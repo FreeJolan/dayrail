@@ -1,0 +1,21 @@
+node_modules
+dist
+dist-ssr
+*.local
+
+# Tauri
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/gen
+
+.DS_Store
+.vite
+.turbo
+.env
+.env.*
+!.env.example
+coverage
+*.log
+.idea
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
