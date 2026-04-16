@@ -1,8 +1,0 @@
-{
-  "action_done": "完成",
-  "action_adjust": "调整",
-  "action_skip": "跳过",
-  "remaining": "还有 {minutes} 分钟",
-  "starts_in": "{minutes} 分钟后开始",
-  "duration": "{minutes} 分钟"
-}

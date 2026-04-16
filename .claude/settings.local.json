@@ -12,7 +12,10 @@
       "mcp__stitch__get_project",
       "Bash(mkdir -p /tmp/dayrail-stitch)",
       "Read(//tmp/**)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(rm -rf apps packages node_modules)",
+      "Bash(rm -f pnpm-lock.yaml package.json pnpm-workspace.yaml tsconfig.base.json)"
     ]
   }
 }

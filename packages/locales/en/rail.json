@@ -1,8 +1,0 @@
-{
-  "action_done": "Done",
-  "action_adjust": "Adjust",
-  "action_skip": "Skip",
-  "remaining": "{minutes, plural, one {# min left} other {# min left}}",
-  "starts_in": "starts in {minutes, plural, one {# min} other {# min}}",
-  "duration": "{minutes, plural, one {# min} other {# min}}"
-}
