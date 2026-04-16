@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm --version)",
+      "Bash(pnpm install:*)",
+      "Bash(cargo --version)",
+      "Bash(xcode-select -p)",
+      "Bash(git checkout:*)",
+      "Bash(pnpm --filter @dayrail/web typecheck)",
+      "Bash(pnpm typecheck *)",
+      "Bash(pnpm build *)",
+      "mcp__stitch__get_project",
+      "Bash(mkdir -p /tmp/dayrail-stitch)",
+      "Read(//tmp/**)",
+      "Bash(git add *)"
+    ]
+  }
+}

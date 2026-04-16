@@ -1,0 +1,12 @@
+{
+  "name": "@dayrail/locales",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./zh-CN/common": "./zh-CN/common.json",
+    "./zh-CN/rail": "./zh-CN/rail.json",
+    "./en/common": "./en/common.json",
+    "./en/rail": "./en/rail.json"
+  }
+}
