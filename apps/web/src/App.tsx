@@ -75,7 +75,7 @@ function labelFor(page: NavKey): string {
     case 'calendar':
       return 'Calendar (§5.4 Calendar)';
     case 'pending':
-      return 'Pending queue (§5.7)';
+      return 'Unresolved queue (§5.7)';
     case 'settings':
       return 'Settings (§5.9)';
   }

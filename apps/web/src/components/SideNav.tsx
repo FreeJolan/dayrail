@@ -43,7 +43,7 @@ const PRIMARY_ITEMS: Item[] = [
   { key: 'projects', label: 'Projects', icon: ClipboardList },
   { key: 'review', label: 'Review', icon: LineChart },
   { key: 'calendar', label: 'Calendar', icon: Calendar },
-  { key: 'pending', label: 'Pending', icon: Inbox },
+  { key: 'pending', label: 'Unresolved', icon: Inbox },
 ];
 
 const SECONDARY_ITEMS: Item[] = [
