@@ -9,14 +9,30 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { getDb, runMigrations } from '@dayrail/db';
-import { appendEvent, initClock, loadEvents, dropSessionEvents } from './event';
+import {
+  appendEvent,
+  currentClock,
+  initClock,
+  loadEvents,
+  dropSessionEvents,
+} from './event';
 import {
   closeSession,
+  onSessionChange,
   openSession,
   recoverActiveSessions,
   touchSession,
   type EditSession,
 } from './session';
+import {
+  armSnapshotOnHide,
+  clearSnapshots,
+  loadLatestSnapshot,
+  noteEvent,
+  resetUnsnapshotted,
+  shouldSnapshotAfterEvent,
+  writeSnapshot,
+} from './snapshot';
 import type { Rail, RailColor, Recurrence, Template, TemplateKey } from './types';
 
 // ------------------------------------------------------------------
@@ -117,161 +133,220 @@ function applyEventInPlace(
 // awaited before components render any store-derived data.
 // ------------------------------------------------------------------
 
+type SnapshotPayload = Pick<DayRailState, 'templates' | 'rails'>;
+
+let unhookSnapshotTriggers: (() => void) | null = null;
+let unsubscribeSessionBridge: (() => void) | null = null;
+
 export const useStore = create<DayRailStore>()(
-  immer((set, get) => ({
-    ready: false,
-    templates: {},
-    rails: {},
-    sessions: {},
+  immer((set, get) => {
+    // After a mutation: bump the unsnapshotted counter and, if the
+    // threshold just tripped, snapshot in the background. We cap the
+    // snapshot to "current state" — HLC is read fresh from the clock
+    // so a racing appendEvent doesn't land outside the snapshot.
+    const afterMutation = (): void => {
+      noteEvent();
+      if (shouldSnapshotAfterEvent()) {
+        const s = get();
+        void writeSnapshot<SnapshotPayload>(
+          { templates: s.templates, rails: s.rails },
+          currentClock(),
+          /* eventCount */ 0,
+        );
+      }
+    };
 
-    hydrate: async () => {
-      try {
-        // 1. Open DB + run migrations
-        const db = await getDb();
-        runMigrations(db);
+    return {
+      ready: false,
+      templates: {},
+      rails: {},
+      sessions: {},
 
-        // 2. Seed HLC + recover sessions
-        await initClock();
-        const recovered = await recoverActiveSessions();
+      hydrate: async () => {
+        try {
+          // 1. Open DB + run migrations (await — the worker queues DB
+          //    calls serially but we still want surfaced errors).
+          const db = await getDb();
+          await runMigrations(db);
 
-        // 3. Replay every event — v0.2 uses no snapshot yet, so replay
-        //    is always from 0. Snapshot support lands later in the
-        //    data-layer milestone.
+          // 2. Seed HLC + recover sessions.
+          await initClock();
+          const recovered = await recoverActiveSessions();
+
+          // 3. Load latest snapshot (if any) + replay events since.
+          const snap = await loadLatestSnapshot<SnapshotPayload>();
+          const events = await loadEvents(snap ? { sinceHlc: snap.hlc } : {});
+
+          set((draft) => {
+            if (snap) {
+              draft.templates = snap.state.templates ?? {};
+              draft.rails = snap.state.rails ?? {};
+            }
+            const reducerState: ReducerState = {
+              templates: draft.templates,
+              rails: draft.rails,
+            };
+            for (const ev of events) {
+              applyEventInPlace(reducerState, ev.type, ev.payload);
+            }
+            for (const s of recovered) {
+              if (!s.closed) draft.sessions[s.id] = s;
+            }
+            draft.ready = true;
+          });
+          resetUnsnapshotted(events.length);
+
+          // 4. Arm visibilitychange → snapshot if there are pending
+          //    events. HMR may call hydrate more than once; clean up
+          //    any previous binding first.
+          if (unhookSnapshotTriggers) unhookSnapshotTriggers();
+          unhookSnapshotTriggers = armSnapshotOnHide(() => {
+            const s = get();
+            void writeSnapshot<SnapshotPayload>(
+              { templates: s.templates, rails: s.rails },
+              currentClock(),
+              /* eventCount */ 0,
+            );
+          });
+
+          // 5. Bridge session.ts's internal map into the store. `touchSession`
+          //    and friends mutate the session registry but don't know about
+          //    Zustand; without this listener the Edit Session indicator's
+          //    `changeCount` would stay frozen at 0.
+          if (unsubscribeSessionBridge) unsubscribeSessionBridge();
+          unsubscribeSessionBridge = onSessionChange((session) => {
+            set((draft) => {
+              if (session.closed) {
+                delete draft.sessions[session.id];
+              } else {
+                draft.sessions[session.id] = session;
+              }
+            });
+          });
+        } catch (err) {
+          set((d) => {
+            d.error = (err as Error).message;
+            d.ready = true;
+          });
+          throw err;
+        }
+      },
+
+      upsertTemplate: async (tpl, sessionId) => {
+        const isCreate = !get().templates[tpl.key];
+        const event = await appendEvent({
+          aggregateId: `template:${tpl.key}`,
+          type: isCreate ? 'template.created' : 'template.updated',
+          payload: { ...tpl },
+          sessionId,
+        });
+        if (sessionId) await touchSession(sessionId);
+        set((draft) => {
+          applyEventInPlace(
+            { templates: draft.templates, rails: draft.rails },
+            event.type,
+            event.payload,
+          );
+        });
+        afterMutation();
+      },
+
+      createRail: async (rail, sessionId) => {
+        const event = await appendEvent({
+          aggregateId: `rail:${rail.id}`,
+          type: 'rail.created',
+          payload: { ...rail },
+          sessionId,
+        });
+        if (sessionId) await touchSession(sessionId);
+        set((draft) => {
+          applyEventInPlace(
+            { templates: draft.templates, rails: draft.rails },
+            event.type,
+            event.payload,
+          );
+        });
+        afterMutation();
+      },
+
+      updateRail: async (id, patch, sessionId) => {
+        const event = await appendEvent({
+          aggregateId: `rail:${id}`,
+          type: 'rail.updated',
+          payload: { id, ...patch },
+          sessionId,
+        });
+        if (sessionId) await touchSession(sessionId);
+        set((draft) => {
+          applyEventInPlace(
+            { templates: draft.templates, rails: draft.rails },
+            event.type,
+            event.payload,
+          );
+        });
+        afterMutation();
+      },
+
+      deleteRail: async (id, sessionId) => {
+        const event = await appendEvent({
+          aggregateId: `rail:${id}`,
+          type: 'rail.deleted',
+          payload: { id },
+          sessionId,
+        });
+        if (sessionId) await touchSession(sessionId);
+        set((draft) => {
+          applyEventInPlace(
+            { templates: draft.templates, rails: draft.rails },
+            event.type,
+            event.payload,
+          );
+        });
+        afterMutation();
+      },
+
+      openEditSession: async (surface) => {
+        const session = await openSession(surface);
+        set((draft) => {
+          draft.sessions[session.id] = session;
+        });
+        return session;
+      },
+
+      closeEditSession: async (sessionId) => {
+        await closeSession(sessionId);
+        set((draft) => {
+          delete draft.sessions[sessionId];
+        });
+      },
+
+      /** §5.3.1 · roll back every event tagged with the session, then
+       *  rebuild the in-memory state from the surviving events. */
+      undoEditSession: async (sessionId) => {
+        const removed = await dropSessionEvents(sessionId);
+        // Any existing snapshot may have baked in the session's now-
+        // dropped events. Wipe them so the next cold start replays
+        // from scratch rather than inheriting ghost state.
+        await clearSnapshots();
+        // Rebuild the two aggregates this store cares about.
         const events = await loadEvents();
         set((draft) => {
+          draft.templates = {};
+          draft.rails = {};
           const reducerState: ReducerState = {
             templates: draft.templates,
             rails: draft.rails,
           };
-          for (const ev of events) {
-            applyEventInPlace(reducerState, ev.type, ev.payload);
-          }
-          for (const s of recovered) {
-            if (!s.closed) draft.sessions[s.id] = s;
-          }
-          draft.ready = true;
+          for (const ev of events) applyEventInPlace(reducerState, ev.type, ev.payload);
         });
-
-        // Keep the store's session mirror in sync with the registry
-        // by polling — cheap since we emit change notifications.
-        // (The event-based subscription lives in the surface components
-        // that open/close sessions; for now this is a good-enough
-        // hookup.)
-      } catch (err) {
-        set((d) => {
-          d.error = (err as Error).message;
-          d.ready = true;
+        await closeSession(sessionId);
+        set((draft) => {
+          delete draft.sessions[sessionId];
         });
-        throw err;
-      }
-    },
-
-    upsertTemplate: async (tpl, sessionId) => {
-      const isCreate = !get().templates[tpl.key];
-      const event = await appendEvent({
-        aggregateId: `template:${tpl.key}`,
-        type: isCreate ? 'template.created' : 'template.updated',
-        payload: { ...tpl },
-        sessionId,
-      });
-      if (sessionId) await touchSession(sessionId);
-      set((draft) => {
-        applyEventInPlace(
-          { templates: draft.templates, rails: draft.rails },
-          event.type,
-          event.payload,
-        );
-      });
-    },
-
-    createRail: async (rail, sessionId) => {
-      const event = await appendEvent({
-        aggregateId: `rail:${rail.id}`,
-        type: 'rail.created',
-        payload: { ...rail },
-        sessionId,
-      });
-      if (sessionId) await touchSession(sessionId);
-      set((draft) => {
-        applyEventInPlace(
-          { templates: draft.templates, rails: draft.rails },
-          event.type,
-          event.payload,
-        );
-      });
-    },
-
-    updateRail: async (id, patch, sessionId) => {
-      const event = await appendEvent({
-        aggregateId: `rail:${id}`,
-        type: 'rail.updated',
-        payload: { id, ...patch },
-        sessionId,
-      });
-      if (sessionId) await touchSession(sessionId);
-      set((draft) => {
-        applyEventInPlace(
-          { templates: draft.templates, rails: draft.rails },
-          event.type,
-          event.payload,
-        );
-      });
-    },
-
-    deleteRail: async (id, sessionId) => {
-      const event = await appendEvent({
-        aggregateId: `rail:${id}`,
-        type: 'rail.deleted',
-        payload: { id },
-        sessionId,
-      });
-      if (sessionId) await touchSession(sessionId);
-      set((draft) => {
-        applyEventInPlace(
-          { templates: draft.templates, rails: draft.rails },
-          event.type,
-          event.payload,
-        );
-      });
-    },
-
-    openEditSession: async (surface) => {
-      const session = await openSession(surface);
-      set((draft) => {
-        draft.sessions[session.id] = session;
-      });
-      return session;
-    },
-
-    closeEditSession: async (sessionId) => {
-      await closeSession(sessionId);
-      set((draft) => {
-        delete draft.sessions[sessionId];
-      });
-    },
-
-    /** §5.3.1 · roll back every event tagged with the session, then
-     *  rebuild the in-memory state from the surviving events. */
-    undoEditSession: async (sessionId) => {
-      const removed = await dropSessionEvents(sessionId);
-      // Rebuild the two aggregates this store cares about.
-      const events = await loadEvents();
-      set((draft) => {
-        draft.templates = {};
-        draft.rails = {};
-        const reducerState: ReducerState = {
-          templates: draft.templates,
-          rails: draft.rails,
-        };
-        for (const ev of events) applyEventInPlace(reducerState, ev.type, ev.payload);
-      });
-      await closeSession(sessionId);
-      set((draft) => {
-        delete draft.sessions[sessionId];
-      });
-      return removed;
-    },
-  })),
+        return removed;
+      },
+    };
+  }),
 );
 
 // ------------------------------------------------------------------

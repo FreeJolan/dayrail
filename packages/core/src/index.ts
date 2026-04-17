@@ -7,5 +7,6 @@
 export * from './hlc';
 export * from './event';
 export * from './session';
+export * from './snapshot';
 export * from './store';
 export * from './types';

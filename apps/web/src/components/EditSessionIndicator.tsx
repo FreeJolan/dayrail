@@ -6,9 +6,10 @@ import { Undo2 } from 'lucide-react';
 
 interface Props {
   changeCount: number;
+  onUndo?: () => void;
 }
 
-export function EditSessionIndicator({ changeCount }: Props) {
+export function EditSessionIndicator({ changeCount, onUndo }: Props) {
   if (changeCount === 0) {
     return (
       <span className="text-xs text-ink-tertiary">无改动</span>
@@ -24,6 +25,7 @@ export function EditSessionIndicator({ changeCount }: Props) {
       </span>
       <button
         type="button"
+        onClick={onUndo}
         title="撤销本次编辑（15 min 无动作后本会话自动归档）"
         className="inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
       >
