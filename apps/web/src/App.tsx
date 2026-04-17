@@ -6,6 +6,7 @@ import { Review } from './pages/Review';
 import { Projects } from './pages/Projects';
 import { Pending } from './pages/Pending';
 import { Settings } from './pages/Settings';
+import { Calendar } from './pages/Calendar';
 import { SideNav, type NavKey } from './components/SideNav';
 
 // Simple state-based routing for the static-mock phase. When we add
@@ -27,13 +28,15 @@ export default function App() {
         {page === 'projects' && <Projects />}
         {page === 'pending' && <Pending />}
         {page === 'settings' && <Settings />}
+        {page === 'calendar' && <Calendar />}
         {page !== 'today' &&
           page !== 'template' &&
           page !== 'cycle' &&
           page !== 'review' &&
           page !== 'projects' &&
           page !== 'pending' &&
-          page !== 'settings' && <ComingSoon page={page} />}
+          page !== 'settings' &&
+          page !== 'calendar' && <ComingSoon page={page} />}
       </main>
     </div>
   );
