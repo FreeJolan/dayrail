@@ -36,17 +36,30 @@ export type EventType =
   | 'cycleday.template-changed'
   | 'slot.assigned'
   | 'slot.cleared'
-  // Projects
+  // Projects (Lines)
   | 'line.created'
   | 'line.updated'
   | 'line.archived'
+  | 'line.restored'
+  | 'line.deleted'
+  | 'line.purged'
+  // Tasks (units of work inside a Line, §5.5)
   | 'task.created'
   | 'task.updated'
   | 'task.scheduled'
+  | 'task.unscheduled'
+  | 'task.archived'
+  | 'task.restored'
+  | 'task.deleted'
+  | 'task.purged'
   // Calendar rules
   | 'calendar-rule.upserted'
   | 'calendar-rule.removed'
+  // Ad-hoc Events
   | 'adhoc.created'
+  | 'adhoc.updated'
+  | 'adhoc.deleted'
+  | 'adhoc.restored'
   | 'adhoc.removed';
 
 export interface AppEvent<T extends EventType = EventType> {

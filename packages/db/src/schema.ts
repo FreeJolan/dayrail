@@ -207,11 +207,15 @@ export const lines = sqliteTable('lines', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   color: text('color'),
-  status: text('status').notNull().default('active'), // active / archived
+  status: text('status').notNull().default('active'), // active / archived / deleted
   kind: text('kind').notNull().default('project'), // project / habit / group
+  /** Built-in Lines are immutable via user action. Reserved for `line-inbox`. */
+  isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
   plannedStart: text('planned_start'),
   plannedEnd: text('planned_end'),
   createdAt: integer('created_at').notNull(),
+  archivedAt: integer('archived_at'),
+  deletedAt: integer('deleted_at'),
 });
 
 export const tasks = sqliteTable(
@@ -230,6 +234,9 @@ export const tasks = sqliteTable(
     slotCycleId: text('slot_cycle_id'),
     slotDate: text('slot_date'),
     slotRailId: text('slot_rail_id'),
+    doneAt: text('done_at'),
+    archivedAt: text('archived_at'),
+    deletedAt: text('deleted_at'),
   },
   (t) => ({ lineIdx: index('tasks_line_idx').on(t.lineId) }),
 );
@@ -251,6 +258,11 @@ export const adhocEvents = sqliteTable(
     name: text('name').notNull(),
     color: text('color'),
     lineId: text('line_id'),
+    /** §5.5.2 free-time Task scheduling: a Task's unscheduled state
+     *  soft-deletes the backing Ad-hoc. */
+    taskId: text('task_id'),
+    status: text('status').notNull().default('active'), // active / deleted
+    deletedAt: text('deleted_at'),
   },
   (t) => ({ dateIdx: index('adhoc_date_idx').on(t.date) }),
 );
@@ -397,9 +409,12 @@ CREATE TABLE IF NOT EXISTS lines (
   color TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   kind TEXT NOT NULL DEFAULT 'project',
+  is_default INTEGER NOT NULL DEFAULT 0,
   planned_start TEXT,
   planned_end TEXT,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  archived_at INTEGER,
+  deleted_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -413,7 +428,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   sub_items TEXT,
   slot_cycle_id TEXT,
   slot_date TEXT,
-  slot_rail_id TEXT
+  slot_rail_id TEXT,
+  done_at TEXT,
+  archived_at TEXT,
+  deleted_at TEXT
 );
 CREATE INDEX IF NOT EXISTS tasks_line_idx ON tasks(line_id);
 
@@ -431,7 +449,10 @@ CREATE TABLE IF NOT EXISTS adhoc_events (
   duration_minutes INTEGER NOT NULL,
   name TEXT NOT NULL,
   color TEXT,
-  line_id TEXT
+  line_id TEXT,
+  task_id TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  deleted_at TEXT
 );
 CREATE INDEX IF NOT EXISTS adhoc_date_idx ON adhoc_events(date);
 

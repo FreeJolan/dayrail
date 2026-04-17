@@ -8,7 +8,7 @@
 import type { Database } from './connection';
 import { INITIAL_SCHEMA_SQL } from './schema';
 
-export const LATEST_SCHEMA_VERSION = 2;
+export const LATEST_SCHEMA_VERSION = 3;
 
 export async function runMigrations(db: Database): Promise<void> {
   // Apply the initial schema unconditionally (CREATE TABLE IF NOT
@@ -44,6 +44,43 @@ export async function runMigrations(db: Database): Promise<void> {
     }
     await db.exec({
       sql: 'INSERT INTO schema_version (version, applied_at) VALUES (2, ?1);',
+      bind: [Date.now()],
+    });
+  }
+
+  if (current < 3) {
+    // v3: Tasks-view refactor.
+    //   - lines:        +is_default, +archived_at, +deleted_at
+    //   - tasks:        +done_at, +archived_at, +deleted_at (status enum
+    //                    widened to include 'archived' | 'deleted';
+    //                    enum is stored as TEXT so no DDL for that)
+    //   - adhoc_events: +task_id, +status, +deleted_at
+    // Each ALTER is wrapped in try/catch so a fresh v3 install (where
+    // INITIAL_SCHEMA_SQL already put the columns there) doesn't trip on
+    // the "duplicate column" error.
+    const addColumn = async (sql: string): Promise<void> => {
+      try {
+        await db.exec({ sql });
+      } catch {
+        // Column already exists on fresh v3 install — ALTER TABLE ADD
+        // COLUMN throws. Ignore.
+      }
+    };
+    await addColumn(
+      "ALTER TABLE lines ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0;",
+    );
+    await addColumn('ALTER TABLE lines ADD COLUMN archived_at INTEGER;');
+    await addColumn('ALTER TABLE lines ADD COLUMN deleted_at INTEGER;');
+    await addColumn('ALTER TABLE tasks ADD COLUMN done_at TEXT;');
+    await addColumn('ALTER TABLE tasks ADD COLUMN archived_at TEXT;');
+    await addColumn('ALTER TABLE tasks ADD COLUMN deleted_at TEXT;');
+    await addColumn('ALTER TABLE adhoc_events ADD COLUMN task_id TEXT;');
+    await addColumn(
+      "ALTER TABLE adhoc_events ADD COLUMN status TEXT NOT NULL DEFAULT 'active';",
+    );
+    await addColumn('ALTER TABLE adhoc_events ADD COLUMN deleted_at TEXT;');
+    await db.exec({
+      sql: 'INSERT INTO schema_version (version, applied_at) VALUES (3, ?1);',
       bind: [Date.now()],
     });
   }
