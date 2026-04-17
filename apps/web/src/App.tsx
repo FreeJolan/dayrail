@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { TodayTrack } from './pages/TodayTrack';
 import { TemplateEditor } from './pages/TemplateEditor';
 import { CycleView } from './pages/CycleView';
+import { Review } from './pages/Review';
 import { SideNav, type NavKey } from './components/SideNav';
 
 // Simple state-based routing for the static-mock phase. When we add
@@ -19,9 +20,11 @@ export default function App() {
         {page === 'today' && <TodayTrack />}
         {page === 'template' && <TemplateEditor />}
         {page === 'cycle' && <CycleView />}
-        {page !== 'today' && page !== 'template' && page !== 'cycle' && (
-          <ComingSoon page={page} />
-        )}
+        {page === 'review' && <Review />}
+        {page !== 'today' &&
+          page !== 'template' &&
+          page !== 'cycle' &&
+          page !== 'review' && <ComingSoon page={page} />}
       </main>
     </div>
   );
