@@ -111,7 +111,7 @@ export function RailEditCard({
         />
 
         {(!rail.showInCheckin || rail.defaultLineId) && (
-          <div className="mt-1 flex flex-wrap items-center gap-1.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-ink-tertiary">
             {!rail.showInCheckin && (
               <span className="rounded-sm bg-surface-3 px-1.5 py-0.5">
                 不参与 check-in

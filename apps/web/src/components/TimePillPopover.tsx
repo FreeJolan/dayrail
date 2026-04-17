@@ -223,7 +223,7 @@ export function TimePillPopover({
             onClick={commit}
             disabled={!durationValid || !!conflicting}
             className={clsx(
-              'rounded-sm px-2.5 py-1 font-mono text-2xs uppercase tracking-widest transition',
+              'rounded-sm px-2.5 py-1 text-xs font-medium transition',
               durationValid && !conflicting
                 ? 'bg-ink-primary text-surface-0 hover:bg-ink-secondary'
                 : 'cursor-not-allowed bg-surface-2 text-ink-tertiary',

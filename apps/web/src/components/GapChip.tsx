@@ -32,7 +32,7 @@ export function GapChip({ startMin, endMin, onFill }: Props) {
       <button
         type="button"
         onClick={onFill}
-        className="inline-flex items-center gap-1 rounded-sm border border-dashed border-ink-tertiary/40 px-2 py-0.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:border-ink-secondary hover:text-ink-secondary"
+        className="inline-flex items-center gap-1 rounded-sm border border-dashed border-ink-tertiary/40 px-2 py-0.5 text-xs font-medium text-ink-tertiary transition hover:border-ink-secondary hover:text-ink-secondary"
       >
         <Plus className="h-3 w-3" strokeWidth={1.8} />
         填充 Rail

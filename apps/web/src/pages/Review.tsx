@@ -169,19 +169,19 @@ function AdhocHintCard({
       <div className="mt-3 flex gap-2">
         <button
           type="button"
-          className="rounded-sm bg-ink-primary px-2.5 py-1 font-mono text-2xs uppercase tracking-widest text-surface-0 transition hover:bg-ink-secondary"
+          className="rounded-sm bg-ink-primary px-2.5 py-1 text-xs font-medium text-surface-0 transition hover:bg-ink-secondary"
         >
           加入模板
         </button>
         <button
           type="button"
-          className="rounded-sm px-2.5 py-1 font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-secondary"
+          className="rounded-sm px-2.5 py-1 text-xs font-medium text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-secondary"
         >
           保持 Ad-hoc
         </button>
         <button
           type="button"
-          className="rounded-sm px-2.5 py-1 font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-secondary"
+          className="rounded-sm px-2.5 py-1 text-xs font-medium text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-secondary"
         >
           不再提示
         </button>
@@ -217,7 +217,7 @@ function AISection({
           <button
             type="button"
             onClick={onToggle}
-            className="rounded-sm px-2.5 py-1 font-mono text-2xs uppercase tracking-widest text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+            className="rounded-sm px-2.5 py-1 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
           >
             预览（本页 mock 启用）
           </button>
@@ -234,7 +234,7 @@ function AISection({
         <button
           type="button"
           onClick={onToggle}
-          className="rounded-sm px-2.5 py-1 font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-secondary"
+          className="rounded-sm px-2.5 py-1 text-xs font-medium text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-secondary"
         >
           关闭预览
         </button>

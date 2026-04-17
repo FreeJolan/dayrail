@@ -16,7 +16,7 @@ export function FirstRunBanner() {
       <div className="flex-1">
         <span className="text-ink-primary">改动即时保存。</span>{' '}
         想反悔？点{' '}
-        <span className="inline-flex items-center gap-1 rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-2xs uppercase tracking-widest text-ink-primary">
+        <span className="inline-flex items-center gap-1 rounded-sm bg-surface-2 px-1.5 py-0.5 text-xs font-medium text-ink-primary">
           ⤺ 撤销本次编辑
         </span>{' '}
         —— 一次回退本次会话的所有改动（15 min 无动作后本会话自动归档）。
