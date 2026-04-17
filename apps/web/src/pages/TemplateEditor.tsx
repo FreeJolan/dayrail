@@ -1,10 +1,18 @@
 import { useMemo, useState } from 'react';
-import { MoreHorizontal, Plus } from 'lucide-react';
+import {
+  Copy,
+  MoreHorizontal,
+  Plus,
+  RotateCcw,
+  Trash2,
+  Undo2,
+} from 'lucide-react';
 import {
   SAMPLE_RAILS_BY_TEMPLATE,
   SAMPLE_TEMPLATES,
   computeSummary,
   type EditableRail,
+  type SampleTemplate,
   type TemplateKey,
 } from '@/data/sampleTemplate';
 import { FirstRunBanner } from '@/components/FirstRunBanner';
@@ -14,6 +22,14 @@ import { SummaryStrip } from '@/components/SummaryStrip';
 import { TimelineRuler } from '@/components/TimelineRuler';
 import { RailEditCard } from '@/components/RailEditCard';
 import { GapChip } from '@/components/GapChip';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/primitives/DropdownMenu';
 
 // ERD §5.4 Template Editor static mock (E1–E7).
 //
@@ -28,6 +44,7 @@ export function TemplateEditor() {
   const [focusRailId, setFocusRailId] = useState<string | undefined>();
   const [changeCount, setChangeCount] = useState(3); // mock "N processing changes"
 
+  const currentTemplate = SAMPLE_TEMPLATES.find((t) => t.key === activeKey)!;
   const rails = railsByKey[activeKey];
   const sorted = useMemo(
     () => rails.slice().sort((a, b) => a.startMin - b.startMin),
@@ -63,6 +80,47 @@ export function TemplateEditor() {
       return { ...prev, [activeKey]: [...prev[activeKey], dup] };
     });
     setChangeCount((c) => c + 1);
+  };
+
+  // ---- top-right ⋯ menu handlers (ERD §5.4 E1 / E7) ----
+
+  const undoSession = () => {
+    // Static mock: "session baseline" = the SAMPLE seeds. A real impl
+    // would replay inverse mutations from §5.3.1 Edit Session log.
+    setRailsByKey((prev) => ({
+      ...prev,
+      [activeKey]: SAMPLE_RAILS_BY_TEMPLATE[activeKey],
+    }));
+    setChangeCount(0);
+  };
+
+  const resetToDefault = () => {
+    if (!currentTemplate.builtIn) return;
+    setRailsByKey((prev) => ({
+      ...prev,
+      [activeKey]: SAMPLE_RAILS_BY_TEMPLATE[activeKey],
+    }));
+    setChangeCount((c) => c + 1);
+  };
+
+  const duplicateTemplate = () => {
+    // Static mock: no state for user-created templates yet. Real impl
+    // clones the current template into a new key, switches tab.
+    window.alert(
+      `「${currentTemplate.label} · 副本」—— 新模板已创建并切换到新 tab。\n(静态 mock：未真的持久化)`,
+    );
+  };
+
+  const deleteTemplate = () => {
+    if (currentTemplate.builtIn) return;
+    const cycleDayCount = 0; // real impl counts CycleDay refs to this template
+    const msg =
+      cycleDayCount > 0
+        ? `删除「${currentTemplate.label}」\n将有 ${cycleDayCount} 天落回默认工作日模板。确认？`
+        : `删除「${currentTemplate.label}」？此操作写入编辑会话，可以 ⤺ 撤销本次编辑 回退。`;
+    if (window.confirm(msg)) {
+      window.alert('（静态 mock：未真的删除）');
+    }
   };
 
   const fillGap = (startMin: number, endMin: number) => {
@@ -106,7 +164,14 @@ export function TemplateEditor() {
 
   return (
     <div className="flex w-full flex-col pl-10 pr-8 xl:pl-14">
-      <TopBar changeCount={changeCount} />
+      <TopBar
+        changeCount={changeCount}
+        template={currentTemplate}
+        onUndoSession={undoSession}
+        onReset={resetToDefault}
+        onDuplicate={duplicateTemplate}
+        onDelete={deleteTemplate}
+      />
 
       <TemplateTabs
         templates={SAMPLE_TEMPLATES}
@@ -161,7 +226,22 @@ export function TemplateEditor() {
   );
 }
 
-function TopBar({ changeCount }: { changeCount: number }) {
+function TopBar({
+  changeCount,
+  template,
+  onUndoSession,
+  onReset,
+  onDuplicate,
+  onDelete,
+}: {
+  changeCount: number;
+  template: SampleTemplate;
+  onUndoSession: () => void;
+  onReset: () => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+}) {
+  const canUndo = changeCount > 0;
   return (
     <header className="sticky top-0 z-40 -mx-10 flex h-[52px] items-center justify-between gap-4 bg-surface-0 px-10">
       <div className="flex items-baseline gap-3">
@@ -174,14 +254,76 @@ function TopBar({ changeCount }: { changeCount: number }) {
       </div>
       <div className="flex items-center gap-3">
         <EditSessionIndicator changeCount={changeCount} />
-        <button
-          type="button"
-          aria-label="Template menu"
-          className="rounded-sm p-1 text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-          title="撤销本次编辑 / 重置到默认 / 复制新建 / 删除此模板"
-        >
-          <MoreHorizontal className="h-4 w-4" strokeWidth={1.8} />
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label="Template menu"
+              className="rounded-sm p-1 text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary data-[state=open]:bg-surface-2 data-[state=open]:text-ink-primary"
+              title="模板操作"
+            >
+              <MoreHorizontal className="h-4 w-4" strokeWidth={1.8} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[220px]">
+            <DropdownMenuLabel>本次会话</DropdownMenuLabel>
+            <DropdownMenuItem
+              disabled={!canUndo}
+              onSelect={onUndoSession}
+            >
+              <Undo2
+                className="h-3.5 w-3.5 text-ink-tertiary"
+                strokeWidth={1.8}
+              />
+              <span className="flex-1">撤销本次编辑</span>
+              <span className="font-mono text-2xs text-ink-tertiary">
+                {canUndo ? `${changeCount} 处` : '无改动'}
+              </span>
+            </DropdownMenuItem>
+
+            <DropdownMenuSeparator />
+
+            <DropdownMenuLabel>模板</DropdownMenuLabel>
+            <DropdownMenuItem
+              disabled={!template.builtIn}
+              onSelect={onReset}
+            >
+              <RotateCcw
+                className="h-3.5 w-3.5 text-ink-tertiary"
+                strokeWidth={1.8}
+              />
+              <span className="flex-1">重置到默认</span>
+              {!template.builtIn && (
+                <span className="font-mono text-2xs text-ink-tertiary">
+                  仅内置
+                </span>
+              )}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onDuplicate}>
+              <Copy
+                className="h-3.5 w-3.5 text-ink-tertiary"
+                strokeWidth={1.8}
+              />
+              <span className="flex-1">复制新建</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={template.builtIn}
+              onSelect={onDelete}
+              destructive
+            >
+              <Trash2
+                className="h-3.5 w-3.5 text-ink-tertiary"
+                strokeWidth={1.8}
+              />
+              <span className="flex-1">删除此模板</span>
+              {template.builtIn && (
+                <span className="font-mono text-2xs text-ink-tertiary">
+                  内置禁删
+                </span>
+              )}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </header>
   );
