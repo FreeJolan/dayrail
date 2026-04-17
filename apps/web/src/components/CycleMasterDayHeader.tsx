@@ -14,6 +14,14 @@ import { SAMPLE_TEMPLATES } from '@/data/sampleTemplate';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import { RAIL_COLOR_HEX } from './railColors';
 
+// Compact master day header (ERD D3). Each day is a small button
+// rendered in roughly 56 px of vertical space:
+//   - weekday abbreviation (Mon / Tue ...)
+//   - day number (tabular nums)
+//   - 2 px Template.color strip beneath
+// Template NAME is shown in tooltip/popover, not on the header itself.
+// Overridden days wear a small bronze dot, not "覆盖" text.
+
 // ERD §5.3 D3 — the top-of-page header row is the SOLE entry for
 // switching a day's template. Each day is a small button; click opens
 // a popover with the template options (single-day override only).
@@ -32,18 +40,28 @@ export function CycleMasterDayHeader({
   onClearOverride,
 }: Props) {
   return (
-    <ul className="grid grid-cols-7 gap-1 pt-2">
-      {days.map((day) => (
-        <li key={day.date}>
-          <DayButton
-            day={day}
-            isToday={day.date === todayISO}
-            onOverride={(tpl) => onOverride(day.date, tpl)}
-            onClearOverride={() => onClearOverride(day.date)}
-          />
-        </li>
-      ))}
-    </ul>
+    <div className="flex flex-col gap-1.5 pt-2">
+      <div className="flex items-baseline justify-between">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          Days
+        </span>
+        <span className="text-xs text-ink-tertiary">
+          点击切换当日模板
+        </span>
+      </div>
+      <ul className="grid grid-cols-7 gap-1">
+        {days.map((day) => (
+          <li key={day.date}>
+            <DayButton
+              day={day}
+              isToday={day.date === todayISO}
+              onOverride={(tpl) => onOverride(day.date, tpl)}
+              onClearOverride={() => onClearOverride(day.date)}
+            />
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -61,17 +79,18 @@ function DayButton({
   const [open, setOpen] = useState(false);
   const template = SAMPLE_TEMPLATES.find((t) => t.key === day.templateKey)!;
   const { weekday, dayNum } = formatDayLabel(day);
+  const tooltip = day.overridden
+    ? `${template.label} · 覆盖`
+    : template.label;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
+          title={tooltip}
           className={clsx(
-            'group flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition',
-            // Today gets a distinct background + a stronger ring so it
-            // reads as "you are here" without borrowing terracotta
-            // (which G1 locks to Current Rail / primary CTA / Replace).
+            'group relative flex w-full items-center gap-2 overflow-hidden rounded-md px-2 pb-0 pt-1.5 text-left transition',
             isToday
               ? 'bg-surface-2 ring-1 ring-inset ring-ink-primary/60'
               : open
@@ -79,7 +98,7 @@ function DayButton({
                 : 'hover:bg-surface-1',
           )}
         >
-          <div className="flex w-full items-baseline justify-between">
+          <div className="flex flex-1 items-baseline gap-2">
             <span
               className={clsx(
                 'font-mono text-2xs uppercase tracking-widest',
@@ -88,33 +107,27 @@ function DayButton({
             >
               {weekday}
             </span>
-            {day.overridden && (
-              <span
-                className="font-mono text-[9px] uppercase tracking-widest text-ink-tertiary"
-                title="overridden from the weekday default"
-              >
-                覆盖
-              </span>
-            )}
+            <span
+              className={clsx(
+                'font-mono text-base tabular-nums',
+                isToday ? 'font-medium text-ink-primary' : 'text-ink-primary',
+              )}
+            >
+              {dayNum}
+            </span>
           </div>
-          <span
-            className={clsx(
-              'font-mono text-xl tabular-nums',
-              isToday ? 'text-ink-primary font-medium' : 'text-ink-secondary',
-            )}
-          >
-            {dayNum}
-          </span>
-          <span className="flex items-center gap-1.5">
+          {day.overridden && (
             <span
               aria-hidden
-              className="h-[3px] w-5 rounded-full"
-              style={{ background: RAIL_COLOR_HEX[template.color] }}
+              title="overridden from the weekday default"
+              className="h-1.5 w-1.5 rounded-full bg-cta"
             />
-            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-              {template.label}
-            </span>
-          </span>
+          )}
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-x-1 bottom-0 block h-[2px] rounded-full"
+            style={{ background: RAIL_COLOR_HEX[template.color] }}
+          />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" sideOffset={4} className="w-[200px] p-1">
