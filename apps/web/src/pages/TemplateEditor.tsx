@@ -352,14 +352,14 @@ function pickColor(used: EditableRail['color'][]): EditableRail['color'] {
   const ALL: EditableRail['color'][] = [
     'sand',
     'sage',
-    'olive',
     'slate',
-    'mauve',
     'brown',
     'amber',
     'teal',
     'pink',
-    'gray',
+    'grass',
+    'indigo',
+    'plum',
   ];
   const counts = new Map<EditableRail['color'], number>();
   for (const c of ALL) counts.set(c, 0);

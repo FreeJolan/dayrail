@@ -2,15 +2,15 @@ import type { Config } from 'tailwindcss';
 import {
   sand,
   sage,
-  olive,
   slate,
-  mauve,
   brown,
   bronze,
   amber,
   teal,
   pink,
-  gray,
+  grass,
+  indigo,
+  plum,
 } from '@radix-ui/colors';
 
 // ---------- G-group design tokens (ERD §9.6) ----------
@@ -52,61 +52,63 @@ const warn = {
   soft: amber.amber4,
 };
 
-// Rail step-9 palette — the 10 natural+saturated scales
+// Rail 10-color palette. Revised from the original §9.6 proposal after
+// visual testing: dropped olive/mauve/gray (too-close neighbors with
+// sage/slate respectively, or identity-less pure gray); added grass,
+// indigo, plum to cover the previously missing "saturated green /
+// cool blue / creative purple" slots. Balance: 4 natural-muted (sand,
+// sage, slate, brown) + 6 saturated (amber, teal, pink, grass, indigo,
+// plum).
 const railStep9 = {
   sand: sand.sand9,
   sage: sage.sage9,
-  olive: olive.olive9,
   slate: slate.slate9,
-  mauve: mauve.mauve9,
   brown: brown.brown9,
   amber: amber.amber9,
   teal: teal.teal9,
   pink: pink.pink9,
-  gray: gray.gray9,
+  grass: grass.grass9,
+  indigo: indigo.indigo9,
+  plum: plum.plum9,
 };
 
-// Rail step-4 (for "unmarked" hatching per C-group)
 const railStep4 = {
   sand: sand.sand4,
   sage: sage.sage4,
-  olive: olive.olive4,
   slate: slate.slate4,
-  mauve: mauve.mauve4,
   brown: brown.brown4,
   amber: amber.amber4,
   teal: teal.teal4,
   pink: pink.pink4,
-  gray: gray.gray4,
+  grass: grass.grass4,
+  indigo: indigo.indigo4,
+  plum: plum.plum4,
 };
 
-// Rail step-6 (for "skipped" hatching per C-group)
 const railStep6 = {
   sand: sand.sand6,
   sage: sage.sage6,
-  olive: olive.olive6,
   slate: slate.slate6,
-  mauve: mauve.mauve6,
   brown: brown.brown6,
   amber: amber.amber6,
   teal: teal.teal6,
   pink: pink.pink6,
-  gray: gray.gray6,
+  grass: grass.grass6,
+  indigo: indigo.indigo6,
+  plum: plum.plum6,
 };
 
-// Rail step-7 (for "shifted" cell tint per F2 Review heatmap — not strictly
-// needed on Today Track, but kept here since the palette lives together)
 const railStep7 = {
   sand: sand.sand7,
   sage: sage.sage7,
-  olive: olive.olive7,
   slate: slate.slate7,
-  mauve: mauve.mauve7,
   brown: brown.brown7,
   amber: amber.amber7,
   teal: teal.teal7,
   pink: pink.pink7,
-  gray: gray.gray7,
+  grass: grass.grass7,
+  indigo: indigo.indigo7,
+  plum: plum.plum7,
 };
 
 const config: Config = {

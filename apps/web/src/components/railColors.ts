@@ -1,15 +1,15 @@
 import {
   sand,
   sage,
-  olive,
   slate,
-  mauve,
   brown,
   bronze,
   amber,
   teal,
   pink,
-  gray,
+  grass,
+  indigo,
+  plum,
 } from '@radix-ui/colors';
 import type { RailColor } from '@/data/sample';
 
@@ -25,67 +25,67 @@ export const CTA_HEX = bronze.bronze9;
 export const RAIL_COLOR_HEX: Record<RailColor, string> = {
   sand: sand.sand9,
   sage: sage.sage9,
-  olive: olive.olive9,
   slate: slate.slate9,
-  mauve: mauve.mauve9,
   brown: brown.brown9,
   amber: amber.amber9,
   teal: teal.teal9,
   pink: pink.pink9,
-  gray: gray.gray9,
+  grass: grass.grass9,
+  indigo: indigo.indigo9,
+  plum: plum.plum9,
 };
 
 export const RAIL_COLOR_STEP_4: Record<RailColor, string> = {
   sand: sand.sand4,
   sage: sage.sage4,
-  olive: olive.olive4,
   slate: slate.slate4,
-  mauve: mauve.mauve4,
   brown: brown.brown4,
   amber: amber.amber4,
   teal: teal.teal4,
   pink: pink.pink4,
-  gray: gray.gray4,
+  grass: grass.grass4,
+  indigo: indigo.indigo4,
+  plum: plum.plum4,
 };
 
 export const RAIL_COLOR_STEP_6: Record<RailColor, string> = {
   sand: sand.sand6,
   sage: sage.sage6,
-  olive: olive.olive6,
   slate: slate.slate6,
-  mauve: mauve.mauve6,
   brown: brown.brown6,
   amber: amber.amber6,
   teal: teal.teal6,
   pink: pink.pink6,
-  gray: gray.gray6,
+  grass: grass.grass6,
+  indigo: indigo.indigo6,
+  plum: plum.plum6,
 };
 
 export const RAIL_COLOR_STEP_7: Record<RailColor, string> = {
   sand: sand.sand7,
   sage: sage.sage7,
-  olive: olive.olive7,
   slate: slate.slate7,
-  mauve: mauve.mauve7,
   brown: brown.brown7,
   amber: amber.amber7,
   teal: teal.teal7,
   pink: pink.pink7,
-  gray: gray.gray7,
+  grass: grass.grass7,
+  indigo: indigo.indigo7,
+  plum: plum.plum7,
 };
 
 // For text rendered ON TOP of a Rail color at step 9 (the solid "done"
-// state). Radix convention: muted/natural scales plus amber (high
-// luminance) take dark text; saturated teal + pink take white.
+// state). Radix convention: muted/natural scales + amber (high
+// luminance) take dark text; saturated/dark scales take white.
 export const RAIL_TEXT_ON_SOLID: Record<RailColor, string> = {
   sand: slate.slate12,
   sage: slate.slate12,
-  olive: slate.slate12,
   slate: slate.slate12,
-  mauve: slate.slate12,
   brown: slate.slate12,
   amber: slate.slate12,
   teal: sand.sand1,
   pink: sand.sand1,
-  gray: slate.slate12,
+  grass: slate.slate12,
+  indigo: sand.sand1,
+  plum: sand.sand1,
 };
