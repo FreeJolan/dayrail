@@ -75,6 +75,10 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
     if (appliedTags.includes(tag)) return;
     setAppliedTags((prev) => [...prev, tag]);
     onAddTag(tag);
+    // Picking a tag ends the toast's job — dismiss quickly after a
+    // brief visual confirm so the user sees the chip highlight.
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(onClose, 220);
   };
 
   // Done actions don't need chips — there's no Shift to tag and nothing
