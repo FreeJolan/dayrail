@@ -269,7 +269,6 @@ function applyEventInPlace(
       if (existing) state.lines[p.id] = { ...existing, ...p };
       break;
     }
-    case 'line.archived':
     case 'line.restored':
     case 'line.deleted': {
       const p = payload as unknown as Partial<Line> & { id: string };
@@ -318,11 +317,6 @@ function applyEventInPlace(
       const p = payload as unknown as Partial<AdhocEvent> & { id: string };
       const existing = state.adhocEvents[p.id];
       if (existing) state.adhocEvents[p.id] = { ...existing, ...p };
-      break;
-    }
-    case 'adhoc.removed': {
-      const id = (payload as { id: string }).id;
-      delete state.adhocEvents[id];
       break;
     }
     default:
