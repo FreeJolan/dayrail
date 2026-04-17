@@ -8,9 +8,9 @@ import {
   Sparkles,
 } from 'lucide-react';
 import {
+  SAMPLE_CYCLE_REVIEW,
   SAMPLE_DAY_REVIEW,
   SAMPLE_MONTH_REVIEW,
-  SAMPLE_WEEK_REVIEW,
   type ReviewScopeData,
 } from '@/data/sampleReview';
 import { RhythmHeatmap } from '@/components/RhythmHeatmap';
@@ -24,16 +24,16 @@ import { ShiftTagBars } from '@/components/ShiftTagBars';
 // (that's the spec for mobile; desktop side-by-side needs a wider-than-
 // 1440 layout and real data, both arriving later).
 
-type Scope = 'day' | 'week' | 'month';
+type Scope = 'day' | 'cycle' | 'month';
 
 const SCOPES: Array<{ key: Scope; label: string }> = [
   { key: 'day', label: 'Day' },
-  { key: 'week', label: 'Week' },
+  { key: 'cycle', label: 'Cycle' },
   { key: 'month', label: 'Month' },
 ];
 
 export function Review() {
-  const [scope, setScope] = useState<Scope>('week');
+  const [scope, setScope] = useState<Scope>('cycle');
   const data = pickData(scope);
   const [aiEnabled, setAiEnabled] = useState(false);
 
@@ -59,7 +59,7 @@ export function Review() {
 function pickData(scope: Scope): ReviewScopeData {
   if (scope === 'day') return SAMPLE_DAY_REVIEW;
   if (scope === 'month') return SAMPLE_MONTH_REVIEW;
-  return SAMPLE_WEEK_REVIEW;
+  return SAMPLE_CYCLE_REVIEW;
 }
 
 function TopBar({
@@ -69,17 +69,24 @@ function TopBar({
   scope: Scope;
   onScopeChange: (s: Scope) => void;
 }) {
+  // "Review" reads as the page title. A thin vertical rule + wider gap
+  // separate it from the Day/Cycle/Month segmented so the three scopes
+  // don't appear to be a 4-option row with "Review" as sibling.
   return (
     <header className="sticky top-0 z-40 -mx-10 flex h-[52px] items-center justify-between gap-4 bg-surface-0 px-10">
-      <div className="flex items-center gap-3">
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+      <div className="flex items-center gap-4">
+        <span className="font-mono text-sm font-medium tracking-wide text-ink-primary">
           Review
         </span>
+        <span
+          aria-hidden
+          className="h-4 w-px bg-hairline"
+        />
         <ScopeSegmented value={scope} onChange={onScopeChange} />
       </div>
 
       <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-        §5.8 · 观察，不评判
+        §5.8 · observe, don't judge
       </span>
     </header>
   );
@@ -119,7 +126,9 @@ function PeriodPager({ data }: { data: ReviewScopeData }) {
       <button
         type="button"
         aria-label="Previous period"
-        className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+        title="上一周期（v0.2 启用）"
+        disabled
+        className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-ink-tertiary/50 transition hover:bg-surface-2 disabled:cursor-not-allowed"
       >
         <ChevronLeft className="h-3.5 w-3.5" strokeWidth={1.8} />
       </button>
@@ -129,11 +138,13 @@ function PeriodPager({ data }: { data: ReviewScopeData }) {
       <button
         type="button"
         aria-label="Next period"
-        className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+        title="下一周期（v0.2 启用）"
+        disabled
+        className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-ink-tertiary/50 transition hover:bg-surface-2 disabled:cursor-not-allowed"
       >
         <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.8} />
       </button>
-      <span className="ml-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+      <span className="ml-2 text-xs text-ink-tertiary">
         {describeScope(data.scope)}
       </span>
     </div>
@@ -142,7 +153,7 @@ function PeriodPager({ data }: { data: ReviewScopeData }) {
 
 function describeScope(scope: Scope): string {
   if (scope === 'day') return '当日回放';
-  if (scope === 'week') return '本周节奏';
+  if (scope === 'cycle') return '本周期节奏';
   return '本月节奏';
 }
 
@@ -199,29 +210,28 @@ function AISection({
 }) {
   if (!enabled) {
     return (
-      <section className="flex flex-col gap-3 rounded-md bg-surface-1 p-4">
-        <header className="flex items-center gap-2">
+      <section className="rounded-md bg-surface-1 p-4">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="group flex w-full items-center gap-2 text-left"
+          aria-label="Toggle AI preview"
+        >
           <Sparkles className="h-4 w-4 text-ink-tertiary" strokeWidth={1.6} />
           <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
             AI Observe · Review
           </span>
           <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary/60">
-            · Off
+            · off
           </span>
-        </header>
-        <p className="text-sm text-ink-secondary">
-          AI 默认关闭（§6.4）。启用后这里会出现 AI Observe 的模式观察 + AI Review 的结构化周报。
+          <span className="ml-auto text-xs text-ink-tertiary opacity-0 transition group-hover:opacity-100">
+            ▾ preview mock
+          </span>
+        </button>
+        <p className="mt-2 text-sm text-ink-secondary">
+          AI 默认关闭（§6.4）。启用后这里会出现 AI Observe 的模式观察 + AI Review 的结构化周期回顾。
           自备 OpenRouter API Key，见 Settings → AI 辅助。
         </p>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={onToggle}
-            className="rounded-sm px-2.5 py-1 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-          >
-            预览（本页 mock 启用）
-          </button>
-        </div>
       </section>
     );
   }
@@ -277,13 +287,13 @@ function MockReviewCard() {
       <header className="flex items-center gap-2">
         <MessageSquareQuote className="h-4 w-4 text-ink-tertiary" strokeWidth={1.6} />
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-primary">
-          AI Review · 周报
+          AI Review · Cycle 回顾
         </span>
       </header>
       <div className="mt-2 flex flex-col gap-2 text-sm text-ink-primary">
         <p>
-          本周节奏匹配度 <span className="font-mono tabular-nums">62%</span>，
-          与过去四周平均值 <span className="font-mono tabular-nums">65%</span> 相近。
+          本周期节奏匹配度 <span className="font-mono tabular-nums">62%</span>，
+          与过去四个 cycle 平均值 <span className="font-mono tabular-nums">65%</span> 相近。
         </p>
         <p className="text-ink-secondary">
           变动最集中在
@@ -293,7 +303,7 @@ function MockReviewCard() {
           两条 Rail；其它 Rail 均处于稳定节律。
         </p>
         <p className="text-ink-secondary">
-          Line 进度方面：DayRail 开发本周推进 2 条 Chunk（Template Editor 静态页 + Cycle View 静态页），
+          Line 进度方面：DayRail 开发本周期推进 2 条 Chunk（Template Editor 静态页 + Cycle View 静态页），
           符合原计划；考研 408 完成 4 节，略低于预期（5）。
         </p>
       </div>

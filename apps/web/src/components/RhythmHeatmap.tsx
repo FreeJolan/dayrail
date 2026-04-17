@@ -8,6 +8,7 @@ import {
   RAIL_COLOR_STEP_6,
   RAIL_COLOR_STEP_7,
 } from './railColors';
+import { HeatmapLegend } from './HeatmapLegend';
 
 // ERD §5.8 F2 rhythm heatmap.
 // - rows = Rails sorted by frequency desc
@@ -24,6 +25,8 @@ export function RhythmHeatmap({ data }: Props) {
   return (
     <div className="flex flex-col gap-3">
       <Header label={data.label} match={data.rhythmMatchPct} done={data.totalDone} total={data.totalSlots} />
+
+      <HeatmapLegend />
 
       <table className="w-full table-fixed border-separate border-spacing-0">
         <colgroup>
