@@ -22,9 +22,15 @@ import {
 
 interface Props {
   rail: SampleRail;
+  /** Pending / current rows: hover action bar (完成 / 以后再说 / 归档). */
+  onAction?: (action: 'done' | 'defer' | 'archive') => void;
+  /** Done / deferred / archived / unmarked rows: the inline undo button
+   *  reverts `status` back to 'pending' (no Reason toast — this is an
+   *  explicit "I pressed the wrong thing" gesture). */
+  onUndo?: () => void;
 }
 
-export function RailCard({ rail }: Props) {
+export function RailCard({ rail, onAction, onUndo }: Props) {
   const duration = computeDurationMinutes(rail.start, rail.end);
   const isCurrent = rail.state === 'current';
   const isDone = rail.state === 'done';
@@ -155,13 +161,16 @@ export function RailCard({ rail }: Props) {
         {/* Hover-reveal action row on pending / current only.
             Done / deferred / archived / unmarked get a single Undo-ish affordance. */}
         {(rail.state === 'pending' || isCurrent) && (
-          <ActionRow state={rail.state as Extract<RailState, 'pending' | 'current'>} />
+          <ActionRow
+            state={rail.state as Extract<RailState, 'pending' | 'current'>}
+            onAction={onAction}
+          />
         )}
 
-        {isUnmarked && <UndoRow label="补录" />}
-        {isDeferred && <UndoRow label="取消以后再说" />}
-        {isArchived && <UndoRow label="取消归档" />}
-        {isDone && <UndoRow label="撤回完成" />}
+        {isUnmarked && <UndoRow label="补录" onClick={onUndo} />}
+        {isDeferred && <UndoRow label="取消以后再说" onClick={onUndo} />}
+        {isArchived && <UndoRow label="取消归档" onClick={onUndo} />}
+        {isDone && <UndoRow label="撤回完成" onClick={onUndo} />}
       </div>
     </article>
   );
@@ -195,7 +204,13 @@ function DoneCheck() {
   );
 }
 
-function ActionRow({ state }: { state: Extract<RailState, 'pending' | 'current'> }) {
+function ActionRow({
+  state,
+  onAction,
+}: {
+  state: Extract<RailState, 'pending' | 'current'>;
+  onAction?: (action: 'done' | 'defer' | 'archive') => void;
+}) {
   // Reveal animation eases in slightly slower than other transitions
   // so the three buttons feel "arrived" rather than "popped". Default
   // 180 ms duration for both opacity and translate.
@@ -207,18 +222,32 @@ function ActionRow({ state }: { state: Extract<RailState, 'pending' | 'current'>
         state === 'current' && 'opacity-100 translate-y-0',
       )}
     >
-      <ActionButton variant="primary" icon={Check} label="完成" />
-      <ActionButton icon={Clock} label="以后再说" />
-      <ActionButton icon={Archive} label="归档" />
+      <ActionButton
+        variant="primary"
+        icon={Check}
+        label="完成"
+        onClick={() => onAction?.('done')}
+      />
+      <ActionButton
+        icon={Clock}
+        label="以后再说"
+        onClick={() => onAction?.('defer')}
+      />
+      <ActionButton
+        icon={Archive}
+        label="归档"
+        onClick={() => onAction?.('archive')}
+      />
     </div>
   );
 }
 
-function UndoRow({ label }: { label: string }) {
+function UndoRow({ label, onClick }: { label: string; onClick?: () => void }) {
   return (
     <div className="mt-1 flex items-center gap-2 opacity-0 transition group-hover:opacity-100">
       <button
         type="button"
+        onClick={onClick}
         className="rounded-sm px-2.5 py-1 text-xs font-medium text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-secondary"
       >
         {label}
@@ -231,10 +260,12 @@ function ActionButton({
   variant = 'default',
   icon: Icon,
   label,
+  onClick,
 }: {
   variant?: 'default' | 'primary' | 'terracotta';
   icon: typeof Check;
   label: string;
+  onClick?: () => void;
 }) {
   // CN-content buttons drop Mono/uppercase/tracking-widest — those are
   // for pure-Latin overlines. CN glyphs under tracking-widest look
@@ -242,6 +273,7 @@ function ActionButton({
   return (
     <button
       type="button"
+      onClick={onClick}
       className={clsx(
         'inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium transition',
         variant === 'primary' &&
