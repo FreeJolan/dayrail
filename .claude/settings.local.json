@@ -19,7 +19,9 @@
       "Bash(pnpm dev *)",
       "Bash(tee /tmp/dayrail-dev.log)",
       "Bash(pnpm -r typecheck)",
-      "Bash(pnpm --filter @dayrail/web add @radix-ui/react-popover @radix-ui/react-dropdown-menu)"
+      "Bash(pnpm --filter @dayrail/web add @radix-ui/react-popover @radix-ui/react-dropdown-menu)",
+      "Skill(update-config)",
+      "Read(//Users/bytedance/.claude/**)"
     ]
   }
 }
