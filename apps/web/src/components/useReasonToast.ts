@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 import {
   useStore,
   type RailInstance,
+  type RailInstanceStatus,
   type Shift,
   type ShiftType,
   type Signal,
@@ -38,6 +39,11 @@ export function useReasonToast(surface: Signal['surface']): {
   const tagsRef = useRef<string[]>([]);
   const instanceRef = useRef<string | null>(null);
   const actionRef = useRef<ToastAction | null>(null);
+  // The pre-action status. Undo restores the instance to this, not
+  // to a hardcoded 'pending'. On Pending page this matters: acting on
+  // a `deferred` item and then undoing should leave it `deferred`, not
+  // demote it to a fresh `pending` that would drop it from the queue.
+  const previousStatusRef = useRef<RailInstanceStatus | null>(null);
 
   const fire = useCallback(
     (instanceId: string, action: ToastAction) => {
@@ -45,6 +51,7 @@ export function useReasonToast(surface: Signal['surface']): {
       const rail = inst ? rails[inst.railId] : undefined;
       if (!inst || !rail) return;
 
+      previousStatusRef.current = inst.status;
       void recordSignal(instanceId, action, surface);
 
       tagsRef.current = [];
@@ -71,12 +78,14 @@ export function useReasonToast(surface: Signal['surface']): {
 
   const handleUndo = useCallback(() => {
     const id = instanceRef.current;
-    if (id) {
-      void markRailInstance(id, 'pending');
+    const prev = previousStatusRef.current;
+    if (id && prev) {
+      void markRailInstance(id, prev);
     }
     tagsRef.current = [];
     instanceRef.current = null;
     actionRef.current = null;
+    previousStatusRef.current = null;
   }, [markRailInstance]);
 
   const handleClose = useCallback(() => {
@@ -87,6 +96,7 @@ export function useReasonToast(surface: Signal['surface']): {
     tagsRef.current = [];
     instanceRef.current = null;
     actionRef.current = null;
+    previousStatusRef.current = null;
     if (!id || !action) return;
     if (action === 'done') return; // done isn't a Shift
     if (tags.length === 0) return;
