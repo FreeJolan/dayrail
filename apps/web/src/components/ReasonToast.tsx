@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { clsx } from 'clsx';
-import { X } from 'lucide-react';
+import { Plus, X } from 'lucide-react';
 
 // §5.2 Reason toast — the lightweight replacement for the old Shift-tag
 // sheet. Slides in after a check-in action, offers 3 quick-reason tag
@@ -42,23 +42,42 @@ interface Props {
 
 export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
   const [appliedTags, setAppliedTags] = useState<string[]>([]);
+  // Custom-tag input state. `null` = not in input mode; string = the
+  // current input value (may be empty while the user is still typing).
+  const [customInput, setCustomInput] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const armAutoClose = (): void => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(onClose, TIMEOUT_MS);
+  };
+  const clearAutoClose = (): void => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
 
   // Reset + re-arm the countdown each time a new action fires the toast.
   useEffect(() => {
     if (!state) return;
     setAppliedTags([]);
-    timerRef.current = setTimeout(onClose, TIMEOUT_MS);
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
+    setCustomInput(null);
+    armAutoClose();
+    return clearAutoClose;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, onClose]);
 
-  // Esc closes the toast.
+  // Esc closes the toast, EXCEPT while the custom-tag input is active —
+  // there Esc should just exit input mode (the input's own onKeyDown
+  // handles that). We read the current mode via ref so this listener
+  // stays stable across keystrokes.
+  const customActiveRef = useRef(false);
+  customActiveRef.current = customInput !== null;
   useEffect(() => {
     if (!state) return;
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape' && !customActiveRef.current) onClose();
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
@@ -89,13 +108,38 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
   if (typeof document === 'undefined' || !state) return null;
 
   const handleChip = (tag: string): void => {
-    if (appliedTags.includes(tag)) return;
-    setAppliedTags((prev) => [...prev, tag]);
-    onAddTag(tag);
+    const normalized = tag.trim();
+    if (!normalized || appliedTags.includes(normalized)) return;
+    setAppliedTags((prev) => [...prev, normalized]);
+    onAddTag(normalized);
     // Picking a tag ends the toast's job — dismiss quickly after a
     // brief visual confirm so the user sees the chip highlight.
-    if (timerRef.current) clearTimeout(timerRef.current);
+    clearAutoClose();
     timerRef.current = setTimeout(onClose, 220);
+  };
+
+  const enterCustom = (): void => {
+    // While the user is typing, the 6s auto-close would race them.
+    clearAutoClose();
+    setCustomInput('');
+  };
+
+  const exitCustom = (): void => {
+    setCustomInput(null);
+    // Resume the countdown from a fresh 6s window — the user might
+    // still pick a fallback chip.
+    armAutoClose();
+  };
+
+  const submitCustom = (): void => {
+    const raw = customInput ?? '';
+    const tag = raw.trim();
+    if (!tag) {
+      exitCustom();
+      return;
+    }
+    setCustomInput(null);
+    handleChip(tag);
   };
 
   // Done actions don't need chips — there's no Shift to tag and nothing
@@ -136,6 +180,36 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
                   </button>
                 );
               })}
+              {customInput === null ? (
+                <button
+                  type="button"
+                  onClick={enterCustom}
+                  aria-label="添加自定义原因"
+                  title="添加自定义原因"
+                  className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-sm border border-dashed border-hairline/60 text-ink-tertiary transition hover:border-ink-tertiary hover:text-ink-secondary"
+                >
+                  <Plus className="h-3 w-3" strokeWidth={1.8} />
+                </button>
+              ) : (
+                <input
+                  autoFocus
+                  value={customInput}
+                  placeholder="原因…"
+                  onChange={(e) => setCustomInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      submitCustom();
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      exitCustom();
+                    }
+                  }}
+                  onBlur={exitCustom}
+                  maxLength={24}
+                  className="h-[22px] w-24 rounded-sm border border-hairline/60 bg-surface-0 px-1.5 text-xs text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-primary"
+                />
+              )}
             </span>
           </>
         )}
