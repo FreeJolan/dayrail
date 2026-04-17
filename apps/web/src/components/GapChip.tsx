@@ -2,7 +2,7 @@ import { Plus } from 'lucide-react';
 import { fmtDurationShort, fmtHHMM } from '@/data/sampleTemplate';
 
 // ERD §5.4 E4: when adjacent Rails have a gap → an inline chip between
-// rows: `10:00–11:00 · 1h · + 填充 Rail`. Clicking Fill Rail creates a
+// rows: `10:00–11:00 · 1h · + Fill Rail`. Clicking Fill Rail creates a
 // Rail exactly filling the gap (duration = gap length).
 
 interface Props {

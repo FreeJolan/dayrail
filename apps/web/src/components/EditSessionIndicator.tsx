@@ -2,7 +2,8 @@ import { Undo2 } from 'lucide-react';
 
 // Top-right corner indicator (ERD §5.3.1 + D6 + E1). Always on when there
 // are uncommitted session changes. Clicking the ⤺ arrow rolls back the
-// whole session; hovering shows tooltip "15 min 无动作后自动归档".
+// whole session; hovering shows a tooltip explaining the 15-min idle
+// auto-close.
 
 interface Props {
   changeCount: number;

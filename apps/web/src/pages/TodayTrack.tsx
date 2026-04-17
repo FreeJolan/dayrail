@@ -103,9 +103,10 @@ export function TodayTrack() {
   );
 }
 
-// Pulled out so both the "以后再说" strip and (in v0.3) the Pending
-// page can share the same lookup rule: tags from the *most recent*
-// Shift for this instance, capped at whatever the caller renders.
+// Pulled out so both the "Later" (deferred) strip and (in v0.3) the
+// Pending page can share the same lookup rule: tags from the *most
+// recent* Shift for this instance, capped at whatever the caller
+// renders.
 function tagsForInstance(
   instanceId: string,
   shifts: Record<string, { railInstanceId: string; at: string; tags?: string[] }>,
@@ -278,14 +279,14 @@ function Timeline({
   );
 }
 
-// "以后再说" strip — today's deferred rails. Separate from the main
+// "Later" strip — today's deferred rails. Separate from the main
 // timeline because they no longer belong to *today* (the user has
 // said "I want to do this, but not now"). Grouped here so the user
 // sees the pile they've accumulated + can undo in one click.
 //
-// v0.3 will add a "重新排期" affordance that opens Cycle View pre-
-// targeted at this rail; for v0.2 the only explicit re-schedule path
-// is Undefer → rail goes back to `pending` on today's timeline.
+// v0.3 will add a "re-schedule" affordance that opens Cycle View
+// pre-targeted at this rail; for v0.2 the only explicit re-schedule
+// path is Undefer → rail goes back to `pending` on today's timeline.
 function DeferredSection({
   rails,
   onUndefer,

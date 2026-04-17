@@ -17,9 +17,10 @@ import type { RailColor } from '@/data/sample';
 //   - explicit defer (`status === 'deferred'`, any age)
 //   - ended without a decision (`status === 'pending'` with
 //     plannedEnd <= now, any age)
-// Rows look identical apart from a left-side glyph. Actions: `完成` /
-// `归档` (in-place status writes) + `拖到 Cycle →` (jumps to Cycle
-// View for re-scheduling). Bulk: `归档超过 7 天的事项`.
+// Rows look identical apart from a left-side glyph. Actions:
+// `Done` / `Archive` (in-place status writes) + `Drag to Cycle →`
+// (jumps to Cycle View for re-scheduling). Bulk: archive items
+// older than N days (default 7).
 
 const STALE_THRESHOLD_DAYS = 7;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -33,7 +34,7 @@ interface PendingRow {
   railColor: RailColor;
   subtitle?: string;
   /** How the row got here:
-   *  - `deferred`: user explicitly clicked 以后再说.
+   *  - `deferred`: user explicitly picked Later.
    *  - `unmarked`: rail ended without a decision (any age, not just >24h). */
   source: 'deferred' | 'unmarked';
   tags: string[];

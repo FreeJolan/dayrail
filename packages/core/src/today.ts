@@ -103,7 +103,7 @@ export function selectCheckinQueue(
 }
 
 /** §5.7 Pending queue — the master list of "awaiting a decision":
- *  1. All `deferred` instances (user clicked 以后再说).
+ *  1. All `deferred` instances (user picked "Later").
  *  2. All `pending` instances whose `plannedEnd` has passed
  *     (regardless of age — check-in strip shows the recent subset,
  *     but Pending is the full set).
