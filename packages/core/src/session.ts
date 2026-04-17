@@ -60,25 +60,33 @@ export async function openSession(surface: string): Promise<EditSession> {
   return session;
 }
 
+// NB: we replace the map entry rather than mutating the existing
+// object. The store's zustand/immer middleware freezes sessions once
+// they land in `draft.sessions`, so the reference we hold here may be
+// read-only. Treat EditSession records as immutable snapshots.
 export async function touchSession(sessionId: string): Promise<void> {
-  const session = activeSessions.get(sessionId);
-  if (!session || session.closed) return;
+  const prev = activeSessions.get(sessionId);
+  if (!prev || prev.closed) return;
   const now = Date.now();
-  session.lastActivityAt = now;
-  session.changeCount += 1;
+  const next: EditSession = {
+    ...prev,
+    lastActivityAt: now,
+    changeCount: prev.changeCount + 1,
+  };
+  activeSessions.set(sessionId, next);
   const db = await getDb();
   await db.exec({
     sql: 'UPDATE sessions SET last_activity_at = ?1, change_count = change_count + 1 WHERE id = ?2;',
     bind: [now, sessionId],
   });
   armIdle(sessionId);
-  emit(session);
+  emit(next);
 }
 
 export async function closeSession(sessionId: string): Promise<void> {
-  const session = activeSessions.get(sessionId);
-  if (!session || session.closed) return;
-  session.closed = true;
+  const prev = activeSessions.get(sessionId);
+  if (!prev || prev.closed) return;
+  const next: EditSession = { ...prev, closed: true };
   const now = Date.now();
   const db = await getDb();
   await db.exec({
@@ -86,7 +94,7 @@ export async function closeSession(sessionId: string): Promise<void> {
     bind: [now, sessionId],
   });
   clearIdle(sessionId);
-  emit(session);
+  emit(next);
   activeSessions.delete(sessionId);
 }
 

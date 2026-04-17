@@ -10,6 +10,7 @@
     "./hlc": "./src/hlc.ts",
     "./event": "./src/event.ts",
     "./session": "./src/session.ts",
+    "./snapshot": "./src/snapshot.ts",
     "./store": "./src/store.ts"
   },
   "scripts": {

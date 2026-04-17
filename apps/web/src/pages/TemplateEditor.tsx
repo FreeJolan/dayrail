@@ -310,7 +310,10 @@ function TopBar({
         </span>
       </div>
       <div className="flex items-center gap-3">
-        <EditSessionIndicator changeCount={changeCount} />
+        <EditSessionIndicator
+          changeCount={changeCount}
+          onUndo={canUndo ? onUndoSession : undefined}
+        />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button

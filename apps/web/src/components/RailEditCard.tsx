@@ -1,5 +1,5 @@
 import { clsx } from 'clsx';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Plus } from 'lucide-react';
 import type { EditableRail } from '@/data/sampleTemplate';
 import { SAMPLE_LINES } from '@/data/sampleTemplate';
@@ -42,6 +42,18 @@ export function RailEditCard({
   // If the Rail never had a subtitle, the input stays collapsed behind
   // a `+ 副标题` affordance until the user explicitly opens it.
   const [subtitleOpen, setSubtitleOpen] = useState(Boolean(rail.subtitle));
+
+  // Keep local drafts in sync when the Rail is updated externally — e.g.
+  // the Edit Session undo wipes the pending edits, and the parent hands
+  // us a Rail with the original name/subtitle. Without this, our local
+  // state would still display the user's (now-dropped) keystrokes.
+  useEffect(() => {
+    setTitle(rail.name);
+  }, [rail.name]);
+  useEffect(() => {
+    setSubtitle(rail.subtitle ?? '');
+    setSubtitleOpen(Boolean(rail.subtitle));
+  }, [rail.subtitle]);
 
   const lineName =
     rail.defaultLineId == null
