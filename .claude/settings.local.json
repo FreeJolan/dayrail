@@ -15,7 +15,10 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(rm -rf apps packages node_modules)",
-      "Bash(rm -f pnpm-lock.yaml package.json pnpm-workspace.yaml tsconfig.base.json)"
+      "Bash(rm -f pnpm-lock.yaml package.json pnpm-workspace.yaml tsconfig.base.json)",
+      "Bash(pnpm dev *)",
+      "Bash(tee /tmp/dayrail-dev.log)",
+      "Bash(pnpm -r typecheck)"
     ]
   }
 }

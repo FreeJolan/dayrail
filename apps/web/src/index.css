@@ -1,0 +1,68 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------- DayRail base layer ---------- */
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-surface-0 text-ink-primary font-sans;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    /* cv02–cv04: curved open digits and characters; cv11: single-story a.
+       These tune Inter to look a little less geometric — closer to the
+       printed-manual feel ERD §9.6 is after. */
+  }
+
+  /* Inputs inherit ink colors so they don't fight dark mode later */
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  /* Focus ring uses CTA color per G2 whitelist. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-cta/50 ring-offset-2 ring-offset-surface-0;
+  }
+
+  /* Hairline utility — G2 whitelist. 0.5px effective via transform. */
+}
+
+/* ---------- Hatching patterns (C-group three-part semantics) ---------- */
+/* `--hatch` is the line color passed by inline style on a per-Rail basis. */
+
+@layer utilities {
+  .hatch-unmarked {
+    background-image: repeating-linear-gradient(
+      -45deg,
+      var(--hatch, theme('colors.rail-4.gray')) 0 1.5px,
+      transparent 1.5px 8px
+    );
+  }
+  .hatch-skipped {
+    background-image: repeating-linear-gradient(
+      -45deg,
+      var(--hatch, theme('colors.rail-6.gray')) 0 2px,
+      transparent 2px 7px
+    );
+  }
+  /* G2 · 0.5px sticky hairline (slate-10), drawn as a 1px border scaled down */
+  .hairline-b {
+    box-shadow: inset 0 -0.5px 0 0 theme('colors.hairline');
+  }
+  .hairline-t {
+    box-shadow: inset 0 0.5px 0 0 theme('colors.hairline');
+  }
+}
