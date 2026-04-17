@@ -29,8 +29,13 @@ export interface AdhocHint {
   occurrences: number;
 }
 
+// NOTE: "cycle" scope (replaces the earlier "week" label) ties the Review
+// period to the DayRail Cycle unit, not to calendar weeks — this matches
+// ERD §A's `C1/C2/C3` notation chosen precisely because DayRail's planning
+// unit is the Cycle, not the ISO week.
 export interface ReviewScopeData {
-  scope: 'day' | 'week' | 'month';
+  scope: 'day' | 'cycle' | 'month';
+  /** Short period label, e.g. "Thu · 16 Apr 2026" or "C1 · Apr 13 – Apr 19". */
   label: string;
   dates: string[]; // ISO dates that form the columns
   rows: HeatmapRow[];
@@ -96,9 +101,9 @@ const WEEK_ROWS: HeatmapRow[] = [
   row('er-oss-rd', '开源项目 (restday)', 'mauve', '----u-u'),
 ];
 
-export const SAMPLE_WEEK_REVIEW: ReviewScopeData = {
-  scope: 'week',
-  label: 'Apr 13 – Apr 19',
+export const SAMPLE_CYCLE_REVIEW: ReviewScopeData = {
+  scope: 'cycle',
+  label: 'C1 · Apr 13 – Apr 19',
   dates: WEEK_DATES,
   rows: WEEK_ROWS,
   shiftTags: [
@@ -119,7 +124,7 @@ export const SAMPLE_WEEK_REVIEW: ReviewScopeData = {
 };
 
 // Abbreviated placeholders for other scopes — the static mock focuses
-// on week view. Day/Month are selectable but render a small placeholder.
+// on cycle view. Day / Month are selectable but render a smaller stub.
 
 export const SAMPLE_DAY_REVIEW: ReviewScopeData = {
   scope: 'day',
@@ -143,7 +148,7 @@ export const SAMPLE_MONTH_REVIEW: ReviewScopeData = {
   scope: 'month',
   label: 'April 2026',
   // for month scope the sample is intentionally sparse — real impl
-  // would emit one column per week, not per day.
+  // would emit one column per Cycle, not per day.
   dates: ['2026-04-06', '2026-04-13', '2026-04-20', '2026-04-27'],
   rows: WEEK_ROWS.slice(0, 6).map((r) => ({
     ...r,
