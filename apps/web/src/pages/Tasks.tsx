@@ -515,7 +515,7 @@ function NewTaskInput({
     setValue('');
   };
   return (
-    <div className="flex items-center gap-2 rounded-md border border-hairline/40 bg-surface-1 px-3 py-2">
+    <div className="flex h-10 items-center gap-2 rounded-md border border-hairline/60 bg-surface-0 px-3 transition hover:border-hairline focus-within:border-ink-secondary">
       <Plus className="h-4 w-4 shrink-0 text-ink-tertiary" strokeWidth={1.6} />
       <input
         type="text"
@@ -528,7 +528,7 @@ function NewTaskInput({
             submit();
           }
         }}
-        className="flex-1 bg-transparent text-sm text-ink-primary outline-none placeholder:text-ink-tertiary"
+        className="flex-1 bg-transparent text-base text-ink-primary outline-none placeholder:text-ink-tertiary"
       />
     </div>
   );
@@ -570,14 +570,14 @@ function FilterBar({
             {c.label}
           </button>
         ))}
-      <label className="ml-auto flex h-[28px] items-center gap-2 rounded-sm bg-surface-1 px-2.5">
-        <Search className="h-3.5 w-3.5 text-ink-tertiary" strokeWidth={1.6} />
+      <label className="ml-auto flex h-8 items-center gap-2 rounded-md border border-hairline/60 bg-surface-0 px-2.5 transition hover:border-hairline focus-within:border-ink-secondary">
+        <Search className="h-3.5 w-3.5 shrink-0 text-ink-tertiary" strokeWidth={1.6} />
         <input
           type="text"
           value={filters.search}
           onChange={(e) => onChange({ ...filters, search: e.target.value })}
           placeholder="搜索标题 / 备注"
-          className="w-48 bg-transparent text-xs text-ink-primary outline-none placeholder:text-ink-tertiary"
+          className="w-48 bg-transparent text-sm text-ink-primary outline-none placeholder:text-ink-tertiary"
         />
       </label>
     </div>

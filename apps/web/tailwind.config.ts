@@ -154,12 +154,15 @@ const config: Config = {
         mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
       },
       fontSize: {
-        // Compact typographic scale biased toward print rhythm
+        // Typographic scale — matches Tailwind defaults for xs/sm/base/lg
+        // (post-2026-04-18 readability tune; the original print-compact
+        // scale was 1px smaller across the board and felt straining).
+        // 2xs (Mono overlines) and the display sizes (xl+) stay as-is.
         '2xs': ['10px', { lineHeight: '14px', letterSpacing: '0.04em' }],
-        xs: ['11px', { lineHeight: '16px' }],
-        sm: ['13px', { lineHeight: '18px' }],
-        base: ['15px', { lineHeight: '22px' }],
-        lg: ['17px', { lineHeight: '24px' }],
+        xs: ['12px', { lineHeight: '16px' }],
+        sm: ['14px', { lineHeight: '20px' }],
+        base: ['16px', { lineHeight: '24px' }],
+        lg: ['18px', { lineHeight: '28px' }],
         xl: ['20px', { lineHeight: '28px' }],
         '2xl': ['26px', { lineHeight: '32px', letterSpacing: '-0.01em' }],
         '3xl': ['34px', { lineHeight: '40px', letterSpacing: '-0.02em' }],
