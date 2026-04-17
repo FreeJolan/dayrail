@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Copy,
   MoreHorizontal,
@@ -8,8 +8,12 @@ import {
   Undo2,
 } from 'lucide-react';
 import {
-  SAMPLE_RAILS_BY_TEMPLATE,
-  SAMPLE_TEMPLATES,
+  useStore,
+  type EditSession,
+  type Rail,
+  type Template as StoreTemplate,
+} from '@dayrail/core';
+import {
   computeSummary,
   type EditableRail,
   type SampleTemplate,
@@ -40,110 +44,158 @@ import {
 
 export function TemplateEditor() {
   const [activeKey, setActiveKey] = useState<TemplateKey>('workday');
-  const [railsByKey, setRailsByKey] = useState(SAMPLE_RAILS_BY_TEMPLATE);
-  const rails = railsByKey[activeKey];
-  const sorted = useMemo(
-    () => rails.slice().sort((a, b) => a.startMin - b.startMin),
+
+  // --- session bookkeeping (ERD §5.3.1) ---
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const openEditSession = useStore((s) => s.openEditSession);
+  const closeEditSession = useStore((s) => s.closeEditSession);
+  useEffect(() => {
+    let cancelled = false;
+    let openedId: string | null = null;
+    openEditSession('template-editor').then((s: EditSession) => {
+      if (cancelled) {
+        void closeEditSession(s.id);
+        return;
+      }
+      openedId = s.id;
+      setSessionId(s.id);
+    });
+    return () => {
+      cancelled = true;
+      if (openedId) void closeEditSession(openedId);
+    };
+  }, [openEditSession, closeEditSession]);
+
+  // --- data read from store ---
+  // Subscribe to raw maps; derive lists in a useMemo so the selector
+  // doesn't create a fresh array reference on every action (which would
+  // defeat Zustand's reference-equality short-circuit).
+  const railsMap = useStore((s) => s.rails);
+  const templatesMap = useStore((s) => s.templates);
+  const rails: Rail[] = useMemo(
+    () =>
+      Object.values(railsMap)
+        .filter((r) => r.templateKey === activeKey)
+        .sort((a, b) => a.startMinutes - b.startMinutes),
+    [railsMap, activeKey],
+  );
+  const templates: StoreTemplate[] = useMemo(
+    () => Object.values(templatesMap),
+    [templatesMap],
+  );
+  const session = useStore((s) =>
+    sessionId ? s.sessions[sessionId] : undefined,
+  );
+  const changeCount = session?.changeCount ?? 0;
+
+  // --- Adapt Rail → EditableRail for the child components which were
+  //     designed around the sample-data shape (startMin / endMin). Keeps
+  //     the wire-up change contained. ---
+  const sortedEditable: EditableRail[] = useMemo(
+    () => rails.map(railToEditable),
     [rails],
   );
-  // Focus arrow defaults to the FIRST Rail so the ruler's `▶` is visible
-  // on initial render — teaches users that the arrow tracks focus without
-  // requiring them to hover first.
-  const [focusRailId, setFocusRailId] = useState<string | undefined>(
-    sorted[0]?.id,
+  const currentTemplate = useMemo<SampleTemplate>(() => {
+    const tpl = templates.find((t) => t.key === activeKey);
+    return {
+      key: activeKey,
+      label: tpl?.name ?? activeKey,
+      color: (tpl?.color ?? 'slate') as SampleTemplate['color'],
+      builtIn: tpl?.isDefault ?? false,
+    };
+  }, [templates, activeKey]);
+  const templatesForTabs: SampleTemplate[] = useMemo(
+    () =>
+      templates.map((t) => ({
+        // Store templates are dynamic (users can add custom keys post-
+        // v0.3); the sample-data TemplateKey union is narrower. Casting
+        // is safe because TemplateTabs only uses the key as an opaque
+        // string for onSelect.
+        key: t.key as SampleTemplate['key'],
+        label: t.name,
+        color: (t.color ?? 'slate') as SampleTemplate['color'],
+        builtIn: t.isDefault,
+      })),
+    [templates],
   );
-  const [changeCount, setChangeCount] = useState(3); // mock "N processing changes"
 
-  const currentTemplate = SAMPLE_TEMPLATES.find((t) => t.key === activeKey)!;
-  const summary = useMemo(() => computeSummary(sorted), [sorted]);
+  const [focusRailId, setFocusRailId] = useState<string | undefined>();
+  useEffect(() => {
+    if (!focusRailId && sortedEditable[0]) {
+      setFocusRailId(sortedEditable[0].id);
+    }
+  }, [sortedEditable, focusRailId]);
+
+  const summary = useMemo(() => computeSummary(sortedEditable), [sortedEditable]);
+
+  // --- store-backed mutations ---
+  const updateRailAction = useStore((s) => s.updateRail);
+  const createRailAction = useStore((s) => s.createRail);
+  const deleteRailAction = useStore((s) => s.deleteRail);
+  const undoEditSessionAction = useStore((s) => s.undoEditSession);
 
   const mutate = (id: string, patch: Partial<EditableRail>) => {
-    setRailsByKey((prev) => {
-      const next = prev[activeKey].map((r) => (r.id === id ? { ...r, ...patch } : r));
-      return { ...prev, [activeKey]: next };
-    });
-    setChangeCount((c) => c + 1);
+    const railPatch = editablePatchToRail(patch);
+    void updateRailAction(id, railPatch, sessionId ?? undefined);
   };
 
   const del = (id: string) => {
-    setRailsByKey((prev) => ({
-      ...prev,
-      [activeKey]: prev[activeKey].filter((r) => r.id !== id),
-    }));
-    setChangeCount((c) => c + 1);
+    void deleteRailAction(id, sessionId ?? undefined);
   };
 
   const duplicate = (id: string) => {
-    setRailsByKey((prev) => {
-      const source = prev[activeKey].find((r) => r.id === id);
-      if (!source) return prev;
-      const dup: EditableRail = {
-        ...source,
-        id: `${source.id}-dup-${Date.now()}`,
-        name: `${source.name} · 副本`,
-      };
-      return { ...prev, [activeKey]: [...prev[activeKey], dup] };
-    });
-    setChangeCount((c) => c + 1);
+    const source = rails.find((r) => r.id === id);
+    if (!source) return;
+    const dup: Rail = {
+      ...source,
+      id: `${source.id}-dup-${Date.now()}`,
+      name: `${source.name} · 副本`,
+    };
+    void createRailAction(dup, sessionId ?? undefined);
   };
 
   // ---- top-right ⋯ menu handlers (ERD §5.4 E1 / E7) ----
 
-  const undoSession = () => {
-    // Static mock: "session baseline" = the SAMPLE seeds. A real impl
-    // would replay inverse mutations from §5.3.1 Edit Session log.
-    setRailsByKey((prev) => ({
-      ...prev,
-      [activeKey]: SAMPLE_RAILS_BY_TEMPLATE[activeKey],
-    }));
-    setChangeCount(0);
+  const undoSession = async () => {
+    if (!sessionId) return;
+    await undoEditSessionAction(sessionId);
+    // The session closed inside undoEditSession; open a fresh one so
+    // subsequent edits can be grouped again.
+    const next = await openEditSession('template-editor');
+    setSessionId(next.id);
   };
 
   const resetToDefault = () => {
     if (!currentTemplate.builtIn) return;
-    setRailsByKey((prev) => ({
-      ...prev,
-      [activeKey]: SAMPLE_RAILS_BY_TEMPLATE[activeKey],
-    }));
-    setChangeCount((c) => c + 1);
+    window.alert('重置到默认 —— v0.3 衔接。当前走 ⤺ 撤销本次编辑 回到 session baseline。');
   };
 
   const duplicateTemplate = () => {
-    // Static mock: no state for user-created templates yet. Real impl
-    // clones the current template into a new key, switches tab.
-    window.alert(
-      `「${currentTemplate.label} · 副本」—— 新模板已创建并切换到新 tab。\n(静态 mock：未真的持久化)`,
-    );
+    window.alert(`复制「${currentTemplate.label}」—— v0.3 衔接。`);
   };
 
   const deleteTemplate = () => {
     if (currentTemplate.builtIn) return;
-    const cycleDayCount = 0; // real impl counts CycleDay refs to this template
-    const msg =
-      cycleDayCount > 0
-        ? `删除「${currentTemplate.label}」\n将有 ${cycleDayCount} 天落回默认工作日模板。确认？`
-        : `删除「${currentTemplate.label}」？此操作写入编辑会话，可以 ⤺ 撤销本次编辑 回退。`;
-    if (window.confirm(msg)) {
-      window.alert('（静态 mock：未真的删除）');
+    if (window.confirm(`删除「${currentTemplate.label}」？`)) {
+      window.alert('删除模板 —— v0.3 衔接。');
     }
   };
 
   const fillGap = (startMin: number, endMin: number) => {
-    const usedColors = sorted.map((r) => r.color);
-    const fresh: EditableRail = {
-      id: `er-gap-${startMin}-${Date.now()}`,
+    const usedColors = rails.map((r) => r.color);
+    const id = `er-gap-${startMin}-${Date.now()}`;
+    const color = pickColor(usedColors);
+    const rail: Rail = {
+      id,
+      templateKey: activeKey,
       name: '新 Rail',
-      startMin,
-      endMin,
-      color: pickColor(usedColors),
+      startMinutes: startMin,
+      durationMinutes: endMin - startMin,
+      color,
       showInCheckin: true,
-      defaultLineId: null,
+      recurrence: { kind: 'weekdays' },
     };
-    setRailsByKey((prev) => ({
-      ...prev,
-      [activeKey]: [...prev[activeKey], fresh],
-    }));
-    setChangeCount((c) => c + 1);
+    void createRailAction(rail, sessionId ?? undefined);
   };
 
   // Derive the sequence of rows + interleaved gap chips
@@ -151,11 +203,11 @@ export function TemplateEditor() {
     | { kind: 'rail'; rail: EditableRail }
     | { kind: 'gap'; startMin: number; endMin: number; key: string }
   > = [];
-  for (let i = 0; i < sorted.length; i++) {
-    rows.push({ kind: 'rail', rail: sorted[i]! });
-    if (i < sorted.length - 1) {
-      const cur = sorted[i]!;
-      const nxt = sorted[i + 1]!;
+  for (let i = 0; i < sortedEditable.length; i++) {
+    rows.push({ kind: 'rail', rail: sortedEditable[i]! });
+    if (i < sortedEditable.length - 1) {
+      const cur = sortedEditable[i]!;
+      const nxt = sortedEditable[i + 1]!;
       if (nxt.startMin > cur.endMin) {
         rows.push({
           kind: 'gap',
@@ -179,15 +231,15 @@ export function TemplateEditor() {
       />
 
       <TemplateTabs
-        templates={SAMPLE_TEMPLATES}
+        templates={templatesForTabs}
         active={activeKey}
         onSelect={setActiveKey}
         onNew={() => {
-          /* static mock — intentionally no-op */
+          /* v0.3 — create a new custom template */
         }}
       />
 
-      <SummaryStrip rails={sorted} />
+      <SummaryStrip rails={sortedEditable} />
 
       <div className="pt-6">
         <FirstRunBanner />
@@ -196,7 +248,7 @@ export function TemplateEditor() {
       {/* Body: left ruler + right main */}
       <div className="flex gap-6 pt-6 pb-16">
         <TimelineRuler
-          rails={sorted}
+          rails={sortedEditable}
           summary={summary}
           focusRailId={focusRailId}
         />
@@ -207,7 +259,7 @@ export function TemplateEditor() {
               <RailEditCard
                 key={row.rail.id}
                 rail={row.rail}
-                siblings={sorted}
+                siblings={sortedEditable}
                 focused={row.rail.id === focusRailId}
                 onFocus={() => setFocusRailId(row.rail.id)}
                 onChange={(patch) => mutate(row.rail.id, patch)}
@@ -348,8 +400,8 @@ function AddRailRow({ onAdd }: { onAdd: () => void }) {
 }
 
 // Picks a color different from both neighbors; fallback to least-used.
-function pickColor(used: EditableRail['color'][]): EditableRail['color'] {
-  const ALL: EditableRail['color'][] = [
+function pickColor(used: Rail['color'][]): Rail['color'] {
+  const ALL: Rail['color'][] = [
     'sand',
     'sage',
     'slate',
@@ -361,7 +413,7 @@ function pickColor(used: EditableRail['color'][]): EditableRail['color'] {
     'indigo',
     'plum',
   ];
-  const counts = new Map<EditableRail['color'], number>();
+  const counts = new Map<Rail['color'], number>();
   for (const c of ALL) counts.set(c, 0);
   for (const c of used) counts.set(c, (counts.get(c) ?? 0) + 1);
   let best = ALL[0]!;
@@ -374,4 +426,41 @@ function pickColor(used: EditableRail['color'][]): EditableRail['color'] {
     }
   }
   return best;
+}
+
+// Rail (store shape) ↔ EditableRail (sample-data shape used by child
+// components) adapters. The shape mismatch lives here so RailEditCard /
+// TimelineRuler / SummaryStrip stay untouched.
+
+function railToEditable(r: Rail): EditableRail {
+  return {
+    id: r.id,
+    name: r.name,
+    subtitle: r.subtitle,
+    startMin: r.startMinutes,
+    endMin: r.startMinutes + r.durationMinutes,
+    color: r.color,
+    showInCheckin: r.showInCheckin,
+    defaultLineId: r.defaultLineId ?? null,
+  };
+}
+
+function editablePatchToRail(patch: Partial<EditableRail>): Partial<Rail> {
+  const next: Partial<Rail> = {};
+  if (patch.name !== undefined) next.name = patch.name;
+  if (patch.subtitle !== undefined) next.subtitle = patch.subtitle;
+  if (patch.color !== undefined) next.color = patch.color;
+  if (patch.showInCheckin !== undefined) next.showInCheckin = patch.showInCheckin;
+  if (patch.defaultLineId !== undefined)
+    next.defaultLineId = patch.defaultLineId ?? undefined;
+  if (patch.startMin !== undefined) next.startMinutes = patch.startMin;
+  if (patch.endMin !== undefined && patch.startMin !== undefined) {
+    next.durationMinutes = patch.endMin - patch.startMin;
+  } else if (patch.endMin !== undefined) {
+    // Caller provided end but not start — caller passes current start
+    // via a separate update if they want the start to shift; in practice
+    // time-pill changes always send both.
+    next.durationMinutes = undefined as unknown as number;
+  }
+  return next;
 }

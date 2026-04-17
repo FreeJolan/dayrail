@@ -9,6 +9,11 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  // sqlite-wasm ships pre-built WASM + worker assets that Vite's esbuild
+  // dep-optimiser would trip over if pre-bundled.
+  optimizeDeps: {
+    exclude: ['@sqlite.org/sqlite-wasm'],
+  },
   server: {
     port: 5173,
   },
