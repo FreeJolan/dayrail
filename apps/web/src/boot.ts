@@ -9,10 +9,12 @@
 // a user performing those same edits by hand.
 
 import {
+  INBOX_LINE_ID,
   ensureTodayInstances,
   selectActiveTemplateKey,
   toIsoDate,
   useStore,
+  type Line,
   type Rail,
   type RailColor,
 } from '@dayrail/core';
@@ -36,13 +38,32 @@ export async function boot(): Promise<void> {
     await seedFromSamples();
   }
 
-  // 3. Materialise today's rail instances. Idempotent: on subsequent
+  // 3. Ensure the built-in Inbox Line exists. Runs every boot (cheap
+  //    no-op after first run); the Inbox is a system singleton so we
+  //    insist on its presence regardless of the user's Line edits.
+  await ensureInbox();
+
+  // 4. Materialise today's rail instances. Idempotent: on subsequent
   //    boots we skip rails that already have an instance for today.
   const today = toIsoDate();
   const templateKey = selectActiveTemplateKey(useStore.getState());
   if (templateKey) {
     await ensureTodayInstances(today, templateKey);
   }
+}
+
+async function ensureInbox(): Promise<void> {
+  const store = useStore.getState();
+  if (store.lines[INBOX_LINE_ID]) return;
+  const inbox: Line = {
+    id: INBOX_LINE_ID,
+    name: '收件箱',
+    kind: 'project',
+    status: 'active',
+    isDefault: true,
+    createdAt: Date.now(),
+  };
+  await store.createLine(inbox);
 }
 
 async function preflight(): Promise<void> {

@@ -3,11 +3,11 @@ import {
   Calendar,
   ChevronsLeft,
   ChevronsRight,
-  ClipboardList,
   FileText,
   Inbox,
   Layers,
   LineChart,
+  ListChecks,
   Settings,
   Sparkles,
 } from 'lucide-react';
@@ -22,7 +22,7 @@ export type NavKey =
   | 'today'
   | 'cycle'
   | 'template'
-  | 'projects'
+  | 'tasks'
   | 'review'
   | 'calendar'
   | 'pending'
@@ -40,7 +40,7 @@ interface Item {
 const PRIMARY_ITEMS: Item[] = [
   { key: 'today', label: 'Today', icon: Sparkles },
   { key: 'cycle', label: 'Cycle', icon: Layers },
-  { key: 'projects', label: 'Projects', icon: ClipboardList },
+  { key: 'tasks', label: 'Tasks', icon: ListChecks },
   { key: 'review', label: 'Review', icon: LineChart },
   { key: 'calendar', label: 'Calendar', icon: Calendar },
   { key: 'pending', label: 'Unresolved', icon: Inbox },
