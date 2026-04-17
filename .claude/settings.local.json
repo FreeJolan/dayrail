@@ -21,7 +21,8 @@
       "Bash(pnpm -r typecheck)",
       "Bash(pnpm --filter @dayrail/web add @radix-ui/react-popover @radix-ui/react-dropdown-menu)",
       "Skill(update-config)",
-      "Read(//Users/bytedance/.claude/**)"
+      "Read(//Users/bytedance/.claude/**)",
+      "Bash(pkill -f 'vite')"
     ]
   }
 }
