@@ -28,8 +28,10 @@ export function BacklogDrawer({ open, onToggle }: Props) {
     <aside
       aria-label="Backlog drawer"
       className={clsx(
-        'sticky top-0 flex h-screen shrink-0 flex-col bg-surface-1 transition-[width] duration-200',
-        open ? 'w-[320px]' : 'w-[40px]',
+        // mr-6 keeps the drawer from pressing flush against the viewport
+        // edge regardless of open / collapsed state.
+        'sticky top-0 mr-6 flex h-screen shrink-0 flex-col rounded-l-md bg-surface-1 transition-[width] duration-200',
+        open ? 'w-[320px]' : 'w-[48px]',
       )}
     >
       <div

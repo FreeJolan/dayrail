@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
-import { Check } from 'lucide-react';
+import { Check, ChevronDown } from 'lucide-react';
 import {
   Popover,
   PopoverContent,
@@ -40,13 +40,13 @@ export function CycleMasterDayHeader({
   onClearOverride,
 }: Props) {
   return (
-    <div className="flex flex-col gap-1.5 pt-2">
-      <div className="flex items-baseline justify-between">
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+    <div className="flex flex-col gap-2 pt-2">
+      <div className="flex items-baseline gap-2">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-secondary">
           Days
         </span>
         <span className="text-xs text-ink-tertiary">
-          点击切换当日模板
+          · 点日期 → 切换当日模板
         </span>
       </div>
       <ul className="grid grid-cols-7 gap-1">
@@ -123,6 +123,14 @@ function DayButton({
               className="h-1.5 w-1.5 rounded-full bg-cta"
             />
           )}
+          {/* Hover-revealed chevron signals the day card is clickable.
+              Keeps the compact 40 px default quiet while still teaching
+              discoverability on first hover. */}
+          <ChevronDown
+            aria-hidden
+            className="h-3 w-3 text-ink-tertiary opacity-0 transition group-hover:opacity-100"
+            strokeWidth={1.8}
+          />
           <span
             aria-hidden
             className="pointer-events-none absolute inset-x-1 bottom-0 block h-[2px] rounded-full"

@@ -134,12 +134,18 @@ const config: Config = {
         full: '9999px',
       },
       fontFamily: {
-        // §9.6 · Inter body + JetBrains Mono numeric
+        // §9.6 · Inter body + JetBrains Mono numeric.
+        // CN fallback order: PingFang SC → Source Han Sans → system-ui.
+        // We put PingFang BEFORE system-ui because on macOS `system-ui`
+        // resolves to SF Pro Text, whose CJK subset is thinner than
+        // PingFang and reads as fuzzy when mixed with Inter Latin. This
+        // hands CN glyphs directly to PingFang with no middleman.
         sans: [
           'Inter',
-          'system-ui',
           '"PingFang SC"',
           '"Source Han Sans"',
+          '"Microsoft YaHei"',
+          'system-ui',
           'sans-serif',
         ],
         mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],

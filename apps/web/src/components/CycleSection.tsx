@@ -66,11 +66,11 @@ export function CycleSection({
           todayISO={todayISO}
         />
 
-        <table className="w-full table-fixed border-separate border-spacing-0">
+        <table className="table-fixed border-separate border-spacing-0">
           <colgroup>
-            <col className="w-[160px]" />
+            <col className="w-[140px]" />
             {days.map((d) => (
-              <col key={d.date} />
+              <col key={d.date} className="w-[130px]" />
             ))}
           </colgroup>
 
@@ -128,11 +128,11 @@ function SectionMiniHeader({
 }) {
   return (
     <div className="flex min-h-[48px] items-center gap-0 border-b border-transparent py-2">
-      <table className="w-full table-fixed border-separate border-spacing-0">
+      <table className="table-fixed border-separate border-spacing-0">
         <colgroup>
-          <col className="w-[160px]" />
+          <col className="w-[140px]" />
           {days.map((d) => (
-            <col key={d.date} />
+            <col key={d.date} className="w-[130px]" />
           ))}
         </colgroup>
         <thead>
