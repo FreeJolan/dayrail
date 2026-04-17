@@ -101,6 +101,28 @@ interface DayRailActions {
   restoreTask: (id: string) => Promise<void>;
   deleteTask: (id: string) => Promise<void>;
   purgeTask: (id: string) => Promise<void>;
+  // --- task scheduling (§5.5.2) ---
+  /** Mode A: bind the task to a Rail on the given date. Also clears any
+   *  existing free-time Ad-hoc backing this task, if one was set. */
+  scheduleTaskToRail: (
+    taskId: string,
+    slot: { cycleId: string; date: string; railId: string },
+  ) => Promise<void>;
+  /** Mode B: schedule the task into a free time window. Creates an
+   *  AdhocEvent with `taskId` back-reference. Clears `task.slot` (if
+   *  previously Rail-bound) so the two modes stay mutually exclusive. */
+  scheduleTaskFreeTime: (
+    taskId: string,
+    opts: {
+      date: string;
+      startMinutes: number;
+      durationMinutes: number;
+    },
+  ) => Promise<void>;
+  /** Remove whichever schedule the task has (Slot or Ad-hoc). No-op
+   *  if the task is already unscheduled. No Shift / status change —
+   *  this is "I hadn't done it yet, take it off my plan". */
+  unscheduleTask: (taskId: string) => Promise<void>;
   // --- sessions ---
   openEditSession: (surface: string) => Promise<EditSession>;
   closeEditSession: (sessionId: string) => Promise<void>;
@@ -743,6 +765,117 @@ export const useStore = create<DayRailStore>()(
           payload: { id },
         });
         set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        afterMutation();
+      },
+
+      // ---- Task scheduling (§5.5.2) ------------------------------
+
+      scheduleTaskToRail: async (taskId, slot) => {
+        // If the task currently has a free-time Ad-hoc backing it, drop
+        // it first — modes A and B are mutually exclusive.
+        const adhocs = get().adhocEvents;
+        for (const adhoc of Object.values(adhocs)) {
+          if (adhoc.taskId === taskId && adhoc.status === 'active') {
+            const del = await appendEvent({
+              aggregateId: `adhoc:${adhoc.id}`,
+              type: 'adhoc.deleted',
+              payload: {
+                id: adhoc.id,
+                status: 'deleted',
+                deletedAt: new Date().toISOString(),
+              },
+            });
+            set((draft) =>
+              applyEventInPlace(draft, del.type, del.payload),
+            );
+          }
+        }
+        const ev = await appendEvent({
+          aggregateId: `task:${taskId}`,
+          type: 'task.scheduled',
+          payload: { id: taskId, slot },
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+      },
+
+      scheduleTaskFreeTime: async (taskId, opts) => {
+        // Clear Rail binding first if present — keeps the two modes
+        // mutually exclusive.
+        const task = get().tasks[taskId];
+        if (task?.slot) {
+          const clr = await appendEvent({
+            aggregateId: `task:${taskId}`,
+            type: 'task.scheduled',
+            payload: { id: taskId, slot: undefined },
+          });
+          set((draft) =>
+            applyEventInPlace(draft, clr.type, clr.payload),
+          );
+        }
+        // Re-use an existing active Ad-hoc for this task if present
+        // (user is just shifting the time window), otherwise create.
+        const existing = Object.values(get().adhocEvents).find(
+          (a) => a.taskId === taskId && a.status === 'active',
+        );
+        if (existing) {
+          const ev = await appendEvent({
+            aggregateId: `adhoc:${existing.id}`,
+            type: 'adhoc.updated',
+            payload: {
+              id: existing.id,
+              date: opts.date,
+              startMinutes: opts.startMinutes,
+              durationMinutes: opts.durationMinutes,
+            },
+          });
+          set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        } else {
+          const adhocId = `adhoc-${taskId}-${Date.now().toString(36)}`;
+          const name = task?.title ?? 'Task';
+          const ev = await appendEvent({
+            aggregateId: `adhoc:${adhocId}`,
+            type: 'adhoc.created',
+            payload: {
+              id: adhocId,
+              date: opts.date,
+              startMinutes: opts.startMinutes,
+              durationMinutes: opts.durationMinutes,
+              name,
+              lineId: task?.lineId,
+              taskId,
+              status: 'active',
+            },
+          });
+          set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        }
+        afterMutation();
+      },
+
+      unscheduleTask: async (taskId) => {
+        const task = get().tasks[taskId];
+        if (task?.slot) {
+          const ev = await appendEvent({
+            aggregateId: `task:${taskId}`,
+            type: 'task.unscheduled',
+            payload: { id: taskId, slot: undefined },
+          });
+          set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        }
+        for (const adhoc of Object.values(get().adhocEvents)) {
+          if (adhoc.taskId === taskId && adhoc.status === 'active') {
+            const ev = await appendEvent({
+              aggregateId: `adhoc:${adhoc.id}`,
+              type: 'adhoc.deleted',
+              payload: {
+                id: adhoc.id,
+                status: 'deleted',
+                deletedAt: new Date().toISOString(),
+              },
+            });
+            set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+          }
+        }
         afterMutation();
       },
 

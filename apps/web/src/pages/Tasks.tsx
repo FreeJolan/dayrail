@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import {
   Archive,
@@ -22,6 +22,7 @@ import {
 } from '@dayrail/core';
 import { RAIL_COLOR_HEX } from '@/components/railColors';
 import { Tooltip } from '@/components/primitives/Tooltip';
+import { SchedulePopover } from '@/components/SchedulePopover';
 
 // ERD §5.5 Tasks view. Chunk E = list + filters + search + task CRUD.
 // Scheduling popover (Chunk F) + Trash hard-delete UX (Chunk G) ship
@@ -405,9 +406,6 @@ function MainPanel({
           onArchive={(task) => void archiveTask(task.id)}
           onRestore={(task) => void restoreTask(task.id)}
           onDelete={(task) => void deleteTask(task.id)}
-          onSchedule={() =>
-            window.alert('排期 popover 在 Chunk F 接入；v0.2 暂用占位。')
-          }
           isTrash={isTrash}
           isArchived={isArchived}
         />
@@ -596,7 +594,6 @@ function TaskList({
   onArchive,
   onRestore,
   onDelete,
-  onSchedule,
   isTrash,
   isArchived,
 }: {
@@ -607,7 +604,6 @@ function TaskList({
   onArchive: (task: Task) => void;
   onRestore: (task: Task) => void;
   onDelete: (task: Task) => void;
-  onSchedule: (task: Task) => void;
   isTrash: boolean;
   isArchived: boolean;
 }) {
@@ -622,7 +618,6 @@ function TaskList({
             onArchive={() => onArchive(task)}
             onRestore={() => onRestore(task)}
             onDelete={() => onDelete(task)}
-            onSchedule={() => onSchedule(task)}
             isTrash={isTrash}
             isArchived={isArchived}
           />
@@ -639,7 +634,6 @@ function TaskRow({
   onArchive,
   onRestore,
   onDelete,
-  onSchedule,
   isTrash,
   isArchived,
 }: {
@@ -649,7 +643,6 @@ function TaskRow({
   onArchive: () => void;
   onRestore: () => void;
   onDelete: () => void;
-  onSchedule: () => void;
   isTrash: boolean;
   isArchived: boolean;
 }) {
@@ -724,14 +717,15 @@ function TaskRow({
           />
         ) : (
           <>
-            <IconAction
-              onClick={onSchedule}
-              label="排期"
-              title="绑到 Rail / 自由时间排期"
-              icon={
-                <CalendarIcon className="h-3.5 w-3.5" strokeWidth={1.8} />
-              }
-            />
+            <SchedulePopover task={task}>
+              <IconActionButton
+                label="排期"
+                title="绑到 Rail / 自由时间排期"
+                icon={
+                  <CalendarIcon className="h-3.5 w-3.5" strokeWidth={1.8} />
+                }
+              />
+            </SchedulePopover>
             <IconAction
               onClick={onArchive}
               label="归档"
@@ -777,17 +771,48 @@ function StatusIcon({ status }: { status: Task['status'] }) {
 }
 
 function ScheduleInfo({ task }: { task: Task }) {
-  // v0.2.1 Chunk E: nothing is scheduled yet (popover lands in Chunk F);
-  // shape the info slot so the row layout stabilises before that ships.
+  // §5.5.2 two scheduling modes, rendered distinctly:
+  //   Mode A — `task.slot` set: render "date · Rail name"
+  //   Mode B — an active AdhocEvent with `taskId = task.id`:
+  //              render "date · HH:MM–HH:MM"
+  //   Neither → "— 未排期".
+  const rails = useStore((s) => s.rails);
+  const adhocs = useStore((s) => s.adhocEvents);
+
   if (task.slot) {
+    const rail = rails[task.slot.railId];
     return (
-      <span className="inline-flex items-center gap-1 font-mono text-2xs tabular-nums">
+      <span className="inline-flex items-center gap-1 font-mono text-2xs tabular-nums text-ink-secondary">
         <CalendarIcon className="h-2.5 w-2.5" strokeWidth={1.8} />
-        {task.slot.date.slice(5)} · {task.slot.railId}
+        {task.slot.date.slice(5)}
+        <span className="text-ink-tertiary">·</span>
+        {rail?.name ?? task.slot.railId}
       </span>
     );
   }
+
+  const freeTime = Object.values(adhocs).find(
+    (a) => a.taskId === task.id && a.status === 'active',
+  );
+  if (freeTime) {
+    const end = freeTime.startMinutes + freeTime.durationMinutes;
+    return (
+      <span className="inline-flex items-center gap-1 font-mono text-2xs tabular-nums text-ink-secondary">
+        <CalendarIcon className="h-2.5 w-2.5" strokeWidth={1.8} />
+        {freeTime.date.slice(5)}
+        <span className="text-ink-tertiary">·</span>
+        {minutesToHHMM(freeTime.startMinutes)}–{minutesToHHMM(end)}
+      </span>
+    );
+  }
+
   return <span className="text-ink-tertiary/80">— 未排期</span>;
+}
+
+function minutesToHHMM(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
 function ProjectPill({ line }: { line: Line }) {
@@ -820,22 +845,51 @@ function IconAction({
 }) {
   return (
     <Tooltip content={title}>
-      <button
-        type="button"
+      <IconActionButton
         onClick={onClick}
-        aria-label={label}
-        className={clsx(
-          'rounded-sm p-1 transition',
-          danger
-            ? 'text-ink-tertiary hover:bg-surface-3 hover:text-red-500'
-            : 'text-ink-tertiary hover:bg-surface-3 hover:text-ink-primary',
-        )}
-      >
-        {icon}
-      </button>
+        label={label}
+        title={title}
+        icon={icon}
+        danger={danger}
+      />
     </Tooltip>
   );
 }
+
+/** Bare button used when the caller composes its own overlay (e.g.,
+ *  SchedulePopover wraps this via Radix `asChild`). The standalone
+ *  `IconAction` wraps this in a Tooltip. */
+const IconActionButton = forwardRef<
+  HTMLButtonElement,
+  {
+    onClick?: () => void;
+    label: string;
+    title?: string;
+    icon: React.ReactNode;
+    danger?: boolean;
+  } & Omit<
+    React.ButtonHTMLAttributes<HTMLButtonElement>,
+    'onClick' | 'title' | 'aria-label'
+  >
+>(({ onClick, label, title, icon, danger, ...rest }, ref) => (
+  <button
+    ref={ref}
+    type="button"
+    onClick={onClick}
+    aria-label={label}
+    title={title}
+    className={clsx(
+      'rounded-sm p-1 transition',
+      danger
+        ? 'text-ink-tertiary hover:bg-surface-3 hover:text-red-500'
+        : 'text-ink-tertiary hover:bg-surface-3 hover:text-ink-primary',
+    )}
+    {...rest}
+  >
+    {icon}
+  </button>
+));
+IconActionButton.displayName = 'IconActionButton';
 
 function EmptyState({
   selection,
