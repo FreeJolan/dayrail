@@ -1,4 +1,13 @@
-import { Calendar, ClipboardList, Inbox, Layers, LineChart, Settings, Sparkles } from 'lucide-react';
+import {
+  Calendar,
+  ClipboardList,
+  FileText,
+  Inbox,
+  Layers,
+  LineChart,
+  Settings,
+  Sparkles,
+} from 'lucide-react';
 import { clsx } from 'clsx';
 import { CHECKIN_QUEUE } from '@/data/sample';
 
@@ -6,9 +15,10 @@ import { CHECKIN_QUEUE } from '@/data/sample';
 // Collapsed variant (icon-only) for desktop ≥ 1024px. On narrow screens
 // this page defaults to single-column push nav (F5), not implemented yet.
 
-type NavKey =
+export type NavKey =
   | 'today'
   | 'cycle'
+  | 'template'
   | 'projects'
   | 'review'
   | 'calendar'
@@ -24,6 +34,7 @@ interface Item {
 const ITEMS: Item[] = [
   { key: 'today', label: 'Today', icon: Sparkles },
   { key: 'cycle', label: 'Cycle', icon: Layers },
+  { key: 'template', label: 'Template', icon: FileText },
   { key: 'projects', label: 'Projects', icon: ClipboardList },
   { key: 'review', label: 'Review', icon: LineChart },
   { key: 'calendar', label: 'Calendar', icon: Calendar },
@@ -31,12 +42,16 @@ const ITEMS: Item[] = [
   { key: 'settings', label: 'Settings', icon: Settings },
 ];
 
-export function SideNav() {
-  const activeKey: NavKey = 'today';
+interface Props {
+  active: NavKey;
+  onNavigate: (next: NavKey) => void;
+}
+
+export function SideNav({ active, onNavigate }: Props) {
   const pendingCount = CHECKIN_QUEUE.length; // F3 — render `·` dot when > 0
 
   return (
-    <aside className="sticky top-0 flex h-screen w-[72px] shrink-0 flex-col items-stretch border-r border-transparent bg-surface-0 py-6">
+    <aside className="sticky top-0 flex h-screen w-[72px] shrink-0 flex-col items-stretch bg-surface-0 py-6">
       {/* Brand mark — minimal two curved rails. Replaces <DayRailMark /> placeholder. */}
       <div className="flex h-9 items-center justify-center">
         <DayRailMark />
@@ -47,7 +62,8 @@ export function SideNav() {
           <NavItem
             key={it.key}
             item={it}
-            active={activeKey === it.key}
+            active={active === it.key}
+            onClick={() => onNavigate(it.key)}
             badgeDot={it.key === 'pending' && pendingCount > 0}
             pendingTooltip={
               it.key === 'pending' ? `${pendingCount} unmarked` : undefined
@@ -75,11 +91,13 @@ export function SideNav() {
 function NavItem({
   item,
   active,
+  onClick,
   badgeDot,
   pendingTooltip,
 }: {
   item: Item;
   active: boolean;
+  onClick: () => void;
   badgeDot: boolean;
   pendingTooltip?: string;
 }) {
@@ -87,10 +105,13 @@ function NavItem({
   return (
     <button
       type="button"
+      onClick={onClick}
       title={pendingTooltip ?? item.label}
       className={clsx(
         'group relative flex h-11 w-full items-center justify-center rounded-md transition',
-        active ? 'bg-surface-2 text-ink-primary' : 'text-ink-tertiary hover:text-ink-primary hover:bg-surface-1',
+        active
+          ? 'bg-surface-2 text-ink-primary'
+          : 'text-ink-tertiary hover:text-ink-primary hover:bg-surface-1',
       )}
     >
       <Icon className="h-[18px] w-[18px]" strokeWidth={1.6} />
