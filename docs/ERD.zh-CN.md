@@ -1,6 +1,6 @@
 # DayRail 产品设计文档（ERD）
 
-> **状态**：活文档 —— 这里的任何决策都可以被推翻。最近更新 2026-04-18（术语精简：`Chunk` 统一改 `Task`（types + events + schema + UI + ERD 全路径改名），降低 jargon 负担；`Line` 作为内部容器类型保留（`kind: 'project' \| 'habit' \| 'group'` 的 union 父类），但**UI 里永远展示具体形态 Project / Habit / Group / Tag**，不再出现"Line"这个字；`Pending` view 改名 `待决定 / Unresolved` 和 `status='pending'` 解耦；§5.7 Pending 不做 24h 老化，成为"等待决定"全集，check-in 条是其"近 24h"的子集）。历史：2026-04-17（check-in 动作集简化：旧的 `完成/跳过/Shift/忽略` 四按钮 + 四子动作 sheet 合并为三按钮 `完成 / 以后再说 / 归档`；`RailInstance.status` 改为 `pending / done / deferred / archived`（`active / skipped` 弃用，"当前进行中"纯墙钟派生）；Shift sheet 替换为 6 秒 Reason toast（3 枚快速 tag chip + undo，无强制 reason）；Postpone / Replace / Swap / Resize 从 Shift 类型里下架，Postpone 交给 Cycle View 拖拽，其余留 v0.3 重评；Pending 队列重命名并收编 `deferred` 条目 + 超 24h stale 的 pending —— 两个来源一个出口；§5.8 Review 热力图三分语义改绑 `deferred / archived / pending-stale`）。历史：2026-04-16（A 组 UI 底线：同步状态徽章、Now View 节奏条、Ad-hoc 叠层、编辑会话通用化、Cycle 记号改 C1、日期格式表落地；B 组 Now View 结构：多 Task pill 行、Slot 三形态、Next Rail 视觉、去掉铁轨副视图、`CURRENT RAIL` chip、Now 顶栏 `Now` + Mono 副标；C 组 Today Track Shift 交互：Skipped 态改 hatching、桌面 hover 出动作栏、Active 主 CTA 改 tonal `Done`、统一 Shift 标签 sheet、去 bento 保留单条时间线；D 组 Cycle View 骨架：按 Template 堆叠 section、顶部 day header 唯一模板切换入口、Cycle pager picker、summary strip 聚合、`⤺ 撤销本次编辑` 按钮、hatching 三分语义、Backlog 变 split drawer；E 组 Template Editor：删 Save 按钮 / 首次进入 inline 引导、Radix 10 色 popover、顶栏 tab + 2px 色条 + dashed `+ 新建模板`、summary strip 聚合、card 式 Rail 行 + time pill popover picker、行间 gap chip `+ 填充 Rail`、`⋯` 行菜单放 Line 绑定 / check-in toggle；通知重审：删 OS push / Capacitor 通知 / 通知权限链路，Signal 塌缩为 `showInCheckin` 布尔，§5.6 / §5.7 合成一条主线 —— check-in 条 + Pending 队列是同一机制前后两个时态；F 组 缺失页面：Projects / Settings 共用 master-detail 形态，Review 单尺度瀑布 + 节奏匹配度热力图（状态染色 + hatching 三分语义），Pending 队列按日期反序 + 每行 4 动作 + 侧栏 `·` 小点不显数字，Calendar 月历网格 + 点日弹 popover + 高级规则 drawer 四 section，新增 §5.9 Settings 定 5 section + 主题三档默认跟随系统 + i18n 语言在外观 / 时间制 + AI locale 在高级；G 组 设计语言：Terracotta CTA 用 `orange-9/10/11` 三档纯色不用渐变；No-Line Rule 明文白名单（装饰色条 + sticky hairline + focus ring）；Surface 四档 `sand-1..4` 取代 `border` 表达层级；圆角 token `sharp / sm / md / lg` = `0 / 6 / 10 / 16`；整站零 glassmorphism；非对称为默认布局。视觉实装阶段调整：Rail 色板从原 10 色剔除 `olive / mauve / gray`（与 sage / slate 近乎同色、或失去色相识别度），换入 `grass / indigo / plum` 覆盖饱和绿 / 冷静蓝 / 创作紫空位，保持 10 色不变但辨识度拉满；CN 主字体从 PingFang 改为 Noto Sans SC（思源黑体）以获得跨平台一致渲染。Terracotta CTA 从 `orange-9` 实测过于鲜亮，改绑 `bronze-9` 以贴合 ERD 原意的 #C97B4A 暖赭石基调）。
+> **状态**：活文档 —— 这里的任何决策都可以被推翻。最近更新 2026-04-18（§5.5 从 `Projects / Lines View` 重构为 `Tasks 视图`，定位为"任务管理主入口"—— 侧栏导航树（收件箱 + Projects + Habits + Tags + 回收站）+ 跨 Project 的 task 列表 / 搜索 / 过滤 + 排期 popover 两种模式（绑 Rail · 默认 / 自由时间 · 逃生口）；新增内置 Inbox Line（`isDefault: true`、不可删）作为"不挑 Project"的 task 默认容器；全面可逆性 + 软删除模型（Task / Line / AdhocEvent 状态加 `'deleted'`，回收站入口 + 二次确认的硬删 `*.purged`）；`AdhocEvent` 加 `taskId` 字段承接自由时间模式排期；Project 进度条改为条件渲染（仅有 milestone task 时显示），任务数永远显示；开放式 Project（无 plannedEnd）明确不计为风险；§10 Task/Line/AdhocEvent 类型定义同步更新；术语精简：`Chunk` 统一改 `Task`（types + events + schema + UI + ERD 全路径改名），降低 jargon 负担；`Line` 作为内部容器类型保留（`kind: 'project' \| 'habit' \| 'group'` 的 union 父类），但**UI 里永远展示具体形态 Project / Habit / Group / Tag**，不再出现"Line"这个字；`Pending` view 改名 `待决定 / Unresolved` 和 `status='pending'` 解耦；§5.7 Pending 不做 24h 老化，成为"等待决定"全集，check-in 条是其"近 24h"的子集）。历史：2026-04-17（check-in 动作集简化：旧的 `完成/跳过/Shift/忽略` 四按钮 + 四子动作 sheet 合并为三按钮 `完成 / 以后再说 / 归档`；`RailInstance.status` 改为 `pending / done / deferred / archived`（`active / skipped` 弃用，"当前进行中"纯墙钟派生）；Shift sheet 替换为 6 秒 Reason toast（3 枚快速 tag chip + undo，无强制 reason）；Postpone / Replace / Swap / Resize 从 Shift 类型里下架，Postpone 交给 Cycle View 拖拽，其余留 v0.3 重评；Pending 队列重命名并收编 `deferred` 条目 + 超 24h stale 的 pending —— 两个来源一个出口；§5.8 Review 热力图三分语义改绑 `deferred / archived / pending-stale`）。历史：2026-04-16（A 组 UI 底线：同步状态徽章、Now View 节奏条、Ad-hoc 叠层、编辑会话通用化、Cycle 记号改 C1、日期格式表落地；B 组 Now View 结构：多 Task pill 行、Slot 三形态、Next Rail 视觉、去掉铁轨副视图、`CURRENT RAIL` chip、Now 顶栏 `Now` + Mono 副标；C 组 Today Track Shift 交互：Skipped 态改 hatching、桌面 hover 出动作栏、Active 主 CTA 改 tonal `Done`、统一 Shift 标签 sheet、去 bento 保留单条时间线；D 组 Cycle View 骨架：按 Template 堆叠 section、顶部 day header 唯一模板切换入口、Cycle pager picker、summary strip 聚合、`⤺ 撤销本次编辑` 按钮、hatching 三分语义、Backlog 变 split drawer；E 组 Template Editor：删 Save 按钮 / 首次进入 inline 引导、Radix 10 色 popover、顶栏 tab + 2px 色条 + dashed `+ 新建模板`、summary strip 聚合、card 式 Rail 行 + time pill popover picker、行间 gap chip `+ 填充 Rail`、`⋯` 行菜单放 Line 绑定 / check-in toggle；通知重审：删 OS push / Capacitor 通知 / 通知权限链路，Signal 塌缩为 `showInCheckin` 布尔，§5.6 / §5.7 合成一条主线 —— check-in 条 + Pending 队列是同一机制前后两个时态；F 组 缺失页面：Projects / Settings 共用 master-detail 形态，Review 单尺度瀑布 + 节奏匹配度热力图（状态染色 + hatching 三分语义），Pending 队列按日期反序 + 每行 4 动作 + 侧栏 `·` 小点不显数字，Calendar 月历网格 + 点日弹 popover + 高级规则 drawer 四 section，新增 §5.9 Settings 定 5 section + 主题三档默认跟随系统 + i18n 语言在外观 / 时间制 + AI locale 在高级；G 组 设计语言：Terracotta CTA 用 `orange-9/10/11` 三档纯色不用渐变；No-Line Rule 明文白名单（装饰色条 + sticky hairline + focus ring）；Surface 四档 `sand-1..4` 取代 `border` 表达层级；圆角 token `sharp / sm / md / lg` = `0 / 6 / 10 / 16`；整站零 glassmorphism；非对称为默认布局。视觉实装阶段调整：Rail 色板从原 10 色剔除 `olive / mauve / gray`（与 sage / slate 近乎同色、或失去色相识别度），换入 `grass / indigo / plum` 覆盖饱和绿 / 冷静蓝 / 创作紫空位，保持 10 色不变但辨识度拉满；CN 主字体从 PingFang 改为 Noto Sans SC（思源黑体）以获得跨平台一致渲染。Terracotta CTA 从 `orange-9` 实测过于鲜亮，改绑 `bronze-9` 以贴合 ERD 原意的 #C97B4A 暖赭石基调）。
 >
 > 本文档描述 DayRail 的产品逻辑、交互设计与技术选型。它不是最终蓝图，而是设计意图与取舍的记录（包括我们考虑过又否决掉的方案），方便贡献者理解代码**为什么**长成这样。
 >
@@ -117,7 +117,9 @@ DayRail 面向这样一类人：
 - **Shift（变道）**：对当天 Rail 实例 `pending` → 终态转移的附加记录。v0.2 保留两类：`defer`（以后再说，落 Pending）和 `archive`（归档，不再排期）。可选附带原因标签（全局共享标签库，详见 §5.7）。"时内推移"由 Cycle View 拖拽承担；`swap / resize / replace` 留到 v0.3 重评。
 - **Signal（信号）**：Rail 边界的轻量级提醒。名字取自铁路边的信号灯 —— 到点亮一下，不命令你做什么。三个选项：`继续` / `调整` / `跳过`。
 - **Ad-hoc Event（临时事件）**：不属于任何模板的一次性时间块。优先级高于任何 Template 解析结果。可选关联 Line。
-- **Line（内部容器类型 · UI 永远不用这个词）**：DayRail 唯一的"多 Rail 分组"概念，呈现为一个连续谱。`Line` 只出现在 types / schema / event log 里 —— UI 视图 / 菜单 / 文案始终按 `kind` 展示具体形态：`Project` / `Habit` / `Tag（原 Group）`。
+- **Line（内部容器类型 · UI 永远不用这个词）**：DayRail 唯一的"多 Rail / Task 分组"概念，呈现为一个连续谱。`Line` 只出现在 types / schema / event log 里 —— UI 视图 / 菜单 / 文案始终按 `kind` 展示具体形态：`Project` / `Habit` / `Tag（原 Group）`。
+  - **状态三分**：`status: 'active' | 'archived' | 'deleted'`。`archived` 是用户手动归档的终态（可恢复）；`deleted` 是软删除（进回收站，可恢复；二次确认才能硬删）
+  - **Inbox 是内置单例 Line**：`id = 'line-inbox'`、`kind = 'project'`、`isDefault: true`、不可删不可改色。所有"用户没挑 Project 的 task"默认落在这里（详见 §5.5.1）
   - 无 Phase 无 Task → **纯分组（标签化）**，仅用于归类（给若干 Rail、Ad-hoc Event 打上"工作""就医"等归属）。
   - 有 Phase → **Habit Line（习惯型 / UI 称 "Habit"）**，开放结束，按 Phase 演进（时长、目标参数、切换规则：按天数 / 按完成次数 / 手动）。适合"每天一次"的重复性事务（晨跑、英语阅读）—— **高频重复本身不是 Project，是 Habit**。
   - 有 Task → **Project Line（项目型 / UI 称 "Project"）**，有限但可追加步骤。见下条 Task 详述。
@@ -452,36 +454,126 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
   - drawer 关闭即 commit —— 无 Save 按钮，与 Template Editor 同一"即改即存 + 编辑会话兜底"思路；drawer 顶栏右上有 `N 处改动 · ⤺ 撤销本次编辑`。
 - **Ad-hoc Event**：在 Calendar 上直接添加一次性时间块，独立于任何模板。
 
-### 5.5 Projects / Lines View
+### 5.5 Tasks 视图
 
-**入口双轨**：
+> v0.2.1 重构：原 `Projects / Lines View` 更名 `Tasks`。"Projects" 过于窄化，实际用户需要的是一个**任务管理主入口** —— 既包含 TODO 工具该有的基础能力（新建 / 删除 / 完成 / 恢复 / 搜索 / 过滤），也保留 DayRail 的排期语义（Rail / Cycle / Slot）。Project 作为**归属维度**仍然是核心概念，但不再是顶层视图名。
 
-- 顶部导航 tab `Projects` —— 独立视图，适合"专注管理项目"的场景。
-- Cycle View 内的 **Projects 侧栏**（可折叠抽屉）—— 适合"规划排程时直接拖拽"的场景。同一份数据、两种使用姿势。
+**哲学站位**：Tasks 是"底层 TODO 管理"，Rail / Cycle / Template 是叠在它上面的"调度哲学"。两者**不互斥** —— 大多数 task 会被排到某个 Rail（吃日程节奏的红利），少数一次性事件（医院预约、差旅）走自由时间（由 Ad-hoc Event 承接）。两种模式都是合法路径，默认推荐 Rail 模式。
 
-**布局（独立视图）**：
+**布局（桌面）**：
 
-- **桌面 master-detail**：左侧固定 320 px 列表栏（Type tabs + Active/Archived 子 tab + Line 卡片常驻可见），右侧占余下宽度显示选中 Line 的详情。
-- **初始状态（未选中）**：右栏显示空状态卡 —— "从左边选一条 Line 开始 / 或新建一条"。
-- **移动端**折叠为单栏列表页 → 点一条 Line → push 到详情页（面包屑 `Projects / 项目名`），左上角返回。Settings 页（§5.9）复用同一 master-detail 语法。
-- 密集编辑场景（新建 Task、排 Phase、调进度、归档、重命名）在同屏完成，不反复 push。
+- **左栏（256 px · 导航树）**：
+  - 📥 **`收件箱`** —— 未归属任何 Project 的 task 的默认容器（见 §5.5.1 Inbox）
+  - **`Projects`** 分组：按 `createdAt` 倒序列出；每项显示色条 + 名称 + 未完成数
+  - **`Habits`** 分组：v0.4 交付；MVP 占位
+  - **`Tags`** 分组：v0.3+ 交付
+  - 末尾 `+ 新建 Project / Habit`
+  - 底部 `📦 已归档` / `🗑 回收站` —— 默认折叠
+- **主体（右侧）**：
+  - 顶部：搜索框 + filter chip 行 + 常驻 `+ 新任务` 输入框（Enter 直接落当前选中位置；无选中落收件箱）
+  - 主列表：按当前左栏选中项过滤；按 Project 分组呈现（若已经在某个 Project 内，则按"里程碑 / 普通"分组）
+- **移动端**：折叠为两级（导航 → 列表）。
 
-**列表层**：
+**Task 行的视觉规则**：
 
-- 所有 Line 按类型 tab 分组：`Project` / `Habit` / 纯分组（MVP 首批只交付 Project；Habit 在 §12 roadmap 中）。
-- 子 tab 切分 `Active` / `Archived`。
-- 卡片展示：色条、名称、计划时间窗（若 Project 有 `plannedStart` / `plannedEnd`）、主进度条（Project = 已完成 Tasks 中 `milestonePercent` 的最大值）、已完成事项数 / 总事项数。
-- 超过 `plannedEnd` 7 天仍未归档的 Project 显示"延期"徽章。
+```
+[●] 数据层接 store   📅 周三 · 工作 · 编码   [DayRail 开发]  ⋯
+ ↑                  ↑ 排期信息（一等公民）  ↑ 所属 Project
+ status icon                                 （跨 Project 列表时显示）
+```
 
-**详情层**：
+- **status 图标**：`○` pending / `◎` in-progress / `✓` done / `🗑` deleted。单击切换 pending ↔ done
+- **title**：单行 truncate；hover / click 展开详情抽屉
+- **排期信息（居中，一等公民，不是 metadata）**：
+  - 已绑 Rail：`📅 周三 · 工作 · 编码`（日期 + Rail 名；过期未做加 ⚠）
+  - 自由时间 Ad-hoc：`🕒 周三 14:30–16:00`
+  - 未排：`— 未安排`（视觉最淡）
+  - 点击 → 打开"排期 popover"（见 §5.5.2）
+- **所属 Project pill**：收件箱 / "所有 task" / 搜索结果中显示；已进入某个 Project 详情则隐藏（冗余）
+- **hover 动作组**：完成 · 归档 · 排期… · 删除 · ⋯
 
-- Habit：Phase 时间线（当前阶段高亮）、关联 Rail 列表、Shift 分布。
-- Project：
-  - Task 列表，可拖拽排序；每个 Task 行展示 title、`milestonePercent`（如有）、status、sub-item 完成度（如 `2/5`）、以及它被排入的 Slot（显示日期 + Rail 名）。
-  - 未排入 Slot 的 Task 聚集在顶部"backlog"区；支持从详情层直接拖到 Cycle View 侧栏的目标 Slot。
-  - 底部"+ 添加 Task"，可以直接添加附加事项（无 milestonePercent）或里程碑（设 milestonePercent）。
-- 编辑入口：手动增删 Phase / Task；或点 `AI 协助拆解` 进入多步问答向导（§6）。
-- **Phase 过渡标记**：Habit Line 从一个 Phase 进入下一个 Phase（如晨跑 30min → 40min）时，**在时间轴上那一天留下一条** **`PhaseTransition`** **标记**。Today Track、Cycle View、Review 三处都能看到，直接回答"为什么我的 Rail 突然变了？"，不用翻到 Line 详情页才看见。标记不是 Shift（不是对计划的偏离），而是事件日志里一等的事件类型。呈现形式：**附着在触发变化的那条 Rail 上的小型 inline chip**（如 "→ 第 2 阶段：40min"），而不是一整行宽的分隔条。点击 / 悬浮查看前后对比。
+**Filter chip（顶部一排）**：
+
+- **状态**（mutex）：`全部` / `未完成` / `已完成` / `已归档` / `回收站`
+- **排期**（mutex）：`任意` / `已排期` / `未排期` / `今日` / `本周` / `过期未做`
+- **所属**：Project pill 多选（和左栏导航选中项取交集）
+- **搜索框**：对 `title` + `note` 做文本子串匹配
+
+**Project header（选中某 Project 时在列表上方）**：
+
+- 色条 + 名称 + 状态徽章（active / archived）
+- **任务数永远显示**：`7 / 15 任务`
+- **进度条有条件渲染**：**仅当** Project 内至少一个 task 带 `milestonePercent` → 画一条（宽度 = done tasks 中 `milestonePercent` 的最大值）；无里程碑 Project 不渲染进度条，避免"进度永远 0%"的误读
+- 时间窗：有 `plannedStart` / `plannedEnd` 才显示；**无 `plannedEnd` 不视为风险**（开放式 Project 合法，不贬成二等）
+- `⋯` 菜单：重命名 / 改色 / 改时间窗 / 归档 / 删除（软）
+
+#### 5.5.1 Inbox
+
+- **系统内置、全局单例、不可删**。id 固定 `line-inbox`；`Line.isDefault: true`；UI 上无重命名 / 改色 / 删除入口
+- **首次启动自动 seed**：和 sample templates 同一批次；即使用户清空其它 Line，收件箱始终在
+- **落点规则**：新建 task 时不挑 Project → `lineId = 'line-inbox'`，进收件箱
+- **出口**：用户把收件箱 task 拖到某个 Project → `lineId` 变更，task 随之归位
+- 收件箱 task 的排期 / 完成 / 归档 / 删除动作与普通 Project task **完全一致**（心智零迁移）
+
+#### 5.5.2 排期模式（两种并存，Rail 优先）
+
+点任一 task 行的"排期…" → 打开 popover：
+
+```
+┌──────────────────────────────────────┐
+│  排到某天：[📅 2026-04-22]           │
+│                                      │
+│  时段：                              │
+│  ◉ 绑定 Rail              ← 默认     │
+│     [⏳ 工作 · 编码  14:00-16:00 ▾] │
+│  ○ 自由时间                         │
+│     [14:30] → [16:00]                │
+│                                      │
+│               [取消]  [确认排期]     │
+└──────────────────────────────────────┘
+```
+
+**模式 A · 绑定 Rail**（默认）：
+- 下拉列出所选日期对应 Template 下的全部 Rail
+- 确认 → 写 / 更新 Slot（`cycleId, date, railId`），把 task 的 `slot` 指向它；多 task 可共用同一 Slot（`taskIds` 是数组）
+- 若当天没模板（或模板无 Rail）→ 选项 disabled，提示"这天没有模板 Rail，请用自由时间或先去 Cycle View 设模板"
+
+**模式 B · 自由时间**：
+- 用户直接指定起止时间
+- 确认 → 创建 `AdhocEvent`（`date, startMinutes, durationMinutes, taskId`），task 自身 `slot` 为空
+- Ad-hoc 以 1.5px 虚线外框渲染在 Today Track / Cycle View 的对应时段（§5.2 叠层规则）
+- 适合：医院预约、跨行程一次性事件、差旅时段
+
+**取消排期**（从已排状态回到未排）：
+- 模式 A：删 Slot 的 `taskIds` 里那一项（同一格无其它 task 时整行 Slot 删除）
+- 模式 B：软删对应 AdhocEvent
+- **均无副作用** —— 不记 Shift、不改 task 状态
+
+**为什么默认 A**：Rail 节奏是 DayRail 的独特价值。A 保持日程有型；B 是逃生口不是推荐路径。两条都在、默认偏 A，能覆盖 95% 场景而不让 5% 的人卡住。
+
+#### 5.5.3 可逆性 & 软删除
+
+所有破坏性操作默认**软删除**，入口"回收站" filter 找回。唯一硬删口是软删之后再手动点"永久删除"（二次确认）。
+
+| 动作 | 类型 | 撤销路径 |
+|---|---|---|
+| Complete task | 状态切换 | 再点一下 status 图标 / "恢复为未完成"按钮 |
+| Archive task | 状态切换 | "恢复为 Active" |
+| Delete task | 软删（`Task.status = 'deleted'`）| 回收站 filter → 恢复（回到 pre-delete 的 status） |
+| Purge task | 硬删（触发 `task.purged` 事件，DB 行删除） | **无** —— 二次确认框明说 |
+| Delete Project（Line）| 软删（`Line.status = 'deleted'`）| 同上 |
+| Delete AdhocEvent | 软删 | 同上 |
+| Delete Rail（template）| v0.2.1 仍然只能归档 | 解除归档 |
+
+**已删除 task 的级联**：自动解除排期（清 `slot` 或软删关联 Ad-hoc），已完成的 subItems 保留。**恢复不自动重建排期** —— 用户重新点"排期…"即可。
+
+**事件日志**：`task.deleted` / `task.restored` / `task.purged` 三条；`line.deleted` / `line.restored`；`adhoc.deleted` / `adhoc.restored`。Edit Session 级 undo 可以撤回 `*.deleted`；`*.purged` 明确不进 session。
+
+---
+
+**Projects 在 Cycle View 里的入口**：原 Cycle View 的 Projects 侧栏继续存在（§5.3 Backlog drawer），MVP 功能是"从 backlog 拖 task 到 slot"。Tasks 视图和它互为补充 —— 一个是"管理 task"，一个是"规划时间"。
+
+**Habit / Phase 过渡标记**：仍按原设计挂在 Habit Line 上（见 §4.1），v0.4 交付。Tasks 视图里 Habit 分组的 UI 行为与 Project 并列但单独规则（习惯不是任务堆，而是节奏追踪），具体形态 v0.4 再明确。
 
 ### 5.6 Signal：打开 App 时的 check-in 条
 
@@ -1102,14 +1194,16 @@ type Line = {
   color?: string;             // Radix scale token（与 Rail 共用调色盘）
   createdAt: string;
   archivedAt?: string;
-  status: 'active' | 'archived';
+  deletedAt?: string;         // 软删除时间戳
+  status: 'active' | 'archived' | 'deleted';
+  isDefault?: boolean;        // true 的 Line 不能被删 / 改色 / 重命名（保留给 Inbox: id='line-inbox'）
   // 三个字段决定 Line 的"形态"，均可为空：
   phases?: Phase[];           // 有 → Habit
   currentPhaseId?: string;
-  tasks?: Task[];           // 有 → Project
+  tasks?: Task[];             // 有 → Project
   plannedStart?: string;      // YYYY-MM-DD，Project 计划窗口（软提示）
-  plannedEnd?: string;        // YYYY-MM-DD，超过 7 天仍活跃则显示"延期"徽章
-  // 若 phases / tasks 都为空，Line 退化为纯分组（标签）
+  plannedEnd?: string;        // YYYY-MM-DD；无此字段的开放式 Project 不算风险，UI 不加"逾期"徽章
+  // 若 phases / tasks 都为空，Line 退化为纯分组（Tag）
 };
 
 type AdhocEvent = {
@@ -1121,6 +1215,9 @@ type AdhocEvent = {
   color?: string;     // 可选：外框色（Radix scale token）。未指定时继承 lineId 对应 Line.color；都没有时用中性灰 slate。
                       // 视觉规则恒定：1.5px 虚线外框 + slate step 2–3 极浅填色；外框色可变，填色不变（见 §5.2）。
   lineId?: string;    // 可选归属：决定右上 ADHOC chip 旁是否显示 Line 名，以及默认外框色。
+  taskId?: string;    // §5.5.2 "自由时间"排期模式：task 用该字段回指本 Ad-hoc。取消排期时软删本行。
+  status: 'active' | 'deleted';   // 软删除
+  deletedAt?: string;
 };
 
 type Phase = {
@@ -1136,17 +1233,28 @@ type Phase = {
 
 type Task = {
   id: string;
-  lineId: string;              // 所属 Project Line
+  lineId: string;              // 所属 Line；没挑 Project 的 task 落 'line-inbox'（收件箱）
   title: string;
+  note?: string;               // 自由文本备注（搜索会扫这个字段）
   milestonePercent?: number;   // 0–100，带百分比即里程碑；缺省为"附加事项"
   subItems: SubItem[];         // 内部 checklist，不单独排程
-  status: 'pending' | 'in_progress' | 'done';
+  status:
+    | 'pending'
+    | 'in_progress'
+    | 'done'
+    | 'archived'      // §5.5.3 归档 —— 用户手动放一边，可恢复
+    | 'deleted';      // §5.5.3 软删除 —— 默认列表隐藏，回收站可见
   doneAt?: string;
+  archivedAt?: string;
+  deletedAt?: string;
   order: number;               // Line 内排序（拖拽可调）
-  targetRailIds?: string[];    // 可选：限定仅可排入这些 Rail 的 Slot
+  targetRailIds?: string[];    // 可选：限定仅可排入这些 Rail 的 Slot（v0.3+）
   railOverrides?: Partial<Rail>;
-  // 排入 Slot 的位置：最多一处；缺省表示在 backlog
-  assignment?: { cycleId: string; date: string; railId: string };
+  // §5.5.2 排期：两种模式二选一
+  //   模式 A 绑 Rail ─▶ slot = { cycleId, date, railId }
+  //   模式 B 自由时间 ─▶ slot = 空，改为 AdhocEvent.taskId 回指
+  //   未排 ─▶ slot = 空 且 没有 AdhocEvent 回指
+  slot?: { cycleId: string; date: string; railId: string };
 };
 
 type SubItem = {
