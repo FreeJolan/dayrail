@@ -10,36 +10,28 @@ import { INITIAL_SCHEMA_SQL } from './schema';
 
 export const LATEST_SCHEMA_VERSION = 1;
 
-interface VersionRow {
-  version: number;
-}
-
-export function runMigrations(db: Database): void {
+export async function runMigrations(db: Database): Promise<void> {
   // Apply the initial schema unconditionally (CREATE TABLE IF NOT
   // EXISTS makes this idempotent).
-  db.exec(INITIAL_SCHEMA_SQL);
+  await db.exec({ sql: INITIAL_SCHEMA_SQL });
 
-  const current = currentVersion(db);
+  const current = await currentVersion(db);
 
   if (current < 1) {
-    db.exec(`INSERT INTO schema_version (version, applied_at) VALUES (1, ?1);`, {
+    await db.exec({
+      sql: 'INSERT INTO schema_version (version, applied_at) VALUES (1, ?1);',
       bind: [Date.now()],
     });
   }
 
-  // Future migrations:
-  // if (current < 2) { db.exec("ALTER TABLE ..."); db.exec("INSERT INTO schema_version ..."); }
+  // Future migrations: guard with version check, then bump.
+  // if (current < 2) { await db.exec(...); await db.exec("INSERT INTO schema_version ..."); }
 }
 
-function currentVersion(db: Database): number {
+async function currentVersion(db: Database): Promise<number> {
   try {
-    const rows: VersionRow[] = [];
-    db.exec({
+    const rows = await db.query<{ version: number }>({
       sql: 'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1;',
-      rowMode: 'object',
-      callback: (row: VersionRow) => {
-        rows.push(row);
-      },
     });
     return rows[0]?.version ?? 0;
   } catch {

@@ -15,6 +15,11 @@ import {
 } from './data/sampleTemplate';
 
 export async function boot(): Promise<void> {
+  // 0. Pre-flight capability probe. Catches common environment issues
+  //    (private browsing, missing OPFS, etc.) before we get deep into
+  //    sqlite-wasm and report a surprising error message.
+  await preflight();
+
   // 1. Hydrate from DB
   await useStore.getState().hydrate();
 
@@ -22,6 +27,25 @@ export async function boot(): Promise<void> {
   const s = useStore.getState();
   if (Object.keys(s.templates).length === 0) {
     await seedFromSamples();
+  }
+}
+
+async function preflight(): Promise<void> {
+  if (typeof navigator === 'undefined' || !('storage' in navigator)) {
+    throw new Error(
+      'navigator.storage 不可用 —— 可能是非安全上下文（需 https 或 localhost）。',
+    );
+  }
+  const storage = navigator.storage;
+  if (typeof storage.getDirectory !== 'function') {
+    throw new Error(
+      'OPFS 不可用 —— navigator.storage.getDirectory 未实现（需 Chrome 86+ / Safari 15.2+）。',
+    );
+  }
+  try {
+    await storage.getDirectory();
+  } catch (err) {
+    throw new Error(`OPFS 根目录无法访问：${(err as Error).message}`);
   }
 }
 

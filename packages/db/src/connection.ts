@@ -1,91 +1,133 @@
-// Connection layer for @dayrail/db. Uses @sqlite.org/sqlite-wasm with
-// the OPFS SAH Pool VFS — no COOP/COEP headers required, works on the
-// main thread in Chromium, and falls back to a dedicated worker only
-// where the browser forces it.
+// Main-thread RPC client for the SQLite worker (see sqlite.worker.ts).
 //
-// We expose a single async `getDb()` that lazily initialises once per
-// page load and returns the live handle. Tests that need a fresh DB
-// can call `resetDb()` to close + rebuild.
+// Exposes an async `Database` facade — every operation is a postMessage
+// round-trip. Ordering is preserved because the worker processes
+// messages serially on its microtask queue, and our id-based pending
+// map resolves responses in FIFO arrival order.
+//
+// Prior art: we originally tried running sqlite-wasm on the main thread
+// via `installOpfsSAHPoolVfs`, but `FileSystemSyncAccessHandle` is
+// dedicated-worker-only in every shipping browser. Hence this client.
 
-import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
+// `?worker` is Vite's built-in suffix: it builds the referenced module
+// as a separate worker bundle and returns a Worker constructor.
+// The triple-slash reference pulls in the ambient declaration from
+// vite-env.d.ts so consumers (packages/core, apps/web) don't need to
+// set up vite/client types of their own when they follow the import.
+/// <reference path="./vite-env.d.ts" />
+import SqliteWorker from './sqlite.worker.ts?worker';
 
-// The SQLite-WASM types are shipped as top-level declarations (not as
-// named exports on the module namespace), so we re-declare thin aliases
-// that match the surface we actually use. This keeps downstream code
-// type-safe without fighting the upstream d.ts layout.
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type Sqlite3Static = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type Database = any;
-
-interface Handle {
-  sqlite3: Sqlite3Static;
-  db: Database;
+export interface Database {
+  exec(opts: {
+    sql: string;
+    bind?: ReadonlyArray<string | number | null>;
+  }): Promise<void>;
+  query<T = Record<string, unknown>>(opts: {
+    sql: string;
+    bind?: ReadonlyArray<string | number | null>;
+  }): Promise<T[]>;
+  close(): Promise<void>;
 }
 
-let _handle: Handle | null = null;
-let _initPromise: Promise<Handle> | null = null;
-
-/** Resolves to the shared Database handle. Opens OPFS + runs migrations
- *  on first call; every subsequent call is instant. */
-export async function getDb(): Promise<Database> {
-  if (_handle) return _handle.db;
-  if (!_initPromise) _initPromise = open();
-  const h = await _initPromise;
-  return h.db;
+interface WorkerMessage {
+  id: number;
+  ok: boolean;
+  rows?: unknown[];
+  ready?: boolean;
+  error?: string;
+  stack?: string;
 }
 
-/** Returns the raw SQLite3 module in addition to the DB — handy for
- *  calling things like `sqlite3.version` during startup diagnostics. */
-export async function getSqlite(): Promise<Sqlite3Static> {
-  if (_handle) return _handle.sqlite3;
-  if (!_initPromise) _initPromise = open();
-  const h = await _initPromise;
-  return h.sqlite3;
+interface Pending {
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
 }
 
-/** For tests: close the DB + clear the cached handle. */
-export async function resetDb(): Promise<void> {
-  if (_handle) {
-    try {
-      _handle.db.close();
-    } catch {
-      // ignore; db may already be closed
+let worker: Worker | null = null;
+let nextId = 1;
+const pending = new Map<number, Pending>();
+let dbInstance: Database | null = null;
+
+function send<T>(
+  w: Worker,
+  type: 'exec' | 'query' | 'close',
+  payload: Record<string, unknown>,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, {
+      resolve: resolve as (v: unknown) => void,
+      reject,
+    });
+    w.postMessage({ id, type, payload });
+  });
+}
+
+function ensureWorker(): Worker {
+  if (worker) return worker;
+  const w = new SqliteWorker({ name: 'dayrail-sqlite' });
+  w.addEventListener('message', (ev: MessageEvent) => {
+    const msg = ev.data as WorkerMessage;
+    if (msg.ready) {
+      // Worker bootstrap signal — no pending slot to resolve.
+      return;
     }
-    _handle = null;
-  }
-  _initPromise = null;
+    const p = pending.get(msg.id);
+    if (!p) return;
+    pending.delete(msg.id);
+    if (msg.ok) {
+      p.resolve(msg.rows ?? undefined);
+    } else {
+      const err = new Error(msg.error ?? 'Unknown DB error');
+      if (msg.stack) err.stack = msg.stack;
+      p.reject(err);
+    }
+  });
+  w.addEventListener('error', (ev: ErrorEvent) => {
+    console.error('[db worker error]', ev.message, ev.filename, ev.lineno);
+    // Reject all pending requests so callers fail fast.
+    for (const p of pending.values()) {
+      p.reject(new Error(`Worker crashed: ${ev.message}`));
+    }
+    pending.clear();
+  });
+  worker = w;
+  return w;
 }
 
-async function open(): Promise<Handle> {
-  // Loaded once per page lifetime. The initModule call returns a
-  // namespace populated with `oo1`, `capi`, `wasm`, etc.
-  const sqlite3 = await sqlite3InitModule({
-    print: (msg: string) => console.log('[sqlite]', msg),
-    printErr: (msg: string) => console.warn('[sqlite]', msg),
-  });
+export async function getDb(): Promise<Database> {
+  if (dbInstance) return dbInstance;
+  const w = ensureWorker();
+  dbInstance = {
+    async exec({ sql, bind }) {
+      await send<void>(w, 'exec', { sql, bind });
+    },
+    async query<T>({
+      sql,
+      bind,
+    }: {
+      sql: string;
+      bind?: ReadonlyArray<string | number | null>;
+    }): Promise<T[]> {
+      const rows = await send<unknown[] | undefined>(w, 'query', { sql, bind });
+      return (rows ?? []) as T[];
+    },
+    async close() {
+      await send<void>(w, 'close', {});
+      w.terminate();
+      worker = null;
+      dbInstance = null;
+    },
+  };
+  return dbInstance;
+}
 
-  // Install the OPFS Sync-Access-Handle pool VFS. This gives us
-  // persistence without requiring COOP/COEP or SharedArrayBuffer.
-  // The pool lives under the provided `directory` inside OPFS.
-  const poolUtil = await sqlite3.installOpfsSAHPoolVfs({
-    name: 'dayrail-pool',
-    directory: '/dayrail',
-    clearOnInit: false,
-  });
-
-  const db = new poolUtil.OpfsSAHPoolDb('/dayrail.db');
-
-  // One-time pragmas — DayRail is a single-user single-writer DB so
-  // these are safe and give us ~2x write perf.
-  db.exec(`
-    PRAGMA journal_mode = MEMORY;
-    PRAGMA synchronous = NORMAL;
-    PRAGMA foreign_keys = ON;
-    PRAGMA temp_store = MEMORY;
-  `);
-
-  _handle = { sqlite3, db };
-  return _handle;
+export async function resetDb(): Promise<void> {
+  if (dbInstance) {
+    try {
+      await dbInstance.close();
+    } catch {
+      /* ignore */
+    }
+  }
 }
