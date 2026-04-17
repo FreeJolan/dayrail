@@ -122,15 +122,31 @@ export function TodayTrack() {
     [railInstances, rails, now.asDate],
   );
 
-  // Timeline hides past-unmarked rails — those live in the strip. Done
-  // / deferred / archived stay on the timeline so the user can see the
-  // shape of today.
-  const timelineVisible = timeline.filter((r) => r.state !== 'unmarked');
+  // Timeline hides two states:
+  //   - 'unmarked' (past-ended pending) — lives in the check-in strip.
+  //   - 'deferred' — "move me somewhere else" is explicit; keeping it
+  //     on today's timeline would confuse "this is today" with "this
+  //     needs re-scheduling". Deferred rails get their own section
+  //     below check-in but above today's main list.
+  //   'done' / 'archived' stay on the timeline so the user can see the
+  //   full shape of today (including dropped items).
+  const timelineVisible = timeline.filter(
+    (r) => r.state !== 'unmarked' && r.state !== 'deferred',
+  );
+  const deferredToday = timeline.filter((r) => r.state === 'deferred');
+
+  const handleUndefer = useCallback(
+    (instanceId: string) => {
+      void markRailInstance(instanceId, 'pending');
+    },
+    [markRailInstance],
+  );
 
   return (
     <div className="flex w-full max-w-[780px] flex-col gap-8 py-10 pl-10 pr-10 lg:pl-14 xl:pl-20">
       <PageHeader now={now} />
       <CheckInStrip queue={checkinQueue} onAction={handleCheckin} />
+      <DeferredSection rails={deferredToday} onUndefer={handleUndefer} />
       <Timeline rails={timelineVisible} />
       <Footnote />
       <ReasonToast
@@ -308,6 +324,57 @@ function Timeline({ rails }: { rails: SampleRail[] }) {
           ))}
         </ul>
       )}
+    </section>
+  );
+}
+
+// "以后再说" strip — today's deferred rails. Separate from the main
+// timeline because they no longer belong to *today* (the user has
+// said "I want to do this, but not now"). Grouped here so the user
+// sees the pile they've accumulated + can undo in one click.
+//
+// v0.3 will add a "重新排期" affordance that opens Cycle View pre-
+// targeted at this rail; for v0.2 the only explicit re-schedule path
+// is Undefer → rail goes back to `pending` on today's timeline.
+function DeferredSection({
+  rails,
+  onUndefer,
+}: {
+  rails: SampleRail[];
+  onUndefer: (instanceId: string) => void;
+}) {
+  if (rails.length === 0) return null;
+  return (
+    <section
+      aria-label="今日以后再说的 Rail"
+      className="flex flex-col gap-2.5 rounded-md border border-hairline/40 bg-surface-1 p-4"
+    >
+      <SectionLabel text="以后再说" right={`${rails.length}`} />
+      <ul className="flex flex-col divide-y divide-hairline/40">
+        {rails.map((r) => (
+          <li
+            key={r.id}
+            className="flex items-center gap-3 py-2 first:pt-0 last:pb-0"
+          >
+            <span className="font-mono text-xs tabular-nums text-ink-tertiary">
+              {r.start}–{r.end}
+            </span>
+            <span className="flex-1 truncate text-sm text-ink-secondary">
+              {r.name}
+              {r.subtitle && (
+                <span className="ml-1 text-ink-tertiary">· {r.subtitle}</span>
+              )}
+            </span>
+            <button
+              type="button"
+              onClick={() => onUndefer(r.id)}
+              className="rounded-sm px-2 py-0.5 text-xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+            >
+              取消
+            </button>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
