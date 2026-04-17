@@ -500,7 +500,7 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
 - **per-Rail 开关 `showInCheckin`**（默认 `true`）：Template Editor 行 `⋯` 菜单中勾选切换（见 §5.4）。关闭 = 这条 Rail 静默走完，不进 check-in 条也不进 Pending 队列（适合纯结构性 Rail，如"午休"—— 没什么要追踪的）。
 - **不自动降级**：连续多天 `完成` / `归档` 不会自动关掉 check-in；用户可以主动在 Rail 设置里关。静默替用户决定"不再 check-in"会从"安静"滑向"缺席"。
 
-### 5.7 Pending 队列
+### 5.7 待决定（Unresolved）队列
 
 §5.6 的 check-in 条覆盖的是"刚结束"的时态。**更久以前还没决定的 Rail**、以及**显式点了"以后再说"的 Rail**，都汇入 Pending 队列。入口两个，出口一个。
 

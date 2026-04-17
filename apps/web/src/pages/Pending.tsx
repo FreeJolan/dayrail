@@ -252,10 +252,10 @@ function TopBar({
     <header className="flex items-end justify-between gap-6 pt-2">
       <div className="flex flex-col gap-1.5">
         <span className="font-mono text-xs uppercase tracking-widest text-ink-tertiary">
-          Pending
+          Unresolved
         </span>
         <div className="flex items-baseline gap-3">
-          <h1 className="text-2xl font-medium text-ink-primary">Pending</h1>
+          <h1 className="text-2xl font-medium text-ink-primary">待决定</h1>
           <span className="font-mono text-sm tabular-nums text-ink-secondary">
             {total} 条
           </span>
