@@ -181,7 +181,7 @@ function SectionMiniHeader({
                     </span>
                     {d.overridden && (
                       <span className="font-mono text-[9px] uppercase tracking-widest text-ink-tertiary">
-                        OVR
+                        覆盖
                       </span>
                     )}
                   </div>

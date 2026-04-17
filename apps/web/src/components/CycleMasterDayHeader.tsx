@@ -69,8 +69,14 @@ function DayButton({
           type="button"
           className={clsx(
             'group flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition',
-            open ? 'bg-surface-2' : 'hover:bg-surface-1',
-            isToday && 'ring-1 ring-inset ring-ink-primary/20',
+            // Today gets a distinct background + a stronger ring so it
+            // reads as "you are here" without borrowing terracotta
+            // (which G1 locks to Current Rail / primary CTA / Replace).
+            isToday
+              ? 'bg-surface-2 ring-1 ring-inset ring-ink-primary/60'
+              : open
+                ? 'bg-surface-2'
+                : 'hover:bg-surface-1',
           )}
         >
           <div className="flex w-full items-baseline justify-between">
@@ -85,9 +91,9 @@ function DayButton({
             {day.overridden && (
               <span
                 className="font-mono text-[9px] uppercase tracking-widest text-ink-tertiary"
-                title="overridden"
+                title="overridden from the weekday default"
               >
-                OVR
+                覆盖
               </span>
             )}
           </div>
