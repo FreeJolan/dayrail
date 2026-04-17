@@ -73,11 +73,6 @@ interface DayRailActions {
   // --- rail instances (Today Track / check-in) ---
   createRailInstance: (inst: RailInstance) => Promise<void>;
   markRailInstance: (id: string, status: RailInstanceStatus) => Promise<void>;
-  shiftInstanceTime: (
-    id: string,
-    plannedStart: string,
-    plannedEnd: string,
-  ) => Promise<void>;
   recordSignal: (
     instanceId: string,
     response: SignalResponse,
@@ -448,28 +443,19 @@ export const useStore = create<DayRailStore>()(
       },
 
       markRailInstance: async (id, status) => {
-        // status→wall-clock correlations: mark actualEnd when the user
-        // closes out (done/skipped). We don't record actualStart yet —
-        // v0.3 will introduce "start now" once we wire the active state.
+        // status → wall-clock correlations: stamp actualEnd on any
+        // terminal-or-semi-terminal transition out of `pending`. For
+        // `done` this doubles as "finish time"; for deferred/archived
+        // it simply marks when the user made that call. No actualStart
+        // yet — v0.3 will introduce "start now" when the active state
+        // gets its own UI.
         const now = new Date().toISOString();
         const payload: InstanceStatusPayload = { id, status };
-        if (status === 'done' || status === 'skipped') payload.actualEnd = now;
+        if (status !== 'pending') payload.actualEnd = now;
         const event = await appendEvent({
           aggregateId: `instance:${id}`,
           type: 'instance.status-changed',
           payload: { ...payload },
-        });
-        set((draft) => {
-          applyEventInPlace(draft, event.type, event.payload);
-        });
-        afterMutation();
-      },
-
-      shiftInstanceTime: async (id, plannedStart, plannedEnd) => {
-        const event = await appendEvent({
-          aggregateId: `instance:${id}`,
-          type: 'instance.time-shifted',
-          payload: { id, plannedStart, plannedEnd },
         });
         set((draft) => {
           applyEventInPlace(draft, event.type, event.payload);
@@ -495,14 +481,14 @@ export const useStore = create<DayRailStore>()(
           applyEventInPlace(draft, event.type, event.payload);
         });
         afterMutation();
-        // Convenience: done/skip responses also flip the instance status
-        // so downstream queries (Pending, Review) don't need to join.
-        if (response === 'done' || response === 'skip') {
-          await get().markRailInstance(
-            instanceId,
-            response === 'done' ? 'done' : 'skipped',
-          );
-        }
+        // All three responses flip the instance status so downstream
+        // queries (Pending, Review) don't need to join signal history.
+        const statusByResponse: Record<SignalResponse, RailInstanceStatus> = {
+          done: 'done',
+          defer: 'deferred',
+          archive: 'archived',
+        };
+        await get().markRailInstance(instanceId, statusByResponse[response]);
       },
 
       recordShift: async (shift) => {

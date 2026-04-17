@@ -64,7 +64,12 @@ export interface Slot {
   chunkIds: string[];
 }
 
-export type RailInstanceStatus = 'pending' | 'active' | 'done' | 'skipped';
+/** §4.4 state machine. "Currently happening" is NOT a status — it's
+ *  purely wall-clock-derived (plannedStart ≤ now ≤ plannedEnd while
+ *  status === 'pending'). The v0.2-early `active` / `skipped` are
+ *  retired; their roles collapse into wall-clock derivation,
+ *  `deferred`, and `archived` respectively. */
+export type RailInstanceStatus = 'pending' | 'done' | 'deferred' | 'archived';
 
 export interface RailInstance {
   id: string;
@@ -79,16 +84,11 @@ export interface RailInstance {
   sessionId?: string;
 }
 
-/** §5.2 unifies user-facing Shift actions to four: Skip, Postpone,
- *  Replace, Add note. `swap` and `resize` are kept for future use
- *  (e.g. Cycle-view row swaps, explicit duration edits). */
-export type ShiftType =
-  | 'postpone'
-  | 'swap'
-  | 'skip'
-  | 'resize'
-  | 'replace'
-  | 'note';
+/** §5.2: only two Shift types survive v0.2 — each matches a terminal-
+ *  or-semi-terminal status transition. Within-day postponing is
+ *  handled via Cycle-View drag (not a Shift); swap / resize / replace
+ *  are re-evaluated in v0.3. */
+export type ShiftType = 'defer' | 'archive';
 
 export interface Shift {
   id: string;
@@ -97,10 +97,14 @@ export interface Shift {
   at: string;
   payload: Record<string, unknown>;
   tags?: string[];
-  reason?: string; // ≤500 chars per v0.2 decision
+  /** Not captured in v0.2 — the Reason toast only writes tags.
+   *  Free-text reason is deferred to the v0.3 Pending detail page. */
+  reason?: string;
 }
 
-export type SignalResponse = 'done' | 'skip' | 'shift' | 'ignore';
+/** §5.6 three-action check-in vocabulary. Replaces the v0.2-early
+ *  `'skip' | 'shift' | 'ignore'` — those were semantically overlapping. */
+export type SignalResponse = 'done' | 'defer' | 'archive';
 
 export interface Signal {
   id: string;

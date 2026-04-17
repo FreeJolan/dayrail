@@ -1,4 +1,4 @@
-import { Check, Replace, RotateCw, SkipForward } from 'lucide-react';
+import { Archive, Check, Clock } from 'lucide-react';
 import { clsx } from 'clsx';
 import type { SampleRail, RailState } from '@/data/sample';
 import {
@@ -28,14 +28,16 @@ export function RailCard({ rail }: Props) {
   const duration = computeDurationMinutes(rail.start, rail.end);
   const isCurrent = rail.state === 'current';
   const isDone = rail.state === 'done';
-  const isSkipped = rail.state === 'skipped';
+  const isDeferred = rail.state === 'deferred';
+  const isArchived = rail.state === 'archived';
   const isUnmarked = rail.state === 'unmarked';
-  // Strip fades to step-6 for "settled past" states (done / skipped) so
-  // the main timeline reads past-vs-upcoming at a glance. Unmarked
-  // keeps the step-9 tint — it still wants attention even when dimmed.
+  // Strip fades to step-6 for "settled past" states (done / archived) so
+  // the main timeline reads past-vs-upcoming at a glance. Deferred
+  // keeps the step-9 tint so the row still reads as "pending somewhere
+  // else". Unmarked keeps step-9 — it wants attention.
   const strip = isCurrent
     ? CTA_HEX
-    : isDone || isSkipped
+    : isDone || isArchived
     ? RAIL_COLOR_STEP_6[rail.color]
     : RAIL_COLOR_HEX[rail.color];
   const hatching = stateHatching(rail);
@@ -49,7 +51,7 @@ export function RailCard({ rail }: Props) {
         'bg-surface-1',
         isCurrent && 'bg-surface-2',
         // Demoted state: title dims via tertiary ink, hatching paints over.
-        (isSkipped || isUnmarked) && 'text-ink-tertiary',
+        (isDeferred || isArchived || isUnmarked) && 'text-ink-tertiary',
       )}
       style={{
         // hatching receives its color via CSS var consumed by utility classes.
@@ -80,11 +82,12 @@ export function RailCard({ rail }: Props) {
       <div
         className={clsx(
           'relative flex flex-col gap-2 px-5 py-4 pl-6',
-          // Settled/dropped states get a faded content layer so the strip
-          // (and hatching, if present) read as "main info" and the text
-          // as "archival". Skipped keeps full opacity — hatching already
-          // carries the visual weight, and dimming would compete.
+          // Settled states get a faded content layer so the strip reads
+          // as primary info and text as archival. Deferred keeps fuller
+          // opacity — its hatching already carries weight and dimming
+          // would make it look identical to archived.
           isDone && 'opacity-70',
+          isArchived && 'opacity-60',
         )}
       >
         <header className="flex items-baseline justify-between gap-4">
@@ -94,11 +97,9 @@ export function RailCard({ rail }: Props) {
                 'font-mono text-xs uppercase tracking-widest',
                 isCurrent && 'text-ink-primary',
                 rail.state === 'pending' && 'text-ink-secondary',
-                (isDone || isSkipped || isUnmarked) && 'text-ink-tertiary',
-                // Line-through on the title marks the rail as decided —
-                // visible with or without a subtitle, which the earlier
-                // sub-only line-through missed.
-                (isDone || isSkipped) &&
+                (isDone || isDeferred || isArchived || isUnmarked) && 'text-ink-tertiary',
+                // Line-through on the title marks the rail as decided.
+                (isDone || isArchived) &&
                   'line-through decoration-ink-tertiary/60 decoration-[1.5px]',
               )}
             >
@@ -106,9 +107,14 @@ export function RailCard({ rail }: Props) {
             </h3>
             {isCurrent && <CurrentRailChip />}
             {isDone && <DoneCheck />}
-            {isSkipped && (
+            {isDeferred && (
               <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-                Skipped
+                Later
+              </span>
+            )}
+            {isArchived && (
+              <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                Archived
               </span>
             )}
             {isUnmarked && (
@@ -121,7 +127,7 @@ export function RailCard({ rail }: Props) {
           <time
             className={clsx(
               'shrink-0 font-mono text-xs tabular-nums',
-              rail.state === 'done' || rail.state === 'skipped' || rail.state === 'unmarked'
+              isDone || isDeferred || isArchived || isUnmarked
                 ? 'text-ink-tertiary'
                 : 'text-ink-secondary',
             )}
@@ -136,10 +142,10 @@ export function RailCard({ rail }: Props) {
           <p
             className={clsx(
               'text-base',
-              rail.state === 'current' && 'text-ink-primary',
-              rail.state === 'done' && 'text-ink-tertiary line-through decoration-ink-tertiary/40',
+              isCurrent && 'text-ink-primary',
+              isDone && 'text-ink-tertiary line-through decoration-ink-tertiary/40',
               rail.state === 'pending' && 'text-ink-secondary',
-              (rail.state === 'unmarked' || rail.state === 'skipped') && 'text-ink-tertiary',
+              (isDeferred || isArchived || isUnmarked) && 'text-ink-tertiary',
             )}
           >
             {rail.subtitle}
@@ -147,14 +153,15 @@ export function RailCard({ rail }: Props) {
         )}
 
         {/* Hover-reveal action row on pending / current only.
-            Done / skipped / unmarked get a single Undo-ish affordance. */}
-        {(rail.state === 'pending' || rail.state === 'current') && (
-          <ActionRow state={rail.state} />
+            Done / deferred / archived / unmarked get a single Undo-ish affordance. */}
+        {(rail.state === 'pending' || isCurrent) && (
+          <ActionRow state={rail.state as Extract<RailState, 'pending' | 'current'>} />
         )}
 
-        {rail.state === 'unmarked' && <UndoRow label="补录" />}
-        {rail.state === 'skipped' && <UndoRow label="撤回跳过" />}
-        {rail.state === 'done' && <UndoRow label="撤回" />}
+        {isUnmarked && <UndoRow label="补录" />}
+        {isDeferred && <UndoRow label="取消以后再说" />}
+        {isArchived && <UndoRow label="取消归档" />}
+        {isDone && <UndoRow label="撤回完成" />}
       </div>
     </article>
   );
@@ -189,10 +196,9 @@ function DoneCheck() {
 }
 
 function ActionRow({ state }: { state: Extract<RailState, 'pending' | 'current'> }) {
-  // Reveal animation eases in slightly slower than other transitions so
-  // the 4 buttons feel "arrived" rather than "popped". Uses default
-  // duration (180 ms) for both opacity and translate; staggered via
-  // delay in the buttons themselves.
+  // Reveal animation eases in slightly slower than other transitions
+  // so the three buttons feel "arrived" rather than "popped". Default
+  // 180 ms duration for both opacity and translate.
   return (
     <div
       className={clsx(
@@ -202,9 +208,8 @@ function ActionRow({ state }: { state: Extract<RailState, 'pending' | 'current'>
       )}
     >
       <ActionButton variant="primary" icon={Check} label="完成" />
-      <ActionButton icon={SkipForward} label="跳过" />
-      <ActionButton icon={RotateCw} label="Shift" />
-      <ActionButton variant="terracotta" icon={Replace} label="替换" />
+      <ActionButton icon={Clock} label="以后再说" />
+      <ActionButton icon={Archive} label="归档" />
     </div>
   );
 }
@@ -269,11 +274,19 @@ function formatDuration(mins: number) {
   return `${h}h${m}`;
 }
 
-function stateHatching(rail: SampleRail): { kind: 'unmarked' | 'skipped'; color: string } | undefined {
+// Hatching pattern — per ERD §5.8 three-part semantics:
+//   unmarked → step 4 (faintest, "still undecided")
+//   deferred → step 6 (mid, "pushed off, lives in Pending")
+//   archived → also uses the skipped-weight hatching (step 6) so the
+//              card reads demoted; the extra line-through on title and
+//              stronger opacity differentiates it from deferred.
+function stateHatching(
+  rail: SampleRail,
+): { kind: 'unmarked' | 'skipped'; color: string } | undefined {
   if (rail.state === 'unmarked') {
     return { kind: 'unmarked', color: RAIL_COLOR_STEP_4[rail.color] };
   }
-  if (rail.state === 'skipped') {
+  if (rail.state === 'deferred' || rail.state === 'archived') {
     return { kind: 'skipped', color: RAIL_COLOR_STEP_6[rail.color] };
   }
   return undefined;

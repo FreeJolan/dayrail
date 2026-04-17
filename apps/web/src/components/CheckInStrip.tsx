@@ -8,7 +8,7 @@ import { RAIL_COLOR_HEX } from './railColors';
 // queue is non-empty. A single Rail expands as an inline row; 2+ Rails
 // collapse to a summary line that can be expanded.
 
-export type CheckInAction = 'done' | 'skip' | 'shift' | 'ignore';
+export type CheckInAction = 'done' | 'defer' | 'archive';
 
 interface Props {
   queue: SampleRail[];
@@ -95,10 +95,11 @@ function CheckInRow({
         <ActionChip variant="primary" onClick={() => onAction(rail.id, 'done')}>
           完成
         </ActionChip>
-        <ActionChip onClick={() => onAction(rail.id, 'skip')}>跳过</ActionChip>
-        <ActionChip onClick={() => onAction(rail.id, 'shift')}>Shift</ActionChip>
-        <ActionChip variant="ghost" onClick={() => onAction(rail.id, 'ignore')}>
-          忽略
+        <ActionChip onClick={() => onAction(rail.id, 'defer')}>
+          以后再说
+        </ActionChip>
+        <ActionChip variant="ghost" onClick={() => onAction(rail.id, 'archive')}>
+          归档
         </ActionChip>
       </span>
     </li>

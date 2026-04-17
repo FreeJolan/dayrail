@@ -18,8 +18,9 @@ export type RailState =
   | 'pending' // future Rail, not yet started
   | 'current' // active right now — only one per day
   | 'done' // user marked done
-  | 'skipped' // user explicitly skipped
-  | 'unmarked'; // ended without a decision; lives in §5.7 queue
+  | 'deferred' // user clicked "以后再说" — lives in §5.7 Pending queue
+  | 'archived' // user clicked "归档" — terminal, dropped from the schedule
+  | 'unmarked'; // ended without a decision; lives in check-in strip
 
 export interface SampleRail {
   id: string;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   selectCheckinQueue,
   selectTodayTimeline,
@@ -6,11 +6,15 @@ import {
   useStore,
   type Rail,
   type RailInstance,
-  type Shift,
+  type ShiftType,
 } from '@dayrail/core';
 import { CheckInStrip, type CheckInAction } from '@/components/CheckInStrip';
 import { RailCard } from '@/components/RailCard';
-import { ShiftSheet, type ShiftSubmission } from '@/components/ShiftSheet';
+import {
+  ReasonToast,
+  type ReasonToastState,
+  type ToastAction,
+} from '@/components/ReasonToast';
 import type { RailColor, RailState, SampleRail } from '@/data/sample';
 
 // Page layout — ERD A/B/C decisions:
@@ -25,103 +29,82 @@ export function TodayTrack() {
 
   const rails = useStore((s) => s.rails);
   const railInstances = useStore((s) => s.railInstances);
-  const signals = useStore((s) => s.signals);
   const shifts = useStore((s) => s.shifts);
   const recordSignal = useStore((s) => s.recordSignal);
   const recordShift = useStore((s) => s.recordShift);
   const markRailInstance = useStore((s) => s.markRailInstance);
 
-  // Shift sheet state. When open, `shiftTarget` identifies which instance
-  // the user invoked Shift on. Resolved via the railInstances map at
-  // render time so HMR / reducer updates don't leave stale refs.
-  const [shiftTarget, setShiftTarget] = useState<string | null>(null);
+  // Reason toast — shown for ~6s after every check-in action. Chips
+  // accumulate here; we only persist a Shift record when the toast
+  // closes (user is still allowed to Undo, which discards them).
+  const [toast, setToast] = useState<ReasonToastState | null>(null);
+  const toastTagsRef = useRef<string[]>([]);
+  // Tracks which instance was just acted on — used by Undo to roll
+  // the status back to 'pending' via a compensating status-change
+  // event (the signal remains as audit).
+  const toastInstanceRef = useRef<string | null>(null);
 
   const handleCheckin = useCallback(
     (instanceId: string, action: CheckInAction) => {
-      if (action === 'shift') {
-        setShiftTarget(instanceId);
-        return;
-      }
+      const inst = railInstances[instanceId];
+      const rail = inst ? rails[inst.railId] : undefined;
+      if (!inst || !rail) return;
+
       void recordSignal(instanceId, action, 'check-in-strip');
+
+      toastTagsRef.current = [];
+      toastInstanceRef.current = instanceId;
+      // In v0.2 every Rail has a `recurrence` (one-shot Rails aren't a
+      // concept yet), so archiving today's instance is always the
+      // "only today" case — that's what the toast hint is for.
+      setToast({
+        action: action as ToastAction,
+        instanceId,
+        railName: rail.name,
+        isRecurring: true,
+        recommendedTags: recommendedTagsFor(rail.id, railInstances, shifts),
+      });
     },
-    [recordSignal],
+    [railInstances, rails, recordSignal, shifts],
   );
 
-  const targetInstance = shiftTarget ? railInstances[shiftTarget] : undefined;
-  const targetRail = targetInstance ? rails[targetInstance.railId] : undefined;
-
-  // Historical tags for the targeted Rail — top-3 by frequency across
-  // past Shifts. Empty on first run, which the sheet falls back around.
-  const recommendedTags = useMemo<string[]>(() => {
-    if (!targetInstance) return [];
-    const counts = new Map<string, number>();
-    for (const shift of Object.values(shifts)) {
-      // Same Rail (different days share the Rail id via instance) only.
-      const inst = railInstances[shift.railInstanceId];
-      if (!inst || inst.railId !== targetInstance.railId) continue;
-      for (const tag of shift.tags ?? []) {
-        counts.set(tag, (counts.get(tag) ?? 0) + 1);
-      }
+  const handleToastAddTag = useCallback((tag: string) => {
+    if (!toastTagsRef.current.includes(tag)) {
+      toastTagsRef.current = [...toastTagsRef.current, tag];
     }
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([tag]) => tag);
-  }, [shifts, railInstances, targetInstance]);
+  }, []);
 
-  const handleShiftSubmit = useCallback(
-    (sub: ShiftSubmission) => {
-      if (!targetInstance) return;
-      const id = targetInstance.id;
-      const shift: Shift = {
-        id: `shift-${id}-${Date.now().toString(36)}`,
-        railInstanceId: id,
-        type: sub.type,
-        at: new Date().toISOString(),
-        payload:
-          sub.type === 'postpone' && sub.postponeMinutes
-            ? { minutes: sub.postponeMinutes }
-            : {},
-        tags: sub.tags.length > 0 ? sub.tags : undefined,
-        reason: sub.reason,
-      };
-      void (async () => {
-        await recordShift(shift);
-        if (sub.type === 'skip') {
-          await markRailInstance(id, 'skipped');
-          // Also log a signal so the instance leaves the strip.
-          await recordSignal(id, 'skip', 'check-in-strip');
-        }
-        // Postpone mutates plannedStart/plannedEnd — slot the rail
-        // later today (or tomorrow if it overflows). Time-shift is
-        // its own event type so Review can show the delta without
-        // scanning Shift payloads.
-        if (sub.type === 'postpone' && sub.postponeMinutes) {
-          await shiftPostpone(id, sub.postponeMinutes);
-        }
-        setShiftTarget(null);
-      })();
-    },
-    [targetInstance, recordShift, markRailInstance, recordSignal],
-  );
+  const handleToastUndo = useCallback(() => {
+    const id = toastInstanceRef.current;
+    if (id) {
+      void markRailInstance(id, 'pending');
+    }
+    toastTagsRef.current = [];
+    toastInstanceRef.current = null;
+  }, [markRailInstance]);
 
-  const shiftInstanceTime = useStore((s) => s.shiftInstanceTime);
-  const shiftPostpone = useCallback(
-    async (instanceId: string, minutes: number): Promise<void> => {
-      const state = useStore.getState();
-      const inst = state.railInstances[instanceId];
-      if (!inst) return;
-      const shiftMs = minutes * 60_000;
-      const fmt = (d: Date): string =>
-        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
-          d.getHours(),
-        )}:${pad(d.getMinutes())}`;
-      const newStart = fmt(new Date(Date.parse(inst.plannedStart) + shiftMs));
-      const newEnd = fmt(new Date(Date.parse(inst.plannedEnd) + shiftMs));
-      await shiftInstanceTime(instanceId, newStart, newEnd);
-    },
-    [shiftInstanceTime],
-  );
+  const handleToastClose = useCallback(() => {
+    const tags = toastTagsRef.current;
+    const id = toastInstanceRef.current;
+    const currentToast = toast;
+    setToast(null);
+    toastTagsRef.current = [];
+    toastInstanceRef.current = null;
+    // Only defer / archive produce Shift records. Done isn't a
+    // deviation, and the ShiftType union refuses 'done' anyway.
+    if (!id || !currentToast) return;
+    if (currentToast.action === 'done') return;
+    if (tags.length === 0) return;
+    const shiftType: ShiftType = currentToast.action === 'defer' ? 'defer' : 'archive';
+    void recordShift({
+      id: `shift-${id}-${Date.now().toString(36)}`,
+      railInstanceId: id,
+      type: shiftType,
+      at: new Date().toISOString(),
+      payload: {},
+      tags,
+    });
+  }, [recordShift, toast]);
 
   const timeline = useMemo<SampleRail[]>(
     () =>
@@ -133,13 +116,15 @@ export function TodayTrack() {
 
   const checkinQueue = useMemo<SampleRail[]>(
     () =>
-      selectCheckinQueue({ railInstances, signals }, now.asDate)
+      selectCheckinQueue({ railInstances }, now.asDate)
         .map((inst) => adaptToSample(inst, rails[inst.railId], now.asDate))
         .filter((r): r is SampleRail => r !== null),
-    [railInstances, signals, rails, now.asDate],
+    [railInstances, rails, now.asDate],
   );
 
-  // Timeline hides the unmarked items — they already live in the strip.
+  // Timeline hides past-unmarked rails — those live in the strip. Done
+  // / deferred / archived stay on the timeline so the user can see the
+  // shape of today.
   const timelineVisible = timeline.filter((r) => r.state !== 'unmarked');
 
   return (
@@ -148,12 +133,11 @@ export function TodayTrack() {
       <CheckInStrip queue={checkinQueue} onAction={handleCheckin} />
       <Timeline rails={timelineVisible} />
       <Footnote />
-      <ShiftSheet
-        open={shiftTarget != null && targetRail != null}
-        railName={targetRail?.name ?? ''}
-        recommendedTags={recommendedTags}
-        onClose={() => setShiftTarget(null)}
-        onSubmit={handleShiftSubmit}
+      <ReasonToast
+        state={toast}
+        onAddTag={handleToastAddTag}
+        onUndo={handleToastUndo}
+        onClose={handleToastClose}
       />
     </div>
   );
@@ -186,6 +170,31 @@ function sample(d: Date): LiveNow {
 }
 
 // ------------------------------------------------------------------
+// Recommended-tag picker — top 3 by frequency across this Rail's past
+// Shifts. Runs inline at handler time (not a memo) because a toast
+// firing isn't a render-driven event.
+// ------------------------------------------------------------------
+
+function recommendedTagsFor(
+  railId: string,
+  railInstances: Record<string, RailInstance>,
+  shifts: Record<string, { railInstanceId: string; tags?: string[] }>,
+): string[] {
+  const counts = new Map<string, number>();
+  for (const shift of Object.values(shifts)) {
+    const inst = railInstances[shift.railInstanceId];
+    if (!inst || inst.railId !== railId) continue;
+    for (const tag of shift.tags ?? []) {
+      counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([tag]) => tag);
+}
+
+// ------------------------------------------------------------------
 // Domain → display adapter. RailInstance + Rail + wall-clock now give
 // the 5-state SampleRail shape the existing components were built
 // around. Encapsulated here so the component layer doesn't need to
@@ -204,8 +213,8 @@ function adaptToSample(
 
   let state: RailState;
   if (inst.status === 'done') state = 'done';
-  else if (inst.status === 'skipped') state = 'skipped';
-  else if (inst.status === 'active') state = 'current';
+  else if (inst.status === 'deferred') state = 'deferred';
+  else if (inst.status === 'archived') state = 'archived';
   else if (!Number.isNaN(startMs) && startMs <= nowMs && nowMs <= endMs)
     state = 'current';
   else if (!Number.isNaN(endMs) && endMs < nowMs) state = 'unmarked';
