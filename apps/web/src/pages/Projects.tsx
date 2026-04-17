@@ -76,12 +76,12 @@ function EmptyState() {
           Nothing selected
         </span>
         <h2 className="text-lg font-medium text-ink-primary">
-          从左边选一条 Line 开始
+          从左边选一个 Project 开始
         </h2>
         <p className="text-sm text-ink-secondary">
           或点左上 <span className="font-mono text-xs text-ink-primary">+</span> 新建一个 Project。
-          Project 是所有规划活动的容器 —— 里程碑 Chunks 决定主进度条，
-          辅助 Chunks 帮你把项目拆成可排到 Slot 的小块。
+          Project 是所有规划活动的容器 —— 里程碑任务决定主进度条，
+          辅助任务帮你把项目拆成可排到 Slot 的小块。
         </p>
       </div>
     </section>

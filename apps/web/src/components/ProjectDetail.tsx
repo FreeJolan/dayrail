@@ -12,9 +12,9 @@ import {
 } from 'lucide-react';
 import {
   computeProjectProgress,
-  countDoneChunks,
-  type Chunk,
-  type ChunkStatus,
+  countDoneTasks,
+  type Task,
+  type TaskStatus,
   type ProjectLine,
 } from '@/data/sampleProjects';
 import { RAIL_COLOR_HEX } from './railColors';
@@ -28,10 +28,10 @@ import {
 
 // ERD §5.5 F1 — right pane of the Projects master-detail.
 //   · Project header: name + description + dates + overall progress
-//   · "Backlog" region at top (unscheduled Chunks)
-//   · Scheduled Chunks below, ordered; each row shows title +
+//   · "Backlog" region at top (unscheduled Tasks)
+//   · Scheduled Tasks below, ordered; each row shows title +
 //     milestone mark + status + sub-item completion + Slot ref
-//   · Bottom: `+ 添加 Chunk` and `AI 协助拆解`
+//   · Bottom: `+ 添加任务` and `AI 协助拆解`
 
 interface Props {
   line: ProjectLine;
@@ -39,10 +39,10 @@ interface Props {
 
 export function ProjectDetail({ line }: Props) {
   const progress = computeProjectProgress(line);
-  const { done, total } = countDoneChunks(line);
+  const { done, total } = countDoneTasks(line);
 
-  const backlog = line.chunks.filter((c) => !c.slot && c.status !== 'done');
-  const scheduled = line.chunks.filter((c) => c.slot || c.status === 'done');
+  const backlog = line.tasks.filter((c) => !c.slot && c.status !== 'done');
+  const scheduled = line.tasks.filter((c) => c.slot || c.status === 'done');
 
   return (
     <section className="flex min-w-0 flex-1 flex-col">
@@ -55,18 +55,18 @@ export function ProjectDetail({ line }: Props) {
 
       <div className="flex flex-col gap-8 px-10 pb-16 pt-6 xl:pl-14">
         {backlog.length > 0 && (
-          <ChunkGroup
-            title="Backlog"
+          <TaskGroup
+            title="待排期"
             subtitle="未排入 Slot"
             line={line}
-            chunks={backlog}
+            tasks={backlog}
           />
         )}
-        <ChunkGroup
-          title="Chunks"
+        <TaskGroup
+          title="任务"
           subtitle={`按 order 排 · ${total} 条`}
           line={line}
-          chunks={scheduled}
+          tasks={scheduled}
           showOrder
         />
 
@@ -139,7 +139,7 @@ function Header({
         <div className="flex items-center gap-3 font-mono text-xs tabular-nums text-ink-secondary">
           <span>
             {done}
-            <span className="text-ink-tertiary">/{total}</span> chunks
+            <span className="text-ink-tertiary">/{total}</span> tasks
           </span>
           {line.plannedEnd && (
             <>
@@ -185,22 +185,22 @@ function HeaderMenu({ archived }: { archived: boolean }) {
   );
 }
 
-// ---------- chunk group ----------
+// ---------- task group ----------
 
-function ChunkGroup({
+function TaskGroup({
   title,
   subtitle,
   line,
-  chunks,
+  tasks,
   showOrder,
 }: {
   title: string;
   subtitle?: string;
   line: ProjectLine;
-  chunks: Chunk[];
+  tasks: Task[];
   showOrder?: boolean;
 }) {
-  if (chunks.length === 0) return null;
+  if (tasks.length === 0) return null;
   return (
     <section className="flex flex-col gap-2">
       <header className="flex items-baseline justify-between">
@@ -212,9 +212,9 @@ function ChunkGroup({
         </span>
       </header>
       <ul className="flex flex-col gap-1.5">
-        {chunks.map((chunk) => (
-          <li key={chunk.id}>
-            <ChunkRow line={line} chunk={chunk} showOrder={showOrder} />
+        {tasks.map((task) => (
+          <li key={task.id}>
+            <TaskRow line={line} task={task} showOrder={showOrder} />
           </li>
         ))}
       </ul>
@@ -222,64 +222,64 @@ function ChunkGroup({
   );
 }
 
-function ChunkRow({
+function TaskRow({
   line,
-  chunk,
+  task,
   showOrder,
 }: {
   line: ProjectLine;
-  chunk: Chunk;
+  task: Task;
   showOrder?: boolean;
 }) {
-  const subDone = chunk.subItems?.filter((s) => s.done).length ?? 0;
-  const subTotal = chunk.subItems?.length ?? 0;
+  const subDone = task.subItems?.filter((s) => s.done).length ?? 0;
+  const subTotal = task.subItems?.length ?? 0;
   const strip = RAIL_COLOR_HEX[line.color];
 
   return (
     <div
       className={clsx(
         'group flex items-center gap-3 rounded-md bg-surface-1 px-3 py-2.5 transition hover:bg-surface-2',
-        chunk.status === 'done' && 'opacity-70',
+        task.status === 'done' && 'opacity-70',
       )}
     >
       {showOrder && (
         <span className="w-6 shrink-0 text-right font-mono text-2xs tabular-nums text-ink-tertiary">
-          {String(chunk.order).padStart(2, '0')}
+          {String(task.order).padStart(2, '0')}
         </span>
       )}
 
-      <StatusIcon status={chunk.status} />
+      <StatusIcon status={task.status} />
 
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex items-center gap-2">
-          {chunk.milestonePercent != null && (
-            <MilestoneBadge pct={chunk.milestonePercent} color={strip} />
+          {task.milestonePercent != null && (
+            <MilestoneBadge pct={task.milestonePercent} color={strip} />
           )}
           <span
             className={clsx(
               'truncate text-sm',
-              chunk.status === 'done'
+              task.status === 'done'
                 ? 'text-ink-tertiary line-through decoration-ink-tertiary/40'
                 : 'text-ink-primary',
             )}
           >
-            {chunk.title}
+            {task.title}
           </span>
         </div>
-        {(chunk.slot || subTotal > 0 || chunk.note) && (
+        {(task.slot || subTotal > 0 || task.note) && (
           <div className="flex flex-wrap items-center gap-2 text-xs text-ink-tertiary">
-            {chunk.slot && (
+            {task.slot && (
               <span className="inline-flex items-center gap-1 font-mono text-2xs tabular-nums">
                 <CalendarIcon className="h-2.5 w-2.5" strokeWidth={1.8} />
-                {chunk.slot.date.slice(5)} · {chunk.slot.railName}
+                {task.slot.date.slice(5)} · {task.slot.railName}
               </span>
             )}
             {subTotal > 0 && (
               <span className="font-mono text-2xs tabular-nums">
-                {subDone}/{subTotal} sub-items
+                {subDone}/{subTotal} 子项
               </span>
             )}
-            {chunk.note && <span>· {chunk.note}</span>}
+            {task.note && <span>· {task.note}</span>}
           </div>
         )}
       </div>
@@ -306,7 +306,7 @@ function ChunkRow({
   );
 }
 
-function StatusIcon({ status }: { status: ChunkStatus }) {
+function StatusIcon({ status }: { status: TaskStatus }) {
   if (status === 'done') {
     return (
       <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-ink-primary/10">
@@ -365,7 +365,7 @@ function ActionFooter({ disabled }: { disabled: boolean }) {
         )}
       >
         <Plus className="h-3.5 w-3.5" strokeWidth={1.8} />
-        添加 Chunk
+        添加任务
       </button>
       <button
         type="button"

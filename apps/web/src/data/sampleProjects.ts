@@ -7,7 +7,7 @@ import type { RailColor } from './sample';
 export type LineKind = 'project' | 'habit' | 'group';
 export type LineStatus = 'active' | 'archived';
 
-export type ChunkStatus = 'pending' | 'in-progress' | 'done';
+export type TaskStatus = 'pending' | 'in-progress' | 'done';
 
 export interface SubItem {
   id: string;
@@ -15,16 +15,16 @@ export interface SubItem {
   done: boolean;
 }
 
-export interface Chunk {
+export interface Task {
   id: string;
   lineId: string;
   title: string;
   order: number;
-  status: ChunkStatus;
+  status: TaskStatus;
   /** Present on milestones only; 0–100. Determines the Line's main progress. */
   milestonePercent?: number;
   subItems?: SubItem[];
-  /** Present when this Chunk has been scheduled into a Cycle Slot. */
+  /** Present when this Task has been scheduled into a Cycle Slot. */
   slot?: { date: string; railName: string };
   note?: string;
 }
@@ -38,7 +38,7 @@ export interface ProjectLine {
   plannedStart?: string; // ISO
   plannedEnd?: string; // ISO
   createdAt: string;
-  chunks: Chunk[];
+  tasks: Task[];
   /** Optional short description under the name. */
   subtitle?: string;
 }
@@ -55,7 +55,7 @@ const DAYRAIL: ProjectLine = {
   plannedStart: '2026-03-16',
   plannedEnd: '2026-07-31',
   createdAt: '2026-03-12',
-  chunks: [
+  tasks: [
     {
       id: 'c-dr-1',
       lineId: 'line-dayrail',
@@ -156,7 +156,7 @@ const GRAD_PREP: ProjectLine = {
   plannedStart: '2026-03-01',
   plannedEnd: '2026-12-22',
   createdAt: '2026-02-20',
-  chunks: [
+  tasks: [
     {
       id: 'c-gp-1',
       lineId: 'line-grad-prep',
@@ -225,7 +225,7 @@ const ENGLISH: ProjectLine = {
   status: 'active',
   plannedEnd: '2026-09-30',
   createdAt: '2026-03-01',
-  chunks: [
+  tasks: [
     {
       id: 'c-en-1',
       lineId: 'line-english',
@@ -265,7 +265,7 @@ const THESIS: ProjectLine = {
   status: 'archived',
   plannedEnd: '2025-12-20',
   createdAt: '2025-06-01',
-  chunks: [
+  tasks: [
     { id: 'c-th-1', lineId: 'line-thesis', title: '开题报告', order: 1, status: 'done', milestonePercent: 10 },
     { id: 'c-th-2', lineId: 'line-thesis', title: '文献综述', order: 2, status: 'done', milestonePercent: 25 },
     { id: 'c-th-3', lineId: 'line-thesis', title: '初稿', order: 3, status: 'done', milestonePercent: 60 },
@@ -278,18 +278,18 @@ export const SAMPLE_PROJECTS: ProjectLine[] = [DAYRAIL, GRAD_PREP, ENGLISH, THES
 
 // --- Helpers ---
 
-/** Max milestonePercent among done Chunks = Line's primary progress. */
+/** Max milestonePercent among done Tasks = Line's primary progress. */
 export function computeProjectProgress(line: ProjectLine): number {
-  const doneMilestones = line.chunks.filter(
+  const doneMilestones = line.tasks.filter(
     (c) => c.status === 'done' && c.milestonePercent != null,
   );
   if (doneMilestones.length === 0) return 0;
   return Math.max(...doneMilestones.map((c) => c.milestonePercent ?? 0));
 }
 
-export function countDoneChunks(line: ProjectLine): { done: number; total: number } {
-  const total = line.chunks.length;
-  const done = line.chunks.filter((c) => c.status === 'done').length;
+export function countDoneTasks(line: ProjectLine): { done: number; total: number } {
+  const total = line.tasks.length;
+  const done = line.tasks.filter((c) => c.status === 'done').length;
   return { done, total };
 }
 

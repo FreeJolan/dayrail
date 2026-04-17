@@ -140,8 +140,11 @@ export const slots = sqliteTable(
     cycleId: text('cycle_id').notNull(),
     date: text('date').notNull(),
     railId: text('rail_id').notNull(),
-    taskName: text('task_name'),
-    chunkIds: text('chunk_ids').notNull().default('[]'), // JSON array
+    /** Free-text label for a slot that has no Task attached (the
+     *  "quick text" slot form from §5.3). Name kept for historical
+     *  reasons — any column rename would require another migration. */
+    label: text('task_name'),
+    taskIds: text('task_ids').notNull().default('[]'), // JSON array
   },
   (t) => ({ pk: primaryKey({ columns: [t.cycleId, t.date, t.railId] }) }),
 );
@@ -211,8 +214,8 @@ export const lines = sqliteTable('lines', {
   createdAt: integer('created_at').notNull(),
 });
 
-export const chunks = sqliteTable(
-  'chunks',
+export const tasks = sqliteTable(
+  'tasks',
   {
     id: text('id').primaryKey(),
     lineId: text('line_id')
@@ -228,7 +231,7 @@ export const chunks = sqliteTable(
     slotDate: text('slot_date'),
     slotRailId: text('slot_rail_id'),
   },
-  (t) => ({ lineIdx: index('chunks_line_idx').on(t.lineId) }),
+  (t) => ({ lineIdx: index('tasks_line_idx').on(t.lineId) }),
 );
 
 export const calendarRules = sqliteTable('calendar_rules', {
@@ -342,7 +345,7 @@ CREATE TABLE IF NOT EXISTS slots (
   date TEXT NOT NULL,
   rail_id TEXT NOT NULL,
   task_name TEXT,
-  chunk_ids TEXT NOT NULL DEFAULT '[]',
+  task_ids TEXT NOT NULL DEFAULT '[]',
   PRIMARY KEY (cycle_id, date, rail_id)
 );
 
@@ -399,7 +402,7 @@ CREATE TABLE IF NOT EXISTS lines (
   created_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS chunks (
+CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   line_id TEXT NOT NULL REFERENCES lines(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
@@ -412,7 +415,7 @@ CREATE TABLE IF NOT EXISTS chunks (
   slot_date TEXT,
   slot_rail_id TEXT
 );
-CREATE INDEX IF NOT EXISTS chunks_line_idx ON chunks(line_id);
+CREATE INDEX IF NOT EXISTS tasks_line_idx ON tasks(line_id);
 
 CREATE TABLE IF NOT EXISTS calendar_rules (
   id TEXT PRIMARY KEY,

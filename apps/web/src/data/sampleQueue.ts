@@ -13,7 +13,7 @@ export interface QueueItem {
   railColor: RailColor;
   start: string; // HH:MM
   end: string;
-  /** Optional Slot.taskName if the slot had a scheduled Chunk. */
+  /** Optional Slot.taskName if the slot had a scheduled Task. */
   task?: string;
   /** Which Line it belongs to (for AI Observe downstream; not shown here). */
   lineId?: string;

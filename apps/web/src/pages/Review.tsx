@@ -303,7 +303,7 @@ function MockReviewCard() {
           两条 Rail；其它 Rail 均处于稳定节律。
         </p>
         <p className="text-ink-secondary">
-          Line 进度方面：DayRail 开发本周期推进 2 条 Chunk（Template Editor 静态页 + Cycle View 静态页），
+          Project 进度方面：DayRail 开发本周期推进 2 条任务（Template Editor 静态页 + Cycle View 静态页），
           符合原计划；考研 408 完成 4 节，略低于预期（5）。
         </p>
       </div>

@@ -5,7 +5,7 @@ import { SAMPLE_BACKLOG, type BacklogItem } from '@/data/sampleCycle';
 import { RAIL_COLOR_HEX } from './railColors';
 
 // ERD §5.3 D8 — a split drawer (not a modal), docked on the right.
-// Items are unscheduled Chunks waiting to be dragged onto a Slot.
+// Items are unscheduled Tasks waiting to be dragged onto a Slot.
 // 📌 pin is the user's "don't let this fall off" marker.
 
 interface Props {
@@ -83,7 +83,7 @@ export function BacklogDrawer({ open, onToggle }: Props) {
               />
               <input
                 type="text"
-                placeholder="找一个 Chunk…"
+                placeholder="找一个任务…"
                 className="flex-1 bg-transparent text-sm outline-none placeholder:text-ink-tertiary"
               />
             </label>

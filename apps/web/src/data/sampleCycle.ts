@@ -16,7 +16,7 @@ export interface CycleDay {
 
 export type SlotState =
   | 'planned-empty' // future; Rail row exists but no task assigned
-  | 'planned-task' // future; a Chunk / task is scheduled
+  | 'planned-task' // future; a Task is scheduled
   | 'done' // completed in the past
   | 'shifted' // happened but with a postpone / swap / resize
   | 'skipped' // user marked skipped

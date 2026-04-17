@@ -60,8 +60,12 @@ export interface Slot {
   cycleId: string;
   date: string;
   railId: string;
-  taskName?: string;
-  chunkIds: string[];
+  /** Free-text label for a slot that has no Task attached (§5.3 "quick
+   *  text" slot form). Stored in the `task_name` column for historical
+   *  reasons; the field name is `label` post-v0.2.1 to disambiguate
+   *  from the Task union.  */
+  label?: string;
+  taskIds: string[];
 }
 
 /** §4.4 state machine. "Currently happening" is NOT a status — it's
@@ -114,6 +118,10 @@ export interface Signal {
   surface: 'check-in-strip' | 'pending-queue';
 }
 
+/** `Line` is an internal container type. The UI never shows the word
+ *  "Line" — the user sees Project / Habit / Group based on `kind`.
+ *  Kept as an umbrella name in code because all three variants share
+ *  id / name / color / status / plannedStart / plannedEnd.  */
 export interface Line {
   id: string;
   name: string;
@@ -125,7 +133,9 @@ export interface Line {
   createdAt: number;
 }
 
-export interface Chunk {
+/** A unit of work within a Line. ERD pre-v0.2.1 called this "Chunk";
+ *  renamed to "Task" to match universal TODO-tool vocabulary. */
+export interface Task {
   id: string;
   lineId: string;
   title: string;
