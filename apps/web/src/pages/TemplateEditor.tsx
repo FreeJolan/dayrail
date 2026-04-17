@@ -40,7 +40,7 @@ import {
 // - No Save button. Edit session indicator + `⋯` menu at the top-right.
 // - Sticky tab bar with 2px Template.color strip; summary strip below.
 // - Left sticky 132px TimelineRuler; right main RailEditCard list.
-// - Gap chips between adjacent Rails; dashed `+ 添加 Rail` tail row.
+// - Gap chips between adjacent Rails; dashed `+ Add Rail` tail row.
 
 export function TemplateEditor() {
   const [activeKey, setActiveKey] = useState<TemplateKey>('workday');

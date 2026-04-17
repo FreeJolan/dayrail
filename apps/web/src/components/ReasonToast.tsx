@@ -109,8 +109,8 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
 
   // Always show 3 chips: history-top-N first (can be 0..3) and fill
   // the rest from the static fallback, deduped. Prevents "I tagged
-  // '天气' once and now that's the only option" — which the all-or-
-  // nothing branch introduced.
+  // <one tag> once and now that's the only option" — which the all-
+  // or-nothing branch introduced.
   //
   // NB: this useMemo must live BEFORE any early-return or React's
   // rules-of-hooks will flag a conditional hook call when `cached`

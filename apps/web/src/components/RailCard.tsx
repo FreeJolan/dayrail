@@ -22,7 +22,7 @@ import {
 
 interface Props {
   rail: SampleRail;
-  /** Pending / current rows: hover action bar (完成 / 以后再说 / 归档). */
+  /** Pending / current rows: hover action bar (Done / Later / Archive). */
   onAction?: (action: 'done' | 'defer' | 'archive') => void;
   /** Done / deferred / archived / unmarked rows: the inline undo button
    *  reverts `status` back to 'pending' (no Reason toast — this is an

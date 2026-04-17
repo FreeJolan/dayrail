@@ -40,7 +40,7 @@ export function RailEditCard({
   const [title, setTitle] = useState(rail.name);
   const [subtitle, setSubtitle] = useState(rail.subtitle ?? '');
   // If the Rail never had a subtitle, the input stays collapsed behind
-  // a `+ 副标题` affordance until the user explicitly opens it.
+  // a `+ subtitle` affordance until the user explicitly opens it.
   const [subtitleOpen, setSubtitleOpen] = useState(Boolean(rail.subtitle));
 
   // Keep local drafts in sync when the Rail is updated externally — e.g.

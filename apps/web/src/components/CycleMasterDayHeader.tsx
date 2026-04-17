@@ -20,7 +20,7 @@ import { RAIL_COLOR_HEX } from './railColors';
 //   - day number (tabular nums)
 //   - 2 px Template.color strip beneath
 // Template NAME is shown in tooltip/popover, not on the header itself.
-// Overridden days wear a small bronze dot, not "覆盖" text.
+// Overridden days wear a small bronze dot, not a text "Overridden" label.
 
 // ERD §5.3 D3 — the top-of-page header row is the SOLE entry for
 // switching a day's template. Each day is a small button; click opens
