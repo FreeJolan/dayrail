@@ -13,12 +13,31 @@ interface Props {
 
 export function GapChip({ startMin, endMin, onFill }: Props) {
   const duration = endMin - startMin;
+  // Gaps shorter than 15 min render as a subtle divider-only marker; gaps
+  // 15 min or longer surface as a full call-out row with the "+ Fill Rail"
+  // affordance. Avoids drawing attention to tiny sub-quarter gaps that are
+  // almost always intentional transitions.
+  const big = duration >= 15;
+
+  if (!big) {
+    return (
+      <div className="flex items-center gap-2 py-1 pl-6 pr-2 text-ink-tertiary/70">
+        <span
+          aria-hidden
+          className="h-px flex-1 border-t border-dashed border-ink-tertiary/30"
+        />
+        <span className="font-mono text-2xs tabular-nums">
+          {fmtDurationShort(duration)}
+        </span>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex items-center gap-3 pl-6 pr-2">
-      {/* vertical tick connecting rows — dashed (per §9.6 "dashed = addable slot") */}
+    <div className="group flex items-center gap-3 py-2 pl-6 pr-2 transition hover:bg-surface-1/60">
       <span
         aria-hidden
-        className="h-full w-[3px] border-l border-dashed border-ink-tertiary/40"
+        className="h-4 w-[3px] border-l-[1.5px] border-dashed border-ink-tertiary/50 transition group-hover:border-ink-secondary"
       />
       <div className="flex flex-1 items-center gap-2 font-mono text-2xs tabular-nums text-ink-tertiary">
         <span>
@@ -27,12 +46,14 @@ export function GapChip({ startMin, endMin, onFill }: Props) {
           {fmtHHMM(endMin)}
         </span>
         <span className="text-ink-tertiary/60">·</span>
-        <span className="uppercase tracking-widest">gap {fmtDurationShort(duration)}</span>
+        <span className="uppercase tracking-widest">
+          gap {fmtDurationShort(duration)}
+        </span>
       </div>
       <button
         type="button"
         onClick={onFill}
-        className="inline-flex items-center gap-1 rounded-sm border border-dashed border-ink-tertiary/40 px-2 py-0.5 text-xs font-medium text-ink-tertiary transition hover:border-ink-secondary hover:text-ink-secondary"
+        className="inline-flex items-center gap-1 rounded-sm border border-dashed border-ink-tertiary/50 px-2.5 py-1 text-xs font-medium text-ink-secondary transition hover:border-ink-secondary hover:bg-surface-2 hover:text-ink-primary"
       >
         <Plus className="h-3 w-3" strokeWidth={1.8} />
         填充 Rail

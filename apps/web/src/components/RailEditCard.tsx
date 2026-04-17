@@ -1,5 +1,6 @@
 import { clsx } from 'clsx';
 import { useState } from 'react';
+import { Plus } from 'lucide-react';
 import type { EditableRail } from '@/data/sampleTemplate';
 import { SAMPLE_LINES } from '@/data/sampleTemplate';
 import { RAIL_COLOR_HEX } from './railColors';
@@ -38,6 +39,9 @@ export function RailEditCard({
 }: Props) {
   const [title, setTitle] = useState(rail.name);
   const [subtitle, setSubtitle] = useState(rail.subtitle ?? '');
+  // If the Rail never had a subtitle, the input stays collapsed behind
+  // a `+ 副标题` affordance until the user explicitly opens it.
+  const [subtitleOpen, setSubtitleOpen] = useState(Boolean(rail.subtitle));
 
   const lineName =
     rail.defaultLineId == null
@@ -98,17 +102,31 @@ export function RailEditCard({
           />
         </div>
 
-        <input
-          value={subtitle}
-          placeholder="subtitle — 可空"
-          onChange={(e) => setSubtitle(e.target.value)}
-          onBlur={() =>
-            subtitle !== (rail.subtitle ?? '') &&
-            onChange({ subtitle: subtitle || undefined })
-          }
-          aria-label={`${rail.name} 副标`}
-          className="rounded-sm bg-transparent px-0 py-0.5 text-sm text-ink-tertiary outline-none placeholder:text-ink-tertiary/50 hover:bg-surface-3/40 focus:bg-surface-3"
-        />
+        {subtitleOpen ? (
+          <input
+            value={subtitle}
+            placeholder="副标题"
+            autoFocus={!rail.subtitle}
+            onChange={(e) => setSubtitle(e.target.value)}
+            onBlur={() => {
+              if (subtitle !== (rail.subtitle ?? '')) {
+                onChange({ subtitle: subtitle || undefined });
+              }
+              if (!subtitle) setSubtitleOpen(false);
+            }}
+            aria-label={`${rail.name} 副标`}
+            className="rounded-sm bg-transparent px-0 py-0.5 text-sm text-ink-tertiary outline-none placeholder:text-ink-tertiary/50 hover:bg-surface-3/40 focus:bg-surface-3"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setSubtitleOpen(true)}
+            className="inline-flex w-fit items-center gap-1 text-xs text-ink-tertiary/70 opacity-0 transition hover:text-ink-secondary group-hover:opacity-100"
+          >
+            <Plus className="h-3 w-3" strokeWidth={1.6} />
+            副标题
+          </button>
+        )}
 
         {(!rail.showInCheckin || rail.defaultLineId) && (
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-ink-tertiary">

@@ -41,15 +41,20 @@ import {
 export function TemplateEditor() {
   const [activeKey, setActiveKey] = useState<TemplateKey>('workday');
   const [railsByKey, setRailsByKey] = useState(SAMPLE_RAILS_BY_TEMPLATE);
-  const [focusRailId, setFocusRailId] = useState<string | undefined>();
-  const [changeCount, setChangeCount] = useState(3); // mock "N processing changes"
-
-  const currentTemplate = SAMPLE_TEMPLATES.find((t) => t.key === activeKey)!;
   const rails = railsByKey[activeKey];
   const sorted = useMemo(
     () => rails.slice().sort((a, b) => a.startMin - b.startMin),
     [rails],
   );
+  // Focus arrow defaults to the FIRST Rail so the ruler's `▶` is visible
+  // on initial render — teaches users that the arrow tracks focus without
+  // requiring them to hover first.
+  const [focusRailId, setFocusRailId] = useState<string | undefined>(
+    sorted[0]?.id,
+  );
+  const [changeCount, setChangeCount] = useState(3); // mock "N processing changes"
+
+  const currentTemplate = SAMPLE_TEMPLATES.find((t) => t.key === activeKey)!;
   const summary = useMemo(() => computeSummary(sorted), [sorted]);
 
   const mutate = (id: string, patch: Partial<EditableRail>) => {
