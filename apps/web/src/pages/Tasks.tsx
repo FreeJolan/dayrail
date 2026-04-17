@@ -41,6 +41,7 @@ export function Tasks() {
   // shallow-compares output, and `Object.values(...).sort()` returns a
   // fresh array every render → infinite loop.
   const linesMap = useStore((s) => s.lines);
+  const createLine = useStore((s) => s.createLine);
   const inbox = linesMap[INBOX_LINE_ID];
   const projects = useMemo(
     () =>
@@ -54,6 +55,25 @@ export function Tasks() {
     [projects],
   );
 
+  const handleCreateProject = useCallback(() => {
+    // Minimal creation UX for chunk E — a full popover with color /
+    // planned-end pickers can land later; a name is all the store
+    // strictly needs.
+    const raw = window.prompt('新建 Project · 输入名称');
+    if (raw == null) return;
+    const name = raw.trim();
+    if (!name) return;
+    const id = freshId('line');
+    void createLine({
+      id,
+      name,
+      kind: 'project',
+      status: 'active',
+      createdAt: Date.now(),
+    });
+    setSelection({ kind: 'line', lineId: id });
+  }, [createLine]);
+
   return (
     <div className="flex min-h-screen w-full">
       <NavTree
@@ -61,6 +81,7 @@ export function Tasks() {
         onSelect={setSelection}
         inbox={inbox}
         projects={otherProjects}
+        onCreateProject={handleCreateProject}
       />
       <section className="flex min-w-0 flex-1 flex-col">
         <MainPanel selection={selection} inbox={inbox} projects={projects} />
@@ -78,11 +99,13 @@ function NavTree({
   onSelect,
   inbox,
   projects,
+  onCreateProject,
 }: {
   selection: Selection;
   onSelect: (s: Selection) => void;
   inbox: Line | undefined;
   projects: Line[];
+  onCreateProject: () => void;
 }) {
   return (
     <aside className="sticky top-0 flex h-screen w-[256px] shrink-0 flex-col border-r border-hairline/40 bg-surface-0 px-3 py-6">
@@ -102,7 +125,7 @@ function NavTree({
         />
       )}
 
-      <NavGroup label="Projects" actionLabel="+ 新建" onAction={() => undefined}>
+      <NavGroup label="Projects" actionLabel="+ 新建" onAction={onCreateProject}>
         {projects.length === 0 ? (
           <p className="px-3 py-1.5 text-xs text-ink-tertiary">
             还没有 Project
