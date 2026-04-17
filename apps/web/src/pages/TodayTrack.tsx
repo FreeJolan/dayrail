@@ -133,9 +133,15 @@ export function TodayTrack() {
   const timelineVisible = timeline.filter(
     (r) => r.state !== 'unmarked' && r.state !== 'deferred',
   );
-  const deferredToday = timeline.filter((r) => r.state === 'deferred');
+  const deferredToday = useMemo<DeferredRow[]>(
+    () =>
+      timeline
+        .filter((r) => r.state === 'deferred')
+        .map((r) => ({ ...r, tags: tagsForInstance(r.id, shifts) })),
+    [timeline, shifts],
+  );
 
-  const handleUndefer = useCallback(
+  const handleRevert = useCallback(
     (instanceId: string) => {
       void markRailInstance(instanceId, 'pending');
     },
@@ -146,8 +152,12 @@ export function TodayTrack() {
     <div className="flex w-full max-w-[780px] flex-col gap-8 py-10 pl-10 pr-10 lg:pl-14 xl:pl-20">
       <PageHeader now={now} />
       <CheckInStrip queue={checkinQueue} onAction={handleCheckin} />
-      <DeferredSection rails={deferredToday} onUndefer={handleUndefer} />
-      <Timeline rails={timelineVisible} />
+      <DeferredSection rails={deferredToday} onUndefer={handleRevert} />
+      <Timeline
+        rails={timelineVisible}
+        onAction={handleCheckin}
+        onUndo={handleRevert}
+      />
       <Footnote />
       <ReasonToast
         state={toast}
@@ -157,6 +167,25 @@ export function TodayTrack() {
       />
     </div>
   );
+}
+
+// Pulled out so both the "以后再说" strip and (in v0.3) the Pending
+// page can share the same lookup rule: tags from the *most recent*
+// Shift for this instance, capped at whatever the caller renders.
+function tagsForInstance(
+  instanceId: string,
+  shifts: Record<string, { railInstanceId: string; at: string; tags?: string[] }>,
+): string[] {
+  let latest: { at: string; tags?: string[] } | undefined;
+  for (const shift of Object.values(shifts)) {
+    if (shift.railInstanceId !== instanceId) continue;
+    if (!latest || shift.at > latest.at) latest = shift;
+  }
+  return latest?.tags ?? [];
+}
+
+interface DeferredRow extends SampleRail {
+  tags: string[];
 }
 
 // ------------------------------------------------------------------
@@ -309,7 +338,15 @@ function DayProgressBar({ hh, mm }: { hh: number; mm: number }) {
   );
 }
 
-function Timeline({ rails }: { rails: SampleRail[] }) {
+function Timeline({
+  rails,
+  onAction,
+  onUndo,
+}: {
+  rails: SampleRail[];
+  onAction: (instanceId: string, action: CheckInAction) => void;
+  onUndo: (instanceId: string) => void;
+}) {
   return (
     <section className="flex flex-col gap-2.5">
       <SectionLabel text="Today" right={`${rails.length} rails`} />
@@ -319,7 +356,11 @@ function Timeline({ rails }: { rails: SampleRail[] }) {
         <ul className="flex flex-col gap-2.5">
           {rails.map((r) => (
             <li key={r.id}>
-              <RailCard rail={r} />
+              <RailCard
+                rail={r}
+                onAction={(a) => onAction(r.id, a)}
+                onUndo={() => onUndo(r.id)}
+              />
             </li>
           ))}
         </ul>
@@ -340,7 +381,7 @@ function DeferredSection({
   rails,
   onUndefer,
 }: {
-  rails: SampleRail[];
+  rails: DeferredRow[];
   onUndefer: (instanceId: string) => void;
 }) {
   if (rails.length === 0) return null;
@@ -359,10 +400,24 @@ function DeferredSection({
             <span className="font-mono text-xs tabular-nums text-ink-tertiary">
               {r.start}–{r.end}
             </span>
-            <span className="flex-1 truncate text-sm text-ink-secondary">
-              {r.name}
-              {r.subtitle && (
-                <span className="ml-1 text-ink-tertiary">· {r.subtitle}</span>
+            <span className="flex min-w-0 flex-1 items-baseline gap-2">
+              <span className="truncate text-sm text-ink-secondary">
+                {r.name}
+                {r.subtitle && (
+                  <span className="ml-1 text-ink-tertiary">· {r.subtitle}</span>
+                )}
+              </span>
+              {r.tags.length > 0 && (
+                <span className="flex shrink-0 items-center gap-1">
+                  {r.tags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-2xs tabular-nums text-ink-tertiary"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </span>
               )}
             </span>
             <button
