@@ -77,14 +77,17 @@ export function CycleView() {
 
         <CycleSummaryStrip cycle={cycle} />
 
-        <div className="pt-6">
+        <section
+          aria-label="Cycle days overview"
+          className="mt-6 rounded-md bg-surface-1 px-4 py-3"
+        >
           <CycleMasterDayHeader
             days={cycle.days}
             todayISO={TODAY_ISO}
             onOverride={overrideDay}
             onClearOverride={clearOverride}
           />
-        </div>
+        </section>
 
         <div className="flex flex-col gap-5 pt-6 pb-16">
           {groups.map(({ templateKey, days }) => (

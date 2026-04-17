@@ -58,7 +58,7 @@ export function CycleSection({
         style={{ background: stripColor }}
       />
 
-      <div className="pl-5">
+      <div className="overflow-x-auto pl-5">
         <SectionMiniHeader
           template={template}
           days={days}
@@ -70,7 +70,7 @@ export function CycleSection({
           <colgroup>
             <col className="w-[140px]" />
             {days.map((d) => (
-              <col key={d.date} className="w-[130px]" />
+              <col key={d.date} className="w-[180px]" />
             ))}
           </colgroup>
 
@@ -132,7 +132,7 @@ function SectionMiniHeader({
         <colgroup>
           <col className="w-[140px]" />
           {days.map((d) => (
-            <col key={d.date} className="w-[130px]" />
+            <col key={d.date} className="w-[180px]" />
           ))}
         </colgroup>
         <thead>
