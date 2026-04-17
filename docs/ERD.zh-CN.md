@@ -506,10 +506,10 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
 
 **来源**：
 
-1. **显式 defer** —— 用户在 check-in 条 / Today Track / §5.7 详情里点"以后再说"。`status → deferred`。
-2. **自然沉降** —— `status = 'pending'` 且 `plannedEnd < now - 24h` 的 instance 不再在 check-in 条里主动浮出，自动进入 Pending 队列视图（状态本身不改 —— 它仍是 `pending`，只是不新鲜了）。
+1. **显式 defer** —— 用户在 check-in 条 / Today Track 里点"以后再说"。`status → deferred`。
+2. **结束未标记** —— 所有 `status = 'pending'` 且 `plannedEnd ≤ now` 的 instance（**任意年龄**，不再做"超 24h 才沉降"的老化过滤）。
 
-两者**在队列里展示得一样**，只是数据源不同。
+Pending 是"等待决定"的**全集**；§5.6 check-in 条是它"近 24h 这一段"的子集展示 —— 同一条 rail 会同时出现在两处，点任一处的按钮两边都会同步消失。刻意让 Pending 列表无隐藏项，避免出现"东西找不到在哪里"的状态。
 
 **刻意不采用的设计：** "昨天的 Rail 没标记，今天不让操作"。这违背核心理念（偏离是一等操作，归档无后果）。
 
