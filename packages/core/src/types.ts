@@ -119,30 +119,72 @@ export interface Signal {
 }
 
 /** `Line` is an internal container type. The UI never shows the word
- *  "Line" — the user sees Project / Habit / Group based on `kind`.
+ *  "Line" — the user sees Project / Habit / Tag based on `kind`.
  *  Kept as an umbrella name in code because all three variants share
  *  id / name / color / status / plannedStart / plannedEnd.  */
 export interface Line {
   id: string;
   name: string;
   color?: RailColor;
-  status: 'active' | 'archived';
+  /** `archived` is a user-intentional terminal (restorable via un-archive).
+   *  `deleted` is a soft delete (visible in Trash; purging is a separate
+   *  explicit step). */
+  status: 'active' | 'archived' | 'deleted';
   kind: 'project' | 'habit' | 'group';
+  /** Built-in Lines cannot be renamed / recolored / deleted. Reserved for
+   *  the Inbox singleton (`id === 'line-inbox'`). */
+  isDefault?: boolean;
   plannedStart?: string;
   plannedEnd?: string;
   createdAt: number;
+  archivedAt?: number;
+  deletedAt?: number;
+}
+
+/** The system-singleton Inbox Line id. All Tasks created without a
+ *  user-picked Project default to this Line. */
+export const INBOX_LINE_ID = 'line-inbox';
+
+/** A one-off time block that overlays the Track. Either ad-hoc input
+ *  (user scheduled "dentist appt" for tomorrow 14:30-16:00) or the
+ *  backing record for §5.5.2 Mode-B task scheduling (`taskId` refers
+ *  back to the Task). */
+export interface AdhocEvent {
+  id: string;
+  date: string; // YYYY-MM-DD
+  startMinutes: number;
+  durationMinutes: number;
+  name: string;
+  color?: RailColor;
+  /** Optional grouping — drives the Line-name badge + default color. */
+  lineId?: string;
+  /** Set when this Ad-hoc backs a free-time-scheduled Task (§5.5.2 Mode B).
+   *  Unscheduling the Task soft-deletes this Ad-hoc. */
+  taskId?: string;
+  status: 'active' | 'deleted';
+  deletedAt?: string;
 }
 
 /** A unit of work within a Line. ERD pre-v0.2.1 called this "Chunk";
  *  renamed to "Task" to match universal TODO-tool vocabulary. */
 export interface Task {
   id: string;
+  /** Owning Line. Tasks without an explicit Project default to `INBOX_LINE_ID`. */
   lineId: string;
   title: string;
   note?: string;
   order: number;
-  status: 'pending' | 'in-progress' | 'done';
+  /** `archived` = user parked it (restorable). `deleted` = soft-deleted
+   *  (Trash view; purging = explicit confirmed hard delete). */
+  status: 'pending' | 'in-progress' | 'done' | 'archived' | 'deleted';
   milestonePercent?: number;
   subItems?: Array<{ id: string; title: string; done: boolean }>;
+  /** §5.5.2 scheduling — two mutually exclusive modes:
+   *    Mode A, bind to Rail ▸ slot = { cycleId, date, railId }
+   *    Mode B, free time    ▸ slot = undefined; AdhocEvent.taskId points back
+   *    Unscheduled          ▸ slot = undefined AND no AdhocEvent refers to it. */
   slot?: { cycleId: string; date: string; railId: string };
+  doneAt?: string;
+  archivedAt?: string;
+  deletedAt?: string;
 }
