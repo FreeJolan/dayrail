@@ -40,11 +40,19 @@ interface Props {
   onClose: () => void;
 }
 
+const ANIM_MS = 200;
+
 export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
   const [appliedTags, setAppliedTags] = useState<string[]>([]);
   // Custom-tag input state. `null` = not in input mode; string = the
   // current input value (may be empty while the user is still typing).
   const [customInput, setCustomInput] = useState<string | null>(null);
+  // `cached` lags the prop by one exit-animation window so the toast
+  // stays mounted long enough to fade out; `visible` drives the CSS
+  // transition on/off. Both together give us a declarative enter +
+  // exit without pulling in a motion library.
+  const [cached, setCached] = useState<ReasonToastState | null>(state);
+  const [visible, setVisible] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const armAutoClose = (): void => {
@@ -68,6 +76,22 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, onClose]);
 
+  // Drive the enter / exit animation by lagging `cached` one animation
+  // window behind `state`. Mounting: sync cached, RAF to trigger the
+  // transition into visible=true on the next paint. Unmounting: flip
+  // visible=false immediately, keep cached until the exit animation
+  // finishes, then drop it so the portal unmounts.
+  useEffect(() => {
+    if (state) {
+      setCached(state);
+      const id = requestAnimationFrame(() => setVisible(true));
+      return () => cancelAnimationFrame(id);
+    }
+    setVisible(false);
+    const id = window.setTimeout(() => setCached(null), ANIM_MS);
+    return () => window.clearTimeout(id);
+  }, [state]);
+
   // Esc closes the toast, EXCEPT while the custom-tag input is active —
   // there Esc should just exit input mode (the input's own onKeyDown
   // handles that). We read the current mode via ref so this listener
@@ -89,9 +113,9 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
   // nothing branch introduced.
   //
   // NB: this useMemo must live BEFORE any early-return or React's
-  // rules-of-hooks will flag a conditional hook call when `state`
+  // rules-of-hooks will flag a conditional hook call when `cached`
   // transitions between null and non-null.
-  const recommended = state?.recommendedTags;
+  const recommended = cached?.recommendedTags;
   const chips = useMemo(() => {
     const seen = new Set<string>();
     const out: string[] = [];
@@ -105,7 +129,7 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
     return out;
   }, [recommended]);
 
-  if (typeof document === 'undefined' || !state) return null;
+  if (typeof document === 'undefined' || !cached) return null;
 
   const handleChip = (tag: string): void => {
     const normalized = tag.trim();
@@ -145,18 +169,24 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
   // Done actions don't need chips — there's no Shift to tag and nothing
   // to "explain". Keep the toast to a confirmation + Undo so the happy-
   // path finish feels frictionless.
-  const showChips = state.action !== 'done';
+  const showChips = cached.action !== 'done';
 
   return createPortal(
     <div className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-6">
       <div
         role="status"
         aria-live="polite"
-        className="pointer-events-auto flex max-w-[640px] items-center gap-3 rounded-md border border-hairline/40 bg-surface-3 px-4 py-3 text-sm text-ink-primary shadow-[0_8px_24px_-12px_rgba(30,28,26,0.25)]"
+        className={clsx(
+          'pointer-events-auto flex max-w-[640px] items-center gap-3 rounded-md border border-hairline/40 bg-surface-3 px-4 py-3 text-sm text-ink-primary shadow-[0_8px_24px_-12px_rgba(30,28,26,0.25)]',
+          'transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none',
+          visible
+            ? 'translate-y-0 opacity-100'
+            : 'translate-y-3 opacity-0',
+        )}
       >
         <span className="shrink-0">
-          <span className="font-medium">{headline(state.action)}</span>
-          <span className="ml-2 text-ink-secondary">「{state.railName}」</span>
+          <span className="font-medium">{headline(cached.action)}</span>
+          <span className="ml-2 text-ink-secondary">「{cached.railName}」</span>
         </span>
         {showChips && (
           <>
@@ -224,7 +254,7 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
         >
           撤销
         </button>
-        {state.action === 'archive' && state.isRecurring && (
+        {cached.action === 'archive' && cached.isRecurring && (
           <>
             <span className="h-4 w-px bg-hairline/40" aria-hidden />
             <span className="text-xs text-ink-tertiary">明天的仍会生成</span>
