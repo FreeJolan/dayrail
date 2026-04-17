@@ -1,12 +1,7 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import { Inbox, Plus, Archive, Trash2 } from 'lucide-react';
-import {
-  INBOX_LINE_ID,
-  selectLinesByKind,
-  useStore,
-  type Line,
-} from '@dayrail/core';
+import { INBOX_LINE_ID, useStore, type Line } from '@dayrail/core';
 import { RAIL_COLOR_HEX } from '@/components/railColors';
 
 // ERD §5.5 — Tasks view scaffold.
@@ -27,9 +22,22 @@ const DEFAULT_SELECTION: Selection = { kind: 'inbox' };
 
 export function Tasks() {
   const [selection, setSelection] = useState<Selection>(DEFAULT_SELECTION);
-  const inbox = useStore((s) => s.lines[INBOX_LINE_ID]);
-  const projects = useStore((s) => selectLinesByKind(s, 'project', 'active'));
-  const otherProjects = projects.filter((l) => l.id !== INBOX_LINE_ID);
+  // Subscribe to the raw map, not a selector that sorts/filters — Zustand
+  // shallow-compares output, and `Object.values(...).sort()` returns a
+  // fresh array every render → infinite loop.
+  const linesMap = useStore((s) => s.lines);
+  const inbox = linesMap[INBOX_LINE_ID];
+  const projects = useMemo(
+    () =>
+      Object.values(linesMap)
+        .filter((l) => l.kind === 'project' && l.status === 'active')
+        .sort((a, b) => b.createdAt - a.createdAt),
+    [linesMap],
+  );
+  const otherProjects = useMemo(
+    () => projects.filter((l) => l.id !== INBOX_LINE_ID),
+    [projects],
+  );
 
   return (
     <div className="flex min-h-screen w-full">
