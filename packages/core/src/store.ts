@@ -73,6 +73,11 @@ interface DayRailActions {
   // --- rail instances (Today Track / check-in) ---
   createRailInstance: (inst: RailInstance) => Promise<void>;
   markRailInstance: (id: string, status: RailInstanceStatus) => Promise<void>;
+  shiftInstanceTime: (
+    id: string,
+    plannedStart: string,
+    plannedEnd: string,
+  ) => Promise<void>;
   recordSignal: (
     instanceId: string,
     response: SignalResponse,
@@ -453,6 +458,18 @@ export const useStore = create<DayRailStore>()(
           aggregateId: `instance:${id}`,
           type: 'instance.status-changed',
           payload: { ...payload },
+        });
+        set((draft) => {
+          applyEventInPlace(draft, event.type, event.payload);
+        });
+        afterMutation();
+      },
+
+      shiftInstanceTime: async (id, plannedStart, plannedEnd) => {
+        const event = await appendEvent({
+          aggregateId: `instance:${id}`,
+          type: 'instance.time-shifted',
+          payload: { id, plannedStart, plannedEnd },
         });
         set((draft) => {
           applyEventInPlace(draft, event.type, event.payload);

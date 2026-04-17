@@ -6,9 +6,11 @@ import {
   useStore,
   type Rail,
   type RailInstance,
+  type Shift,
 } from '@dayrail/core';
 import { CheckInStrip, type CheckInAction } from '@/components/CheckInStrip';
 import { RailCard } from '@/components/RailCard';
+import { ShiftSheet, type ShiftSubmission } from '@/components/ShiftSheet';
 import type { RailColor, RailState, SampleRail } from '@/data/sample';
 
 // Page layout — ERD A/B/C decisions:
@@ -24,18 +26,101 @@ export function TodayTrack() {
   const rails = useStore((s) => s.rails);
   const railInstances = useStore((s) => s.railInstances);
   const signals = useStore((s) => s.signals);
+  const shifts = useStore((s) => s.shifts);
   const recordSignal = useStore((s) => s.recordSignal);
+  const recordShift = useStore((s) => s.recordShift);
+  const markRailInstance = useStore((s) => s.markRailInstance);
+
+  // Shift sheet state. When open, `shiftTarget` identifies which instance
+  // the user invoked Shift on. Resolved via the railInstances map at
+  // render time so HMR / reducer updates don't leave stale refs.
+  const [shiftTarget, setShiftTarget] = useState<string | null>(null);
 
   const handleCheckin = useCallback(
     (instanceId: string, action: CheckInAction) => {
       if (action === 'shift') {
-        // TODO(chunk 5): open Shift sheet with reason + tag recommender.
-        window.alert('Shift sheet 还没接上 — Chunk 5 再说。');
+        setShiftTarget(instanceId);
         return;
       }
       void recordSignal(instanceId, action, 'check-in-strip');
     },
     [recordSignal],
+  );
+
+  const targetInstance = shiftTarget ? railInstances[shiftTarget] : undefined;
+  const targetRail = targetInstance ? rails[targetInstance.railId] : undefined;
+
+  // Historical tags for the targeted Rail — top-3 by frequency across
+  // past Shifts. Empty on first run, which the sheet falls back around.
+  const recommendedTags = useMemo<string[]>(() => {
+    if (!targetInstance) return [];
+    const counts = new Map<string, number>();
+    for (const shift of Object.values(shifts)) {
+      // Same Rail (different days share the Rail id via instance) only.
+      const inst = railInstances[shift.railInstanceId];
+      if (!inst || inst.railId !== targetInstance.railId) continue;
+      for (const tag of shift.tags ?? []) {
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([tag]) => tag);
+  }, [shifts, railInstances, targetInstance]);
+
+  const handleShiftSubmit = useCallback(
+    (sub: ShiftSubmission) => {
+      if (!targetInstance) return;
+      const id = targetInstance.id;
+      const shift: Shift = {
+        id: `shift-${id}-${Date.now().toString(36)}`,
+        railInstanceId: id,
+        type: sub.type,
+        at: new Date().toISOString(),
+        payload:
+          sub.type === 'postpone' && sub.postponeMinutes
+            ? { minutes: sub.postponeMinutes }
+            : {},
+        tags: sub.tags.length > 0 ? sub.tags : undefined,
+        reason: sub.reason,
+      };
+      void (async () => {
+        await recordShift(shift);
+        if (sub.type === 'skip') {
+          await markRailInstance(id, 'skipped');
+          // Also log a signal so the instance leaves the strip.
+          await recordSignal(id, 'skip', 'check-in-strip');
+        }
+        // Postpone mutates plannedStart/plannedEnd — slot the rail
+        // later today (or tomorrow if it overflows). Time-shift is
+        // its own event type so Review can show the delta without
+        // scanning Shift payloads.
+        if (sub.type === 'postpone' && sub.postponeMinutes) {
+          await shiftPostpone(id, sub.postponeMinutes);
+        }
+        setShiftTarget(null);
+      })();
+    },
+    [targetInstance, recordShift, markRailInstance, recordSignal],
+  );
+
+  const shiftInstanceTime = useStore((s) => s.shiftInstanceTime);
+  const shiftPostpone = useCallback(
+    async (instanceId: string, minutes: number): Promise<void> => {
+      const state = useStore.getState();
+      const inst = state.railInstances[instanceId];
+      if (!inst) return;
+      const shiftMs = minutes * 60_000;
+      const fmt = (d: Date): string =>
+        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+          d.getHours(),
+        )}:${pad(d.getMinutes())}`;
+      const newStart = fmt(new Date(Date.parse(inst.plannedStart) + shiftMs));
+      const newEnd = fmt(new Date(Date.parse(inst.plannedEnd) + shiftMs));
+      await shiftInstanceTime(instanceId, newStart, newEnd);
+    },
+    [shiftInstanceTime],
   );
 
   const timeline = useMemo<SampleRail[]>(
@@ -63,6 +148,13 @@ export function TodayTrack() {
       <CheckInStrip queue={checkinQueue} onAction={handleCheckin} />
       <Timeline rails={timelineVisible} />
       <Footnote />
+      <ShiftSheet
+        open={shiftTarget != null && targetRail != null}
+        railName={targetRail?.name ?? ''}
+        recommendedTags={recommendedTags}
+        onClose={() => setShiftTarget(null)}
+        onSubmit={handleShiftSubmit}
+      />
     </div>
   );
 }

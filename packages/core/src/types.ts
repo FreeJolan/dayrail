@@ -79,7 +79,16 @@ export interface RailInstance {
   sessionId?: string;
 }
 
-export type ShiftType = 'postpone' | 'swap' | 'skip' | 'resize' | 'replace';
+/** §5.2 unifies user-facing Shift actions to four: Skip, Postpone,
+ *  Replace, Add note. `swap` and `resize` are kept for future use
+ *  (e.g. Cycle-view row swaps, explicit duration edits). */
+export type ShiftType =
+  | 'postpone'
+  | 'swap'
+  | 'skip'
+  | 'resize'
+  | 'replace'
+  | 'note';
 
 export interface Shift {
   id: string;
