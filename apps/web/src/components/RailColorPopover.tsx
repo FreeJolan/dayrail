@@ -11,14 +11,14 @@ import { RAIL_COLOR_HEX } from './railColors';
 const PALETTE: Array<{ key: RailColor; label: string }> = [
   { key: 'sand', label: 'Sand' },
   { key: 'sage', label: 'Sage' },
-  { key: 'olive', label: 'Moss' },
   { key: 'slate', label: 'Slate' },
-  { key: 'mauve', label: 'Fog' },
   { key: 'brown', label: 'Clay' },
   { key: 'amber', label: 'Apricot' },
   { key: 'teal', label: 'Seafoam' },
   { key: 'pink', label: 'Dusty Rose' },
-  { key: 'gray', label: 'Steel' },
+  { key: 'grass', label: 'Grass' },
+  { key: 'indigo', label: 'Indigo' },
+  { key: 'plum', label: 'Plum' },
 ];
 
 interface Props {

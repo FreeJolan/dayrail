@@ -158,7 +158,7 @@ export const SAMPLE_CYCLE: SampleCycle = {
     {
       id: 'line-dayrail',
       name: 'DayRail 开发',
-      color: 'mauve',
+      color: 'plum',
       done: 2,
       planned: 5,
     },
@@ -191,8 +191,8 @@ export interface BacklogItem {
 }
 
 export const SAMPLE_BACKLOG: BacklogItem[] = [
-  { id: 'bk-1', name: 'Shift 标签 sheet 组件', lineId: 'line-dayrail', lineColor: 'mauve', pinned: true },
-  { id: 'bk-2', name: 'Review 节奏热力图可视化', lineId: 'line-dayrail', lineColor: 'mauve', pinned: false },
+  { id: 'bk-1', name: 'Shift 标签 sheet 组件', lineId: 'line-dayrail', lineColor: 'plum', pinned: true },
+  { id: 'bk-2', name: 'Review 节奏热力图可视化', lineId: 'line-dayrail', lineColor: 'plum', pinned: false },
   { id: 'bk-3', name: 'OS 中断与异常复习', lineId: 'line-grad-prep', lineColor: 'sand', pinned: true },
   { id: 'bk-4', name: '计网第 3 章笔记整理', lineId: 'line-grad-prep', lineColor: 'sand', pinned: false },
   { id: 'bk-5', name: '英语口语 · 模拟面试', lineId: 'line-english', lineColor: 'amber', pinned: false },

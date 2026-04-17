@@ -90,15 +90,15 @@ const WEEK_ROWS: HeatmapRow[] = [
   row('er-408', '408 复习', 'sand', 'ddddd--'),
   row('er-deep-am', '工作 · 深度任务', 'teal', 'dddsu--'),
   row('er-code-pm', '工作 · 编码', 'teal', 'dddd---'),
-  row('er-lunch', '午休', 'gray', 'dddd---'),
+  row('er-lunch', '午休', 'slate', 'dddd---'),
   row('er-run', '晨跑', 'sage', 'dkdd---'),
-  row('er-oss', '开源项目', 'mauve', 'sddu---'),
+  row('er-oss', '开源项目', 'plum', 'sddu---'),
   row('er-english', '英语 · 口语', 'amber', 'kdddu--'),
   row('er-algo', '算法', 'pink', 'dsdk---'),
   // Restday rails
   row('er-run-rd', '晨跑 (restday)', 'sage', '----u-u'),
   row('er-read-rd', '阅读', 'sand', '----u-u'),
-  row('er-oss-rd', '开源项目 (restday)', 'mauve', '----u-u'),
+  row('er-oss-rd', '开源项目 (restday)', 'plum', '----u-u'),
 ];
 
 export const SAMPLE_CYCLE_REVIEW: ReviewScopeData = {

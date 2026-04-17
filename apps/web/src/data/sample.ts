@@ -5,14 +5,14 @@
 export type RailColor =
   | 'sand'
   | 'sage'
-  | 'olive'
   | 'slate'
-  | 'mauve'
   | 'brown'
   | 'amber'
   | 'teal'
   | 'pink'
-  | 'gray';
+  | 'grass'
+  | 'indigo'
+  | 'plum';
 
 export type RailState =
   | 'pending' // future Rail, not yet started
@@ -50,7 +50,7 @@ export const SAMPLE_RAILS: SampleRail[] = [
     name: '晨跑',
     start: '06:00',
     end: '07:00',
-    color: 'sage',
+    color: 'grass',
     state: 'unmarked',
     showInCheckin: true,
   },
@@ -79,7 +79,7 @@ export const SAMPLE_RAILS: SampleRail[] = [
     name: '午休',
     start: '12:00',
     end: '13:00',
-    color: 'gray',
+    color: 'slate',
     state: 'done',
     showInCheckin: false,
   },
@@ -98,7 +98,7 @@ export const SAMPLE_RAILS: SampleRail[] = [
     name: '开源项目',
     start: '16:00',
     end: '18:00',
-    color: 'mauve',
+    color: 'plum',
     state: 'pending',
     showInCheckin: true,
   },
@@ -126,7 +126,7 @@ export const SAMPLE_RAILS: SampleRail[] = [
     name: '有氧',
     start: '22:00',
     end: '22:30',
-    color: 'olive',
+    color: 'grass',
     state: 'pending',
     showInCheckin: true,
   },

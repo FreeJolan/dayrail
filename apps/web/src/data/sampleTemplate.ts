@@ -30,7 +30,7 @@ export const SAMPLE_TEMPLATES: SampleTemplate[] = [
   { key: 'workday', label: 'Workday', color: 'slate', builtIn: true },
   { key: 'restday', label: 'Restday', color: 'sage', builtIn: true },
   { key: 'deep', label: 'Deep Focus', color: 'teal', builtIn: false },
-  { key: 'travel', label: 'Travel', color: 'mauve', builtIn: false },
+  { key: 'travel', label: 'Travel', color: 'plum', builtIn: false },
 ];
 
 const hm = (h: number, m = 0) => h * 60 + m;
@@ -70,7 +70,7 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       name: '午休',
       startMin: hm(12),
       endMin: hm(13),
-      color: 'gray',
+      color: 'slate',
       showInCheckin: false,
       defaultLineId: null,
     },
@@ -90,7 +90,7 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       subtitle: 'DayRail',
       startMin: hm(16),
       endMin: hm(18),
-      color: 'mauve',
+      color: 'plum',
       showInCheckin: true,
       defaultLineId: 'line-dayrail',
     },
@@ -139,7 +139,7 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       name: '午餐',
       startMin: hm(12),
       endMin: hm(13),
-      color: 'gray',
+      color: 'slate',
       showInCheckin: false,
       defaultLineId: null,
     },
@@ -148,7 +148,7 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       name: '开源项目',
       startMin: hm(14),
       endMin: hm(17),
-      color: 'mauve',
+      color: 'plum',
       showInCheckin: true,
       defaultLineId: 'line-dayrail',
     },
@@ -178,7 +178,7 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
 export const SAMPLE_LINES = [
   { id: 'line-running', name: '跑步', color: 'sage' as const },
   { id: 'line-grad-prep', name: '考研 408', color: 'sand' as const },
-  { id: 'line-dayrail', name: 'DayRail 开发', color: 'mauve' as const },
+  { id: 'line-dayrail', name: 'DayRail 开发', color: 'plum' as const },
   { id: 'line-english', name: '英语', color: 'amber' as const },
   { id: 'line-reading', name: '阅读清单', color: 'sand' as const },
 ];
