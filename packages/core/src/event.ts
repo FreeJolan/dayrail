@@ -39,7 +39,6 @@ export type EventType =
   // Projects (Lines)
   | 'line.created'
   | 'line.updated'
-  | 'line.archived'
   | 'line.restored'
   | 'line.deleted'
   | 'line.purged'
@@ -59,8 +58,7 @@ export type EventType =
   | 'adhoc.created'
   | 'adhoc.updated'
   | 'adhoc.deleted'
-  | 'adhoc.restored'
-  | 'adhoc.removed';
+  | 'adhoc.restored';
 
 export interface AppEvent<T extends EventType = EventType> {
   id: string;
