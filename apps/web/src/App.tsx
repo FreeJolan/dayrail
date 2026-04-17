@@ -8,6 +8,7 @@ import { Pending } from './pages/Pending';
 import { Settings } from './pages/Settings';
 import { Calendar } from './pages/Calendar';
 import { SideNav, type NavKey } from './components/SideNav';
+import { TooltipProvider } from './components/primitives/Tooltip';
 
 // Simple state-based routing for the static-mock phase. When we add
 // real persistence + proper routing, swap this for `react-router` or
@@ -18,27 +19,29 @@ export default function App() {
   const [page, setPage] = useState<NavKey>('today');
 
   return (
-    <div className="flex min-h-screen w-full bg-surface-0">
-      <SideNav active={page} onNavigate={setPage} />
-      <main className="flex-1">
-        {page === 'today' && <TodayTrack />}
-        {page === 'template' && <TemplateEditor />}
-        {page === 'cycle' && <CycleView />}
-        {page === 'review' && <Review />}
-        {page === 'tasks' && <Tasks />}
-        {page === 'pending' && <Pending />}
-        {page === 'settings' && <Settings />}
-        {page === 'calendar' && <Calendar />}
-        {page !== 'today' &&
-          page !== 'template' &&
-          page !== 'cycle' &&
-          page !== 'review' &&
-          page !== 'tasks' &&
-          page !== 'pending' &&
-          page !== 'settings' &&
-          page !== 'calendar' && <ComingSoon page={page} />}
-      </main>
-    </div>
+    <TooltipProvider delayDuration={200} skipDelayDuration={300}>
+      <div className="flex min-h-screen w-full bg-surface-0">
+        <SideNav active={page} onNavigate={setPage} />
+        <main className="flex-1">
+          {page === 'today' && <TodayTrack />}
+          {page === 'template' && <TemplateEditor />}
+          {page === 'cycle' && <CycleView />}
+          {page === 'review' && <Review />}
+          {page === 'tasks' && <Tasks />}
+          {page === 'pending' && <Pending />}
+          {page === 'settings' && <Settings />}
+          {page === 'calendar' && <Calendar />}
+          {page !== 'today' &&
+            page !== 'template' &&
+            page !== 'cycle' &&
+            page !== 'review' &&
+            page !== 'tasks' &&
+            page !== 'pending' &&
+            page !== 'settings' &&
+            page !== 'calendar' && <ComingSoon page={page} />}
+        </main>
+      </div>
+    </TooltipProvider>
   );
 }
 
