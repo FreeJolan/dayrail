@@ -403,6 +403,8 @@ We deliberately do **not** introduce "Plan" or "EditMode" as user-facing nouns. 
 
 **Why this matters for the Template Editor**: because Template Editor is local-first with realtime persistence (no "Save" button; see §5.4), the edit session is its safety net — users never need to worry "did my half-done edit get saved?" (it did) or "how do I undo this mess?" (press Undo this edit session).
 
+**No Cmd+Z binding** (v0.2 decision): session-level undo wipes N changes in one stroke, so binding Cmd+Z to it invites accidental full wipes. Binding Cmd+Z to a per-step undo violates the atomic-batch semantics of this section and doubles the undo infrastructure. So the only entry point is the explicit `⤺ Undo this edit session` button — slightly higher learning curve in exchange for zero-misfire. Per-step undo may return as a §11 open question in v0.3+ if user feedback demands it.
+
 Net effect: the user-facing vocabulary stays Template / Track / Rail / Shift / Line / Signal / Project / Chunk / Slot — no management page, no promotion flow, just one "take it back" button.
 
 ### 5.4 Template Editor + Calendar
@@ -1045,6 +1047,7 @@ type Shift = {
   payload: Record<string, unknown>;
   tags?: string[]; // Global shared tags, written by the §5.2 Shift-tag sheet; quick-reason chips are recommended from this Rail's historical tag frequency.
   reason?: string; // Optional free-text note, written from the sheet's textarea; empty = no record.
+                   // Plain text, 500-char cap (v0.2 decision); no Markdown; URLs are auto-linked at render time.
 };
 
 type Signal = {

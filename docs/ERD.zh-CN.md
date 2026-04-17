@@ -403,6 +403,8 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
 
 **Template Editor 的特殊性**：由于 local-first 实时持久化（没有"保存"按钮，见 §5.4），编辑会话是 Template Editor 的安全网 —— 用户不用担心"改到一半退出会不会丢"（不会）、"改坏了怎么回退"（按撤销本次编辑）。
 
+**不绑 Cmd+Z**（v0.2 决策）：会话级 undo 会一次擦掉 N 处改动，绑 Cmd+Z 误触风险过高。绑单步 undo 违反本节的 atomic-batch 语义，且带两套 undo 基础设施。所以入口只有 `⤺ 撤销本次编辑` 这一个显式按钮 —— 学习曲线略陡，零误触；未来若用户反馈强，可在 v0.3+ 把单步 undo 提到 §11 的开放议题里再议。
+
 结果：用户面对的名词仍然只有 Template / Track / Rail / Shift / Line / Signal / Project / Chunk / Slot，没有管理页、没有升格流程，多了一个"后悔药"按钮。
 
 ### 5.4 Template Editor + Calendar
@@ -1042,6 +1044,7 @@ type Shift = {
   payload: Record<string, unknown>;
   tags?: string[]; // 全局共享标签，由 §5.2 Shift 标签 sheet 写入；快速原因 chip 从该 Rail 的历史 tag 频次推荐。
   reason?: string; // 可选自由文本备注，由 Shift 标签 sheet 的 textarea 写入；空即不记录。
+                   // 纯文本，500 字上限（v0.2 决策）；Markdown 不支持；URL 在渲染时自动识别。
 };
 
 type Signal = {
