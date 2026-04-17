@@ -142,9 +142,9 @@ export function TimePillPopover({
           <span className="ml-1 text-ink-tertiary">{fmtDurationShort(endMin - startMin)}</span>
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" sideOffset={6} className="w-[260px]">
+      <PopoverContent align="end" sideOffset={6} className="w-[280px] max-w-[280px]">
         <div className="flex items-end gap-2">
-          <label className="flex flex-1 flex-col gap-1">
+          <label className="flex min-w-0 flex-1 flex-col gap-1">
             <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
               Start
             </span>
@@ -153,6 +153,7 @@ export function TimePillPopover({
               inputMode="numeric"
               pattern="[0-9]{1,2}:[0-9]{2}"
               value={start}
+              size={6}
               onChange={(e) => setStart(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
@@ -165,10 +166,10 @@ export function TimePillPopover({
                 const n = normalize(start);
                 if (n) setStart(n);
               }}
-              className="rounded-sm bg-surface-2 px-2 py-1.5 font-mono text-sm tabular-nums outline-none ring-0 focus:bg-surface-3"
+              className="w-full min-w-0 rounded-sm bg-surface-2 px-2 py-1.5 font-mono text-sm tabular-nums outline-none ring-0 focus:bg-surface-3"
             />
           </label>
-          <label className="flex flex-1 flex-col gap-1">
+          <label className="flex min-w-0 flex-1 flex-col gap-1">
             <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
               End
             </span>
@@ -177,6 +178,7 @@ export function TimePillPopover({
               inputMode="numeric"
               pattern="[0-9]{1,2}:[0-9]{2}"
               value={end}
+              size={6}
               onChange={(e) => setEnd(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
@@ -189,7 +191,7 @@ export function TimePillPopover({
                 const n = normalize(end);
                 if (n) setEnd(n);
               }}
-              className="rounded-sm bg-surface-2 px-2 py-1.5 font-mono text-sm tabular-nums outline-none ring-0 focus:bg-surface-3"
+              className="w-full min-w-0 rounded-sm bg-surface-2 px-2 py-1.5 font-mono text-sm tabular-nums outline-none ring-0 focus:bg-surface-3"
             />
           </label>
         </div>
@@ -214,9 +216,9 @@ export function TimePillPopover({
           </p>
         )}
 
-        <div className="mt-3 flex items-center justify-between">
-          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-            ↵ commit · ↑↓ 15m · ⇧↑↓ 1h
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <span className="flex-1 truncate font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            ↵ · ↑↓ 15m · ⇧↑↓ 1h
           </span>
           <button
             type="button"
