@@ -3,7 +3,7 @@ import { TodayTrack } from './pages/TodayTrack';
 import { TemplateEditor } from './pages/TemplateEditor';
 import { CycleView } from './pages/CycleView';
 import { Review } from './pages/Review';
-import { Projects } from './pages/Projects';
+import { Tasks } from './pages/Tasks';
 import { Pending } from './pages/Pending';
 import { Settings } from './pages/Settings';
 import { Calendar } from './pages/Calendar';
@@ -25,7 +25,7 @@ export default function App() {
         {page === 'template' && <TemplateEditor />}
         {page === 'cycle' && <CycleView />}
         {page === 'review' && <Review />}
-        {page === 'projects' && <Projects />}
+        {page === 'tasks' && <Tasks />}
         {page === 'pending' && <Pending />}
         {page === 'settings' && <Settings />}
         {page === 'calendar' && <Calendar />}
@@ -33,7 +33,7 @@ export default function App() {
           page !== 'template' &&
           page !== 'cycle' &&
           page !== 'review' &&
-          page !== 'projects' &&
+          page !== 'tasks' &&
           page !== 'pending' &&
           page !== 'settings' &&
           page !== 'calendar' && <ComingSoon page={page} />}
@@ -68,8 +68,8 @@ function labelFor(page: NavKey): string {
       return 'Template Editor';
     case 'cycle':
       return 'Cycle View (§5.3)';
-    case 'projects':
-      return 'Projects / Lines (§5.5)';
+    case 'tasks':
+      return 'Tasks (§5.5)';
     case 'review':
       return 'Review (§5.8)';
     case 'calendar':

@@ -33,18 +33,22 @@ import {
   shouldSnapshotAfterEvent,
   writeSnapshot,
 } from './snapshot';
-import type {
-  Rail,
-  RailColor,
-  RailInstance,
-  RailInstanceStatus,
-  Recurrence,
-  Shift,
-  ShiftType,
-  Signal,
-  SignalResponse,
-  Template,
-  TemplateKey,
+import {
+  INBOX_LINE_ID,
+  type AdhocEvent,
+  type Line,
+  type Rail,
+  type RailColor,
+  type RailInstance,
+  type RailInstanceStatus,
+  type Recurrence,
+  type Shift,
+  type ShiftType,
+  type Signal,
+  type SignalResponse,
+  type Task,
+  type Template,
+  type TemplateKey,
 } from './types';
 
 // ------------------------------------------------------------------
@@ -59,6 +63,9 @@ export interface DayRailState {
   railInstances: Record<string, RailInstance>;
   signals: Record<string, Signal>;
   shifts: Record<string, Shift>;
+  lines: Record<string, Line>;
+  tasks: Record<string, Task>;
+  adhocEvents: Record<string, AdhocEvent>;
   sessions: Record<string, EditSession>;
 }
 
@@ -79,6 +86,21 @@ interface DayRailActions {
     surface: Signal['surface'],
   ) => Promise<void>;
   recordShift: (shift: Shift) => Promise<void>;
+  // --- lines (Project / Habit / Tag, §5.5) ---
+  createLine: (line: Line) => Promise<void>;
+  updateLine: (id: string, patch: Partial<Line>) => Promise<void>;
+  deleteLine: (id: string) => Promise<void>;
+  restoreLine: (id: string) => Promise<void>;
+  purgeLine: (id: string) => Promise<void>;
+  // --- tasks (units of work inside a Line, §5.5) ---
+  createTask: (task: Task) => Promise<void>;
+  updateTask: (id: string, patch: Partial<Task>) => Promise<void>;
+  /** Status transitions as dedicated actions so the event log captures
+   *  intent cleanly (task.archived vs task.updated with status=archived). */
+  archiveTask: (id: string) => Promise<void>;
+  restoreTask: (id: string) => Promise<void>;
+  deleteTask: (id: string) => Promise<void>;
+  purgeTask: (id: string) => Promise<void>;
   // --- sessions ---
   openEditSession: (surface: string) => Promise<EditSession>;
   closeEditSession: (sessionId: string) => Promise<void>;
@@ -95,7 +117,14 @@ export type DayRailStore = DayRailState & DayRailActions;
 
 type ReducerState = Pick<
   DayRailState,
-  'templates' | 'rails' | 'railInstances' | 'signals' | 'shifts'
+  | 'templates'
+  | 'rails'
+  | 'railInstances'
+  | 'signals'
+  | 'shifts'
+  | 'lines'
+  | 'tasks'
+  | 'adhocEvents'
 >;
 
 // Narrowed local types matching exactly the event payloads the Template
@@ -229,6 +258,73 @@ function applyEventInPlace(
       };
       break;
     }
+    case 'line.created': {
+      const line = payload as unknown as Line;
+      state.lines[line.id] = { ...line };
+      break;
+    }
+    case 'line.updated': {
+      const p = payload as unknown as Partial<Line> & { id: string };
+      const existing = state.lines[p.id];
+      if (existing) state.lines[p.id] = { ...existing, ...p };
+      break;
+    }
+    case 'line.archived':
+    case 'line.restored':
+    case 'line.deleted': {
+      const p = payload as unknown as Partial<Line> & { id: string };
+      const existing = state.lines[p.id];
+      if (existing) state.lines[p.id] = { ...existing, ...p };
+      break;
+    }
+    case 'line.purged': {
+      const id = (payload as { id: string }).id;
+      delete state.lines[id];
+      // Cascade: drop tasks that belonged to this line.
+      for (const tid of Object.keys(state.tasks)) {
+        if (state.tasks[tid]?.lineId === id) delete state.tasks[tid];
+      }
+      break;
+    }
+    case 'task.created': {
+      const task = payload as unknown as Task;
+      state.tasks[task.id] = { ...task };
+      break;
+    }
+    case 'task.updated':
+    case 'task.archived':
+    case 'task.restored':
+    case 'task.deleted':
+    case 'task.scheduled':
+    case 'task.unscheduled': {
+      const p = payload as unknown as Partial<Task> & { id: string };
+      const existing = state.tasks[p.id];
+      if (existing) state.tasks[p.id] = { ...existing, ...p };
+      break;
+    }
+    case 'task.purged': {
+      const id = (payload as { id: string }).id;
+      delete state.tasks[id];
+      break;
+    }
+    case 'adhoc.created': {
+      const adhoc = payload as unknown as AdhocEvent;
+      state.adhocEvents[adhoc.id] = { ...adhoc };
+      break;
+    }
+    case 'adhoc.updated':
+    case 'adhoc.deleted':
+    case 'adhoc.restored': {
+      const p = payload as unknown as Partial<AdhocEvent> & { id: string };
+      const existing = state.adhocEvents[p.id];
+      if (existing) state.adhocEvents[p.id] = { ...existing, ...p };
+      break;
+    }
+    case 'adhoc.removed': {
+      const id = (payload as { id: string }).id;
+      delete state.adhocEvents[id];
+      break;
+    }
     default:
       // Unknown event types are no-ops in this store slice.
       break;
@@ -243,7 +339,14 @@ function applyEventInPlace(
 
 type SnapshotPayload = Pick<
   DayRailState,
-  'templates' | 'rails' | 'railInstances' | 'signals' | 'shifts'
+  | 'templates'
+  | 'rails'
+  | 'railInstances'
+  | 'signals'
+  | 'shifts'
+  | 'lines'
+  | 'tasks'
+  | 'adhocEvents'
 >;
 
 function emptyReducerState(): ReducerState {
@@ -253,6 +356,9 @@ function emptyReducerState(): ReducerState {
     railInstances: {},
     signals: {},
     shifts: {},
+    lines: {},
+    tasks: {},
+    adhocEvents: {},
   };
 }
 
@@ -263,6 +369,9 @@ function snapshotFromState(s: DayRailState): SnapshotPayload {
     railInstances: s.railInstances,
     signals: s.signals,
     shifts: s.shifts,
+    lines: s.lines,
+    tasks: s.tasks,
+    adhocEvents: s.adhocEvents,
   };
 }
 
@@ -297,6 +406,9 @@ export const useStore = create<DayRailStore>()(
       railInstances: {},
       signals: {},
       shifts: {},
+      lines: {},
+      tasks: {},
+      adhocEvents: {},
       sessions: {},
 
       hydrate: async () => {
@@ -322,6 +434,9 @@ export const useStore = create<DayRailStore>()(
               reducerState.railInstances = { ...(snap.state.railInstances ?? {}) };
               reducerState.signals = { ...(snap.state.signals ?? {}) };
               reducerState.shifts = { ...(snap.state.shifts ?? {}) };
+              reducerState.lines = { ...(snap.state.lines ?? {}) };
+              reducerState.tasks = { ...(snap.state.tasks ?? {}) };
+              reducerState.adhocEvents = { ...(snap.state.adhocEvents ?? {}) };
             }
             for (const ev of events) {
               applyEventInPlace(reducerState, ev.type, ev.payload);
@@ -331,6 +446,9 @@ export const useStore = create<DayRailStore>()(
             draft.railInstances = reducerState.railInstances;
             draft.signals = reducerState.signals;
             draft.shifts = reducerState.shifts;
+            draft.lines = reducerState.lines;
+            draft.tasks = reducerState.tasks;
+            draft.adhocEvents = reducerState.adhocEvents;
             for (const s of recovered) {
               if (!s.closed) draft.sessions[s.id] = s;
             }
@@ -503,6 +621,137 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
+      // ---- Line CRUD (§5.5) --------------------------------------
+
+      createLine: async (line) => {
+        const event = await appendEvent({
+          aggregateId: `line:${line.id}`,
+          type: 'line.created',
+          payload: { ...line },
+        });
+        set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        afterMutation();
+      },
+
+      updateLine: async (id, patch) => {
+        // Guard: built-in Lines (Inbox) can only be updated in limited
+        // ways — we allow status transitions internally but block any
+        // rename / recolor / delete from the UI layer. Here we leave
+        // enforcement to callers; the store just writes whatever it
+        // was asked to.
+        const event = await appendEvent({
+          aggregateId: `line:${id}`,
+          type: 'line.updated',
+          payload: { id, ...patch },
+        });
+        set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        afterMutation();
+      },
+
+      deleteLine: async (id) => {
+        const line = get().lines[id];
+        if (!line) return;
+        if (line.isDefault) return; // Inbox is undeletable.
+        const deletedAt = Date.now();
+        const event = await appendEvent({
+          aggregateId: `line:${id}`,
+          type: 'line.deleted',
+          payload: { id, status: 'deleted', deletedAt },
+        });
+        set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        afterMutation();
+      },
+
+      restoreLine: async (id) => {
+        const event = await appendEvent({
+          aggregateId: `line:${id}`,
+          type: 'line.restored',
+          payload: { id, status: 'active', deletedAt: undefined, archivedAt: undefined },
+        });
+        set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        afterMutation();
+      },
+
+      purgeLine: async (id) => {
+        const line = get().lines[id];
+        if (!line) return;
+        if (line.isDefault) return; // Inbox can't be purged either.
+        const event = await appendEvent({
+          aggregateId: `line:${id}`,
+          type: 'line.purged',
+          payload: { id },
+        });
+        set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        afterMutation();
+      },
+
+      // ---- Task CRUD (§5.5) --------------------------------------
+
+      createTask: async (task) => {
+        const event = await appendEvent({
+          aggregateId: `task:${task.id}`,
+          type: 'task.created',
+          payload: { ...task },
+        });
+        set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        afterMutation();
+      },
+
+      updateTask: async (id, patch) => {
+        const event = await appendEvent({
+          aggregateId: `task:${id}`,
+          type: 'task.updated',
+          payload: { id, ...patch },
+        });
+        set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        afterMutation();
+      },
+
+      archiveTask: async (id) => {
+        const archivedAt = new Date().toISOString();
+        const event = await appendEvent({
+          aggregateId: `task:${id}`,
+          type: 'task.archived',
+          payload: { id, status: 'archived', archivedAt },
+        });
+        set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        afterMutation();
+      },
+
+      restoreTask: async (id) => {
+        // Restore returns to `pending` by default. Callers that know a
+        // more specific prior status can pass it through updateTask
+        // afterward.
+        const event = await appendEvent({
+          aggregateId: `task:${id}`,
+          type: 'task.restored',
+          payload: { id, status: 'pending', archivedAt: undefined, deletedAt: undefined },
+        });
+        set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        afterMutation();
+      },
+
+      deleteTask: async (id) => {
+        const deletedAt = new Date().toISOString();
+        const event = await appendEvent({
+          aggregateId: `task:${id}`,
+          type: 'task.deleted',
+          payload: { id, status: 'deleted', deletedAt },
+        });
+        set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        afterMutation();
+      },
+
+      purgeTask: async (id) => {
+        const event = await appendEvent({
+          aggregateId: `task:${id}`,
+          type: 'task.purged',
+          payload: { id },
+        });
+        set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        afterMutation();
+      },
+
       openEditSession: async (surface) => {
         const session = await openSession(surface);
         set((draft) => {
@@ -537,6 +786,9 @@ export const useStore = create<DayRailStore>()(
           draft.railInstances = reducerState.railInstances;
           draft.signals = reducerState.signals;
           draft.shifts = reducerState.shifts;
+          draft.lines = reducerState.lines;
+          draft.tasks = reducerState.tasks;
+          draft.adhocEvents = reducerState.adhocEvents;
         });
         await closeSession(sessionId);
         set((draft) => {
@@ -562,4 +814,80 @@ export function selectTemplateList(state: DayRailState): Template[] {
   return Object.values(state.templates);
 }
 
-export type { RailColor };
+// ------------------------------------------------------------------
+// Tasks view selectors (§5.5).
+// ------------------------------------------------------------------
+
+export function selectActiveLines(state: DayRailState): Line[] {
+  return Object.values(state.lines)
+    .filter((l) => l.status === 'active')
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export function selectLinesByKind(
+  state: DayRailState,
+  kind: Line['kind'],
+  status: Line['status'] = 'active',
+): Line[] {
+  return Object.values(state.lines)
+    .filter((l) => l.kind === kind && l.status === status)
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export function selectTasksByLine(
+  state: DayRailState,
+  lineId: string,
+  { includeArchived = false, includeDeleted = false } = {},
+): Task[] {
+  return Object.values(state.tasks)
+    .filter((t) => t.lineId === lineId)
+    .filter((t) => includeDeleted || t.status !== 'deleted')
+    .filter((t) => includeArchived || t.status !== 'archived')
+    .sort((a, b) => a.order - b.order);
+}
+
+/** Has-milestone check — drives the §5.5 Project header's conditional
+ *  progress bar. */
+export function hasMilestone(state: DayRailState, lineId: string): boolean {
+  for (const t of Object.values(state.tasks)) {
+    if (t.lineId !== lineId) continue;
+    if (t.status === 'deleted') continue;
+    if (t.milestonePercent != null) return true;
+  }
+  return false;
+}
+
+/** Project progress: max `milestonePercent` among done tasks in the
+ *  Line. Returns 0 if no done-milestones yet. Callers should guard
+ *  with `hasMilestone` — an all-zero bar on a no-milestone Project is
+ *  misleading. */
+export function selectProjectProgress(state: DayRailState, lineId: string): number {
+  let max = 0;
+  for (const t of Object.values(state.tasks)) {
+    if (t.lineId !== lineId) continue;
+    if (t.status !== 'done') continue;
+    if (t.milestonePercent != null && t.milestonePercent > max) {
+      max = t.milestonePercent;
+    }
+  }
+  return max;
+}
+
+export function countTasks(
+  state: DayRailState,
+  lineId: string,
+): { done: number; open: number; total: number } {
+  let done = 0;
+  let open = 0;
+  for (const t of Object.values(state.tasks)) {
+    if (t.lineId !== lineId) continue;
+    if (t.status === 'deleted' || t.status === 'archived') continue;
+    if (t.status === 'done') done++;
+    else open++;
+  }
+  return { done, open, total: done + open };
+}
+
+export { INBOX_LINE_ID };
+
+export type { Line, Task, AdhocEvent, RailColor };
