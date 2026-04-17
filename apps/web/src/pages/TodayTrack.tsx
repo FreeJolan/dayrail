@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   selectCheckinQueue,
   selectTodayTimeline,
@@ -6,15 +6,12 @@ import {
   useStore,
   type Rail,
   type RailInstance,
-  type ShiftType,
+  type Shift,
 } from '@dayrail/core';
 import { CheckInStrip, type CheckInAction } from '@/components/CheckInStrip';
 import { RailCard } from '@/components/RailCard';
-import {
-  ReasonToast,
-  type ReasonToastState,
-  type ToastAction,
-} from '@/components/ReasonToast';
+import { ReasonToast } from '@/components/ReasonToast';
+import { useReasonToast } from '@/components/useReasonToast';
 import type { RailColor, RailState, SampleRail } from '@/data/sample';
 
 // Page layout — ERD A/B/C decisions:
@@ -30,81 +27,18 @@ export function TodayTrack() {
   const rails = useStore((s) => s.rails);
   const railInstances = useStore((s) => s.railInstances);
   const shifts = useStore((s) => s.shifts);
-  const recordSignal = useStore((s) => s.recordSignal);
-  const recordShift = useStore((s) => s.recordShift);
   const markRailInstance = useStore((s) => s.markRailInstance);
 
-  // Reason toast — shown for ~6s after every check-in action. Chips
-  // accumulate here; we only persist a Shift record when the toast
-  // closes (user is still allowed to Undo, which discards them).
-  const [toast, setToast] = useState<ReasonToastState | null>(null);
-  const toastTagsRef = useRef<string[]>([]);
-  // Tracks which instance was just acted on — used by Undo to roll
-  // the status back to 'pending' via a compensating status-change
-  // event (the signal remains as audit).
-  const toastInstanceRef = useRef<string | null>(null);
+  const { toast, fire, handleAddTag, handleUndo, handleClose } = useReasonToast(
+    'check-in-strip',
+  );
 
   const handleCheckin = useCallback(
     (instanceId: string, action: CheckInAction) => {
-      const inst = railInstances[instanceId];
-      const rail = inst ? rails[inst.railId] : undefined;
-      if (!inst || !rail) return;
-
-      void recordSignal(instanceId, action, 'check-in-strip');
-
-      toastTagsRef.current = [];
-      toastInstanceRef.current = instanceId;
-      // In v0.2 every Rail has a `recurrence` (one-shot Rails aren't a
-      // concept yet), so archiving today's instance is always the
-      // "only today" case — that's what the toast hint is for.
-      setToast({
-        action: action as ToastAction,
-        instanceId,
-        railName: rail.name,
-        isRecurring: true,
-        recommendedTags: recommendedTagsFor(rail.id, railInstances, shifts),
-      });
+      fire(instanceId, action);
     },
-    [railInstances, rails, recordSignal, shifts],
+    [fire],
   );
-
-  const handleToastAddTag = useCallback((tag: string) => {
-    if (!toastTagsRef.current.includes(tag)) {
-      toastTagsRef.current = [...toastTagsRef.current, tag];
-    }
-  }, []);
-
-  const handleToastUndo = useCallback(() => {
-    const id = toastInstanceRef.current;
-    if (id) {
-      void markRailInstance(id, 'pending');
-    }
-    toastTagsRef.current = [];
-    toastInstanceRef.current = null;
-  }, [markRailInstance]);
-
-  const handleToastClose = useCallback(() => {
-    const tags = toastTagsRef.current;
-    const id = toastInstanceRef.current;
-    const currentToast = toast;
-    setToast(null);
-    toastTagsRef.current = [];
-    toastInstanceRef.current = null;
-    // Only defer / archive produce Shift records. Done isn't a
-    // deviation, and the ShiftType union refuses 'done' anyway.
-    if (!id || !currentToast) return;
-    if (currentToast.action === 'done') return;
-    if (tags.length === 0) return;
-    const shiftType: ShiftType = currentToast.action === 'defer' ? 'defer' : 'archive';
-    void recordShift({
-      id: `shift-${id}-${Date.now().toString(36)}`,
-      railInstanceId: id,
-      type: shiftType,
-      at: new Date().toISOString(),
-      payload: {},
-      tags,
-    });
-  }, [recordShift, toast]);
 
   const timeline = useMemo<SampleRail[]>(
     () =>
@@ -161,9 +95,9 @@ export function TodayTrack() {
       <Footnote />
       <ReasonToast
         state={toast}
-        onAddTag={handleToastAddTag}
-        onUndo={handleToastUndo}
-        onClose={handleToastClose}
+        onAddTag={handleAddTag}
+        onUndo={handleUndo}
+        onClose={handleClose}
       />
     </div>
   );
@@ -212,31 +146,6 @@ function useLiveNow(): LiveNow {
 
 function sample(d: Date): LiveNow {
   return { hh: d.getHours(), mm: d.getMinutes(), asDate: d };
-}
-
-// ------------------------------------------------------------------
-// Recommended-tag picker — top 3 by frequency across this Rail's past
-// Shifts. Runs inline at handler time (not a memo) because a toast
-// firing isn't a render-driven event.
-// ------------------------------------------------------------------
-
-function recommendedTagsFor(
-  railId: string,
-  railInstances: Record<string, RailInstance>,
-  shifts: Record<string, { railInstanceId: string; tags?: string[] }>,
-): string[] {
-  const counts = new Map<string, number>();
-  for (const shift of Object.values(shifts)) {
-    const inst = railInstances[shift.railInstanceId];
-    if (!inst || inst.railId !== railId) continue;
-    for (const tag of shift.tags ?? []) {
-      counts.set(tag, (counts.get(tag) ?? 0) + 1);
-    }
-  }
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([tag]) => tag);
 }
 
 // ------------------------------------------------------------------

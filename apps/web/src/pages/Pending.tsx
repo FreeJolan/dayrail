@@ -9,6 +9,8 @@ import {
   type Shift,
 } from '@dayrail/core';
 import { RAIL_COLOR_HEX } from '@/components/railColors';
+import { ReasonToast } from '@/components/ReasonToast';
+import { useReasonToast } from '@/components/useReasonToast';
 import type { RailColor } from '@/data/sample';
 
 // ERD §5.7 — Pending queue. Two sources, one exit:
@@ -40,6 +42,10 @@ export function Pending() {
   const shifts = useStore((s) => s.shifts);
   const markRailInstance = useStore((s) => s.markRailInstance);
 
+  const { toast, fire, handleAddTag, handleUndo, handleClose } = useReasonToast(
+    'pending-queue',
+  );
+
   const rows = useMemo<PendingRow[]>(() => {
     const now = new Date();
     return selectPendingQueue({ railInstances }, now)
@@ -62,16 +68,16 @@ export function Pending() {
 
   const handleComplete = useCallback(
     (id: string) => {
-      void markRailInstance(id, 'done');
+      fire(id, 'done');
     },
-    [markRailInstance],
+    [fire],
   );
 
   const handleArchive = useCallback(
     (id: string) => {
-      void markRailInstance(id, 'archived');
+      fire(id, 'archive');
     },
-    [markRailInstance],
+    [fire],
   );
 
   const handleReschedule = useCallback((_id: string) => {
@@ -121,6 +127,12 @@ export function Pending() {
       )}
 
       <Footnote />
+      <ReasonToast
+        state={toast}
+        onAddTag={handleAddTag}
+        onUndo={handleUndo}
+        onClose={handleClose}
+      />
     </div>
   );
 }
