@@ -21,6 +21,7 @@ import {
   type Task,
 } from '@dayrail/core';
 import { RAIL_COLOR_HEX } from '@/components/railColors';
+import { Tooltip } from '@/components/primitives/Tooltip';
 
 // ERD §5.5 Tasks view. Chunk E = list + filters + search + task CRUD.
 // Scheduling popover (Chunk F) + Trash hard-delete UX (Chunk G) ship
@@ -818,20 +819,21 @@ function IconAction({
   danger?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={label}
-      title={title}
-      className={clsx(
-        'rounded-sm p-1 transition',
-        danger
-          ? 'text-ink-tertiary hover:bg-surface-3 hover:text-red-500'
-          : 'text-ink-tertiary hover:bg-surface-3 hover:text-ink-primary',
-      )}
-    >
-      {icon}
-    </button>
+    <Tooltip content={title}>
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={label}
+        className={clsx(
+          'rounded-sm p-1 transition',
+          danger
+            ? 'text-ink-tertiary hover:bg-surface-3 hover:text-red-500'
+            : 'text-ink-tertiary hover:bg-surface-3 hover:text-ink-primary',
+        )}
+      >
+        {icon}
+      </button>
+    </Tooltip>
   );
 }
 
