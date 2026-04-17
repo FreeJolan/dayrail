@@ -1,6 +1,6 @@
 # DayRail Product Design Document (ERD)
 
-> **Status**: living document — any decision here can be overturned. Last updated 2026-04-18 (terminology audit: `Chunk` renamed to `Task` end-to-end (types + events + schema + UI + ERD) to retire an internal-only jargon term; `Line` stays as an internal umbrella type (`kind: 'project' \| 'habit' \| 'group'`) but **the word "Line" never appears in UI copy** — surfaces always show the concrete Project / Habit / Tag; the `Pending` view is renamed `待决定 / Unresolved` so it no longer overloads the `status='pending'` enum; §5.7 Pending drops its 24h aging filter — it's now the complete "awaiting a decision" set, with the check-in strip serving as the "last-24h" subset view). History: 2026-04-17 (check-in action set simplified: the old four-button `Done / Skip / Shift / Ignore` + four-sub-action sheet collapses into three buttons `Done / Later / Archive`; `RailInstance.status` becomes `pending / done / deferred / archived` (`active` and `skipped` retired — "currently happening" is wall-clock-derived); Shift sheet replaced by a 6-second Reason toast (3 quick-reason tag chips + Undo, no mandatory reason); Postpone / Replace / Swap / Resize removed from the Shift types — within-day postponing is handled by Cycle-View drag, the rest deferred to v0.3; Pending queue renamed and now absorbs both explicit `deferred` items and stale-`pending` items > 24h — two sources, one exit; §5.8 Review heatmap's three-part hatching semantics rebound to `deferred / archived / pending-stale`). History: 2026-04-16 (Group A UI baseline: sync-status badge, Now-View rhythm bar, Ad-hoc overlay, generalized Edit Sessions, Cycle notation → C1, per-view date-format table; Group B Now-View structure: multi-task pill row, three Slot shapes, Next-Rail visual spec, removal of the left rail visualizer, `CURRENT RAIL` chip, Now top-bar `Now` + Mono subtitle; Group C Today-Track Shift interactions: Skipped state via hatching, desktop hover-revealed action bar, Active main CTA → tonal `Done`, unified Shift-tag sheet, single timeline with no bento; Group D Cycle-View skeleton: per-template stacked sections, top day-header as the sole template-switch entry, Cycle pager picker, summary-strip aggregates, `⤺ Undo this edit` button, three-part hatching semantics, Backlog as split drawer; Group E Template Editor: no Save button + first-run inline banner, Radix 10-color popover, sticky tab bar + 2px color strip + dashed `+ New template`, summary strip, card-style Rail row + time-pill popover picker, inter-row gap chip `+ Fill Rail`, `⋯` row menu carrying Line binding / check-in toggle; notification rework: drop OS push / Capacitor notifications / permission pipeline, Signal collapses to a `showInCheckin` boolean, §5.6 and §5.7 unified — the check-in strip and the pending-decisions queue are two tenses of one mechanism; Group F missing screens: Projects / Settings share the master-detail form, Review per-scope waterfall + rhythm-match heatmap (state tints + the three-part hatching semantics), pending-decisions queue is date-reverse grouped with four inline actions per row and the side-nav shows a `·` dot without a number, Calendar is a standard month grid + per-date popover + Advanced-rules drawer with four sections, new §5.9 Settings defines five sections + a three-way theme toggle defaulting to follow-system + Language in Appearance / Time format + AI output-locale in Advanced; Group G design language: Terracotta CTA uses `orange-9/10/11` three solid tones (no gradients); No-Line Rule with explicit whitelist (decorative color strips + sticky hairline + focus rings); four-tier Surface tokens `sand-1..4` replace `border`-based hierarchy; radius tokens `sharp / sm / md / lg` = `0 / 6 / 10 / 16`; zero glassmorphism app-wide; Intentional Asymmetry as the default layout principle. Visual-implementation adjustments: Rail palette drops `olive / mauve / gray` (visually too close to sage / slate, or identity-less), swaps in `grass / indigo / plum` to fill the missing saturated-green / cool-blue / creative-purple slots — still 10 colors but every one perceptibly distinct. CN primary font swapped PingFang → Noto Sans SC (Source Han Sans SC) for cross-platform consistency. Terracotta CTA re-bound from `orange-9` to `bronze-9` — `orange-9` read as SaaS-vivid on screen; `bronze-9` sits much closer to the ERD's original #C97B4A "warm terracotta" intent).
+> **Status**: living document — any decision here can be overturned. Last updated 2026-04-18 (§5.5 refactored from `Projects / Lines View` → `Tasks View`, positioned as the primary task-management surface — left-column nav tree (Inbox + Projects + Habits + Tags + Trash) + cross-Project task list with search / filter + a scheduling popover offering two modes (Bind-to-Rail · default / Free-time · escape hatch); a built-in Inbox Line (`isDefault: true`, undeletable) becomes the default container for tasks created without a Project; comprehensive reversibility + soft-delete model (Task / Line / AdhocEvent `status` gains `'deleted'`, Trash entry + a confirmed `*.purged` hard delete); `AdhocEvent` gains `taskId` to back the free-time scheduling mode; Project progress bar becomes conditional (only rendered when at least one task has a milestone), task count always visible; open-ended Projects (missing `plannedEnd`) are explicitly NOT a risk signal; §10 Task/Line/AdhocEvent types updated; terminology audit: `Chunk` renamed to `Task` end-to-end (types + events + schema + UI + ERD) to retire an internal-only jargon term; `Line` stays as an internal umbrella type (`kind: 'project' \| 'habit' \| 'group'`) but **the word "Line" never appears in UI copy** — surfaces always show the concrete Project / Habit / Tag; the `Pending` view is renamed `待决定 / Unresolved` so it no longer overloads the `status='pending'` enum; §5.7 Pending drops its 24h aging filter — it's now the complete "awaiting a decision" set, with the check-in strip serving as the "last-24h" subset view). History: 2026-04-17 (check-in action set simplified: the old four-button `Done / Skip / Shift / Ignore` + four-sub-action sheet collapses into three buttons `Done / Later / Archive`; `RailInstance.status` becomes `pending / done / deferred / archived` (`active` and `skipped` retired — "currently happening" is wall-clock-derived); Shift sheet replaced by a 6-second Reason toast (3 quick-reason tag chips + Undo, no mandatory reason); Postpone / Replace / Swap / Resize removed from the Shift types — within-day postponing is handled by Cycle-View drag, the rest deferred to v0.3; Pending queue renamed and now absorbs both explicit `deferred` items and stale-`pending` items > 24h — two sources, one exit; §5.8 Review heatmap's three-part hatching semantics rebound to `deferred / archived / pending-stale`). History: 2026-04-16 (Group A UI baseline: sync-status badge, Now-View rhythm bar, Ad-hoc overlay, generalized Edit Sessions, Cycle notation → C1, per-view date-format table; Group B Now-View structure: multi-task pill row, three Slot shapes, Next-Rail visual spec, removal of the left rail visualizer, `CURRENT RAIL` chip, Now top-bar `Now` + Mono subtitle; Group C Today-Track Shift interactions: Skipped state via hatching, desktop hover-revealed action bar, Active main CTA → tonal `Done`, unified Shift-tag sheet, single timeline with no bento; Group D Cycle-View skeleton: per-template stacked sections, top day-header as the sole template-switch entry, Cycle pager picker, summary-strip aggregates, `⤺ Undo this edit` button, three-part hatching semantics, Backlog as split drawer; Group E Template Editor: no Save button + first-run inline banner, Radix 10-color popover, sticky tab bar + 2px color strip + dashed `+ New template`, summary strip, card-style Rail row + time-pill popover picker, inter-row gap chip `+ Fill Rail`, `⋯` row menu carrying Line binding / check-in toggle; notification rework: drop OS push / Capacitor notifications / permission pipeline, Signal collapses to a `showInCheckin` boolean, §5.6 and §5.7 unified — the check-in strip and the pending-decisions queue are two tenses of one mechanism; Group F missing screens: Projects / Settings share the master-detail form, Review per-scope waterfall + rhythm-match heatmap (state tints + the three-part hatching semantics), pending-decisions queue is date-reverse grouped with four inline actions per row and the side-nav shows a `·` dot without a number, Calendar is a standard month grid + per-date popover + Advanced-rules drawer with four sections, new §5.9 Settings defines five sections + a three-way theme toggle defaulting to follow-system + Language in Appearance / Time format + AI output-locale in Advanced; Group G design language: Terracotta CTA uses `orange-9/10/11` three solid tones (no gradients); No-Line Rule with explicit whitelist (decorative color strips + sticky hairline + focus rings); four-tier Surface tokens `sand-1..4` replace `border`-based hierarchy; radius tokens `sharp / sm / md / lg` = `0 / 6 / 10 / 16`; zero glassmorphism app-wide; Intentional Asymmetry as the default layout principle. Visual-implementation adjustments: Rail palette drops `olive / mauve / gray` (visually too close to sage / slate, or identity-less), swaps in `grass / indigo / plum` to fill the missing saturated-green / cool-blue / creative-purple slots — still 10 colors but every one perceptibly distinct. CN primary font swapped PingFang → Noto Sans SC (Source Han Sans SC) for cross-platform consistency. Terracotta CTA re-bound from `orange-9` to `bronze-9` — `orange-9` read as SaaS-vivid on screen; `bronze-9` sits much closer to the ERD's original #C97B4A "warm terracotta" intent).
 >
 > This describes DayRail's product logic, interaction design, and tech choices. It is not a final blueprint — it captures intent and trade-offs (including paths we considered and rejected) so contributors can see *why* the code looks the way it does.
 >
@@ -117,7 +117,9 @@ These stories act as a design touchstone — any new feature should plug natural
 - **Shift**: A record of a `pending → *` transition on a RailInstance. v0.2 keeps two types: `defer` (Later; lands in Pending) and `archive` (no more scheduling). May optionally carry tags from a global shared library (see §5.7). Within-day postponing is handled by Cycle-View drag; `swap / resize / replace` are deferred to v0.3.
 - **Signal**: Lightweight check-in at a Rail boundary — named after the railway signal at each crossing: it lights up, it doesn't command. `continue` / `adjust` / `skip`.
 - **Ad-hoc Event**: A one-off time block not belonging to any template. Higher priority than template resolution. Optionally attached to a Line.
-- **Line (internal container type · never in UI copy)**: DayRail's only multi-Rail grouping concept, forming a continuum. `Line` exists only in types / schema / event log — UI views / menus / copy always show the concrete shape per `kind`: `Project` / `Habit` / `Tag` (formerly "Group").
+- **Line (internal container type · never in UI copy)**: DayRail's only multi-Rail / Task grouping concept, forming a continuum. `Line` exists only in types / schema / event log — UI views / menus / copy always show the concrete shape per `kind`: `Project` / `Habit` / `Tag` (formerly "Group").
+  - **Three states**: `status: 'active' | 'archived' | 'deleted'`. `archived` is a user-intentional terminal state (restorable); `deleted` is a soft delete (visible in Trash, restorable; hard delete only via an explicit "permanently delete" confirmation).
+  - **Inbox is a built-in singleton Line**: `id = 'line-inbox'`, `kind = 'project'`, `isDefault: true`, undeletable and uneditable. Every task the user creates without picking a Project lands here (see §5.5.1).
   - No phases, no tasks → **Pure group (tag-like)**. Just for labeling (e.g., "Work", "Medical").
   - With phases → **Habit Line (UI: "Habit")**. Open-ended, evolves by phases (duration, target params, advance rules: by days / completions / manual). The home for **daily recurring things** (morning run, English reading) — high-frequency recurrence is not a Project, it's a Habit.
   - With tasks → **Project Line (UI: "Project")**. Finite but append-extensible. See the Task entry below.
@@ -452,36 +454,128 @@ Net effect: the user-facing vocabulary stays Template / Track / Rail / Shift / L
   - Closing the drawer commits immediately — no Save button, same "edit-live + Edit-Session undo" model as Template Editor; drawer top-right carries `N changes · ⤺ Undo this edit`.
 - **Ad-hoc Event**: added directly on the Calendar; independent of any template.
 
-### 5.5 Projects / Lines View
+### 5.5 Tasks View
 
-**Two entry points** (same data, two usage postures):
+> v0.2.1 refactor: the section formerly titled `Projects / Lines View` is renamed `Tasks`. "Projects" was too narrow — what users actually need is a **primary task-management surface** that combines the core TODO-tool capabilities (create / delete / complete / restore / search / filter) with DayRail's scheduling semantics (Rail / Cycle / Slot). Project remains a first-class grouping dimension, just not the top-level view name.
 
-- Top-nav tab `Projects` — the standalone view, for "I want to manage projects right now".
-- Collapsible **Projects sidebar** inside Cycle View — for drag-and-drop scheduling during planning.
+**Philosophical position**: Tasks is the underlying "TODO management" layer; Rail / Cycle / Template is the "scheduling philosophy" layered on top. The two are **not mutually exclusive** — most tasks get scheduled onto a Rail (to ride the day's rhythm), a minority of one-off events (medical appointments, travel) take the free-time path (backed by an Ad-hoc Event). Both paths are legal; Rail is the default.
 
-**Layout (standalone view)**:
+**Desktop layout**:
 
-- **Desktop master-detail**: a fixed 320px left column always shows the list (Type tabs + Active/Archived sub-tabs + Line cards); the right column takes the remaining width and renders the selected Line's detail.
-- **Empty state (nothing selected)**: the right column shows a placeholder card — "Pick a Line from the left / or create a new one".
-- **Mobile** collapses to a single-column list page → tap a Line → push to its detail page (breadcrumb `Projects / Project name`, back button top-left). Settings (§5.9) reuses the same master-detail pattern.
-- Dense editing flows (add Task, arrange Phases, adjust progress, archive, rename) happen on one screen — no repeated push navigation.
+- **Left column (256 px · nav tree)**:
+  - 📥 **Inbox** — default container for tasks that don't belong to any Project (see §5.5.1)
+  - **Projects** group — ordered by `createdAt` desc; each item shows color strip + name + unfinished count
+  - **Habits** group — v0.4; MVP placeholder
+  - **Tags** group — v0.3+
+  - Footer: `+ New Project / Habit`
+  - Bottom: `📦 Archived` / `🗑 Trash` — collapsed by default
+- **Main (right)**:
+  - Top bar: search field + filter chips + a persistent `+ New task` input (Enter commits at the selected location; falls back to Inbox)
+  - List: filters by current left-nav selection; grouped by Project by default (or "milestone / ordinary" when already inside a single Project)
+- **Mobile**: collapses to a two-level page (nav → list).
 
-**List layer**:
+**Task row anatomy**:
 
-- All Lines grouped by kind tab: `Project` / `Habit` / pure grouping (MVP ships Project first; Habit per §12 roadmap).
-- Sub-tabs for `Active` / `Archived`.
-- Card fields: color bar, name, planned window (if the Project has `plannedStart` / `plannedEnd`), primary progress bar (Project = max `milestonePercent` among done Tasks), items-done / items-total.
-- Active Projects past their `plannedEnd` by 7 days get an "overdue" badge.
+```
+[●] Wire data layer to store   📅 Wed · Work · Code   [DayRail]  ⋯
+ ↑                            ↑ schedule info          ↑ Project badge
+ status icon                    (first-class, not meta)  (cross-Project lists only)
+```
 
-**Detail layer**:
+- **Status icon**: `○` pending / `◎` in-progress / `✓` done / `🗑` deleted. Single click toggles pending ↔ done.
+- **Title**: single line truncated; hover / click opens a detail drawer.
+- **Schedule info (center, first-class, not metadata)**:
+  - Rail-bound: `📅 Wed · Work · Code` (date + Rail name; `⚠` if past without completion)
+  - Free-time Ad-hoc: `🕒 Wed 14:30–16:00`
+  - Unscheduled: `— Not scheduled` (visually faintest)
+  - Click → opens the scheduling popover (see §5.5.2)
+- **Project pill**: shown in Inbox / "All tasks" / search results; hidden when already inside a Project detail (redundant).
+- **Hover actions**: Complete · Archive · Schedule… · Delete · ⋯
 
-- Habit: Phase timeline (current highlighted), linked Rails, Shift distribution.
-- Project:
-  - Task list, draggable to reorder. Each row shows title, `milestonePercent` (if any), status, sub-item completion (e.g., `2/5`), and the Slot it's assigned to (date + Rail name).
-  - Unassigned Tasks cluster at the top in a "backlog" region; drag them from here into target Slots via the Cycle-View sidebar.
-  - Bottom "+ Add Task" — add either a supplementary item (no `milestonePercent`) or a milestone (set `milestonePercent`).
-- Edit entry: add/remove Phases/Tasks manually, or press `AI decompose` to launch the multi-step wizard (§6).
-- **Phase transition markers**: when a Habit Line advances from one Phase to the next (e.g., 30min → 40min morning runs), a **`PhaseTransition` marker is placed on the timeline** for that date. Render form: **a small inline chip** attached to the Rail where the transition fired (e.g., "→ Phase 2: 40min"), not a full-width divider. Tap / hover reveals the before/after. The chip is visible in Today Track, Cycle View, and Review — answering "why did my Rail suddenly change?" without requiring the user to dig into the Line's detail page. Markers are not Shifts (they're not deviations from a plan); they're a first-class event type in the event log.
+**Filter chips (top row)**:
+
+- **Status** (mutex): `All` / `Open` / `Completed` / `Archived` / `Trash`
+- **Schedule** (mutex): `Any` / `Scheduled` / `Unscheduled` / `Today` / `This week` / `Overdue`
+- **Ownership**: Project pills, multi-select (intersects with left-nav selection)
+- **Search field**: substring match on `title` + `note`
+
+**Project header (when a Project is selected, above the list)**:
+
+- Color strip + name + status badge (active / archived)
+- **Task count always visible**: `7 / 15 tasks`
+- **Progress bar is conditional**: rendered **only if** at least one task in the Project has `milestonePercent` set (bar width = max `milestonePercent` among done tasks). A Project without any milestone never shows a progress bar — avoids "progress stuck at 0%" confusion.
+- Time window: shown only if `plannedStart` / `plannedEnd` exist; **a missing `plannedEnd` is not a risk signal** — open-ended Projects are legitimate and should not be visually demoted.
+- `⋯` menu: Rename / Recolor / Edit time window / Archive / Delete (soft).
+
+#### 5.5.1 Inbox
+
+- **System built-in, global singleton, undeletable.** id fixed as `line-inbox`; `Line.isDefault: true`; UI offers no rename / recolor / delete.
+- **Auto-seeded on first launch** alongside sample templates. Even if the user clears every other Line, Inbox persists.
+- **Placement rule**: new task without a picked Project → `lineId = 'line-inbox'`.
+- **Exit**: the user drags an Inbox task onto any Project; `lineId` is updated, the task re-homes.
+- Inbox tasks support the exact same schedule / complete / archive / delete actions as Project tasks — **zero mental-model shift**.
+
+#### 5.5.2 Two scheduling modes (Rail default, free-time escape hatch)
+
+Clicking "Schedule…" on any task row opens the popover:
+
+```
+┌──────────────────────────────────────┐
+│  To date:    [📅 2026-04-22]        │
+│                                      │
+│  Time slot:                          │
+│  ◉ Bind to a Rail         ← default │
+│     [⏳ Work · Code  14:00–16:00 ▾] │
+│  ○ Free time                        │
+│     [14:30] → [16:00]                │
+│                                      │
+│               [Cancel]   [Schedule] │
+└──────────────────────────────────────┘
+```
+
+**Mode A · Bind to Rail** (default):
+- The dropdown lists every Rail on that day's Template.
+- Confirm → write / update a Slot (`cycleId, date, railId`) and point the task's `slot` at it. Multiple tasks can share one Slot (`taskIds` is an array).
+- If the day has no Template (or the Template has no Rails) → the option is disabled with a hint: "No Rails on this day's template — use free time, or set the template in Cycle View first."
+
+**Mode B · Free time**:
+- The user picks start + end directly.
+- Confirm → create an `AdhocEvent` (`date, startMinutes, durationMinutes, taskId`); the task's own `slot` stays empty.
+- The Ad-hoc renders with the standard 1.5px dashed outline in Today Track / Cycle View (§5.2 overlay rules).
+- Use cases: medical appointments, travel blocks, one-off fixed-time commitments.
+
+**Unschedule** (going from scheduled back to unscheduled):
+- Mode A: remove this task from the Slot's `taskIds` (drop the row if empty).
+- Mode B: soft-delete the backing AdhocEvent.
+- **Both paths have no side effects** — no Shift record, no task-status change.
+
+**Why Mode A is the default**: Rail rhythm is DayRail's distinguishing value. Mode A keeps the schedule legible. Mode B is an escape hatch, not a recommended path. Both are always available; defaulting to A serves the 95% case without blocking the 5%.
+
+#### 5.5.3 Reversibility & soft delete
+
+Every destructive action defaults to **soft delete**, with Trash as the recovery surface. The only hard-delete path is "Delete permanently" from within Trash (confirmed dialog).
+
+| Action | Kind | Undo path |
+|---|---|---|
+| Complete task | Status toggle | Click status icon again / "Mark as open" |
+| Archive task | Status toggle | "Restore to active" |
+| Delete task | Soft (`Task.status = 'deleted'`) | Trash filter → Restore (returns to pre-delete status) |
+| Purge task | Hard (emits `task.purged`, DB row removed) | **None** — confirmation dialog says so explicitly |
+| Delete Project (Line) | Soft (`Line.status = 'deleted'`) | Same as above |
+| Delete AdhocEvent | Soft | Same as above |
+| Delete Rail (template) | v0.2.1 still archive-only | Un-archive |
+
+**Cascade for deleted tasks**: any existing schedule is released (clear `slot` or soft-delete the backing Ad-hoc). SubItems are preserved. **Restore does not re-establish the schedule** — the user can re-schedule from Trash.
+
+**Event log**: `task.deleted` / `task.restored` / `task.purged`; `line.deleted` / `line.restored`; `adhoc.deleted` / `adhoc.restored`. Edit Session undo covers `*.deleted`; `*.purged` is explicitly out of session scope.
+
+---
+
+**Projects in Cycle View**: the existing Backlog drawer (§5.3) stays — its role is "drag a task from backlog onto a slot". Tasks view and the drawer are complementary surfaces (manage-tasks vs plan-time).
+
+**Habit / Phase transitions** still live on Habit Lines (§4.1) and land in v0.4. In Tasks view they'll sit in the `Habits` nav group with their own list rules (rhythm tracking, not task-pile management); concrete shape is deferred to v0.4.
+
+---
 
 ### 5.6 Signal: the check-in strip on app open
 
@@ -1108,14 +1202,16 @@ type Line = {
   color?: string;             // Radix scale token (shared palette with Rail)
   createdAt: string;
   archivedAt?: string;
-  status: 'active' | 'archived';
+  deletedAt?: string;         // soft-delete timestamp
+  status: 'active' | 'archived' | 'deleted';
+  isDefault?: boolean;        // Lines with isDefault=true cannot be deleted/renamed/recolored (reserved for Inbox, id='line-inbox')
   // These three fields decide the Line's "shape"; all optional:
   phases?: Phase[];           // present → Habit
   currentPhaseId?: string;
-  tasks?: Task[];           // present → Project
+  tasks?: Task[];             // present → Project
   plannedStart?: string;      // YYYY-MM-DD, Project planning window (soft hint)
-  plannedEnd?: string;        // YYYY-MM-DD; if still active 7d past this date, show "overdue" badge
-  // If both phases and tasks are absent, the Line is a pure group (tag).
+  plannedEnd?: string;        // YYYY-MM-DD; a Project without plannedEnd is a legitimate open-ended project, NOT a risk signal
+  // If both phases and tasks are absent, the Line is a pure group (Tag).
 };
 
 type AdhocEvent = {
@@ -1129,6 +1225,10 @@ type AdhocEvent = {
                       // + slate step 2–3 very-light fill; outline color may vary, fill does not (see §5.2).
   lineId?: string;    // Optional grouping: drives whether the Line name renders next to the ADHOC chip and
                       // provides the default outline color.
+  taskId?: string;    // §5.5.2 "free-time" scheduling mode: a Task refers back via this field. Soft-deleted when
+                      // the Task is unscheduled.
+  status: 'active' | 'deleted';   // soft delete
+  deletedAt?: string;
 };
 
 type Phase = {
@@ -1144,17 +1244,28 @@ type Phase = {
 
 type Task = {
   id: string;
-  lineId: string;              // owning Project Line
+  lineId: string;              // owning Line; tasks without a chosen Project default to 'line-inbox'
   title: string;
+  note?: string;               // free-text notes (search scans this field)
   milestonePercent?: number;   // 0–100; if set, this task is a milestone; otherwise an "extra item"
   subItems: SubItem[];         // internal checklist, not independently scheduled
-  status: 'pending' | 'in_progress' | 'done';
+  status:
+    | 'pending'
+    | 'in_progress'
+    | 'done'
+    | 'archived'      // §5.5.3 archived — user parked it; restorable
+    | 'deleted';      // §5.5.3 soft-deleted — hidden by default; visible in Trash
   doneAt?: string;
+  archivedAt?: string;
+  deletedAt?: string;
   order: number;               // ordering within the Line (drag to reorder)
-  targetRailIds?: string[];    // optional: restrict which Rails' Slots this task can land in
+  targetRailIds?: string[];    // optional: restrict which Rails' Slots this task can land in (v0.3+)
   railOverrides?: Partial<Rail>;
-  // Assignment into a Slot: at most one; absent = still in backlog
-  assignment?: { cycleId: string; date: string; railId: string };
+  // §5.5.2 scheduling — two mutually exclusive modes:
+  //   Mode A, bind to Rail ─▶ slot = { cycleId, date, railId }
+  //   Mode B, free time    ─▶ slot = empty; an AdhocEvent.taskId points back
+  //   Unscheduled          ─▶ slot = empty AND no AdhocEvent references the task
+  slot?: { cycleId: string; date: string; railId: string };
 };
 
 type SubItem = {
