@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { clsx } from 'clsx';
 import { X } from 'lucide-react';
@@ -66,10 +66,22 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
 
   if (typeof document === 'undefined' || !state) return null;
 
-  const chips =
-    state.recommendedTags && state.recommendedTags.length > 0
-      ? state.recommendedTags.slice(0, 3)
-      : FALLBACK_TAGS;
+  // Always show 3 chips: history-top-N first (can be 0..3) and fill the
+  // rest from the static fallback, deduped. Prevents "I tagged '天气'
+  // once and now that's the only option" — which the all-or-nothing
+  // branch introduced.
+  const chips = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    const push = (tag: string): void => {
+      if (seen.has(tag) || out.length >= 3) return;
+      seen.add(tag);
+      out.push(tag);
+    };
+    for (const t of state.recommendedTags ?? []) push(t);
+    for (const t of FALLBACK_TAGS) push(t);
+    return out;
+  }, [state.recommendedTags]);
 
   const handleChip = (tag: string): void => {
     if (appliedTags.includes(tag)) return;
