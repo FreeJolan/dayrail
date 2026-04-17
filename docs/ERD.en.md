@@ -1,6 +1,6 @@
 # DayRail Product Design Document (ERD)
 
-> **Status**: living document — any decision here can be overturned. Last updated 2026-04-16 (Group A UI baseline: sync-status badge, Now-View rhythm bar, Ad-hoc overlay, generalized Edit Sessions, Cycle notation → C1, per-view date-format table; Group B Now-View structure: multi-chunk pill row, three Slot shapes, Next-Rail visual spec, removal of the left rail visualizer, `CURRENT RAIL` chip, Now top-bar `Now` + Mono subtitle; Group C Today-Track Shift interactions: Skipped state via hatching, desktop hover-revealed action bar, Active main CTA → tonal `Done`, unified Shift-tag sheet, single timeline with no bento; Group D Cycle-View skeleton: per-template stacked sections, top day-header as the sole template-switch entry, Cycle pager picker, summary-strip aggregates, `⤺ Undo this edit` button, three-part hatching semantics, Backlog as split drawer; Group E Template Editor: no Save button + first-run inline banner, Radix 10-color popover, sticky tab bar + 2px color strip + dashed `+ New template`, summary strip, card-style Rail row + time-pill popover picker, inter-row gap chip `+ Fill Rail`, `⋯` row menu carrying Line binding / check-in toggle; notification rework: drop OS push / Capacitor notifications / permission pipeline, Signal collapses to a `showInCheckin` boolean, §5.6 and §5.7 unified — the check-in strip and the pending-decisions queue are two tenses of one mechanism; Group F missing screens: Projects / Settings share the master-detail form, Review per-scope waterfall + rhythm-match heatmap (state tints + the three-part hatching semantics), pending-decisions queue is date-reverse grouped with four inline actions per row and the side-nav shows a `·` dot without a number, Calendar is a standard month grid + per-date popover + Advanced-rules drawer with four sections, new §5.9 Settings defines five sections + a three-way theme toggle defaulting to follow-system + Language in Appearance / Time format + AI output-locale in Advanced; Group G design language: Terracotta CTA uses `orange-9/10/11` three solid tones (no gradients); No-Line Rule with explicit whitelist (decorative color strips + sticky hairline + focus rings); four-tier Surface tokens `sand-1..4` replace `border`-based hierarchy; radius tokens `sharp / sm / md / lg` = `0 / 6 / 10 / 16`; zero glassmorphism app-wide; Intentional Asymmetry as the default layout principle. Visual-implementation adjustments: Rail palette drops `olive / mauve / gray` (visually too close to sage / slate, or identity-less), swaps in `grass / indigo / plum` to fill the missing saturated-green / cool-blue / creative-purple slots — still 10 colors but every one perceptibly distinct. CN primary font swapped PingFang → Noto Sans SC (Source Han Sans SC) for cross-platform consistency. Terracotta CTA re-bound from `orange-9` to `bronze-9` — `orange-9` read as SaaS-vivid on screen; `bronze-9` sits much closer to the ERD's original #C97B4A "warm terracotta" intent).
+> **Status**: living document — any decision here can be overturned. Last updated 2026-04-17 (check-in action set simplified: the old four-button `Done / Skip / Shift / Ignore` + four-sub-action sheet collapses into three buttons `Done / Later / Archive`; `RailInstance.status` becomes `pending / done / deferred / archived` (`active` and `skipped` retired — "currently happening" is wall-clock-derived); Shift sheet replaced by a 6-second Reason toast (3 quick-reason tag chips + Undo, no mandatory reason); Postpone / Replace / Swap / Resize removed from the Shift types — within-day postponing is handled by Cycle-View drag, the rest deferred to v0.3; Pending queue renamed and now absorbs both explicit `deferred` items and stale-`pending` items > 24h — two sources, one exit; §5.8 Review heatmap's three-part hatching semantics rebound to `deferred / archived / pending-stale`). History: 2026-04-16 (Group A UI baseline: sync-status badge, Now-View rhythm bar, Ad-hoc overlay, generalized Edit Sessions, Cycle notation → C1, per-view date-format table; Group B Now-View structure: multi-chunk pill row, three Slot shapes, Next-Rail visual spec, removal of the left rail visualizer, `CURRENT RAIL` chip, Now top-bar `Now` + Mono subtitle; Group C Today-Track Shift interactions: Skipped state via hatching, desktop hover-revealed action bar, Active main CTA → tonal `Done`, unified Shift-tag sheet, single timeline with no bento; Group D Cycle-View skeleton: per-template stacked sections, top day-header as the sole template-switch entry, Cycle pager picker, summary-strip aggregates, `⤺ Undo this edit` button, three-part hatching semantics, Backlog as split drawer; Group E Template Editor: no Save button + first-run inline banner, Radix 10-color popover, sticky tab bar + 2px color strip + dashed `+ New template`, summary strip, card-style Rail row + time-pill popover picker, inter-row gap chip `+ Fill Rail`, `⋯` row menu carrying Line binding / check-in toggle; notification rework: drop OS push / Capacitor notifications / permission pipeline, Signal collapses to a `showInCheckin` boolean, §5.6 and §5.7 unified — the check-in strip and the pending-decisions queue are two tenses of one mechanism; Group F missing screens: Projects / Settings share the master-detail form, Review per-scope waterfall + rhythm-match heatmap (state tints + the three-part hatching semantics), pending-decisions queue is date-reverse grouped with four inline actions per row and the side-nav shows a `·` dot without a number, Calendar is a standard month grid + per-date popover + Advanced-rules drawer with four sections, new §5.9 Settings defines five sections + a three-way theme toggle defaulting to follow-system + Language in Appearance / Time format + AI output-locale in Advanced; Group G design language: Terracotta CTA uses `orange-9/10/11` three solid tones (no gradients); No-Line Rule with explicit whitelist (decorative color strips + sticky hairline + focus rings); four-tier Surface tokens `sand-1..4` replace `border`-based hierarchy; radius tokens `sharp / sm / md / lg` = `0 / 6 / 10 / 16`; zero glassmorphism app-wide; Intentional Asymmetry as the default layout principle. Visual-implementation adjustments: Rail palette drops `olive / mauve / gray` (visually too close to sage / slate, or identity-less), swaps in `grass / indigo / plum` to fill the missing saturated-green / cool-blue / creative-purple slots — still 10 colors but every one perceptibly distinct. CN primary font swapped PingFang → Noto Sans SC (Source Han Sans SC) for cross-platform consistency. Terracotta CTA re-bound from `orange-9` to `bronze-9` — `orange-9` read as SaaS-vivid on screen; `bronze-9` sits much closer to the ERD's original #C97B4A "warm terracotta" intent).
 >
 > This describes DayRail's product logic, interaction design, and tech choices. It is not a final blueprint — it captures intent and trade-offs (including paths we considered and rejected) so contributors can see *why* the code looks the way it does.
 >
@@ -84,7 +84,7 @@ These stories act as a design touchstone — any new feature should plug natural
 
 > Junior, three weeks to deliver a group report.
 >
-> She creates a Project "Market research report" (planned window 2026-04-20 → 2026-05-10) and breaks it into Chunks: "Pick a topic 20%", "Send out survey 50%", "Analyze data 80%", "First draft 100%", plus a few supplementary items without a milestone percent ("tidy references", "format check"). She drags each Chunk into a Slot on a specific CycleDay + Rail ("Analyze data" goes into next Wednesday 14:00–16:00). A teammate delay slips "Send out survey" by two days — she Postpones just that RailInstance; other Chunks are unaffected. When the 100% Chunk is marked done, the Project auto-archives.
+> She creates a Project "Market research report" (planned window 2026-04-20 → 2026-05-10) and breaks it into Chunks: "Pick a topic 20%", "Send out survey 50%", "Analyze data 80%", "First draft 100%", plus a few supplementary items without a milestone percent ("tidy references", "format check"). She drags each Chunk into a Slot on a specific CycleDay + Rail ("Analyze data" goes into next Wednesday 14:00–16:00). A teammate delay slips "Send out survey" by two days — she clicks "Later" on that RailInstance (`status → deferred`), it joins the Pending queue, then in Cycle View she drags it to Friday, which resets plannedStart/End back to `pending`. Other Chunks are unaffected. When the 100% Chunk is marked done, the Project auto-archives.
 
 ### D — Lin, the no-AI minimalist
 
@@ -113,8 +113,8 @@ These stories act as a design touchstone — any new feature should plug natural
   - Ordered `chunkIds` — Chunk assignments belonging to some Project.
   The Slot is design-time (what you plan for this position); on that day it materializes into a **RailInstance** (run-time).
 - **Track**: One day's timeline, composed of RailInstances. Generated from that day's CycleDay + template; edits made on Today Track do not mutate the template or its CycleDay.
-- **RailInstance**: The run-time instance of a Rail on a specific day, carrying `status` (pending / active / done / skipped), `plannedStart` / `plannedEnd`, optional `actualStart` / `actualEnd`, per-day overrides, and (if any) the `sessionId` of its planning session.
-- **Shift**: Any deviation from the plan: `postpone`, `swap`, `skip`, `resize`, `replace`. Neutral record. May optionally carry tags from a global shared library (see §5.7).
+- **RailInstance**: The run-time instance of a Rail on a specific day, carrying `status` (pending / done / deferred / archived), `plannedStart` / `plannedEnd`, optional `actualStart` / `actualEnd`, per-day overrides, and (if any) the `sessionId` of its planning session. "Currently happening" (current rail) is NOT a separate status — it's purely derived from wall-clock position (`plannedStart ≤ now ≤ plannedEnd` with `status='pending'`).
+- **Shift**: A record of a `pending → *` transition on a RailInstance. v0.2 keeps two types: `defer` (Later; lands in Pending) and `archive` (no more scheduling). May optionally carry tags from a global shared library (see §5.7). Within-day postponing is handled by Cycle-View drag; `swap / resize / replace` are deferred to v0.3.
 - **Signal**: Lightweight check-in at a Rail boundary — named after the railway signal at each crossing: it lights up, it doesn't command. `continue` / `adjust` / `skip`.
 - **Ad-hoc Event**: A one-off time block not belonging to any template. Higher priority than template resolution. Optionally attached to a Line.
 - **Line (grouping primitive)**: DayRail's only multi-Rail grouping concept, forming a continuum:
@@ -205,14 +205,21 @@ sessionId     ──groups ───────▶ one planning session's overr
 ### 4.4 State Machine (RailInstance)
 
 ```
-  pending ──start time──▶ active ──end time──▶ done
-     │                      │                    ▲
-     ├─ skip    ──▶ skipped ├─ postpone ──▶ pending
-     ├─ swap    ──▶ (reorder)  ├─ resize  ──▶ active ─┘
-     └─ replace ──▶ active (new content)
+               ┌── Done ────────────▶ done       (terminal)
+               │
+   pending ────┼── Archive ─────────▶ archived   (terminal)
+               │
+               └── Later (defer) ───▶ deferred   (semi-terminal · lands in §5.7 Pending)
+                                          │
+                                          └── Dragged to some day in Cycle View ──▶ pending
+                                                                      (plannedStart/End reset)
 ```
 
-Every transition emits a Shift. Shifts are history — they never penalize future days.
+- **`pending`** is the initial + recoverable state; "future", "current", and "past-unmarked" are all wall-clock shades of it, not separate statuses.
+- **`deferred`** is semi-terminal: it sinks into the Pending queue, and **Cycle View can drag it back to a day** (giving it fresh `plannedStart/End`), returning to `pending`.
+- **`done`** / **`archived`** are terminal. Review reads history from the event log, not current status.
+
+Any `pending → *` transition emits a Shift record (optional tags + optional reason). Shifts are history — they never penalize future days.
 
 ---
 
@@ -268,11 +275,11 @@ Within 1 second:
 
 **The main content area deliberately does not carry a left-side "rail visualizer"** (a vertical-dots / vertical-axis "day-shape" subview). Today's shape is carried entirely by the bottom rhythm bar — two timelines on one screen only dilute attention, and a vertical form can't express state-colored rhythm density as cleanly as the horizontal bar.
 
-**Bottom rhythm bar**: a horizontal strip across the Now View footer, one segment per Rail on today's Track, colored by RailInstance state — `pending` slate step 6 / `active` primary step 9 / `done` sage step 9 / `skipped` slate step 4 hatched. **No numbers, no percentages**, and even when today is completely clean there is no "all done" prompt — neutral retrospection belongs to the dedicated **"Today's Review"** (the day scope of Review, §5.8). The rhythm bar's only job is "see the shape of today at a glance", not to be a wall of stamps.
+**Bottom rhythm bar**: a horizontal strip across the Now View footer, one segment per Rail on today's Track, colored by RailInstance state — `pending · future` slate step 6 / `pending · current` primary step 9 / `done` sage step 9 / `deferred` slate step 4 hatched / `archived` slate step 4 hatched + line-through. **No numbers, no percentages**, and even when today is completely clean there is no "all done" prompt — neutral retrospection belongs to the dedicated **"Today's Review"** (the day scope of Review, §5.8). The rhythm bar's only job is "see the shape of today at a glance", not to be a wall of stamps.
 
 **Two restrained first-screen slots are reserved**:
 
-- Top (conditional): the unmarked-backfill bar (§5.7) — dismissable, non-blocking.
+- Top (conditional): the Pending-queue bar (§5.7) — dismissable, non-blocking.
 - Bottom (one-shot): the AI intro card (§6.4) — appears once on first launch, dismissable.
 
 On first launch, the user lands in a **preset default weekday template** they can edit in place (not an empty canvas, not a setup wizard). This gives newcomers something to react to immediately — tweak the times, rename a Rail, delete what doesn't apply — instead of staring at "now what?" or being asked to make decisions before any trust is built. No login, no splash, no daily summary dialog.
@@ -283,54 +290,56 @@ Vertical timeline of every RailInstance for today. **Per-Rail visual rules**:
 
 - **Row height proportional to duration** (1h and 2h Rails are not the same height) — rhythm density visible at a glance.
 - **4px color bar on the left edge**, drawn from the Rail's Radix step-9 color (or, if the RailInstance has an override, the overridden color).
-- **Four-state tint**:
-  - `pending` slate step 2 bg + step 11 text.
-  - `active` primary step 3 bg + step 12 text, color bar bolded to 6px (see "Active Rail special form" below).
-  - `done` sage step 2 bg + step 11 text, title with a light strike-through.
-  - `skipped` **keeps the Rail's own color bar and dot color** (both at Rail step 9) + 2px-spaced diagonal hatching at Rail step 6 as the background fill + `opacity-60` + italic title + strike-through. **Tertiary terracotta is deliberately not used** — per §9.6 tertiary is reserved for the current Rail, primary action button, and Replace-Shift overlay only; Skipped conveys state through *texture + desaturation* rather than a hue shift, making it part of the same "texture marks state" vocabulary as the Ad-hoc 1.5px dashed outline.
-- **Shift traces**: if the instance has experienced a Shift today, a small inline line at the row bottom summarizes it (`Postponed 30m` / `Replaced by …` / `Skipped · weather` — the reason chip is the Shift's first tag); click to expand the full Shift history (timestamp + type + tags + note) **inline, no modal**.
+- **Five-state tint** (four statuses plus a purely derived "current"):
+  - `pending` · future — normal bg (surface-1) + step 11 text + step 9 color bar.
+  - `pending` · **current** (wall-clock between plannedStart/End) — primary step 3 bg + step 12 text, bar bolded to 6px (see "Current Rail special form" below).
+  - `pending` · **past-unmarked** — surfaces in the §5.6 check-in strip; not rendered as a standalone row in the main timeline.
+  - `done` — bar fades to step 6 + line-through title + content `opacity-70` + small check glyph.
+  - `deferred` — bar stays step 9 + 2px diagonal hatching at Rail step 6 + a top-right `Later` pill (Mono 2xs). **Still visible on the timeline** so the user sees at a glance "what today was meant to be, now pushed aside."
+  - `archived` — bar fades to step 7 + 2px diagonal hatching at Rail step 7 + line-through title + `opacity-60` + top-right `Archived` pill. **Tertiary terracotta is deliberately not used** — per §9.6 tertiary belongs to current rail and primary CTA only; archived speaks through *texture + desaturation*, avoiding the "red = failure" judgment feeling.
+- **Shift traces**: if the instance has a Shift (defer / archive) recorded today, a short inline caption at the row bottom shows `· <first tag>` (e.g. `· weather` / `· meeting conflict`); click to expand the Shift's tag set + optional reason **inline, no modal**.
 
-**Shift trigger entry points (desktop vs mobile, intentionally split)**:
+**Current Rail special form**:
 
-- **Desktop (quiet by default)**: a Rail row carries only content, no buttons. Mouse hover on the row → a 32px action bar slides in on the right, icons in order `Skip` / `Postpone` / `Replace` / `Add note` (Material `block` / `schedule` / `swap_horiz` / `sticky_note_2`). When a keyboard user Tabs to a row, the focus ring reveals the same action bar (accessibility is mandatory).
-- **Mobile**: swipe-left = Skip, swipe-right = Postpone (short gestures map to high-frequency actions); long-press opens the full four-item menu as discoverable fallback.
-- All four Shift actions **funnel into the same "Shift-tag sheet"** described below; only the trigger gesture differs by platform, the flow afterward is identical.
-
-**Active Rail special form**:
-
-- Background, text, and bar go up one tier per `active` (primary step 3 / step 12 / 6px bar); a small Mono `NOW` pill sits at top-right (pulsing a primary step-9 dot).
-- **Primary CTA = `✓ Done`**, tonal style: `bg-primary-container` + `text-on-primary-container`, **not gradient**. Per §9.6 gradient is reserved for rarer celebratory states (e.g. "all Rails done today"), never for everyday buttons.
-- **Secondary `⋯` button** opens a menu of `Skip` / `Postpone` / `Replace` / `Add note` — **identical to the hover action bar on non-active rows**, so menu density stays predictable.
+- Background, text, and bar go up one tier to "current" (primary step 3 / step 12 / 6px bar); a small Mono `CURRENT RAIL` pill sits at top-right (pulsing a cta-soft dot).
+- **Primary CTA = `✓ Done`**, tonal style: `bg-ink-primary` + `text-surface-0`, **not gradient**. Per §9.6 gradient is reserved for rarer celebratory states (e.g. "all Rails done today"), never for everyday buttons.
+- **Secondary actions** sit inline = `Later` / `Archive` buttons. They reveal on hover or keyboard focus, matching the action bar on non-current rows.
 - **"Finish early" is not a new concept**: pressing `✓ Done` sets `RailInstance.status → 'done'` + `actualEnd = now()`. If `actualEnd < plannedEnd`, the Rail finished early. Review aggregates on the delta directly — **no new `earlyFinish` field**.
-- **Postpone sub-choices** (expanded inside the sheet): `+15min` / `+30min` / `+60min` / `Move to next gap` (auto-finds the next free slot today). **Free-form minute input is not offered** — almost every real postpone is a multiple of 5 minutes, so discrete buckets are actually faster.
 
-**Shift-tag sheet (unified landing for all four Shift actions)**:
+**Three actions (shared by check-in strip and timeline hover bar)**:
 
-Triggering any Shift action (Skip / Postpone / Replace / Add note) floats a lightweight panel. Desktop: a 320px side panel slides in from the right; mobile: bottom drawer. Layout:
+- **`✓ Done`** — primary action. `status → done`, immediate.
+- **`Later (defer)`** — `status → deferred`. The rail drops out of today's live rendering (or fades into hatching) and lands in the §5.7 Pending queue. The original slot keeps a dashed outline as a trace of "what was meant to be here".
+- **`Archive`** — `status → archived`, terminal. For recurring Rails (recurrence ≠ `one-shot`) a 3s toast also appears: `Archived today's Morning Run; tomorrow's will still be generated.` Prevents users from mistaking "archive instance" for "disable Rail itself".
+
+All three actions flow through the **Reason toast** below (no sheet).
+
+**Reason toast — lightweight undo-toast, replacing the old Shift-tag sheet**:
+
+After any action, a slim 6-second toast slides in at the bottom of the page (or inline):
 
 ```
-Skip "Morning Run"
-────────────────────
-Quick reasons:  [🌧️ weather]  [😴 tired]  [🤝 meeting]  [⋯ other]
-Note (optional): ________________________________
-                                     [Cancel]  [Skip]
+Later · "Morning Run"  ·  Add a tag?   [🌧️ weather]  [😴 tired]  [🤝 meeting]  [Undo]
 ```
 
-- **Quick-reason chips**: drawn from the global tag library (§5.7), showing the **top 3 most-used tags** for this specific Rail; the 4th slot is fixed as `Other → opens full tag picker + new tag`. Tapping a chip selects it (multi-select allowed); tapping the primary button commits the Shift + applies tags in one step.
-- **Note field** maps to `Shift.reason?: string` (optional free text); the textarea shows a muted placeholder `What was the context for this deviation? (optional)`.
-- **Submitting an empty sheet is fully allowed** — no required fields, no "please fill in a reason" nagging. Shift is a **one-shot reflection window**, not a judgment. This is coherent with the "No guilt design" promise in §1 / §9.
-- Postpone / Replace sheets add one secondary-selection row above the primary button: Postpone shows four buckets (+15 / +30 / +60 / next gap); Replace shows a search box (pick from Template / Line) plus a "new Ad-hoc" entry.
-- Default focus lands on the primary button (Enter = confirm); number keys 1–4 select the corresponding chip; Esc = cancel.
+- **Three quick-reason chips**: this Rail's top-3 tags by historical frequency; cold-start falls back to a static `weather / tired / meeting`. Tapping a chip attaches the tag to the just-written Shift and **keeps the toast visible through the countdown** in case the user wants to pick a second tag.
+- **Undo**: rolls `status` back to `pending` and removes the just-written Shift + Signal events (session-scoped undo, scoped only to the last action).
+- **Auto-dismisses after 6 seconds**. If the user doesn't pick a chip or press Undo, the Shift persists without tags.
+- **No free-text reason field**: the 500-char reason from ERD-early was rarely used in practice (high-frequency scenarios like "didn't run this morning" are fine with just a tag). Users who really want to write something visit the §5.7 Pending queue detail page (v0.3).
+- **An empty toast expiring is fully allowed** — no required reason, consistent with the "No guilt design" promise in §1 / §9.
+
+Keyboard: `1` / `2` / `3` select the corresponding chip; `u` = undo; `Esc` = close toast immediately.
 
 **Top toolbar**: `[Reset to template]` + `[+ Today's Ad-hoc]`. "Reset to template" applies only to today and never to other dates; clicking shows a confirmation listing how many overrides would be discarded.
 
 **Visual overlay rules for Ad-hoc Events**: Ad-hoc Events share the timeline with Rails, but **their visual semantics differ — they are Track overlays, not Rail substitutes**.
 
-- **Default look**: 1.5px **dashed** outline + slate step 2–3 very-light fill + a neutral slate step-9 color bar. **The tertiary terracotta accent is deliberately not the default** — it is reserved for Replace-Shift overlays.
+- **Default look**: 1.5px **dashed** outline + slate step 2–3 very-light fill + a neutral slate step-9 color bar. **The tertiary terracotta accent is deliberately not the default** — it is reserved for the current rail and primary CTA only.
 - **Line color inheritance**: if `lineId` points to a Line that has a `color`, the **outline inherits that Line color (still dashed)**, but the fill stays neutral — Ad-hoc must not visually outrank a Rail.
 - **`ADHOC` chip**: a small pill `临时 / ADHOC` (JetBrains Mono, 9px, all-caps, wide letter-spacing) sits at the row's top-right, making "this didn't come from a template" legible.
-- **Replace-Shift special state**: when a Rail is replaced today via a Replace Shift, the **original Rail row keeps its position but its color bar becomes dashed and desaturated**, and an inline line reads `Replaced by: <new name>`; the replacement content renders in the same slot as an Ad-hoc overlay. The user sees both "what this Rail was supposed to be" and "what actually happened" side by side.
 - **Rail vs Rail is never side-by-side**: two Rails cannot occupy the same time band (already enforced at the Template level). Ad-hoc events are overlays, not side-by-side slots either.
+
+> The v0.2-early "Replace Shift" overlay (original Rail dashed + replacement rendered as Ad-hoc) is retired from the §5.2 action set; that intent is now expressed as two steps — archive today's Rail + create an Ad-hoc — with a dedicated Replace action re-evaluated in v0.3.
 
 **No "bento future blocks"**: Today Track is a single timeline end-to-end; future Rails continue on the main track as `pending` rows — **no separate card grid** for afternoon slots or "distant" Rails. Reason: the DayRail data model has no fields for "participant avatars / focus intensity", so a bento would only add decorative noise. A single timeline also keeps the visual system aligned with Now View §5.1 and Cycle View §5.3.
 
@@ -480,34 +489,45 @@ Net effect: the user-facing vocabulary stays Template / Track / Rail / Shift / L
 
 - **No system notifications, no native push, no notification-permission prompts.** Neither the Capacitor notification module nor the Web Notification API is integrated.
 - **Signal's only surface = the check-in strip**: when the user **opens the app** (or a new Rail ends while the app is already in the foreground), Today Track shows at the top:
-  `☕ "Deep Work" 09:00–11:00 has ended · Done / Skip / Shift... / Ignore`
-  - **Trigger condition**: any Rail with `showInCheckin = true` that has ended and is still unmarked within the current open cycle.
+  `☕ "Deep Work" 09:00–11:00 has ended · Done / Later / Archive`
+  - **Trigger condition**: `status = 'pending'` with `plannedEnd < now` and `plannedEnd > now - 24h` (older items sink into the §5.7 Pending queue), with `showInCheckin = true`.
   - **Multiple hits simultaneously** → collapse into a single line `3 ended Rails waiting to be marked ▾`; expanding shows the list. Processing one item does not auto-collapse — the list stays open so batches flow.
-  - **Button semantics**: `Done` and `Skip` write status directly; `Shift...` opens the Shift-tag sheet defined in §5.2; `Ignore` only dismisses this check-in appearance for the current open cycle — the item itself remains in the §5.7 pending-decisions queue (and after 24h no longer surfaces on the strip at all).
-- **Per-Rail `showInCheckin` toggle** (default `true`): flipped from the Template Editor row `⋯` menu (see §5.4). Off = the Rail runs silently, never hitting the check-in strip or the pending queue (fits purely structural Rails like "lunch break" — nothing to track).
-- **No auto-downgrade**: consecutive days of `Done` / `Skip` do not silently turn check-in off. Users can turn it off from Rail settings themselves. Silently deciding "no more check-in" on their behalf would drift from "quiet" into "absent".
+  - **Button semantics (identical to the §5.2 hover action bar)**:
+    - `Done` → `status → done`
+    - `Later` → `status → deferred`, lands in §5.7 Pending queue
+    - `Archive` → `status → archived`, terminal. Recurring Rails also get a 3s toast `Archived today's <name>; tomorrow's will still be generated.`
+  - **Reason toast**: after any action, a 6-second undo-toast appears below the row (as defined in §5.2), offering 3 quick-reason chips for optional tagging.
+- **Per-Rail `showInCheckin` toggle** (default `true`): flipped from the Template Editor row `⋯` menu (see §5.4). Off = the Rail runs silently, never hitting the check-in strip or the Pending queue (fits purely structural Rails like "lunch break" — nothing to track).
+- **No auto-downgrade**: consecutive days of `Done` / `Archive` do not silently turn check-in off. Users can turn it off from Rail settings themselves. Silently deciding "no more check-in" on their behalf would drift from "quiet" into "absent".
 
-### 5.7 Unmarked Backfill: the Pending-Decisions Queue
+### 5.7 Pending Queue
 
-§5.6's check-in strip covers the "just-ended" tense. Rails that went unmarked **further in the past** take a quieter path — the pending-decisions queue. The two are one mechanism across two tenses: fresh items float up and ask you to decide; old items wait patiently until you feel like catching up.
+§5.6's check-in strip covers the "just-ended" tense. Rails that went **unmarked further in the past** and Rails the user explicitly **deferred** both collect here. Two sources, one exit.
 
-**Deliberately rejected design:** "Yesterday's Rail isn't marked — you can't touch today's." This violates the core philosophy (deviation is first-class, skipping has no consequences).
+**Sources**:
+
+1. **Explicit defer** — the user clicks "Later" in the check-in strip / Today Track / §5.7 detail. `status → deferred`.
+2. **Natural sinking** — `status = 'pending'` instances with `plannedEnd < now - 24h` stop surfacing on the check-in strip and appear here (the status itself doesn't change — still `pending`, just stale).
+
+Both render identically in the queue; only the data source differs.
+
+**Deliberately rejected design:** "Yesterday's Rail isn't marked — you can't touch today's." This violates the core philosophy (deviation is first-class, archiving has no consequences).
 
 **Chosen design:**
 
-- After a Rail ends and stays unmarked for **more than 24 hours** → the item sinks from the check-in strip into the standalone **pending-decisions queue** (its own page, batch-processable). The user clears it when they feel like it.
 - The queue never blocks current operations — Today Track / Cycle View / Template Editor flows are untouched.
-- The system does **not** auto-resolve unmarked items to `skipped`. Leave them untouched and they stay — that is the user's call.
+- The system does **not** auto-resolve unmarked items to `archived`. Leave them untouched and they stay — that is the user's call.
 - If the same Rail goes unmarked for many days, AI Observe (if enabled) gently suggests adjusting / archiving.
-- **Bulk-ignore older items**: when the queue has grown large, the user can bulk-ignore items more than N days old (default threshold **7 days**; configurable in Settings → Advanced). Recent (≤ N days) Rails stay in the queue — they're still worth a decision. **Button copy says exactly what happens**: `Ignore items older than 7 days` (not the earlier, poetic "Let these pass" — vague copy forces users to guess the action). Confirmation names the impact: *"Ignore N unmarked items older than 7 days? They stay in history as 'unmarked' but no longer appear in this queue."* History is not rewritten; only the queue is shortened.
+- **Re-schedule**: in **Cycle View, drag a Pending item onto some day / Rail slot** → `status` returns to `pending` with fresh `plannedStart/End`. Drag is the primary "change of mind" entry, not something done from the §5.7 page itself.
+- **Bulk-archive older items**: when the queue has grown large, the user can bulk-archive items more than N days old (default threshold **7 days**; configurable in Settings → Advanced). Recent (≤ N days) Rails stay in the queue — they're still worth a decision. **Button copy says exactly what happens**: `Archive items older than 7 days` (not the earlier, poetic "Let these pass"). Confirmation names the impact: *"Archive N undecided items older than 7 days? They stay searchable in history but no longer appear in this queue."* History is not rewritten; only the queue is shortened.
 
 **Page form**:
 
-- **Top bar**: title `Pending decisions` + summary line `47 items · oldest Mar 12`; top-right `Let these pass` tonal button (muted; trailed by `(affects 31)` counter; only acts on items > 7 days old).
-- **Body**: grouped by date in **reverse order** (most recent on top); each group header `Mar 14 (Fri) · 3 items`; rows list that day's unmarked RailInstances.
-- **Each row**: 4px left color strip (`Rail.color` step 9) + Rail name + time range `09:00–11:00` (Mono) + four inline small buttons `Done / Skip / Shift... / Ignore`. Button semantics are **identical** to the §5.6 check-in strip — zero-cost mental carry-over.
-- **No multi-select, no batch bar**: each decision stands alone; the only batch entry is "Let these pass". (Intent: avoid thoughtless "mark everything done" sweeps — that would poison Shift data.)
-- **Empty state**: `Queue empty · unmarked Rails land here 24 h after they end`.
+- **Top bar**: title `Pending` + summary line `47 items · oldest Mar 12`; top-right `Archive items older than 7 days` tonal button (muted; trailed by `(affects 31)` counter; only acts on items > 7 days old).
+- **Body**: grouped by date in **reverse order** (most recent on top); each group header `Mar 14 (Fri) · 3 items`; rows list that day's undecided RailInstances. `deferred` and stale-`pending` rows look identical apart from a small left-side glyph.
+- **Each row**: 4px left color strip (`Rail.color` step 9) + Rail name + original planned time `09:00–11:00` (Mono) + three inline small buttons `Done / Archive / Drag to Cycle →`. The first two write status in-place; the third is ghost-styled and nudges the user to Cycle View for re-scheduling.
+- **No multi-select, no batch bar**: each decision stands alone; the only batch entry is "Archive items older than 7 days". (Intent: avoid thoughtless "mark everything done" sweeps — that would poison Review data.)
+- **Empty state**: `Queue empty · undecided Rails land here 24 h after they end`.
 - **Side-nav entry**: the `Pending` item in the app's left nav shows a `·` dot only when the queue is `> 0` (**no number shown** — we don't want to anchor a "47 things you didn't do" anxiety number); hover tooltip reveals the exact count.
 
 ### 5.8 Review: Timeline + AI Review
@@ -516,10 +536,10 @@ Net effect: the user-facing vocabulary stays Template / Track / Rail / Shift / L
 - **Per-scope internal structure (top-to-bottom waterfall)**: title (e.g. `This week Mar 03 – Mar 09`) → **rhythm-match heatmap** → Top-5 Shift-tag frequency bars → Ad-hoc → Template hint (if any) → AI Observe card (if enabled) → AI Review card (if enabled). AI cards **render nothing at all** when AI is off — no blank placeholders. Gradient is natural: facts first, interpretation after, suggestions sandwiched in between — the natural reading path of a retrospective.
 - **Rhythm-match heatmap**: rows = Rails that appeared in the scope (sorted by frequency desc); columns = the scope's dates (day-scope columns = the day's Rail time slots; week = 7 columns; month = 5–6 week-columns). Each cell tints by its RailInstance status:
   - `done` — the Rail's own `color` step 9, solid.
-  - `shifted` — the Rail's own step 7 tint + inline `→` arrow in the cell.
-  - `skipped` — step 6 hatching (the demoted-state half of the Group-C three-part semantic triad).
-  - `unmarked` — step 4 hatching (the faded "still undecided" state).
-  - Cell hover → tooltip `{Rail name} · {date} · status + Shift tag when shifted`.
+  - `deferred` — step 6 hatching (one of the C-group three-part semantic triad).
+  - `archived` — step 7 hatching + a line-through over the cell (a more muted "actively dropped" state).
+  - `pending (stale)` — step 4 hatching (a pending cell that stayed undecided for a long time — visually the faintest; distinct from deferred's "explicitly pushed off").
+  - Cell hover → tooltip `{Rail name} · {date} · status + first tag (if any)`.
   - When Rails exceed 10 rows (or days exceed grid width) the heatmap scrolls horizontally inside its container (not page-wide jitter).
 - **Tag stats**: Top-5 most-used Shift tags for the period as horizontal bars (tag + count + proportion bar). Observational framing only (e.g., "`meeting conflict` appeared 7 times this week").
 - **Archived Lines**: included in long-term stats by default (a toggle lives in Settings → Advanced; see §8). Rationale: most users feel that effort already spent should remain visible; power users who want a focused current view can flip it off.
@@ -773,7 +793,7 @@ A user who initially disabled E2E and later enables it needs all historical even
 | Primary foreground       | `slate-12` / `slateDark-12`                  | Headings, body text                                                 |
 | Secondary foreground     | `slate-11` / `slateDark-11`                  | Subtitles, icons, Mono time pills                                   |
 | Tertiary text            | `slate-10` / `slateDark-10`                  | Captions, placeholder, hairline color                               |
-| Accent Terracotta        | `orange-9` / `orangeDark-9`                  | **Only** for Current Rail marker, primary action buttons, Replace Shift. Three states, see "Terracotta CTA states" below |
+| Accent Terracotta        | `orange-9` / `orangeDark-9`                  | **Only** for Current Rail marker and primary action buttons. Three states, see "Terracotta CTA states" below |
 | Neutral warn             | `amber-9` / `amberDark-9`                    | Unmarked / pending decisions (never red)                            |
 
 **Hard constraints**:
@@ -916,7 +936,7 @@ Views vary in how much date information they need. This table pins down the disp
 | Cycle View header  | `4/7 周一` / `4/13 周日`      | `Mon 4/7` / `Sun 4/13`   | `{month: 'numeric', day: 'numeric', weekday: 'short'}`                                                       |
 | Review scope       | `2026年4月 · 第 1 周期`        | `Apr 2026 · Cycle 1`     | Year + month + Cycle ordinal; **never ISO week**                                                             |
 | Calendar cell      | `16` (digit only)         | `16`                     | Render `day: 'numeric'` only; month comes from view context                                                  |
-| Shift timestamp    | `14:28 · 已延后 30min`       | `14:28 · Postponed 30m`  | `{hour, minute}` + ICU-formatted duration unit                                                               |
+| Shift timestamp    | `14:28 · 已以后再说`           | `14:28 · Deferred`       | `{hour, minute}` + i18n template string                                                                     |
 
 #### Cycle notation rule (the C1 scheme)
 
@@ -1032,7 +1052,15 @@ type RailInstance = {
   plannedEnd: string;
   actualStart?: string;
   actualEnd?: string;
-  status: 'pending' | 'active' | 'done' | 'skipped';
+  status: 'pending' | 'done' | 'deferred' | 'archived';
+  //                 pending   — initial state; future / current / past-unmarked all sit here.
+  //                 done      — completed (terminal).
+  //                 deferred  — "Later" · semi-terminal; appears in §5.7 Pending queue.
+  //                              Dragging it to a day in Cycle View returns it to `pending`
+  //                              with fresh plannedStart/End.
+  //                 archived  — "Archived" · terminal; won't be rescheduled. A recurring
+  //                              Rail's next day is still generated normally by the template.
+  // (Note: the v0.2-early 'active' / 'skipped' are retired; "currently happening" is wall-clock-derived.)
   overrides?: Partial<Pick<Rail, 'name' | 'color' | 'icon' | 'durationMinutes'>>;
   sessionId?: string; // internal: mutations produced inside an Edit Session (§5.3.1) share this id for atomic undo.
                       // Not limited to Cycle View — Template Editor and any future deep-edit view use the same mechanism.
@@ -1042,21 +1070,26 @@ type RailInstance = {
 type Shift = {
   id: string;
   railInstanceId: string;
-  type: 'postpone' | 'swap' | 'skip' | 'resize' | 'replace';
+  type: 'defer' | 'archive';
+  //        defer     — the action that accompanied status → deferred (§5.2 / §5.6).
+  //        archive   — the action that accompanied status → archived.
+  // (Note: v0.2-early 'postpone' / 'swap' / 'skip' / 'resize' / 'replace' / 'note' are retired.
+  //  "Within-day postpone" is handled by drag in Cycle View. Replace / note are re-evaluated in v0.3.)
   at: string;
   payload: Record<string, unknown>;
-  tags?: string[]; // Global shared tags, written by the §5.2 Shift-tag sheet; quick-reason chips are recommended from this Rail's historical tag frequency.
-  reason?: string; // Optional free-text note, written from the sheet's textarea; empty = no record.
-                   // Plain text, 500-char cap (v0.2 decision); no Markdown; URLs are auto-linked at render time.
+  tags?: string[]; // Global shared tags, written by the §5.2 Reason toast's quick-reason chips;
+                   // chips are sourced from this Rail's top-3 historical tags, falling back to a static set on cold start.
+  reason?: string; // Not captured in v0.2 — the Reason toast only writes tags.
+                   // Free-text reason is deferred to v0.3 (Pending queue detail page).
 };
 
 type Signal = {
-  // The user's explicit response to a RailInstance via the check-in strip or the pending-decisions queue (§5.6 / §5.7).
+  // The user's explicit response to a RailInstance via the check-in strip or the Pending queue (§5.6 / §5.7).
   // There is no "fired but unanswered" event — without OS-level push, a Signal does not exist until the user sees the item.
   id: string;
   railInstanceId: string;
   actedAt: string;
-  response: 'done' | 'skip' | 'shift' | 'ignore';
+  response: 'done' | 'defer' | 'archive';
   surface: 'check-in-strip' | 'pending-queue';
 };
 
