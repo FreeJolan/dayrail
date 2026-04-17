@@ -135,15 +135,16 @@ const config: Config = {
       },
       fontFamily: {
         // §9.6 · Inter body + JetBrains Mono numeric.
-        // CN fallback order: PingFang SC → Source Han Sans → system-ui.
-        // We put PingFang BEFORE system-ui because on macOS `system-ui`
-        // resolves to SF Pro Text, whose CJK subset is thinner than
-        // PingFang and reads as fuzzy when mixed with Inter Latin. This
-        // hands CN glyphs directly to PingFang with no middleman.
+        // CN primary: Noto Sans SC (Source Han Sans SC) served from
+        // Google Fonts at weights 400/500/600. Loaded with font-display:
+        // swap so PingFang takes over during the ~300 ms download
+        // window and on platforms where the CDN is blocked. Consistent
+        // cross-platform rendering — no more macOS PingFang vs Windows
+        // Microsoft YaHei mismatch.
         sans: [
           'Inter',
+          '"Noto Sans SC"',
           '"PingFang SC"',
-          '"Source Han Sans"',
           '"Microsoft YaHei"',
           'system-ui',
           'sans-serif',
