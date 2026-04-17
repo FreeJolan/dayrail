@@ -5,6 +5,7 @@ import { CycleView } from './pages/CycleView';
 import { Review } from './pages/Review';
 import { Projects } from './pages/Projects';
 import { Pending } from './pages/Pending';
+import { Settings } from './pages/Settings';
 import { SideNav, type NavKey } from './components/SideNav';
 
 // Simple state-based routing for the static-mock phase. When we add
@@ -25,12 +26,14 @@ export default function App() {
         {page === 'review' && <Review />}
         {page === 'projects' && <Projects />}
         {page === 'pending' && <Pending />}
+        {page === 'settings' && <Settings />}
         {page !== 'today' &&
           page !== 'template' &&
           page !== 'cycle' &&
           page !== 'review' &&
           page !== 'projects' &&
-          page !== 'pending' && <ComingSoon page={page} />}
+          page !== 'pending' &&
+          page !== 'settings' && <ComingSoon page={page} />}
       </main>
     </div>
   );
