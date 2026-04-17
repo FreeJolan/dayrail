@@ -86,7 +86,7 @@ function TopBar({
       </div>
 
       <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-        §5.8 · observe, don't judge
+        §5.8 · Rhythm
       </span>
     </header>
   );

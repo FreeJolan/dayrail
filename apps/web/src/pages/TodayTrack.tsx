@@ -128,7 +128,6 @@ function Footnote() {
   return (
     <footer className="mt-4 flex justify-between font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
       <span>DayRail · v0.1-pre (static mock)</span>
-      <span>Press · to jump to pending queue</span>
     </footer>
   );
 }

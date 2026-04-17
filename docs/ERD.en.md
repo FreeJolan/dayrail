@@ -505,7 +505,7 @@ Net effect: the user-facing vocabulary stays Template / Track / Rail / Shift / L
 - **Body**: grouped by date in **reverse order** (most recent on top); each group header `Mar 14 (Fri) · 3 items`; rows list that day's unmarked RailInstances.
 - **Each row**: 4px left color strip (`Rail.color` step 9) + Rail name + time range `09:00–11:00` (Mono) + four inline small buttons `Done / Skip / Shift... / Ignore`. Button semantics are **identical** to the §5.6 check-in strip — zero-cost mental carry-over.
 - **No multi-select, no batch bar**: each decision stands alone; the only batch entry is "Let these pass". (Intent: avoid thoughtless "mark everything done" sweeps — that would poison Shift data.)
-- **Empty state**: `All clear · the next unmarked Rail will land here`.
+- **Empty state**: `Queue empty · unmarked Rails land here 24 h after they end`.
 - **Side-nav entry**: the `Pending` item in the app's left nav shows a `·` dot only when the queue is `> 0` (**no number shown** — we don't want to anchor a "47 things you didn't do" anxiety number); hover tooltip reveals the exact count.
 
 ### 5.8 Review: Timeline + AI Review
