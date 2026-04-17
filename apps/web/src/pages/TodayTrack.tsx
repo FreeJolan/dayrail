@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { CheckInStrip } from '@/components/CheckInStrip';
 import { RailCard } from '@/components/RailCard';
 import { CHECKIN_QUEUE, MOCK_NOW, SAMPLE_RAILS } from '@/data/sample';
@@ -22,8 +23,25 @@ export function TodayTrack() {
   );
 }
 
+/** Ticks every 30 s. Uses real wall-clock minutes so the HH:MM feels
+ *  "alive" — no sub-minute precision required for the visual. */
+function useLiveNow() {
+  const [now, setNow] = useState(() => ({ hh: MOCK_NOW.hh, mm: MOCK_NOW.mm }));
+  useEffect(() => {
+    const tick = () => {
+      const d = new Date();
+      setNow({ hh: d.getHours(), mm: d.getMinutes() });
+    };
+    tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+  return now;
+}
+
 function PageHeader() {
-  const time = `${pad(MOCK_NOW.hh)}:${pad(MOCK_NOW.mm)}`;
+  const live = useLiveNow();
+  const time = `${pad(live.hh)}:${pad(live.mm)}`;
   return (
     <header className="flex items-end justify-between gap-6 pt-2">
       <div className="flex flex-col gap-2">
@@ -39,17 +57,17 @@ function PageHeader() {
           </span>
         </div>
       </div>
-      <DayProgressBar />
+      <DayProgressBar hh={live.hh} mm={live.mm} />
     </header>
   );
 }
 
 /** A slim Mono-labelled progress slice — the day as a ruler.
  *  Treat this as a navigation echo, not a task-completion bar. */
-function DayProgressBar() {
+function DayProgressBar({ hh, mm }: { hh: number; mm: number }) {
   const dayStartMin = 6 * 60; // 06:00
   const dayEndMin = 24 * 60; // 24:00
-  const nowMin = MOCK_NOW.hh * 60 + MOCK_NOW.mm;
+  const nowMin = hh * 60 + mm;
   const pct = Math.max(0, Math.min(100, ((nowMin - dayStartMin) / (dayEndMin - dayStartMin)) * 100));
   return (
     <div className="flex flex-col items-end gap-1">
@@ -58,11 +76,11 @@ function DayProgressBar() {
       </span>
       <div className="relative h-[3px] w-[180px] overflow-hidden bg-surface-2">
         <div
-          className="absolute inset-y-0 left-0 bg-ink-secondary/70"
+          className="absolute inset-y-0 left-0 bg-ink-secondary/70 transition-[width] duration-500"
           style={{ width: `${pct}%` }}
         />
         <div
-          className="absolute -top-[3px] h-[9px] w-[1.5px] bg-cta"
+          className="absolute -top-[3px] h-[9px] w-[1.5px] bg-cta transition-[left] duration-500"
           style={{ left: `calc(${pct}% - 0.75px)` }}
         />
       </div>

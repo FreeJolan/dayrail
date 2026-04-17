@@ -140,12 +140,18 @@ export function RailCard({ rail }: Props) {
 // ---------- sub-parts ----------
 
 function CurrentRailChip() {
+  // The pulse dot uses cta-soft (bronze step 3) for a "lamp on" look —
+  // a lighter tint visible ON the bronze chip better reads as a
+  // glowing indicator than a dark-on-dark slate-12 point.
   return (
     <span
       className="inline-flex items-center gap-1 rounded-sm bg-cta px-1.5 py-0.5 font-mono text-2xs uppercase tracking-widest text-cta-foreground"
       style={{ letterSpacing: '0.14em' }}
     >
-      <span className="inline-block h-1.5 w-1.5 animate-[pulse_2s_ease-in-out_infinite] rounded-full bg-cta-foreground" />
+      <span className="relative inline-flex h-1.5 w-1.5 items-center justify-center">
+        <span className="absolute h-full w-full animate-ping rounded-full bg-cta-soft opacity-80" />
+        <span className="relative inline-block h-1.5 w-1.5 rounded-full bg-cta-soft" />
+      </span>
       Current Rail
     </span>
   );
@@ -160,10 +166,14 @@ function DoneCheck() {
 }
 
 function ActionRow({ state }: { state: Extract<RailState, 'pending' | 'current'> }) {
+  // Reveal animation eases in slightly slower than other transitions so
+  // the 4 buttons feel "arrived" rather than "popped". Uses default
+  // duration (180 ms) for both opacity and translate; staggered via
+  // delay in the buttons themselves.
   return (
     <div
       className={clsx(
-        'mt-1 flex items-center gap-2 transition',
+        'mt-1 flex items-center gap-2 transition duration-200',
         'opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0',
         state === 'current' && 'opacity-100 translate-y-0',
       )}
