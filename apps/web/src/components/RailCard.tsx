@@ -27,7 +27,17 @@ interface Props {
 export function RailCard({ rail }: Props) {
   const duration = computeDurationMinutes(rail.start, rail.end);
   const isCurrent = rail.state === 'current';
-  const strip = isCurrent ? CTA_HEX : RAIL_COLOR_HEX[rail.color];
+  const isDone = rail.state === 'done';
+  const isSkipped = rail.state === 'skipped';
+  const isUnmarked = rail.state === 'unmarked';
+  // Strip fades to step-6 for "settled past" states (done / skipped) so
+  // the main timeline reads past-vs-upcoming at a glance. Unmarked
+  // keeps the step-9 tint — it still wants attention even when dimmed.
+  const strip = isCurrent
+    ? CTA_HEX
+    : isDone || isSkipped
+    ? RAIL_COLOR_STEP_6[rail.color]
+    : RAIL_COLOR_HEX[rail.color];
   const hatching = stateHatching(rail);
 
   return (
@@ -39,7 +49,7 @@ export function RailCard({ rail }: Props) {
         'bg-surface-1',
         isCurrent && 'bg-surface-2',
         // Demoted state: title dims via tertiary ink, hatching paints over.
-        (rail.state === 'skipped' || rail.state === 'unmarked') && 'text-ink-tertiary',
+        (isSkipped || isUnmarked) && 'text-ink-tertiary',
       )}
       style={{
         // hatching receives its color via CSS var consumed by utility classes.
@@ -67,28 +77,41 @@ export function RailCard({ rail }: Props) {
         />
       )}
 
-      <div className="relative flex flex-col gap-2 px-5 py-4 pl-6">
+      <div
+        className={clsx(
+          'relative flex flex-col gap-2 px-5 py-4 pl-6',
+          // Settled/dropped states get a faded content layer so the strip
+          // (and hatching, if present) read as "main info" and the text
+          // as "archival". Skipped keeps full opacity — hatching already
+          // carries the visual weight, and dimming would compete.
+          isDone && 'opacity-70',
+        )}
+      >
         <header className="flex items-baseline justify-between gap-4">
           <div className="flex items-baseline gap-2">
             <h3
               className={clsx(
                 'font-mono text-xs uppercase tracking-widest',
-                rail.state === 'done' && 'text-ink-tertiary',
-                rail.state === 'current' && 'text-ink-primary',
+                isCurrent && 'text-ink-primary',
                 rail.state === 'pending' && 'text-ink-secondary',
-                (rail.state === 'unmarked' || rail.state === 'skipped') && 'text-ink-tertiary',
+                (isDone || isSkipped || isUnmarked) && 'text-ink-tertiary',
+                // Line-through on the title marks the rail as decided —
+                // visible with or without a subtitle, which the earlier
+                // sub-only line-through missed.
+                (isDone || isSkipped) &&
+                  'line-through decoration-ink-tertiary/60 decoration-[1.5px]',
               )}
             >
               {rail.name}
             </h3>
             {isCurrent && <CurrentRailChip />}
-            {rail.state === 'done' && <DoneCheck />}
-            {rail.state === 'skipped' && (
+            {isDone && <DoneCheck />}
+            {isSkipped && (
               <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
                 Skipped
               </span>
             )}
-            {rail.state === 'unmarked' && (
+            {isUnmarked && (
               <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
                 Unmarked
               </span>
