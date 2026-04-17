@@ -79,26 +79,15 @@ export async function ensureTodayInstances(
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-function hasIgnoreSignal(
-  state: Pick<DayRailState, 'signals'>,
-  instanceId: string,
-): boolean {
-  for (const sig of Object.values(state.signals)) {
-    if (sig.railInstanceId === instanceId && sig.response === 'ignore') {
-      return true;
-    }
-  }
-  return false;
-}
-
 function byPlannedStart(a: RailInstance, b: RailInstance): number {
   return a.plannedStart.localeCompare(b.plannedStart);
 }
 
-/** Instances to show in §5.6 check-in strip: status=pending, ended
- *  before `now`, within the last 24h, and not explicitly ignored. */
+/** Instances to show in §5.6 check-in strip: `status = 'pending'`,
+ *  ended before `now`, and within the last 24h. Older pendings and
+ *  `deferred` items live in §5.7 Pending queue instead. */
 export function selectCheckinQueue(
-  state: Pick<DayRailState, 'railInstances' | 'signals'>,
+  state: Pick<DayRailState, 'railInstances'>,
   now: Date = new Date(),
 ): RailInstance[] {
   const nowMs = now.getTime();
@@ -106,7 +95,6 @@ export function selectCheckinQueue(
   return Object.values(state.railInstances)
     .filter((inst) => {
       if (inst.status !== 'pending') return false;
-      if (hasIgnoreSignal(state, inst.id)) return false;
       const endMs = Date.parse(inst.plannedEnd);
       if (Number.isNaN(endMs)) return false;
       return endMs <= nowMs && endMs > cutoff;
@@ -114,21 +102,24 @@ export function selectCheckinQueue(
     .sort(byPlannedStart);
 }
 
-/** Instances that have fallen out of the strip (§5.7): older than 24h
- *  OR explicitly ignored. `status` stays 'pending' until user acts. */
+/** §5.7 Pending queue — two sources, one exit:
+ *  1. Explicit `deferred` instances (user clicked 以后再说).
+ *  2. Natural sinking: `pending` instances older than 24h.
+ *  `archived` never shows here (terminal). Both sources render the
+ *  same row shape; the caller decides whether to differentiate. */
 export function selectPendingQueue(
-  state: Pick<DayRailState, 'railInstances' | 'signals'>,
+  state: Pick<DayRailState, 'railInstances'>,
   now: Date = new Date(),
 ): RailInstance[] {
   const nowMs = now.getTime();
   const cutoff = nowMs - MS_PER_DAY;
   return Object.values(state.railInstances)
     .filter((inst) => {
+      if (inst.status === 'deferred') return true;
       if (inst.status !== 'pending') return false;
       const endMs = Date.parse(inst.plannedEnd);
       if (Number.isNaN(endMs)) return false;
-      if (endMs > nowMs) return false; // hasn't ended yet
-      return endMs <= cutoff || hasIgnoreSignal(state, inst.id);
+      return endMs <= cutoff;
     })
     .sort(byPlannedStart);
 }
