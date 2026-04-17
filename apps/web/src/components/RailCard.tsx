@@ -170,7 +170,7 @@ function ActionRow({ state }: { state: Extract<RailState, 'pending' | 'current'>
     >
       <ActionButton variant="primary" icon={Check} label="完成" />
       <ActionButton icon={SkipForward} label="跳过" />
-      <ActionButton icon={RotateCw} label="Shift…" />
+      <ActionButton icon={RotateCw} label="Shift" />
       <ActionButton variant="terracotta" icon={Replace} label="替换" />
     </div>
   );
@@ -181,7 +181,7 @@ function UndoRow({ label }: { label: string }) {
     <div className="mt-1 flex items-center gap-2 opacity-0 transition group-hover:opacity-100">
       <button
         type="button"
-        className="rounded-sm px-2 py-1 font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-secondary"
+        className="rounded-sm px-2.5 py-1 text-xs font-medium text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-secondary"
       >
         {label}
       </button>
@@ -198,11 +198,14 @@ function ActionButton({
   icon: typeof Check;
   label: string;
 }) {
+  // CN-content buttons drop Mono/uppercase/tracking-widest — those are
+  // for pure-Latin overlines. CN glyphs under tracking-widest look
+  // disconnected and muddy under Mono fallback fonts.
   return (
     <button
       type="button"
       className={clsx(
-        'inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 font-mono text-2xs uppercase tracking-widest transition',
+        'inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium transition',
         variant === 'primary' &&
           'bg-ink-primary text-surface-0 hover:bg-ink-secondary',
         variant === 'default' &&
@@ -211,7 +214,7 @@ function ActionButton({
           'border border-cta/40 text-cta hover:bg-cta hover:text-cta-foreground',
       )}
     >
-      <Icon className="h-3 w-3" strokeWidth={1.8} />
+      <Icon className="h-3.5 w-3.5" strokeWidth={1.8} />
       <span>{label}</span>
     </button>
   );

@@ -26,14 +26,14 @@ export function CheckInStrip({ queue }: Props) {
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-3 px-4 py-3 text-left"
       >
-        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-surface-1 font-mono text-xs text-ink-secondary">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          Check-in
+        </span>
+        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-surface-1 font-mono text-xs tabular-nums text-ink-secondary">
           {queue.length}
         </span>
         <span className="flex-1 text-sm text-ink-primary">
           条已结束的 Rail 待标记
-        </span>
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          Check-in
         </span>
         {open ? (
           <ChevronUp className="h-4 w-4 text-ink-tertiary" strokeWidth={1.6} />
@@ -78,7 +78,7 @@ function CheckInRow({ rail, first }: { rail: SampleRail; first: boolean }) {
       <span className="ml-auto flex items-center gap-1">
         <ActionChip variant="primary">完成</ActionChip>
         <ActionChip>跳过</ActionChip>
-        <ActionChip>Shift…</ActionChip>
+        <ActionChip>Shift</ActionChip>
         <ActionChip variant="ghost">忽略</ActionChip>
       </span>
     </li>
@@ -96,7 +96,7 @@ function ActionChip({
     <button
       type="button"
       className={clsx(
-        'rounded-sm px-2 py-1 font-mono text-2xs uppercase tracking-widest transition',
+        'rounded-sm px-2.5 py-1 text-xs font-medium transition',
         variant === 'primary' &&
           'bg-ink-primary text-surface-0 hover:bg-ink-secondary',
         variant === 'default' &&
