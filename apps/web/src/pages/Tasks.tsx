@@ -5,8 +5,8 @@ import { INBOX_LINE_ID, useStore, type Line } from '@dayrail/core';
 import { RAIL_COLOR_HEX } from '@/components/railColors';
 
 // ERD §5.5 — Tasks view scaffold.
-//   Left nav tree: Inbox · Projects · Habits (placeholder) · Tags
-//   (placeholder) · Archived / Trash collapsed footer.
+//   Left nav tree: Inbox · Projects · Habits (placeholder) · Archived
+//   / Trash footer.
 //   Right main: placeholder until Chunks E/F/G land.
 //
 // This commit wires the skeleton + selection state. The list, filters,
@@ -107,10 +107,6 @@ function NavTree({
 
       <NavGroup label="Habits">
         <p className="px-3 py-1.5 text-xs text-ink-tertiary">v0.4</p>
-      </NavGroup>
-
-      <NavGroup label="Tags">
-        <p className="px-3 py-1.5 text-xs text-ink-tertiary">v0.3+</p>
       </NavGroup>
 
       <div className="mt-auto flex flex-col gap-0.5">
