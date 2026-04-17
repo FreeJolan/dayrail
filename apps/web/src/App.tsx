@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { TodayTrack } from './pages/TodayTrack';
 import { TemplateEditor } from './pages/TemplateEditor';
+import { CycleView } from './pages/CycleView';
 import { SideNav, type NavKey } from './components/SideNav';
 
 // Simple state-based routing for the static-mock phase. When we add
@@ -17,7 +18,10 @@ export default function App() {
       <main className="flex-1">
         {page === 'today' && <TodayTrack />}
         {page === 'template' && <TemplateEditor />}
-        {page !== 'today' && page !== 'template' && <ComingSoon page={page} />}
+        {page === 'cycle' && <CycleView />}
+        {page !== 'today' && page !== 'template' && page !== 'cycle' && (
+          <ComingSoon page={page} />
+        )}
       </main>
     </div>
   );
