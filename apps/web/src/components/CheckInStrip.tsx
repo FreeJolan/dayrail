@@ -8,11 +8,14 @@ import { RAIL_COLOR_HEX } from './railColors';
 // queue is non-empty. A single Rail expands as an inline row; 2+ Rails
 // collapse to a summary line that can be expanded.
 
+export type CheckInAction = 'done' | 'skip' | 'shift' | 'ignore';
+
 interface Props {
   queue: SampleRail[];
+  onAction: (instanceId: string, action: CheckInAction) => void;
 }
 
-export function CheckInStrip({ queue }: Props) {
+export function CheckInStrip({ queue, onAction }: Props) {
   const [open, setOpen] = useState(true); // start open in the mock for density
   if (queue.length === 0) return null;
 
@@ -45,7 +48,12 @@ export function CheckInStrip({ queue }: Props) {
       {open && (
         <ul className="px-4 pb-3">
           {queue.map((rail, idx) => (
-            <CheckInRow key={rail.id} rail={rail} first={idx === 0} />
+            <CheckInRow
+              key={rail.id}
+              rail={rail}
+              first={idx === 0}
+              onAction={onAction}
+            />
           ))}
         </ul>
       )}
@@ -53,7 +61,15 @@ export function CheckInStrip({ queue }: Props) {
   );
 }
 
-function CheckInRow({ rail, first }: { rail: SampleRail; first: boolean }) {
+function CheckInRow({
+  rail,
+  first,
+  onAction,
+}: {
+  rail: SampleRail;
+  first: boolean;
+  onAction: (instanceId: string, action: CheckInAction) => void;
+}) {
   const accent = RAIL_COLOR_HEX[rail.color];
   return (
     <li
@@ -76,10 +92,14 @@ function CheckInRow({ rail, first }: { rail: SampleRail; first: boolean }) {
       )}
 
       <span className="ml-auto flex items-center gap-1">
-        <ActionChip variant="primary">完成</ActionChip>
-        <ActionChip>跳过</ActionChip>
-        <ActionChip>Shift</ActionChip>
-        <ActionChip variant="ghost">忽略</ActionChip>
+        <ActionChip variant="primary" onClick={() => onAction(rail.id, 'done')}>
+          完成
+        </ActionChip>
+        <ActionChip onClick={() => onAction(rail.id, 'skip')}>跳过</ActionChip>
+        <ActionChip onClick={() => onAction(rail.id, 'shift')}>Shift</ActionChip>
+        <ActionChip variant="ghost" onClick={() => onAction(rail.id, 'ignore')}>
+          忽略
+        </ActionChip>
       </span>
     </li>
   );
@@ -88,13 +108,16 @@ function CheckInRow({ rail, first }: { rail: SampleRail; first: boolean }) {
 function ActionChip({
   children,
   variant = 'default',
+  onClick,
 }: {
   children: React.ReactNode;
   variant?: 'default' | 'primary' | 'ghost';
+  onClick?: () => void;
 }) {
   return (
     <button
       type="button"
+      onClick={onClick}
       className={clsx(
         'rounded-sm px-2.5 py-1 text-xs font-medium transition',
         variant === 'primary' &&

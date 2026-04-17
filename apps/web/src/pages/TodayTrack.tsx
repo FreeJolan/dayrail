@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   selectCheckinQueue,
   selectTodayTimeline,
@@ -7,7 +7,7 @@ import {
   type Rail,
   type RailInstance,
 } from '@dayrail/core';
-import { CheckInStrip } from '@/components/CheckInStrip';
+import { CheckInStrip, type CheckInAction } from '@/components/CheckInStrip';
 import { RailCard } from '@/components/RailCard';
 import type { RailColor, RailState, SampleRail } from '@/data/sample';
 
@@ -24,6 +24,19 @@ export function TodayTrack() {
   const rails = useStore((s) => s.rails);
   const railInstances = useStore((s) => s.railInstances);
   const signals = useStore((s) => s.signals);
+  const recordSignal = useStore((s) => s.recordSignal);
+
+  const handleCheckin = useCallback(
+    (instanceId: string, action: CheckInAction) => {
+      if (action === 'shift') {
+        // TODO(chunk 5): open Shift sheet with reason + tag recommender.
+        window.alert('Shift sheet 还没接上 — Chunk 5 再说。');
+        return;
+      }
+      void recordSignal(instanceId, action, 'check-in-strip');
+    },
+    [recordSignal],
+  );
 
   const timeline = useMemo<SampleRail[]>(
     () =>
@@ -47,7 +60,7 @@ export function TodayTrack() {
   return (
     <div className="flex w-full max-w-[780px] flex-col gap-8 py-10 pl-10 pr-10 lg:pl-14 xl:pl-20">
       <PageHeader now={now} />
-      <CheckInStrip queue={checkinQueue} />
+      <CheckInStrip queue={checkinQueue} onAction={handleCheckin} />
       <Timeline rails={timelineVisible} />
       <Footnote />
     </div>
