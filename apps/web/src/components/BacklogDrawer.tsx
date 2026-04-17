@@ -102,7 +102,7 @@ export function BacklogDrawer({ open, onToggle }: Props) {
               Drag items → day cell
             </p>
             <p className="mt-1 text-xs text-ink-tertiary">
-              拖拽未实装；mock 里点 📌 可切换"不能掉队"状态。
+              拖拽未实装；mock 里点 📌 可置顶 / 取消置顶。
             </p>
           </div>
         </>

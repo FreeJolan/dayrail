@@ -267,9 +267,9 @@ function EmptyState() {
   return (
     <section className="flex min-h-[240px] flex-col items-start justify-center gap-2 rounded-md bg-surface-1 px-8 py-12">
       <Inbox className="h-6 w-6 text-ink-tertiary" strokeWidth={1.4} />
-      <h2 className="text-lg font-medium text-ink-primary">一切清空了</h2>
+      <h2 className="text-lg font-medium text-ink-primary">队列为空</h2>
       <p className="text-sm text-ink-secondary">
-        下次漏标记的 Rail 会出现在这里 —— 你可以挑某个闲下来的时刻一次性清掉。
+        未标记的 Rail 超过 24 小时后会出现在这里，可以一次性处理。
       </p>
     </section>
   );
