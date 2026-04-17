@@ -9,4 +9,5 @@ export * from './event';
 export * from './session';
 export * from './snapshot';
 export * from './store';
+export * from './today';
 export * from './types';

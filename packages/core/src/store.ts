@@ -33,17 +33,32 @@ import {
   shouldSnapshotAfterEvent,
   writeSnapshot,
 } from './snapshot';
-import type { Rail, RailColor, Recurrence, Template, TemplateKey } from './types';
+import type {
+  Rail,
+  RailColor,
+  RailInstance,
+  RailInstanceStatus,
+  Recurrence,
+  Shift,
+  ShiftType,
+  Signal,
+  SignalResponse,
+  Template,
+  TemplateKey,
+} from './types';
 
 // ------------------------------------------------------------------
 // Store shape.
 // ------------------------------------------------------------------
 
-interface DayRailState {
+export interface DayRailState {
   ready: boolean;
   error?: string;
   templates: Record<TemplateKey, Template>;
   rails: Record<string, Rail>;
+  railInstances: Record<string, RailInstance>;
+  signals: Record<string, Signal>;
+  shifts: Record<string, Shift>;
   sessions: Record<string, EditSession>;
 }
 
@@ -55,6 +70,15 @@ interface DayRailActions {
   createRail: (rail: Rail, sessionId?: string) => Promise<void>;
   updateRail: (id: string, patch: Partial<Rail>, sessionId?: string) => Promise<void>;
   deleteRail: (id: string, sessionId?: string) => Promise<void>;
+  // --- rail instances (Today Track / check-in) ---
+  createRailInstance: (inst: RailInstance) => Promise<void>;
+  markRailInstance: (id: string, status: RailInstanceStatus) => Promise<void>;
+  recordSignal: (
+    instanceId: string,
+    response: SignalResponse,
+    surface: Signal['surface'],
+  ) => Promise<void>;
+  recordShift: (shift: Shift) => Promise<void>;
   // --- sessions ---
   openEditSession: (surface: string) => Promise<EditSession>;
   closeEditSession: (sessionId: string) => Promise<void>;
@@ -69,7 +93,10 @@ export type DayRailStore = DayRailState & DayRailActions;
 // `hydrate`). MUST be pure + deterministic.
 // ------------------------------------------------------------------
 
-type ReducerState = Pick<DayRailState, 'templates' | 'rails'>;
+type ReducerState = Pick<
+  DayRailState,
+  'templates' | 'rails' | 'railInstances' | 'signals' | 'shifts'
+>;
 
 // Narrowed local types matching exactly the event payloads the Template
 // Editor emits.
@@ -78,6 +105,33 @@ interface TemplatePayload extends Omit<Template, 'isDefault'> {
 }
 interface RailPayload extends Omit<Rail, 'recurrence'> {
   recurrence?: Recurrence;
+}
+interface InstanceStatusPayload {
+  id: string;
+  status: RailInstanceStatus;
+  actualStart?: string;
+  actualEnd?: string;
+}
+interface InstanceTimeShiftPayload {
+  id: string;
+  plannedStart?: string;
+  plannedEnd?: string;
+}
+interface ShiftPayload {
+  id: string;
+  railInstanceId: string;
+  type: ShiftType;
+  at: string;
+  payload?: Record<string, unknown>;
+  tags?: string[];
+  reason?: string;
+}
+interface SignalPayload {
+  id: string;
+  railInstanceId: string;
+  actedAt: string;
+  response: SignalResponse;
+  surface: Signal['surface'];
 }
 
 function applyEventInPlace(
@@ -121,6 +175,60 @@ function applyEventInPlace(
       delete state.rails[id];
       break;
     }
+    case 'instance.created': {
+      const inst = payload as unknown as RailInstance;
+      state.railInstances[inst.id] = { ...inst };
+      break;
+    }
+    case 'instance.status-changed': {
+      const p = payload as unknown as InstanceStatusPayload;
+      const existing = state.railInstances[p.id];
+      if (existing) {
+        state.railInstances[p.id] = {
+          ...existing,
+          status: p.status,
+          actualStart: p.actualStart ?? existing.actualStart,
+          actualEnd: p.actualEnd ?? existing.actualEnd,
+        };
+      }
+      break;
+    }
+    case 'instance.time-shifted': {
+      const p = payload as unknown as InstanceTimeShiftPayload;
+      const existing = state.railInstances[p.id];
+      if (existing) {
+        state.railInstances[p.id] = {
+          ...existing,
+          plannedStart: p.plannedStart ?? existing.plannedStart,
+          plannedEnd: p.plannedEnd ?? existing.plannedEnd,
+        };
+      }
+      break;
+    }
+    case 'shift.recorded': {
+      const p = payload as unknown as ShiftPayload;
+      state.shifts[p.id] = {
+        id: p.id,
+        railInstanceId: p.railInstanceId,
+        type: p.type,
+        at: p.at,
+        payload: p.payload ?? {},
+        tags: p.tags,
+        reason: p.reason,
+      };
+      break;
+    }
+    case 'signal.acted': {
+      const p = payload as unknown as SignalPayload;
+      state.signals[p.id] = {
+        id: p.id,
+        railInstanceId: p.railInstanceId,
+        actedAt: p.actedAt,
+        response: p.response,
+        surface: p.surface,
+      };
+      break;
+    }
     default:
       // Unknown event types are no-ops in this store slice.
       break;
@@ -133,7 +241,34 @@ function applyEventInPlace(
 // awaited before components render any store-derived data.
 // ------------------------------------------------------------------
 
-type SnapshotPayload = Pick<DayRailState, 'templates' | 'rails'>;
+type SnapshotPayload = Pick<
+  DayRailState,
+  'templates' | 'rails' | 'railInstances' | 'signals' | 'shifts'
+>;
+
+function emptyReducerState(): ReducerState {
+  return {
+    templates: {},
+    rails: {},
+    railInstances: {},
+    signals: {},
+    shifts: {},
+  };
+}
+
+function snapshotFromState(s: DayRailState): SnapshotPayload {
+  return {
+    templates: s.templates,
+    rails: s.rails,
+    railInstances: s.railInstances,
+    signals: s.signals,
+    shifts: s.shifts,
+  };
+}
+
+function ulidLite(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 let unhookSnapshotTriggers: (() => void) | null = null;
 let unsubscribeSessionBridge: (() => void) | null = null;
@@ -147,9 +282,8 @@ export const useStore = create<DayRailStore>()(
     const afterMutation = (): void => {
       noteEvent();
       if (shouldSnapshotAfterEvent()) {
-        const s = get();
         void writeSnapshot<SnapshotPayload>(
-          { templates: s.templates, rails: s.rails },
+          snapshotFromState(get()),
           currentClock(),
           /* eventCount */ 0,
         );
@@ -160,6 +294,9 @@ export const useStore = create<DayRailStore>()(
       ready: false,
       templates: {},
       rails: {},
+      railInstances: {},
+      signals: {},
+      shifts: {},
       sessions: {},
 
       hydrate: async () => {
@@ -178,17 +315,22 @@ export const useStore = create<DayRailStore>()(
           const events = await loadEvents(snap ? { sinceHlc: snap.hlc } : {});
 
           set((draft) => {
+            const reducerState = emptyReducerState();
             if (snap) {
-              draft.templates = snap.state.templates ?? {};
-              draft.rails = snap.state.rails ?? {};
+              reducerState.templates = { ...(snap.state.templates ?? {}) };
+              reducerState.rails = { ...(snap.state.rails ?? {}) };
+              reducerState.railInstances = { ...(snap.state.railInstances ?? {}) };
+              reducerState.signals = { ...(snap.state.signals ?? {}) };
+              reducerState.shifts = { ...(snap.state.shifts ?? {}) };
             }
-            const reducerState: ReducerState = {
-              templates: draft.templates,
-              rails: draft.rails,
-            };
             for (const ev of events) {
               applyEventInPlace(reducerState, ev.type, ev.payload);
             }
+            draft.templates = reducerState.templates;
+            draft.rails = reducerState.rails;
+            draft.railInstances = reducerState.railInstances;
+            draft.signals = reducerState.signals;
+            draft.shifts = reducerState.shifts;
             for (const s of recovered) {
               if (!s.closed) draft.sessions[s.id] = s;
             }
@@ -201,9 +343,8 @@ export const useStore = create<DayRailStore>()(
           //    any previous binding first.
           if (unhookSnapshotTriggers) unhookSnapshotTriggers();
           unhookSnapshotTriggers = armSnapshotOnHide(() => {
-            const s = get();
             void writeSnapshot<SnapshotPayload>(
-              { templates: s.templates, rails: s.rails },
+              snapshotFromState(get()),
               currentClock(),
               /* eventCount */ 0,
             );
@@ -242,11 +383,7 @@ export const useStore = create<DayRailStore>()(
         });
         if (sessionId) await touchSession(sessionId);
         set((draft) => {
-          applyEventInPlace(
-            { templates: draft.templates, rails: draft.rails },
-            event.type,
-            event.payload,
-          );
+          applyEventInPlace(draft, event.type, event.payload);
         });
         afterMutation();
       },
@@ -260,11 +397,7 @@ export const useStore = create<DayRailStore>()(
         });
         if (sessionId) await touchSession(sessionId);
         set((draft) => {
-          applyEventInPlace(
-            { templates: draft.templates, rails: draft.rails },
-            event.type,
-            event.payload,
-          );
+          applyEventInPlace(draft, event.type, event.payload);
         });
         afterMutation();
       },
@@ -278,11 +411,7 @@ export const useStore = create<DayRailStore>()(
         });
         if (sessionId) await touchSession(sessionId);
         set((draft) => {
-          applyEventInPlace(
-            { templates: draft.templates, rails: draft.rails },
-            event.type,
-            event.payload,
-          );
+          applyEventInPlace(draft, event.type, event.payload);
         });
         afterMutation();
       },
@@ -296,11 +425,77 @@ export const useStore = create<DayRailStore>()(
         });
         if (sessionId) await touchSession(sessionId);
         set((draft) => {
-          applyEventInPlace(
-            { templates: draft.templates, rails: draft.rails },
-            event.type,
-            event.payload,
+          applyEventInPlace(draft, event.type, event.payload);
+        });
+        afterMutation();
+      },
+
+      createRailInstance: async (inst) => {
+        const event = await appendEvent({
+          aggregateId: `instance:${inst.id}`,
+          type: 'instance.created',
+          payload: { ...inst },
+        });
+        set((draft) => {
+          applyEventInPlace(draft, event.type, event.payload);
+        });
+        afterMutation();
+      },
+
+      markRailInstance: async (id, status) => {
+        // status→wall-clock correlations: mark actualEnd when the user
+        // closes out (done/skipped). We don't record actualStart yet —
+        // v0.3 will introduce "start now" once we wire the active state.
+        const now = new Date().toISOString();
+        const payload: InstanceStatusPayload = { id, status };
+        if (status === 'done' || status === 'skipped') payload.actualEnd = now;
+        const event = await appendEvent({
+          aggregateId: `instance:${id}`,
+          type: 'instance.status-changed',
+          payload: { ...payload },
+        });
+        set((draft) => {
+          applyEventInPlace(draft, event.type, event.payload);
+        });
+        afterMutation();
+      },
+
+      recordSignal: async (instanceId, response, surface) => {
+        const signalId = ulidLite('sig');
+        const actedAt = new Date().toISOString();
+        const event = await appendEvent({
+          aggregateId: `instance:${instanceId}`,
+          type: 'signal.acted',
+          payload: {
+            id: signalId,
+            railInstanceId: instanceId,
+            actedAt,
+            response,
+            surface,
+          },
+        });
+        set((draft) => {
+          applyEventInPlace(draft, event.type, event.payload);
+        });
+        afterMutation();
+        // Convenience: done/skip responses also flip the instance status
+        // so downstream queries (Pending, Review) don't need to join.
+        if (response === 'done' || response === 'skip') {
+          await get().markRailInstance(
+            instanceId,
+            response === 'done' ? 'done' : 'skipped',
           );
+        }
+      },
+
+      recordShift: async (shift) => {
+        const event = await appendEvent({
+          aggregateId: `instance:${shift.railInstanceId}`,
+          type: 'shift.recorded',
+          payload: { ...shift },
+        });
+        set((draft) => {
+          applyEventInPlace(draft, event.type, event.payload);
         });
         afterMutation();
       },
@@ -328,16 +523,17 @@ export const useStore = create<DayRailStore>()(
         // dropped events. Wipe them so the next cold start replays
         // from scratch rather than inheriting ghost state.
         await clearSnapshots();
-        // Rebuild the two aggregates this store cares about.
         const events = await loadEvents();
         set((draft) => {
-          draft.templates = {};
-          draft.rails = {};
-          const reducerState: ReducerState = {
-            templates: draft.templates,
-            rails: draft.rails,
-          };
-          for (const ev of events) applyEventInPlace(reducerState, ev.type, ev.payload);
+          const reducerState = emptyReducerState();
+          for (const ev of events) {
+            applyEventInPlace(reducerState, ev.type, ev.payload);
+          }
+          draft.templates = reducerState.templates;
+          draft.rails = reducerState.rails;
+          draft.railInstances = reducerState.railInstances;
+          draft.signals = reducerState.signals;
+          draft.shifts = reducerState.shifts;
         });
         await closeSession(sessionId);
         set((draft) => {

@@ -1,7 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  selectCheckinQueue,
+  selectTodayTimeline,
+  toIsoDate,
+  useStore,
+  type Rail,
+  type RailInstance,
+} from '@dayrail/core';
 import { CheckInStrip } from '@/components/CheckInStrip';
 import { RailCard } from '@/components/RailCard';
-import { CHECKIN_QUEUE, MOCK_NOW, SAMPLE_RAILS } from '@/data/sample';
+import type { RailColor, RailState, SampleRail } from '@/data/sample';
 
 // Page layout — ERD A/B/C decisions:
 //   • left sidebar nav (provided by App.tsx)
@@ -10,28 +18,57 @@ import { CHECKIN_QUEUE, MOCK_NOW, SAMPLE_RAILS } from '@/data/sample';
 //   • single vertical timeline of Rail cards (no bento, no side visualizer)
 
 export function TodayTrack() {
-  // Intentional Asymmetry (G6): content sits left-weighted, never centered.
-  // Left pad echoes book-margin proportions; extra width on ultrawides
-  // stays empty rather than diluting focus.
+  const now = useLiveNow();
+  const today = toIsoDate(now.asDate);
+
+  const rails = useStore((s) => s.rails);
+  const railInstances = useStore((s) => s.railInstances);
+  const signals = useStore((s) => s.signals);
+
+  const timeline = useMemo<SampleRail[]>(
+    () =>
+      selectTodayTimeline({ railInstances }, today)
+        .map((inst) => adaptToSample(inst, rails[inst.railId], now.asDate))
+        .filter((r): r is SampleRail => r !== null),
+    [railInstances, rails, today, now.asDate],
+  );
+
+  const checkinQueue = useMemo<SampleRail[]>(
+    () =>
+      selectCheckinQueue({ railInstances, signals }, now.asDate)
+        .map((inst) => adaptToSample(inst, rails[inst.railId], now.asDate))
+        .filter((r): r is SampleRail => r !== null),
+    [railInstances, signals, rails, now.asDate],
+  );
+
+  // Timeline hides the unmarked items — they already live in the strip.
+  const timelineVisible = timeline.filter((r) => r.state !== 'unmarked');
+
   return (
     <div className="flex w-full max-w-[780px] flex-col gap-8 py-10 pl-10 pr-10 lg:pl-14 xl:pl-20">
-      <PageHeader />
-      <CheckInStrip queue={CHECKIN_QUEUE} />
-      <Timeline />
+      <PageHeader now={now} />
+      <CheckInStrip queue={checkinQueue} />
+      <Timeline rails={timelineVisible} />
       <Footnote />
     </div>
   );
 }
 
-/** Ticks every 30 s. Uses real wall-clock minutes so the HH:MM feels
- *  "alive" — no sub-minute precision required for the visual. */
-function useLiveNow() {
-  const [now, setNow] = useState(() => ({ hh: MOCK_NOW.hh, mm: MOCK_NOW.mm }));
+// ------------------------------------------------------------------
+// Live-now tick — updates every 30 s so "current rail" detection
+// and the check-in strip refresh without the user touching anything.
+// ------------------------------------------------------------------
+
+interface LiveNow {
+  hh: number;
+  mm: number;
+  asDate: Date;
+}
+
+function useLiveNow(): LiveNow {
+  const [now, setNow] = useState<LiveNow>(() => sample(new Date()));
   useEffect(() => {
-    const tick = () => {
-      const d = new Date();
-      setNow({ hh: d.getHours(), mm: d.getMinutes() });
-    };
+    const tick = () => setNow(sample(new Date()));
     tick();
     const id = window.setInterval(tick, 30_000);
     return () => window.clearInterval(id);
@@ -39,9 +76,60 @@ function useLiveNow() {
   return now;
 }
 
-function PageHeader() {
-  const live = useLiveNow();
-  const time = `${pad(live.hh)}:${pad(live.mm)}`;
+function sample(d: Date): LiveNow {
+  return { hh: d.getHours(), mm: d.getMinutes(), asDate: d };
+}
+
+// ------------------------------------------------------------------
+// Domain → display adapter. RailInstance + Rail + wall-clock now give
+// the 5-state SampleRail shape the existing components were built
+// around. Encapsulated here so the component layer doesn't need to
+// know about HLC / instance status rules.
+// ------------------------------------------------------------------
+
+function adaptToSample(
+  inst: RailInstance,
+  rail: Rail | undefined,
+  now: Date,
+): SampleRail | null {
+  if (!rail) return null;
+  const startMs = Date.parse(inst.plannedStart);
+  const endMs = Date.parse(inst.plannedEnd);
+  const nowMs = now.getTime();
+
+  let state: RailState;
+  if (inst.status === 'done') state = 'done';
+  else if (inst.status === 'skipped') state = 'skipped';
+  else if (inst.status === 'active') state = 'current';
+  else if (!Number.isNaN(startMs) && startMs <= nowMs && nowMs <= endMs)
+    state = 'current';
+  else if (!Number.isNaN(endMs) && endMs < nowMs) state = 'unmarked';
+  else state = 'pending';
+
+  return {
+    id: inst.id,
+    name: rail.name,
+    subtitle: rail.subtitle,
+    start: inst.plannedStart.slice(11, 16) || '00:00',
+    end: inst.plannedEnd.slice(11, 16) || '00:00',
+    color: rail.color as RailColor,
+    state,
+    showInCheckin: rail.showInCheckin,
+  };
+}
+
+// ------------------------------------------------------------------
+// Presentational chrome.
+// ------------------------------------------------------------------
+
+function PageHeader({ now }: { now: LiveNow }) {
+  const time = `${pad(now.hh)}:${pad(now.mm)}`;
+  const dateStr = now.asDate.toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+  const weekday = now.asDate.toLocaleDateString('en-GB', { weekday: 'short' });
   return (
     <header className="flex items-end justify-between gap-6 pt-2">
       <div className="flex flex-col gap-2">
@@ -53,11 +141,11 @@ function PageHeader() {
             {time}
           </h1>
           <span className="font-mono text-sm text-ink-secondary tabular-nums">
-            {MOCK_NOW.weekdayShort} · {MOCK_NOW.dayLabel}
+            {weekday} · {dateStr}
           </span>
         </div>
       </div>
-      <DayProgressBar hh={live.hh} mm={live.mm} />
+      <DayProgressBar hh={now.hh} mm={now.mm} />
     </header>
   );
 }
@@ -65,10 +153,13 @@ function PageHeader() {
 /** A slim Mono-labelled progress slice — the day as a ruler.
  *  Treat this as a navigation echo, not a task-completion bar. */
 function DayProgressBar({ hh, mm }: { hh: number; mm: number }) {
-  const dayStartMin = 6 * 60; // 06:00
-  const dayEndMin = 24 * 60; // 24:00
+  const dayStartMin = 6 * 60;
+  const dayEndMin = 24 * 60;
   const nowMin = hh * 60 + mm;
-  const pct = Math.max(0, Math.min(100, ((nowMin - dayStartMin) / (dayEndMin - dayStartMin)) * 100));
+  const pct = Math.max(
+    0,
+    Math.min(100, ((nowMin - dayStartMin) / (dayEndMin - dayStartMin)) * 100),
+  );
   return (
     <div className="flex flex-col items-end gap-1">
       <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
@@ -88,23 +179,21 @@ function DayProgressBar({ hh, mm }: { hh: number; mm: number }) {
   );
 }
 
-function Timeline() {
-  const visible = SAMPLE_RAILS.filter((r) => r.state !== 'unmarked');
-  //                       ^— unmarked rails live in the §5.6 strip until the
-  //                          user processes them, so they drop out of the
-  //                          main timeline to keep visual weight on
-  //                          "what's next" rather than "what you missed."
-
+function Timeline({ rails }: { rails: SampleRail[] }) {
   return (
     <section className="flex flex-col gap-2.5">
-      <SectionLabel text="Today" right={`${visible.length} rails`} />
-      <ul className="flex flex-col gap-2.5">
-        {visible.map((r) => (
-          <li key={r.id}>
-            <RailCard rail={r} />
-          </li>
-        ))}
-      </ul>
+      <SectionLabel text="Today" right={`${rails.length} rails`} />
+      {rails.length === 0 ? (
+        <p className="text-sm text-ink-tertiary">今日没有需要显示的 Rail。</p>
+      ) : (
+        <ul className="flex flex-col gap-2.5">
+          {rails.map((r) => (
+            <li key={r.id}>
+              <RailCard rail={r} />
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
@@ -127,7 +216,7 @@ function SectionLabel({ text, right }: { text: string; right?: string }) {
 function Footnote() {
   return (
     <footer className="mt-4 flex justify-between font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-      <span>DayRail · v0.1-pre (static mock)</span>
+      <span>DayRail · v0.2</span>
     </footer>
   );
 }
