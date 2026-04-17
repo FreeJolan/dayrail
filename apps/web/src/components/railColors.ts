@@ -60,3 +60,16 @@ export const RAIL_COLOR_STEP_6: Record<RailColor, string> = {
   pink: pink.pink6,
   gray: gray.gray6,
 };
+
+export const RAIL_COLOR_STEP_7: Record<RailColor, string> = {
+  sand: sand.sand7,
+  sage: sage.sage7,
+  olive: olive.olive7,
+  slate: slate.slate7,
+  mauve: mauve.mauve7,
+  brown: brown.brown7,
+  amber: amber.amber7,
+  teal: teal.teal7,
+  pink: pink.pink7,
+  gray: gray.gray7,
+};
