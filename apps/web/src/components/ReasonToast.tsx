@@ -64,12 +64,15 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
     return () => document.removeEventListener('keydown', onKey);
   }, [state, onClose]);
 
-  if (typeof document === 'undefined' || !state) return null;
-
-  // Always show 3 chips: history-top-N first (can be 0..3) and fill the
-  // rest from the static fallback, deduped. Prevents "I tagged '天气'
-  // once and now that's the only option" — which the all-or-nothing
-  // branch introduced.
+  // Always show 3 chips: history-top-N first (can be 0..3) and fill
+  // the rest from the static fallback, deduped. Prevents "I tagged
+  // '天气' once and now that's the only option" — which the all-or-
+  // nothing branch introduced.
+  //
+  // NB: this useMemo must live BEFORE any early-return or React's
+  // rules-of-hooks will flag a conditional hook call when `state`
+  // transitions between null and non-null.
+  const recommended = state?.recommendedTags;
   const chips = useMemo(() => {
     const seen = new Set<string>();
     const out: string[] = [];
@@ -78,10 +81,12 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
       seen.add(tag);
       out.push(tag);
     };
-    for (const t of state.recommendedTags ?? []) push(t);
+    for (const t of recommended ?? []) push(t);
     for (const t of FALLBACK_TAGS) push(t);
     return out;
-  }, [state.recommendedTags]);
+  }, [recommended]);
+
+  if (typeof document === 'undefined' || !state) return null;
 
   const handleChip = (tag: string): void => {
     if (appliedTags.includes(tag)) return;
