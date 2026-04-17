@@ -41,13 +41,63 @@ export function TimePillPopover({
     if (eHH !== end) setEnd(eHH);
   }
 
-  const parseHHMM = (s: string): number | null => {
-    const m = /^(\d{1,2}):(\d{2})$/.exec(s.trim());
-    if (!m) return null;
-    const h = Number(m[1]);
-    const mm = Number(m[2]);
+  // Tolerant parser — accepts "8", "08", "800", "0800", "8:0", "8:00", "08:00".
+  // Returns minutes-of-day or null.
+  const parseHHMM = (raw: string): number | null => {
+    const s = raw.trim();
+    if (!s) return null;
+    let h: number;
+    let mm: number;
+    if (s.includes(':')) {
+      const [hh, mmStr] = s.split(':');
+      if (hh == null || mmStr == null) return null;
+      h = Number(hh);
+      mm = Number(mmStr);
+    } else {
+      const digits = s.replace(/\D/g, '');
+      if (digits.length === 0) return null;
+      if (digits.length <= 2) {
+        // "8" or "08" → 08:00
+        h = Number(digits);
+        mm = 0;
+      } else if (digits.length === 3) {
+        // "830" → 08:30
+        h = Number(digits.slice(0, 1));
+        mm = Number(digits.slice(1));
+      } else if (digits.length === 4) {
+        // "0830" → 08:30
+        h = Number(digits.slice(0, 2));
+        mm = Number(digits.slice(2));
+      } else {
+        return null;
+      }
+    }
+    if (!Number.isFinite(h) || !Number.isFinite(mm)) return null;
     if (h < 0 || h > 23 || mm < 0 || mm > 59) return null;
     return h * 60 + mm;
+  };
+
+  // Normalize raw input to canonical "HH:MM"; returns null if unparseable.
+  const normalize = (raw: string): string | null => {
+    const mins = parseHHMM(raw);
+    if (mins == null) return null;
+    return fmtHHMM(mins);
+  };
+
+  // ArrowUp / ArrowDown step the field by 15 min (60 min with Shift).
+  const onStepKey = (
+    e: React.KeyboardEvent<HTMLInputElement>,
+    current: string,
+    setValue: (v: string) => void,
+  ) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    const mins = parseHHMM(current);
+    if (mins == null) return;
+    e.preventDefault();
+    const step = e.shiftKey ? 60 : 15;
+    const delta = e.key === 'ArrowUp' ? step : -step;
+    const next = Math.max(0, Math.min(24 * 60, mins + delta));
+    setValue(fmtHHMM(next));
   };
 
   const parsedStart = parseHHMM(start);
@@ -104,7 +154,17 @@ export function TimePillPopover({
               pattern="[0-9]{1,2}:[0-9]{2}"
               value={start}
               onChange={(e) => setStart(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && commit()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  commit();
+                  return;
+                }
+                onStepKey(e, start, setStart);
+              }}
+              onBlur={() => {
+                const n = normalize(start);
+                if (n) setStart(n);
+              }}
               className="rounded-sm bg-surface-2 px-2 py-1.5 font-mono text-sm tabular-nums outline-none ring-0 focus:bg-surface-3"
             />
           </label>
@@ -118,7 +178,17 @@ export function TimePillPopover({
               pattern="[0-9]{1,2}:[0-9]{2}"
               value={end}
               onChange={(e) => setEnd(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && commit()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  commit();
+                  return;
+                }
+                onStepKey(e, end, setEnd);
+              }}
+              onBlur={() => {
+                const n = normalize(end);
+                if (n) setEnd(n);
+              }}
               className="rounded-sm bg-surface-2 px-2 py-1.5 font-mono text-sm tabular-nums outline-none ring-0 focus:bg-surface-3"
             />
           </label>
@@ -146,7 +216,7 @@ export function TimePillPopover({
 
         <div className="mt-3 flex items-center justify-between">
           <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-            Enter to commit
+            ↵ commit · ↑↓ 15m · ⇧↑↓ 1h
           </span>
           <button
             type="button"
