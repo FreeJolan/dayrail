@@ -52,28 +52,18 @@ export async function boot(): Promise<void> {
   }
 }
 
-const INBOX_NAME = '随手记';
-
 async function ensureInbox(): Promise<void> {
   const store = useStore.getState();
-  const existing = store.lines[INBOX_LINE_ID];
-  if (!existing) {
-    const inbox: Line = {
-      id: INBOX_LINE_ID,
-      name: INBOX_NAME,
-      kind: 'project',
-      status: 'active',
-      isDefault: true,
-      createdAt: Date.now(),
-    };
-    await store.createLine(inbox);
-    return;
-  }
-  // Migrate users created before the 2026-04-18 rename. Cheap no-op
-  // after one run — subsequent boots find the new name in place.
-  if (existing.name === '收件箱') {
-    await store.updateLine(INBOX_LINE_ID, { name: INBOX_NAME });
-  }
+  if (store.lines[INBOX_LINE_ID]) return;
+  const inbox: Line = {
+    id: INBOX_LINE_ID,
+    name: '随手记',
+    kind: 'project',
+    status: 'active',
+    isDefault: true,
+    createdAt: Date.now(),
+  };
+  await store.createLine(inbox);
 }
 
 async function preflight(): Promise<void> {
