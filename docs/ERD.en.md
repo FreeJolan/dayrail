@@ -506,10 +506,10 @@ Net effect: the user-facing vocabulary stays Template / Track / Rail / Shift / L
 
 **Sources**:
 
-1. **Explicit defer** — the user clicks "Later" in the check-in strip / Today Track / §5.7 detail. `status → deferred`.
-2. **Natural sinking** — `status = 'pending'` instances with `plannedEnd < now - 24h` stop surfacing on the check-in strip and appear here (the status itself doesn't change — still `pending`, just stale).
+1. **Explicit defer** — the user clicks "Later" in the check-in strip / Today Track. `status → deferred`.
+2. **Ended unmarked** — every `status = 'pending'` instance with `plannedEnd ≤ now` (any age — the previous "> 24h aging" filter is retired).
 
-Both render identically in the queue; only the data source differs.
+Pending is the *complete* set of "awaiting a decision"; §5.6's check-in strip is a "last 24h" subset for nudging. The same rail appears in both surfaces and acting on either one removes it from both. Deliberate: the Pending list hides nothing, so the user is never in a "where did that go?" state.
 
 **Deliberately rejected design:** "Yesterday's Rail isn't marked — you can't touch today's." This violates the core philosophy (deviation is first-class, archiving has no consequences).
 

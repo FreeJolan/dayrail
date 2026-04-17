@@ -13,9 +13,10 @@ import { ReasonToast } from '@/components/ReasonToast';
 import { useReasonToast } from '@/components/useReasonToast';
 import type { RailColor } from '@/data/sample';
 
-// ERD §5.7 — Pending queue. Two sources, one exit:
-//   - explicit defer (`status === 'deferred'`)
-//   - natural sinking (`status === 'pending'` with `plannedEnd < now - 24h`)
+// ERD §5.7 — Pending queue. Master list of "awaiting a decision":
+//   - explicit defer (`status === 'deferred'`, any age)
+//   - ended without a decision (`status === 'pending'` with
+//     plannedEnd <= now, any age)
 // Rows look identical apart from a left-side glyph. Actions: `完成` /
 // `归档` (in-place status writes) + `拖到 Cycle →` (jumps to Cycle
 // View for re-scheduling). Bulk: `归档超过 7 天的事项`.
@@ -31,7 +32,10 @@ interface PendingRow {
   railName: string;
   railColor: RailColor;
   subtitle?: string;
-  source: 'deferred' | 'stale';
+  /** How the row got here:
+   *  - `deferred`: user explicitly clicked 以后再说.
+   *  - `unmarked`: rail ended without a decision (any age, not just >24h). */
+  source: 'deferred' | 'unmarked';
   tags: string[];
   ageDays: number;
 }
@@ -159,7 +163,7 @@ function adaptRow(
     railName: rail.name,
     railColor: rail.color as RailColor,
     subtitle: rail.subtitle,
-    source: inst.status === 'deferred' ? 'deferred' : 'stale',
+    source: inst.status === 'deferred' ? 'deferred' : 'unmarked',
     tags: tagsForInstance(inst.id, shifts),
     ageDays,
   };
@@ -364,9 +368,7 @@ function PendingItemRow({
   const strip = RAIL_COLOR_HEX[row.railColor];
   const SourceIcon = row.source === 'deferred' ? Clock : CircleDashed;
   const sourceTitle =
-    row.source === 'deferred'
-      ? '显式「以后再说」'
-      : '超过 24 小时未决定';
+    row.source === 'deferred' ? '显式「以后再说」' : '结束时未标记';
   return (
     <div
       className={clsx(
@@ -461,7 +463,8 @@ function EmptyState() {
       <Inbox className="h-6 w-6 text-ink-tertiary" strokeWidth={1.4} />
       <h2 className="text-lg font-medium text-ink-primary">队列为空</h2>
       <p className="text-sm text-ink-secondary">
-        未决定的 Rail 超过 24 小时后会出现在这里，可以一次性处理。
+        已结束但还没决定的 Rail —— 以及你显式点过「以后再说」的 ——
+        都会汇总在这里，可以一次性处理。
       </p>
     </section>
   );

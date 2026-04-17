@@ -102,24 +102,25 @@ export function selectCheckinQueue(
     .sort(byPlannedStart);
 }
 
-/** §5.7 Pending queue — two sources, one exit:
- *  1. Explicit `deferred` instances (user clicked 以后再说).
- *  2. Natural sinking: `pending` instances older than 24h.
- *  `archived` never shows here (terminal). Both sources render the
- *  same row shape; the caller decides whether to differentiate. */
+/** §5.7 Pending queue — the master list of "awaiting a decision":
+ *  1. All `deferred` instances (user clicked 以后再说).
+ *  2. All `pending` instances whose `plannedEnd` has passed
+ *     (regardless of age — check-in strip shows the recent subset,
+ *     but Pending is the full set).
+ *  Future `pending` and terminal `done / archived` are excluded —
+ *  they live on the Today timeline and in history respectively. */
 export function selectPendingQueue(
   state: Pick<DayRailState, 'railInstances'>,
   now: Date = new Date(),
 ): RailInstance[] {
   const nowMs = now.getTime();
-  const cutoff = nowMs - MS_PER_DAY;
   return Object.values(state.railInstances)
     .filter((inst) => {
       if (inst.status === 'deferred') return true;
       if (inst.status !== 'pending') return false;
       const endMs = Date.parse(inst.plannedEnd);
       if (Number.isNaN(endMs)) return false;
-      return endMs <= cutoff;
+      return endMs <= nowMs;
     })
     .sort(byPlannedStart);
 }
