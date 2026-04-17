@@ -163,7 +163,7 @@ const config: Config = {
         //     0.04em letter-spacing differentiates it visually from
         //     body `xs` even though the px value is the same.
         //   xs / sm / base / lg match Tailwind defaults.
-        '2xs': ['12px', { lineHeight: '16px', letterSpacing: '0.04em' }],
+        '2xs': ['13px', { lineHeight: '18px', letterSpacing: '0.04em' }],
         xs: ['12px', { lineHeight: '16px' }],
         sm: ['14px', { lineHeight: '20px' }],
         base: ['16px', { lineHeight: '24px' }],
