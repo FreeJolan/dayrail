@@ -5,6 +5,7 @@ import {
   RAIL_COLOR_STEP_4,
   RAIL_COLOR_STEP_6,
   RAIL_COLOR_STEP_7,
+  RAIL_TEXT_ON_SOLID,
 } from './railColors';
 import type { RailColor } from '@/data/sample';
 import type { SlotState } from '@/data/sampleCycle';
@@ -45,20 +46,28 @@ function DoneCell({
   meta?: string;
 }) {
   const bg = RAIL_COLOR_HEX[color];
+  const text = RAIL_TEXT_ON_SOLID[color];
   return (
     <div
       className="relative flex h-full min-h-[44px] flex-col justify-center gap-0.5 rounded-sm px-2 py-1.5"
-      style={{ background: bg }}
+      style={{ background: bg, color: text }}
     >
       {taskName ? (
-        <span className="line-clamp-2 text-xs text-cta-foreground/90">{taskName}</span>
+        <span className="line-clamp-2 text-xs" style={{ opacity: 0.92 }}>
+          {taskName}
+        </span>
       ) : (
-        <span className="font-mono text-2xs uppercase tracking-widest text-cta-foreground/60">
+        <span
+          className="font-mono text-2xs uppercase tracking-widest"
+          style={{ opacity: 0.7 }}
+        >
           Done
         </span>
       )}
       {meta && (
-        <span className="font-mono text-2xs text-cta-foreground/60">{meta}</span>
+        <span className="font-mono text-2xs" style={{ opacity: 0.7 }}>
+          {meta}
+        </span>
       )}
     </div>
   );

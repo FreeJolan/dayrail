@@ -73,3 +73,19 @@ export const RAIL_COLOR_STEP_7: Record<RailColor, string> = {
   pink: pink.pink7,
   gray: gray.gray7,
 };
+
+// For text rendered ON TOP of a Rail color at step 9 (the solid "done"
+// state). Radix convention: muted/natural scales plus amber (high
+// luminance) take dark text; saturated teal + pink take white.
+export const RAIL_TEXT_ON_SOLID: Record<RailColor, string> = {
+  sand: slate.slate12,
+  sage: slate.slate12,
+  olive: slate.slate12,
+  slate: slate.slate12,
+  mauve: slate.slate12,
+  brown: slate.slate12,
+  amber: slate.slate12,
+  teal: sand.sand1,
+  pink: sand.sand1,
+  gray: slate.slate12,
+};
