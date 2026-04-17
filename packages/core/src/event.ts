@@ -40,9 +40,9 @@ export type EventType =
   | 'line.created'
   | 'line.updated'
   | 'line.archived'
-  | 'chunk.created'
-  | 'chunk.updated'
-  | 'chunk.scheduled'
+  | 'task.created'
+  | 'task.updated'
+  | 'task.scheduled'
   // Calendar rules
   | 'calendar-rule.upserted'
   | 'calendar-rule.removed'

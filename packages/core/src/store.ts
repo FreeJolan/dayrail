@@ -4,7 +4,7 @@
 //
 // This is the narrowest useful slice for v0.2 — just the tables
 // Template Editor touches (templates + rails + sessions). Cycle
-// planning, check-in flow, Projects/Chunks follow in later wire-ups.
+// planning, check-in flow, Projects/Tasks follow in later wire-ups.
 
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';

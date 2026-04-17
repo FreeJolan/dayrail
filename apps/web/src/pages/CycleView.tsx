@@ -20,7 +20,7 @@ import { BacklogDrawer } from '@/components/BacklogDrawer';
 //   ┌── Left main column ────────────────────────────────┬── Backlog ──┐
 //   │ Top bar: Cycle pager · edit-session indicator · ⋯  │             │
 //   │ Summary strip (Top-3 Line progress bars)           │  Unpinned   │
-//   │ Master day header (7 columns, click → pop)         │  Chunks     │
+//   │ Master day header (7 columns, click → pop)         │  Tasks      │
 //   │                                                    │             │
 //   │  ▓ Workday section (Mon → Thu, 4 days grid)        │             │
 //   │  ▓ Restday section (Fri–Sun, 3 days grid)          │             │

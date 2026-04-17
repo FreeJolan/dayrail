@@ -3,7 +3,7 @@ import { Plus, Archive } from 'lucide-react';
 import {
   SAMPLE_PROJECTS,
   computeProjectProgress,
-  countDoneChunks,
+  countDoneTasks,
   isOverdue,
   type LineKind,
   type LineStatus,
@@ -15,7 +15,7 @@ import { RAIL_COLOR_HEX } from './railColors';
 //   - top: Type tabs (Project / Habit / Group), MVP delivers Project.
 //   - below: Active / Archived sub-tabs.
 //   - main: Line cards (color strip + name + subtitle + time window +
-//           primary progress bar + chunk count).
+//           primary progress bar + task count).
 
 interface Props {
   activeId?: string;
@@ -184,7 +184,7 @@ function LineCard({
   onClick: () => void;
 }) {
   const progress = computeProjectProgress(line);
-  const { done, total } = countDoneChunks(line);
+  const { done, total } = countDoneTasks(line);
   const overdue = isOverdue(line);
   const strip = RAIL_COLOR_HEX[line.color];
 
@@ -237,7 +237,7 @@ function LineCard({
 
       <div className="flex items-center gap-3 pl-2 font-mono text-2xs tabular-nums text-ink-tertiary">
         <span>
-          {done}/{total} chunks
+          {done}/{total} 任务
         </span>
         {line.plannedEnd && (
           <>

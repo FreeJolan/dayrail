@@ -1,6 +1,6 @@
 # DayRail Product Design Document (ERD)
 
-> **Status**: living document — any decision here can be overturned. Last updated 2026-04-17 (check-in action set simplified: the old four-button `Done / Skip / Shift / Ignore` + four-sub-action sheet collapses into three buttons `Done / Later / Archive`; `RailInstance.status` becomes `pending / done / deferred / archived` (`active` and `skipped` retired — "currently happening" is wall-clock-derived); Shift sheet replaced by a 6-second Reason toast (3 quick-reason tag chips + Undo, no mandatory reason); Postpone / Replace / Swap / Resize removed from the Shift types — within-day postponing is handled by Cycle-View drag, the rest deferred to v0.3; Pending queue renamed and now absorbs both explicit `deferred` items and stale-`pending` items > 24h — two sources, one exit; §5.8 Review heatmap's three-part hatching semantics rebound to `deferred / archived / pending-stale`). History: 2026-04-16 (Group A UI baseline: sync-status badge, Now-View rhythm bar, Ad-hoc overlay, generalized Edit Sessions, Cycle notation → C1, per-view date-format table; Group B Now-View structure: multi-chunk pill row, three Slot shapes, Next-Rail visual spec, removal of the left rail visualizer, `CURRENT RAIL` chip, Now top-bar `Now` + Mono subtitle; Group C Today-Track Shift interactions: Skipped state via hatching, desktop hover-revealed action bar, Active main CTA → tonal `Done`, unified Shift-tag sheet, single timeline with no bento; Group D Cycle-View skeleton: per-template stacked sections, top day-header as the sole template-switch entry, Cycle pager picker, summary-strip aggregates, `⤺ Undo this edit` button, three-part hatching semantics, Backlog as split drawer; Group E Template Editor: no Save button + first-run inline banner, Radix 10-color popover, sticky tab bar + 2px color strip + dashed `+ New template`, summary strip, card-style Rail row + time-pill popover picker, inter-row gap chip `+ Fill Rail`, `⋯` row menu carrying Line binding / check-in toggle; notification rework: drop OS push / Capacitor notifications / permission pipeline, Signal collapses to a `showInCheckin` boolean, §5.6 and §5.7 unified — the check-in strip and the pending-decisions queue are two tenses of one mechanism; Group F missing screens: Projects / Settings share the master-detail form, Review per-scope waterfall + rhythm-match heatmap (state tints + the three-part hatching semantics), pending-decisions queue is date-reverse grouped with four inline actions per row and the side-nav shows a `·` dot without a number, Calendar is a standard month grid + per-date popover + Advanced-rules drawer with four sections, new §5.9 Settings defines five sections + a three-way theme toggle defaulting to follow-system + Language in Appearance / Time format + AI output-locale in Advanced; Group G design language: Terracotta CTA uses `orange-9/10/11` three solid tones (no gradients); No-Line Rule with explicit whitelist (decorative color strips + sticky hairline + focus rings); four-tier Surface tokens `sand-1..4` replace `border`-based hierarchy; radius tokens `sharp / sm / md / lg` = `0 / 6 / 10 / 16`; zero glassmorphism app-wide; Intentional Asymmetry as the default layout principle. Visual-implementation adjustments: Rail palette drops `olive / mauve / gray` (visually too close to sage / slate, or identity-less), swaps in `grass / indigo / plum` to fill the missing saturated-green / cool-blue / creative-purple slots — still 10 colors but every one perceptibly distinct. CN primary font swapped PingFang → Noto Sans SC (Source Han Sans SC) for cross-platform consistency. Terracotta CTA re-bound from `orange-9` to `bronze-9` — `orange-9` read as SaaS-vivid on screen; `bronze-9` sits much closer to the ERD's original #C97B4A "warm terracotta" intent).
+> **Status**: living document — any decision here can be overturned. Last updated 2026-04-18 (terminology audit: `Chunk` renamed to `Task` end-to-end (types + events + schema + UI + ERD) to retire an internal-only jargon term; `Line` stays as an internal umbrella type (`kind: 'project' \| 'habit' \| 'group'`) but **the word "Line" never appears in UI copy** — surfaces always show the concrete Project / Habit / Tag; the `Pending` view is renamed `待决定 / Unresolved` so it no longer overloads the `status='pending'` enum; §5.7 Pending drops its 24h aging filter — it's now the complete "awaiting a decision" set, with the check-in strip serving as the "last-24h" subset view). History: 2026-04-17 (check-in action set simplified: the old four-button `Done / Skip / Shift / Ignore` + four-sub-action sheet collapses into three buttons `Done / Later / Archive`; `RailInstance.status` becomes `pending / done / deferred / archived` (`active` and `skipped` retired — "currently happening" is wall-clock-derived); Shift sheet replaced by a 6-second Reason toast (3 quick-reason tag chips + Undo, no mandatory reason); Postpone / Replace / Swap / Resize removed from the Shift types — within-day postponing is handled by Cycle-View drag, the rest deferred to v0.3; Pending queue renamed and now absorbs both explicit `deferred` items and stale-`pending` items > 24h — two sources, one exit; §5.8 Review heatmap's three-part hatching semantics rebound to `deferred / archived / pending-stale`). History: 2026-04-16 (Group A UI baseline: sync-status badge, Now-View rhythm bar, Ad-hoc overlay, generalized Edit Sessions, Cycle notation → C1, per-view date-format table; Group B Now-View structure: multi-task pill row, three Slot shapes, Next-Rail visual spec, removal of the left rail visualizer, `CURRENT RAIL` chip, Now top-bar `Now` + Mono subtitle; Group C Today-Track Shift interactions: Skipped state via hatching, desktop hover-revealed action bar, Active main CTA → tonal `Done`, unified Shift-tag sheet, single timeline with no bento; Group D Cycle-View skeleton: per-template stacked sections, top day-header as the sole template-switch entry, Cycle pager picker, summary-strip aggregates, `⤺ Undo this edit` button, three-part hatching semantics, Backlog as split drawer; Group E Template Editor: no Save button + first-run inline banner, Radix 10-color popover, sticky tab bar + 2px color strip + dashed `+ New template`, summary strip, card-style Rail row + time-pill popover picker, inter-row gap chip `+ Fill Rail`, `⋯` row menu carrying Line binding / check-in toggle; notification rework: drop OS push / Capacitor notifications / permission pipeline, Signal collapses to a `showInCheckin` boolean, §5.6 and §5.7 unified — the check-in strip and the pending-decisions queue are two tenses of one mechanism; Group F missing screens: Projects / Settings share the master-detail form, Review per-scope waterfall + rhythm-match heatmap (state tints + the three-part hatching semantics), pending-decisions queue is date-reverse grouped with four inline actions per row and the side-nav shows a `·` dot without a number, Calendar is a standard month grid + per-date popover + Advanced-rules drawer with four sections, new §5.9 Settings defines five sections + a three-way theme toggle defaulting to follow-system + Language in Appearance / Time format + AI output-locale in Advanced; Group G design language: Terracotta CTA uses `orange-9/10/11` three solid tones (no gradients); No-Line Rule with explicit whitelist (decorative color strips + sticky hairline + focus rings); four-tier Surface tokens `sand-1..4` replace `border`-based hierarchy; radius tokens `sharp / sm / md / lg` = `0 / 6 / 10 / 16`; zero glassmorphism app-wide; Intentional Asymmetry as the default layout principle. Visual-implementation adjustments: Rail palette drops `olive / mauve / gray` (visually too close to sage / slate, or identity-less), swaps in `grass / indigo / plum` to fill the missing saturated-green / cool-blue / creative-purple slots — still 10 colors but every one perceptibly distinct. CN primary font swapped PingFang → Noto Sans SC (Source Han Sans SC) for cross-platform consistency. Terracotta CTA re-bound from `orange-9` to `bronze-9` — `orange-9` read as SaaS-vivid on screen; `bronze-9` sits much closer to the ERD's original #C97B4A "warm terracotta" intent).
 >
 > This describes DayRail's product logic, interaction design, and tech choices. It is not a final blueprint — it captures intent and trade-offs (including paths we considered and rejected) so contributors can see *why* the code looks the way it does.
 >
@@ -84,7 +84,7 @@ These stories act as a design touchstone — any new feature should plug natural
 
 > Junior, three weeks to deliver a group report.
 >
-> She creates a Project "Market research report" (planned window 2026-04-20 → 2026-05-10) and breaks it into Chunks: "Pick a topic 20%", "Send out survey 50%", "Analyze data 80%", "First draft 100%", plus a few supplementary items without a milestone percent ("tidy references", "format check"). She drags each Chunk into a Slot on a specific CycleDay + Rail ("Analyze data" goes into next Wednesday 14:00–16:00). A teammate delay slips "Send out survey" by two days — she clicks "Later" on that RailInstance (`status → deferred`), it joins the Pending queue, then in Cycle View she drags it to Friday, which resets plannedStart/End back to `pending`. Other Chunks are unaffected. When the 100% Chunk is marked done, the Project auto-archives.
+> She creates a Project "Market research report" (planned window 2026-04-20 → 2026-05-10) and breaks it into Tasks: "Pick a topic 20%", "Send out survey 50%", "Analyze data 80%", "First draft 100%", plus a few supplementary items without a milestone percent ("tidy references", "format check"). She drags each Task into a Slot on a specific CycleDay + Rail ("Analyze data" goes into next Wednesday 14:00–16:00). A teammate delay slips "Send out survey" by two days — she clicks "Later" on that RailInstance (`status → deferred`), it joins the Pending queue, then in Cycle View she drags it to Friday, which resets plannedStart/End back to `pending`. Other Tasks are unaffected. When the 100% Task is marked done, the Project auto-archives.
 
 ### D — Lin, the no-AI minimalist
 
@@ -110,27 +110,27 @@ These stories act as a design touchstone — any new feature should plug natural
 - **CycleDay**: One day within a Cycle, bound to a `templateKey` (MVP defaults to toggling between `workday` / `restday`; other templates also allowed), containing one Slot per Rail.
 - **Slot**: The **planning-side content container** for one Rail position on one CycleDay. Can hold both:
   - Optional `taskName` (free text) — for one-off items that don't warrant a Project ("call mom").
-  - Ordered `chunkIds` — Chunk assignments belonging to some Project.
+  - Ordered `taskIds` — Task assignments belonging to some Project.
   The Slot is design-time (what you plan for this position); on that day it materializes into a **RailInstance** (run-time).
 - **Track**: One day's timeline, composed of RailInstances. Generated from that day's CycleDay + template; edits made on Today Track do not mutate the template or its CycleDay.
 - **RailInstance**: The run-time instance of a Rail on a specific day, carrying `status` (pending / done / deferred / archived), `plannedStart` / `plannedEnd`, optional `actualStart` / `actualEnd`, per-day overrides, and (if any) the `sessionId` of its planning session. "Currently happening" (current rail) is NOT a separate status — it's purely derived from wall-clock position (`plannedStart ≤ now ≤ plannedEnd` with `status='pending'`).
 - **Shift**: A record of a `pending → *` transition on a RailInstance. v0.2 keeps two types: `defer` (Later; lands in Pending) and `archive` (no more scheduling). May optionally carry tags from a global shared library (see §5.7). Within-day postponing is handled by Cycle-View drag; `swap / resize / replace` are deferred to v0.3.
 - **Signal**: Lightweight check-in at a Rail boundary — named after the railway signal at each crossing: it lights up, it doesn't command. `continue` / `adjust` / `skip`.
 - **Ad-hoc Event**: A one-off time block not belonging to any template. Higher priority than template resolution. Optionally attached to a Line.
-- **Line (grouping primitive)**: DayRail's only multi-Rail grouping concept, forming a continuum:
-  - No phases, no chunks → **Pure group (tag-like)**. Just for labeling (e.g., "Work", "Medical").
+- **Line (internal container type · never in UI copy)**: DayRail's only multi-Rail grouping concept, forming a continuum. `Line` exists only in types / schema / event log — UI views / menus / copy always show the concrete shape per `kind`: `Project` / `Habit` / `Tag` (formerly "Group").
+  - No phases, no tasks → **Pure group (tag-like)**. Just for labeling (e.g., "Work", "Medical").
   - With phases → **Habit Line (UI: "Habit")**. Open-ended, evolves by phases (duration, target params, advance rules: by days / completions / manual). The home for **daily recurring things** (morning run, English reading) — high-frequency recurrence is not a Project, it's a Habit.
-  - With chunks → **Project Line (UI: "Project")**. Finite but append-extensible. See the Chunk entry below.
+  - With tasks → **Project Line (UI: "Project")**. Finite but append-extensible. See the Task entry below.
   - **Line ↔ Rail is one-to-many**: a single Line can drive multiple Rails (group assignment split into 5 independently Shift-able Rails).
-  - A Phase / Chunk may target all Rails in the Line or specific Rail IDs.
+  - A Phase / Task may target all Rails in the Line or specific Rail IDs.
   - Lines can be decomposed manually or with AI assistance (§6).
-- **Chunk**: The execution unit of a Project Line. Fields:
+- **Task**: The execution unit of a Project Line. Fields:
   - `title`, `subItems` (internal checklist, not scheduled individually), `status` (pending / in\_progress / done), `order` (draggable).
-  - **Optional** `milestonePercent` (0–100): chunks with a percentage are *milestones*; chunks without are *supplementary items*. Projects support **unbounded appending** of chunks (including new milestones) until archived.
-  - **Chunk completion is global**: a Chunk goes into at most one Slot (Chunk ↔ Slot is 1:1; one Slot can hold many Chunks). The Slot just says "this is where I plan to advance it"; marking it done at any Slot flips the Chunk globally to `done`, reflected everywhere.
-  - **Project progress**: the **max** `milestonePercent` among done Chunks (not a weighted sum; Chunks without a `milestonePercent` don't affect progress but count toward "items done").
-  - **Archive trigger**: when a Chunk with `milestonePercent === 100` transitions to `done`, the Project auto-archives. Users can also archive manually at any time. No unarchiving; use **clone-to-new** for a "v2" — avoids long-tail zombies.
-  - **Planned window** (Project-level): optional `plannedStart` / `plannedEnd`, used as soft hints — assigning a Chunk to a date outside the window warns but doesn't block.
+  - **Optional** `milestonePercent` (0–100): tasks with a percentage are *milestones*; tasks without are *supplementary items*. Projects support **unbounded appending** of tasks (including new milestones) until archived.
+  - **Task completion is global**: a Task goes into at most one Slot (Task ↔ Slot is 1:1; one Slot can hold many Tasks). The Slot just says "this is where I plan to advance it"; marking it done at any Slot flips the Task globally to `done`, reflected everywhere.
+  - **Project progress**: the **max** `milestonePercent` among done Tasks (not a weighted sum; Tasks without a `milestonePercent` don't affect progress but count toward "items done").
+  - **Archive trigger**: when a Task with `milestonePercent === 100` transitions to `done`, the Project auto-archives. Users can also archive manually at any time. No unarchiving; use **clone-to-new** for a "v2" — avoids long-tail zombies.
+  - **Planned window** (Project-level): optional `plannedStart` / `plannedEnd`, used as soft hints — assigning a Task to a date outside the window warns but doesn't block.
 - **Planning session** *(internal)*: A burst of Cycle-View edits performed in one sitting; their RailInstance overrides share an internal `sessionId`, enabling "undo this planning session" as an atomic action. Not a user-facing noun — there is no Plan page, no naming, no promotion flow. For recurring multi-week patterns (exam week, travel week), users build a dedicated Template and apply it via the Calendar.
 
 ### 4.2 Concept Overview (Mermaid)
@@ -141,7 +141,7 @@ flowchart LR
     Template["Template<br/>Ideal day"]
     Rail["Rail<br/>Time block"]
     Line["Line<br/>Group / Project / Habit"]
-    Chunk["Chunk<br/>Project work unit"]
+    Task["Task<br/>Project work unit"]
     Calendar["Calendar<br/>Date → Template"]
   end
 
@@ -162,14 +162,14 @@ flowchart LR
   Template -- contains --> Rail
   Calendar -- picks Template per date --> Template
   Line -- drives (1..N) --> Rail
-  Line -- contains (Project) --> Chunk
+  Line -- contains (Project) --> Task
   Line -.optional tag.- Adhoc
 
   Cycle -- composed of --> CycleDay
   CycleDay -- bound to --> Template
   CycleDay -- one per Rail --> Slot
-  Slot -- holds (0..N) --> Chunk
-  Chunk -- assigned to 0..1 --> Slot
+  Slot -- holds (0..N) --> Task
+  Task -- assigned to 0..1 --> Slot
 
   Slot -- materializes on the day --> RailInstance
   Rail -- instantiates --> RailInstance
@@ -187,15 +187,15 @@ flowchart LR
 Template      ──materializes──▶ CycleDay.templateKey
 Cycle         ──contains ─────▶ CycleDay[]
 CycleDay      ──has ──────────▶ Slot[] (one per Rail)
-Slot          ──holds ────────▶ Chunk[] (0..N, one-to-many)
-Chunk         ──assignedTo ───▶ Slot (0..1, at most one)
-Chunk         ──belongsTo ────▶ Line (Project variant)
+Slot          ──holds ────────▶ Task[] (0..N, one-to-many)
+Task         ──assignedTo ───▶ Slot (0..1, at most one)
+Task         ──belongsTo ────▶ Line (Project variant)
 Line          ──drives ───────▶ Rail[] (1..N)
-Line(Project) ──progress ─────▶ max(milestonePercent of done Chunks)
+Line(Project) ──progress ─────▶ max(milestonePercent of done Tasks)
 
 CycleDay      ──generates ────▶ Track (one per day)
 Track         ──contains ─────▶ RailInstance
-RailInstance  ──reflects ─────▶ Slot content (taskName + chunks)
+RailInstance  ──reflects ─────▶ Slot content (taskName + tasks)
 RailInstance  ──produces ─────▶ Shift (zero or more)
 RailInstance  ──triggers ─────▶ Signal (zero or more)
 Calendar      ──resolves ─────▶ Template (or Ad-hoc Event) for a date
@@ -254,24 +254,24 @@ The badge is always visible and always restrained. **Never red** — local data 
 
 Within 1 second:
 
-1. **Slot content for the current Rail** (large type, in the main content column). A small Mono 9px uppercase wide-letter-spacing chip sits above the headline — the label is always **`CURRENT RAIL`** (not `CURRENT CHUNK`; the semantic unit of focus is the Rail, Chunks are the concrete actions inside it). Below the headline, rendering depends on the Slot's shape — three variants:
+1. **Slot content for the current Rail** (large type, in the main content column). A small Mono 9px uppercase wide-letter-spacing chip sits above the headline — the label is always **`CURRENT RAIL`** (not `CURRENT TASK`; the semantic unit of focus is the Rail, Tasks are the concrete actions inside it). Below the headline, rendering depends on the Slot's shape — three variants:
 
-   - **With Chunks**: the first unfinished Chunk's title is the **headline**. When multiple Chunks are present, a small subtext line reads `1 of 3 chunks` under the headline; below that, a **compact pill row** lists the remaining Chunks by `order` — each pill = 4px Project color bar + Chunk title + optional `milestonePercent` badge; **completed Chunks are struck through**; tapping a pill jumps to the Chunk detail inside its Project Line. Pills **do not carry a "mark done" action** — the primary "Done" button always advances the first unfinished Chunk, one at a time. This prevents "cherry-pick completion" patterns.
-   - **With only `taskName`**: the `taskName` is the headline; a small chip `Quick task` hangs beneath (JetBrains Mono 9px, uppercase, wide letter-spacing — same style as the ADHOC chip; slate step 3 bg + step 11 text). The chip makes it explicit: "this is not a Project Chunk and leaves no trace on any Project's progress".
+   - **With Tasks**: the first unfinished Task's title is the **headline**. When multiple Tasks are present, a small subtext line reads `1 of 3 tasks` under the headline; below that, a **compact pill row** lists the remaining Tasks by `order` — each pill = 4px Project color bar + Task title + optional `milestonePercent` badge; **completed Tasks are struck through**; tapping a pill jumps to the Task detail inside its Project Line. Pills **do not carry a "mark done" action** — the primary "Done" button always advances the first unfinished Task, one at a time. This prevents "cherry-pick completion" patterns.
+   - **With only `taskName`**: the `taskName` is the headline; a small chip `Quick task` hangs beneath (JetBrains Mono 9px, uppercase, wide letter-spacing — same style as the ADHOC chip; slate step 3 bg + step 11 text). The chip makes it explicit: "this is not a Project Task and leaves no trace on any Project's progress".
    - **Neither**: the headline slot shows a huge `—`; a single restrained subline reads `This block is open. Rest, think, or pick something up.` **No "+ Add" button** — adding content in the moment is not the Now View's job; go through Today Track (§5.2) or Cycle View (§5.3).
 
-   Next to the headline (or below, depending on viewport width), three elements render: **remaining time** (Mono large `45m`) + end clock (small Mono `ends 16:30`) + a time-progress bar (driven by Rail duration, **not Chunk progress**).
+   Next to the headline (or below, depending on viewport width), three elements render: **remaining time** (Mono large `45m`) + end clock (small Mono `ends 16:30`) + a time-progress bar (driven by Rail duration, **not Task progress**).
 
 2. **Next Rail card**: visual rules match a Today Track row — a 4px left color bar taken from the next Rail's own Radix step-9 color; **deliberately not tertiary terracotta** as the "Next" accent (tertiary is reserved for the current Rail and primary actions only, §9.6). Card content:
    - Top-left: a Mono small chip `COMING UP NEXT` (same style as `CURRENT RAIL`) + Mono countdown `in 32m` (refreshes at per-minute granularity).
    - Rail name (mid-size type).
-   - Slot preview summary (small subtext, listing the first two Chunks' title + percentage, e.g., `Warmup 20%, Cardio 50%`). If the Slot is `taskName`-only, the subtext = the `taskName` + `Quick task` chip; if empty, subtext is `—`.
+   - Slot preview summary (small subtext, listing the first two Tasks' title + percentage, e.g., `Warmup 20%, Cardio 50%`). If the Slot is `taskName`-only, the subtext = the `taskName` + `Quick task` chip; if empty, subtext is `—`.
 
-3. **A pair of primary buttons**: `Done / Skip`. "Done" marks the first unfinished Chunk in the current Slot as `done` (completion is global — completing at any Slot completes the Chunk everywhere). If the Slot has only `taskName` and no Chunks, "Done" transitions the RailInstance to `done`. The Now View deliberately omits an "Adjust" entry — rescheduling / swapping content happens through the row-level interactions on Today Track (§5.2), so the moment of decision isn't saddled with another choice.
+3. **A pair of primary buttons**: `Done / Skip`. "Done" marks the first unfinished Task in the current Slot as `done` (completion is global — completing at any Slot completes the Task everywhere). If the Slot has only `taskName` and no Tasks, "Done" transitions the RailInstance to `done`. The Now View deliberately omits an "Adjust" entry — rescheduling / swapping content happens through the row-level interactions on Today Track (§5.2), so the moment of decision isn't saddled with another choice.
 
 **Top bar (the Now-View variant of the §5.0 rule)**: primary `Now` (Inter font-bold) + a smaller Mono subtitle `14:28 · Thu Apr 16`. The clock uses Intl and refreshes at per-minute granularity (second-level would create too much visual noise and adds no value for the Now context); the subtitle **carries no Cycle notation** — the Now View is moment-focused, not cycle-focused.
 
-**The right column carries only `Goal Context`** — background info for the Project / Line that owns the Chunks in the current Slot (progress, planned window, the most recent Shift summary). **Deliberately excluded**: decorative imagery, inspirational quotes, "Today's momentum 65%" counters, any streak / achievement metric. Decoration and motivation clash with §1's core philosophy. When the Slot is `taskName`-only or empty, the right column shows a neutral note (e.g., `No long-running goal attached to this block. It's fine to slow down.`) instead of a blank space that pressures the user to find something to fill it.
+**The right column carries only `Goal Context`** — background info for the Project / Line that owns the Tasks in the current Slot (progress, planned window, the most recent Shift summary). **Deliberately excluded**: decorative imagery, inspirational quotes, "Today's momentum 65%" counters, any streak / achievement metric. Decoration and motivation clash with §1's core philosophy. When the Slot is `taskName`-only or empty, the right column shows a neutral note (e.g., `No long-running goal attached to this block. It's fine to slow down.`) instead of a blank space that pressures the user to find something to fill it.
 
 **The main content area deliberately does not carry a left-side "rail visualizer"** (a vertical-dots / vertical-axis "day-shape" subview). Today's shape is carried entirely by the bottom rhythm bar — two timelines on one screen only dilute attention, and a vertical form can't express state-colored rhythm density as cleanly as the horizontal bar.
 
@@ -357,8 +357,8 @@ For **forward planning** and **overview**. Organized around the **Cycle** — by
 **Summary strip below the top bar** (≈ 16px tall, `surface-container-low` background, 6px horizontal padding):
 
 - Left end: `This Cycle: N projects` (Inter small type + numeric Mono).
-- Middle: **top-3 Project inline progress bars** (8px rounded-full bars, each with a Project color swatch at the left + small Project name + Mono `12/20` or percent at the right; ranked by "most Chunks already slotted"); any extras collapse behind `+N more` → click opens a popover listing every Project + progress.
-- Right end: `backlog N →` button, N = total Chunks not yet assigned to any Slot; click opens the Backlog drawer (see below).
+- Middle: **top-3 Project inline progress bars** (8px rounded-full bars, each with a Project color swatch at the left + small Project name + Mono `12/20` or percent at the right; ranked by "most Tasks already slotted"); any extras collapse behind `+N more` → click opens a popover listing every Project + progress.
+- Right end: `backlog N →` button, N = total Tasks not yet assigned to any Slot; click opens the Backlog drawer (see below).
 
 **Main body: stacked mini-grids, one per Template**:
 
@@ -375,14 +375,14 @@ Core rule: **however many Templates this Cycle actually uses, that's how many se
 
 **Cell (Slot) editability**:
 
-- Empty Slot (Template active, no content): dashed border + a visible `+ add`; hover turns solid. Clicking opens a popover: `[New Chunk in Project]` / `[Pick existing Chunk]` / `[Quick text taskName]`.
-- Filled Slot: Chunks listed by `order` as pills at the top (left 4px **Project** color bar + title + optional `milestonePercent`), with `taskName` appended below in small gray type if present. Tapping a pill brings up `[Mark done]` / `[Remove this assignment]` / `[Open Project]`.
+- Empty Slot (Template active, no content): dashed border + a visible `+ add`; hover turns solid. Clicking opens a popover: `[New Task in Project]` / `[Pick existing Task]` / `[Quick text taskName]`.
+- Filled Slot: Tasks listed by `order` as pills at the top (left 4px **Project** color bar + title + optional `milestonePercent`), with `taskName` appended below in small gray type if present. Tapping a pill brings up `[Mark done]` / `[Remove this assignment]` / `[Open Project]`.
 - **"Rail not applicable" cell** (column Template isn't active → every cell down the column): **Rail step 4** 2px-spaced diagonal hatching + a Mono `—` in the center + `cursor: not-allowed`. Step 4 (lighter than Skipped's step 6) communicates "this Rail doesn't exist here" rather than "you abandoned something here".
 - **Three-part visual semantics** (app-wide): **solid = normal content** / **dashed = add-here or Ad-hoc overlay** / **hatching = demoted state (Skipped / not applicable)**. Any new interaction must fall into one of these three — no fourth category.
 
 **Other planning operations**:
 
-- Bulk operations: copy Chunk assignments across days, drag to reschedule, bulk-skip a Rail across the Cycle.
+- Bulk operations: copy Task assignments across days, drag to reschedule, bulk-skip a Rail across the Cycle.
 - "Scatter" a Line across future days (AI can suggest a distribution).
 
 **Backlog drawer (split-drawer form)**:
@@ -390,7 +390,7 @@ Core rule: **however many Templates this Cycle actually uses, that's how many se
 - **Collapsed by default**: clicking `backlog N →` on the summary strip slides a 320px drawer in from the right, covering the right-most column or two of the main grid; ESC / clicking the scrim / clicking the button again closes it.
 - **Pin**: a 📌 button at the top-right of the drawer converts it into a **permanent sidebar** (the main grid auto-reflows to leave 320px of right padding; the drawer stops being an overlay). Clicking 📌 again unpins. Pinned state persists in local UI settings (**not synced** — it's a device-level preference, not planning data).
 - **Responsive collapse**: lg and below force the drawer form regardless of pin state; xl and above honor the user's pin.
-- **Contents**: Project / Chunk list grouped by Project, with Chunks draggable into Slots. Complements the standalone Projects view in §5.5 (tab + drawer — two entry points for the same data).
+- **Contents**: Project / Task list grouped by Project, with Tasks draggable into Slots. Complements the standalone Projects view in §5.5 (tab + drawer — two entry points for the same data).
 
 #### 5.3.1 Edit Sessions: a general batch-undo mechanism
 
@@ -414,7 +414,7 @@ We deliberately do **not** introduce "Plan" or "EditMode" as user-facing nouns. 
 
 **No Cmd+Z binding** (v0.2 decision): session-level undo wipes N changes in one stroke, so binding Cmd+Z to it invites accidental full wipes. Binding Cmd+Z to a per-step undo violates the atomic-batch semantics of this section and doubles the undo infrastructure. So the only entry point is the explicit `⤺ Undo this edit session` button — slightly higher learning curve in exchange for zero-misfire. Per-step undo may return as a §11 open question in v0.3+ if user feedback demands it.
 
-Net effect: the user-facing vocabulary stays Template / Track / Rail / Shift / Line / Signal / Project / Chunk / Slot — no management page, no promotion flow, just one "take it back" button.
+Net effect: the user-facing vocabulary stays Template / Track / Rail / Shift / Line / Signal / Project / Task / Slot — no management page, no promotion flow, just one "take it back" button.
 
 ### 5.4 Template Editor + Calendar
 
@@ -464,23 +464,23 @@ Net effect: the user-facing vocabulary stays Template / Track / Rail / Shift / L
 - **Desktop master-detail**: a fixed 320px left column always shows the list (Type tabs + Active/Archived sub-tabs + Line cards); the right column takes the remaining width and renders the selected Line's detail.
 - **Empty state (nothing selected)**: the right column shows a placeholder card — "Pick a Line from the left / or create a new one".
 - **Mobile** collapses to a single-column list page → tap a Line → push to its detail page (breadcrumb `Projects / Project name`, back button top-left). Settings (§5.9) reuses the same master-detail pattern.
-- Dense editing flows (add Chunk, arrange Phases, adjust progress, archive, rename) happen on one screen — no repeated push navigation.
+- Dense editing flows (add Task, arrange Phases, adjust progress, archive, rename) happen on one screen — no repeated push navigation.
 
 **List layer**:
 
 - All Lines grouped by kind tab: `Project` / `Habit` / pure grouping (MVP ships Project first; Habit per §12 roadmap).
 - Sub-tabs for `Active` / `Archived`.
-- Card fields: color bar, name, planned window (if the Project has `plannedStart` / `plannedEnd`), primary progress bar (Project = max `milestonePercent` among done Chunks), items-done / items-total.
+- Card fields: color bar, name, planned window (if the Project has `plannedStart` / `plannedEnd`), primary progress bar (Project = max `milestonePercent` among done Tasks), items-done / items-total.
 - Active Projects past their `plannedEnd` by 7 days get an "overdue" badge.
 
 **Detail layer**:
 
 - Habit: Phase timeline (current highlighted), linked Rails, Shift distribution.
 - Project:
-  - Chunk list, draggable to reorder. Each row shows title, `milestonePercent` (if any), status, sub-item completion (e.g., `2/5`), and the Slot it's assigned to (date + Rail name).
-  - Unassigned Chunks cluster at the top in a "backlog" region; drag them from here into target Slots via the Cycle-View sidebar.
-  - Bottom "+ Add Chunk" — add either a supplementary item (no `milestonePercent`) or a milestone (set `milestonePercent`).
-- Edit entry: add/remove Phases/Chunks manually, or press `AI decompose` to launch the multi-step wizard (§6).
+  - Task list, draggable to reorder. Each row shows title, `milestonePercent` (if any), status, sub-item completion (e.g., `2/5`), and the Slot it's assigned to (date + Rail name).
+  - Unassigned Tasks cluster at the top in a "backlog" region; drag them from here into target Slots via the Cycle-View sidebar.
+  - Bottom "+ Add Task" — add either a supplementary item (no `milestonePercent`) or a milestone (set `milestonePercent`).
+- Edit entry: add/remove Phases/Tasks manually, or press `AI decompose` to launch the multi-step wizard (§6).
 - **Phase transition markers**: when a Habit Line advances from one Phase to the next (e.g., 30min → 40min morning runs), a **`PhaseTransition` marker is placed on the timeline** for that date. Render form: **a small inline chip** attached to the Rail where the transition fired (e.g., "→ Phase 2: 40min"), not a full-width divider. Tap / hover reveals the before/after. The chip is visible in Today Track, Cycle View, and Review — answering "why did my Rail suddenly change?" without requiring the user to dig into the Line's detail page. Markers are not Shifts (they're not deviations from a plan); they're a first-class event type in the event log.
 
 ### 5.6 Signal: the check-in strip on app open
@@ -594,7 +594,7 @@ Pending is the *complete* set of "awaiting a decision"; §5.6's check-in strip i
 
 ### 6.1 Three Scenarios
 
-1. **Decompose**: Turn a Line into Phases (Habit) / Chunks (Project — optionally with `milestonePercent`) + Rail configs.
+1. **Decompose**: Turn a Line into Phases (Habit) / Tasks (Project — optionally with `milestonePercent`) + Rail configs.
    - **Multi-step Q&A wizard**: AI asks about goal, duration, available time slots, key constraints, then drafts for user confirmation.
    - Users can skip the Q&A anytime and edit the draft directly.
    - The AI's output is **just an initial draft** with no special status — once produced, it's indistinguishable from any user-edited version. We don't keep an "original AI version" for rollback; if the user wants a fresh take, they re-run Decompose. This avoids a layer of "AI vs. mine" history that adds schema weight without a clear win.
@@ -698,12 +698,12 @@ A user who initially disabled E2E and later enables it needs all historical even
 
 1. On enable, the passphrase-derived key is generated locally (never leaves the device). The server opens a **new encrypted stream** alongside the existing plaintext stream — a dual-write phase.
 2. All events produced from this moment on are written to **both** streams.
-3. A background task walks the historical plaintext log in **chunks of ~100 events**: encrypt chunk → upload → backend acks → advance a **persistent cursor** (stored locally and mirrored into the synced-settings stream as ciphertext). Interruption resumes from the cursor on next launch / network return.
+3. A background task walks the historical plaintext log in **tasks of ~100 events**: encrypt task → upload → backend acks → advance a **persistent cursor** (stored locally and mirrored into the synced-settings stream as ciphertext). Interruption resumes from the cursor on next launch / network return.
 4. Defaults: **Wi-Fi only**, visible progress bar, pausable. Power users can override to allow cellular — and **only in that case** is a one-time **size estimate** shown before the migration starts. The estimate uses the **raw plaintext byte total** (slight over-estimate vs. actual encrypted upload, but honest — no sampling / extrapolation that could lie). Wi-Fi users don't see it; the friction would be wasted on them.
 5. When the cursor reaches the log head, the server flips the canonical pointer to the encrypted stream. The plaintext stream enters a **7-day grace period**, then is deleted.
 6. If the user disables E2E mid-migration, the encrypted stream is discarded; the plaintext stream remains canonical — no data loss.
 
-**Passphrase change** reuses the same machinery: the new key opens a new encrypted stream; the old-key stream stays canonical during dual-write; a background task re-encrypts history chunk-by-chunk against the new key with a persistent cursor; Wi-Fi default; once the cursor reaches head, the pointer flips and the old-key stream enters the 7-day grace period. We explicitly **do not** ship a shortcut "rewrap keys only" path — keeping one code path for key-material transitions buys clarity and forward secrecy (a compromised old key cannot decrypt the new stream once grace expires).
+**Passphrase change** reuses the same machinery: the new key opens a new encrypted stream; the old-key stream stays canonical during dual-write; a background task re-encrypts history task-by-task against the new key with a persistent cursor; Wi-Fi default; once the cursor reaches head, the pointer flips and the old-key stream enters the 7-day grace period. We explicitly **do not** ship a shortcut "rewrap keys only" path — keeping one code path for key-material transitions buys clarity and forward secrecy (a compromised old key cannot decrypt the new stream once grace expires).
 
 ---
 
@@ -1023,7 +1023,7 @@ type Slot = {
   date: string;       // YYYY-MM-DD
   railId: string;
   taskName?: string;  // one-off items without a Project; optional
-  chunkIds: string[]; // ordered, 0..N
+  taskIds: string[]; // ordered, 0..N
 };
 
 type Track = {
@@ -1112,10 +1112,10 @@ type Line = {
   // These three fields decide the Line's "shape"; all optional:
   phases?: Phase[];           // present → Habit
   currentPhaseId?: string;
-  chunks?: Chunk[];           // present → Project
+  tasks?: Task[];           // present → Project
   plannedStart?: string;      // YYYY-MM-DD, Project planning window (soft hint)
   plannedEnd?: string;        // YYYY-MM-DD; if still active 7d past this date, show "overdue" badge
-  // If both phases and chunks are absent, the Line is a pure group (tag).
+  // If both phases and tasks are absent, the Line is a pure group (tag).
 };
 
 type AdhocEvent = {
@@ -1142,16 +1142,16 @@ type Phase = {
     | { type: 'manual' };
 };
 
-type Chunk = {
+type Task = {
   id: string;
   lineId: string;              // owning Project Line
   title: string;
-  milestonePercent?: number;   // 0–100; if set, this chunk is a milestone; otherwise an "extra item"
+  milestonePercent?: number;   // 0–100; if set, this task is a milestone; otherwise an "extra item"
   subItems: SubItem[];         // internal checklist, not independently scheduled
   status: 'pending' | 'in_progress' | 'done';
   doneAt?: string;
   order: number;               // ordering within the Line (drag to reorder)
-  targetRailIds?: string[];    // optional: restrict which Rails' Slots this chunk can land in
+  targetRailIds?: string[];    // optional: restrict which Rails' Slots this task can land in
   railOverrides?: Partial<Rail>;
   // Assignment into a Slot: at most one; absent = still in backlog
   assignment?: { cycleId: string; date: string; railId: string };
@@ -1215,10 +1215,10 @@ Open questions are split into two lists. **Now** items affect MVP surface / data
 
 ## 12. Roadmap (Draft)
 
-- **v0.1 (Web MVP)**: Template (workday / restday), Rail CRUD (slot-overlap validation, left time axis + focus arrow), Cycle / CycleDay / Slot, Now View, Cycle View (per-cycle planner with today-column highlight + cell editability affordance), minimal Project / Chunk (Projects tab + Cycle-View sidebar dual entry, manual chunk CRUD, auto-archive on 100% milestone), basic Shift (skip / postpone), local localStorage (SQLite later), **i18n scaffold with zh-CN + en from day one**.
+- **v0.1 (Web MVP)**: Template (workday / restday), Rail CRUD (slot-overlap validation, left time axis + focus arrow), Cycle / CycleDay / Slot, Now View, Cycle View (per-cycle planner with today-column highlight + cell editability affordance), minimal Project / Task (Projects tab + Cycle-View sidebar dual entry, manual task CRUD, auto-archive on 100% milestone), basic Shift (skip / postpone), local localStorage (SQLite later), **i18n scaffold with zh-CN + en from day one**.
 - **v0.2**: Signal, Timeline review, PWA install, Cycle View read-only review mode, tag library, swap localStorage for SQLite.
 - **v0.3**: Cycle View planning mode (with session-level undo), Template Calendar, Ad-hoc Events, Pending-decisions queue.
-- **v0.4**: Habit Line (Phase evolution + PhaseTransition markers), pure-group Lines, archive + clone-to-new, full Chunk sub-item editing.
+- **v0.4**: Habit Line (Phase evolution + PhaseTransition markers), pure-group Lines, archive + clone-to-new, full Task sub-item editing.
 - **v0.5**: AI assistance (OpenRouter, off by default, one-time intro) — Decompose + Observe + Review.
 - **v0.6**: Desktop (Tauri).
 - **v0.7**: Mobile (Capacitor). Notifications still go only through the in-app check-in strip (§5.6) — no OS push.
