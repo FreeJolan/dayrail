@@ -1,0 +1,15 @@
+{
+  "name": "dayrail",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "pnpm --filter @dayrail/web dev",
+    "build": "pnpm --filter @dayrail/web build",
+    "preview": "pnpm --filter @dayrail/web preview",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "engines": {
+    "node": ">=18",
+    "pnpm": ">=7"
+  }
+}
