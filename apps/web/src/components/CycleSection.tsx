@@ -180,9 +180,11 @@ function SectionMiniHeader({
                       {dayNum}
                     </span>
                     {d.overridden && (
-                      <span className="font-mono text-[9px] uppercase tracking-widest text-ink-tertiary">
-                        覆盖
-                      </span>
+                      <span
+                        aria-hidden
+                        title="覆盖"
+                        className="h-1 w-1 rounded-full bg-cta"
+                      />
                     )}
                   </div>
                 </th>
@@ -200,7 +202,7 @@ function RailRowLabel({ rail }: { rail: EditableRail }) {
     <div className="flex items-center gap-2">
       <span
         aria-hidden
-        className="h-4 w-[3px] shrink-0 rounded-sm"
+        className="h-6 w-1 shrink-0 rounded-sm"
         style={{ background: RAIL_COLOR_HEX[rail.color] }}
       />
       <span className="flex min-w-0 flex-1 flex-col">

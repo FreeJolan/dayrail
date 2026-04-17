@@ -1,5 +1,5 @@
 import { clsx } from 'clsx';
-import { ArrowUpRight } from 'lucide-react';
+import { ArrowUpRight, Check } from 'lucide-react';
 import {
   RAIL_COLOR_HEX,
   RAIL_COLOR_STEP_4,
@@ -52,15 +52,18 @@ function DoneCell({
       className="relative flex h-full min-h-[44px] flex-col justify-center gap-0.5 rounded-sm px-2 py-1.5"
       style={{ background: bg, color: text }}
     >
+      <Check
+        aria-hidden
+        className="absolute right-1.5 top-1.5 h-3 w-3"
+        strokeWidth={2.4}
+        style={{ opacity: 0.5 }}
+      />
       {taskName ? (
-        <span className="line-clamp-2 text-xs" style={{ opacity: 0.92 }}>
+        <span className="line-clamp-2 pr-4 text-xs" style={{ opacity: 0.92 }}>
           {taskName}
         </span>
       ) : (
-        <span
-          className="font-mono text-2xs uppercase tracking-widest"
-          style={{ opacity: 0.7 }}
-        >
+        <span className="font-mono text-2xs uppercase tracking-widest" style={{ opacity: 0.6 }}>
           Done
         </span>
       )}

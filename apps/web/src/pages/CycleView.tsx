@@ -31,7 +31,9 @@ const TODAY_ISO = '2026-04-17';
 
 export function CycleView() {
   const [cycle, setCycle] = useState<SampleCycle>(SAMPLE_CYCLE);
-  const [backlogOpen, setBacklogOpen] = useState(true);
+  // Backlog default-closed: the 320 px drawer was eating main content
+  // width; most users only open it when actively scheduling.
+  const [backlogOpen, setBacklogOpen] = useState(false);
   const [changeCount, setChangeCount] = useState(2);
 
   const groups = useMemo(() => groupDaysByTemplate(cycle), [cycle]);
