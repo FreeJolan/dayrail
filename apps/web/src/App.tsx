@@ -3,6 +3,7 @@ import { TodayTrack } from './pages/TodayTrack';
 import { TemplateEditor } from './pages/TemplateEditor';
 import { CycleView } from './pages/CycleView';
 import { Review } from './pages/Review';
+import { Projects } from './pages/Projects';
 import { SideNav, type NavKey } from './components/SideNav';
 
 // Simple state-based routing for the static-mock phase. When we add
@@ -21,10 +22,12 @@ export default function App() {
         {page === 'template' && <TemplateEditor />}
         {page === 'cycle' && <CycleView />}
         {page === 'review' && <Review />}
+        {page === 'projects' && <Projects />}
         {page !== 'today' &&
           page !== 'template' &&
           page !== 'cycle' &&
-          page !== 'review' && <ComingSoon page={page} />}
+          page !== 'review' &&
+          page !== 'projects' && <ComingSoon page={page} />}
       </main>
     </div>
   );
