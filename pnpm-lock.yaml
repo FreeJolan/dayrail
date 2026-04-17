@@ -7,6 +7,8 @@ importers:
 
   apps/web:
     specifiers:
+      '@dayrail/core': workspace:*
+      '@dayrail/db': workspace:*
       '@radix-ui/colors': 3.0.0
       '@radix-ui/react-dropdown-menu': ^2.1.16
       '@radix-ui/react-popover': ^1.1.15
@@ -24,6 +26,8 @@ importers:
       typescript: 5.6.3
       vite: 5.4.11
     dependencies:
+      '@dayrail/core': link:../../packages/core
+      '@dayrail/db': link:../../packages/db
       '@radix-ui/colors': 3.0.0
       '@radix-ui/react-dropdown-menu': 2.1.16_mn6whcxlx7so2an4c3a4lp7zmq
       '@radix-ui/react-popover': 1.1.15_mn6whcxlx7so2an4c3a4lp7zmq
@@ -41,6 +45,34 @@ importers:
       tailwindcss: 3.4.15
       typescript: 5.6.3
       vite: 5.4.11_@types+node@20.16.14
+
+  packages/core:
+    specifiers:
+      '@dayrail/db': workspace:*
+      '@types/react': 18.3.12
+      immer: 10.1.1
+      react: ^18
+      typescript: 5.6.3
+      zustand: 5.0.2
+    dependencies:
+      '@dayrail/db': link:../db
+      immer: 10.1.1
+      react: 18.3.1
+      zustand: 5.0.2_zgfe3lgnsuv4ectla4lwthsl2i
+    devDependencies:
+      '@types/react': 18.3.12
+      typescript: 5.6.3
+
+  packages/db:
+    specifiers:
+      '@sqlite.org/sqlite-wasm': 3.47.0-build1
+      drizzle-orm: 0.36.4
+      typescript: 5.6.3
+    dependencies:
+      '@sqlite.org/sqlite-wasm': 3.47.0-build1
+      drizzle-orm: 0.36.4
+    devDependencies:
+      typescript: 5.6.3
 
 packages:
 
@@ -1218,6 +1250,11 @@ packages:
     dev: true
     optional: true
 
+  /@sqlite.org/sqlite-wasm/3.47.0-build1:
+    resolution: {integrity: sha512-n2lLez+PwcN+WQdgRIm6OCaGvQUHOx+kEmlL7pq0G4xuK+NaKxnbF4wI6XhfZ4HbyG2sla1Qt4ImaD6hpwoMtg==}
+    hasBin: true
+    dev: false
+
   /@types/babel__core/7.20.5:
     resolution: {integrity: sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==}
     dependencies:
@@ -1427,6 +1464,99 @@ packages:
     resolution: {integrity: sha512-+HlytyjlPKnIG8XuRG8WvmBP8xs8P71y+SKKS6ZXWoEgLuePxtDoUEiH7WkdePWrQ5JBpE6aoVqfZfJUQkjXwA==}
     dev: true
 
+  /drizzle-orm/0.36.4:
+    resolution: {integrity: sha512-1OZY3PXD7BR00Gl61UUOFihslDldfH4NFRH2MbP54Yxi0G/PKn4HfO65JYZ7c16DeP3SpM3Aw+VXVG9j6CRSXA==}
+    peerDependencies:
+      '@aws-sdk/client-rds-data': '>=3'
+      '@cloudflare/workers-types': '>=3'
+      '@electric-sql/pglite': '>=0.2.0'
+      '@libsql/client': '>=0.10.0'
+      '@libsql/client-wasm': '>=0.10.0'
+      '@neondatabase/serverless': '>=0.10.0'
+      '@op-engineering/op-sqlite': '>=2'
+      '@opentelemetry/api': ^1.4.1
+      '@planetscale/database': '>=1'
+      '@prisma/client': '*'
+      '@tidbcloud/serverless': '*'
+      '@types/better-sqlite3': '*'
+      '@types/pg': '*'
+      '@types/react': '>=18'
+      '@types/sql.js': '*'
+      '@vercel/postgres': '>=0.8.0'
+      '@xata.io/client': '*'
+      better-sqlite3: '>=7'
+      bun-types: '*'
+      expo-sqlite: '>=14.0.0'
+      knex: '*'
+      kysely: '*'
+      mysql2: '>=2'
+      pg: '>=8'
+      postgres: '>=3'
+      prisma: '*'
+      react: '>=18'
+      sql.js: '>=1'
+      sqlite3: '>=5'
+    peerDependenciesMeta:
+      '@aws-sdk/client-rds-data':
+        optional: true
+      '@cloudflare/workers-types':
+        optional: true
+      '@electric-sql/pglite':
+        optional: true
+      '@libsql/client':
+        optional: true
+      '@libsql/client-wasm':
+        optional: true
+      '@neondatabase/serverless':
+        optional: true
+      '@op-engineering/op-sqlite':
+        optional: true
+      '@opentelemetry/api':
+        optional: true
+      '@planetscale/database':
+        optional: true
+      '@prisma/client':
+        optional: true
+      '@tidbcloud/serverless':
+        optional: true
+      '@types/better-sqlite3':
+        optional: true
+      '@types/pg':
+        optional: true
+      '@types/react':
+        optional: true
+      '@types/sql.js':
+        optional: true
+      '@vercel/postgres':
+        optional: true
+      '@xata.io/client':
+        optional: true
+      better-sqlite3:
+        optional: true
+      bun-types:
+        optional: true
+      expo-sqlite:
+        optional: true
+      knex:
+        optional: true
+      kysely:
+        optional: true
+      mysql2:
+        optional: true
+      pg:
+        optional: true
+      postgres:
+        optional: true
+      prisma:
+        optional: true
+      react:
+        optional: true
+      sql.js:
+        optional: true
+      sqlite3:
+        optional: true
+    dev: false
+
   /electron-to-chromium/1.5.339:
     resolution: {integrity: sha512-Is+0BBHJ4NrdpAYiperrmp53pLywG/yV/6lIMTAnhxvzj/Cmn5Q/ogSHC6AKe7X+8kPLxxFk0cs5oc/3j/fxIg==}
     dev: true
@@ -1554,6 +1684,10 @@ packages:
     dependencies:
       function-bind: 1.1.2
     dev: true
+
+  /immer/10.1.1:
+    resolution: {integrity: sha512-s2MPrmjovJcoMaHtx6K11Ra7oD05NT97w1IC5zpMkT6Atjr7H8LjaDd81iIxUYpMKSRRNMJE703M1Fhr/TctHw==}
+    dev: false
 
   /is-binary-path/2.1.0:
     resolution: {integrity: sha512-ZMERYes6pDydyuGidse7OsHxtbI7WVeUEozgR/g7rd0xUimYNlvZRE/K2MgZTjWy725IfelLeVcEM97mmtRGXw==}
@@ -2147,3 +2281,26 @@ packages:
     engines: {node: '>= 14.6'}
     hasBin: true
     dev: true
+
+  /zustand/5.0.2_zgfe3lgnsuv4ectla4lwthsl2i:
+    resolution: {integrity: sha512-8qNdnJVJlHlrKXi50LDqqUNmUbuBjoKLrYQBnoChIbVph7vni+sY+YpvdjXG9YLd/Bxr6scMcR+rm5H3aSqPaw==}
+    engines: {node: '>=12.20.0'}
+    peerDependencies:
+      '@types/react': '>=18.0.0'
+      immer: '>=9.0.6'
+      react: '>=18.0.0'
+      use-sync-external-store: '>=1.2.0'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      immer:
+        optional: true
+      react:
+        optional: true
+      use-sync-external-store:
+        optional: true
+    dependencies:
+      '@types/react': 18.3.12
+      immer: 10.1.1
+      react: 18.3.1
+    dev: false
