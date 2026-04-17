@@ -154,11 +154,16 @@ const config: Config = {
         mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
       },
       fontSize: {
-        // Typographic scale — matches Tailwind defaults for xs/sm/base/lg
-        // (post-2026-04-18 readability tune; the original print-compact
-        // scale was 1px smaller across the board and felt straining).
-        // 2xs (Mono overlines) and the display sizes (xl+) stay as-is.
-        '2xs': ['10px', { lineHeight: '14px', letterSpacing: '0.04em' }],
+        // Readable-at-scale typography (post-2026-04-18 pass). The
+        // original "print-compact" scale was 1px smaller across the
+        // board; `2xs` (Mono overlines) sat at 10px which felt
+        // straining even with tracking-widest and uppercase.
+        // Current scale:
+        //   2xs is still the overline tier — Mono + uppercase +
+        //     0.04em letter-spacing differentiates it visually from
+        //     body `xs` even though the px value is the same.
+        //   xs / sm / base / lg match Tailwind defaults.
+        '2xs': ['12px', { lineHeight: '16px', letterSpacing: '0.04em' }],
         xs: ['12px', { lineHeight: '16px' }],
         sm: ['14px', { lineHeight: '20px' }],
         base: ['16px', { lineHeight: '24px' }],
