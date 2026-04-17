@@ -11,7 +11,8 @@
     "./event": "./src/event.ts",
     "./session": "./src/session.ts",
     "./snapshot": "./src/snapshot.ts",
-    "./store": "./src/store.ts"
+    "./store": "./src/store.ts",
+    "./today": "./src/today.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

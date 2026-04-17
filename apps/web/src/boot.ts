@@ -8,7 +8,14 @@
 // takes), so first-run state is indistinguishable from the output of
 // a user performing those same edits by hand.
 
-import { useStore, type Rail, type RailColor } from '@dayrail/core';
+import {
+  ensureTodayInstances,
+  selectActiveTemplateKey,
+  toIsoDate,
+  useStore,
+  type Rail,
+  type RailColor,
+} from '@dayrail/core';
 import {
   SAMPLE_RAILS_BY_TEMPLATE,
   SAMPLE_TEMPLATES,
@@ -27,6 +34,14 @@ export async function boot(): Promise<void> {
   const s = useStore.getState();
   if (Object.keys(s.templates).length === 0) {
     await seedFromSamples();
+  }
+
+  // 3. Materialise today's rail instances. Idempotent: on subsequent
+  //    boots we skip rails that already have an instance for today.
+  const today = toIsoDate();
+  const templateKey = selectActiveTemplateKey(useStore.getState());
+  if (templateKey) {
+    await ensureTodayInstances(today, templateKey);
   }
 }
 
