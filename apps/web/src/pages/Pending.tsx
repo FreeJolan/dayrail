@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { clsx } from 'clsx';
-import { Inbox, Wind } from 'lucide-react';
+import { EyeOff, Inbox } from 'lucide-react';
 import {
   SAMPLE_QUEUE,
   groupByDate,
@@ -24,9 +24,9 @@ export function Pending() {
   const removeItem = (id: string) =>
     setItems((prev) => prev.filter((i) => i.id !== id));
 
-  const letThemPass = () => {
+  const bulkIgnore = () => {
     if (s.eligible === 0) return;
-    const msg = `把超过 7 天的事都过去？\n过去的日子不会被改写，只是把这份待办缩短一些（影响 ${s.eligible} 条）。`;
+    const msg = `忽略超过 7 天仍未标记的 ${s.eligible} 条事项？\n这些条目在历史里仍以"未标记"存在，不再出现在此队列。`;
     if (window.confirm(msg)) {
       setItems((prev) => prev.filter((i) => !isOlderThan7d(i)));
     }
@@ -38,7 +38,7 @@ export function Pending() {
         total={s.total}
         eligible={s.eligible}
         oldest={s.oldest}
-        onLetThemPass={letThemPass}
+        onBulkIgnore={bulkIgnore}
       />
 
       {items.length === 0 ? (
@@ -70,12 +70,12 @@ function TopBar({
   total,
   eligible,
   oldest,
-  onLetThemPass,
+  onBulkIgnore,
 }: {
   total: number;
   eligible: number;
   oldest: string | undefined;
-  onLetThemPass: () => void;
+  onBulkIgnore: () => void;
 }) {
   return (
     <header className="flex items-end justify-between gap-6 pt-2">
@@ -96,15 +96,15 @@ function TopBar({
         </div>
       </div>
 
-      <LetThemPassButton
+      <BulkIgnoreButton
         eligible={eligible}
-        onClick={onLetThemPass}
+        onClick={onBulkIgnore}
       />
     </header>
   );
 }
 
-function LetThemPassButton({
+function BulkIgnoreButton({
   eligible,
   onClick,
 }: {
@@ -117,7 +117,7 @@ function LetThemPassButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      title="把超过 7 天的事都过去（默认阈值：7 天，可在 设置 → 高级 调整）"
+      title="忽略超过 7 天仍未标记的事项（阈值可在 设置 → 高级 调整）"
       className={clsx(
         'inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm transition',
         disabled
@@ -125,11 +125,11 @@ function LetThemPassButton({
           : 'bg-surface-1 text-ink-secondary hover:bg-surface-2 hover:text-ink-primary',
       )}
     >
-      <Wind className="h-3.5 w-3.5" strokeWidth={1.8} />
-      <span>让它们都过去吧</span>
+      <EyeOff className="h-3.5 w-3.5" strokeWidth={1.8} />
+      <span>忽略超过 7 天的事项</span>
       {eligible > 0 && (
         <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
-          影响 {eligible}
+          · {eligible} 条
         </span>
       )}
     </button>
@@ -278,8 +278,8 @@ function EmptyState() {
 function Footnote() {
   return (
     <footer className="mt-4 flex justify-between font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-      <span>ERD §5.7 · 未标记的 Rail 永不自动改写</span>
-      <span>Let-them-pass threshold: 7 days · 设置 → 高级</span>
+      <span>ERD §5.7 · 未标记项需由用户主动处理</span>
+      <span>忽略阈值：7 天 · 设置 → 高级 可调</span>
     </footer>
   );
 }

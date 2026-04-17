@@ -497,7 +497,7 @@ Net effect: the user-facing vocabulary stays Template / Track / Rail / Shift / L
 - The queue never blocks current operations — Today Track / Cycle View / Template Editor flows are untouched.
 - The system does **not** auto-resolve unmarked items to `skipped`. Leave them untouched and they stay — that is the user's call.
 - If the same Rail goes unmarked for many days, AI Observe (if enabled) gently suggests adjusting / archiving.
-- **"Let these pass" batch action**: when the queue has grown large, the user can bulk-close **only the older items** (default threshold: items more than **7 days old**; configurable in Settings → Advanced). Recently queued Rails stay — they're new enough to still deserve a decision. Copy: *"Let these pass"*. Confirmation: *"Clear items older than 7 days? Your past days aren't rewritten — only this queue is shortened."* The items themselves remain in history as unmarked; they're just no longer surfaced for decision.
+- **Bulk-ignore older items**: when the queue has grown large, the user can bulk-ignore items more than N days old (default threshold **7 days**; configurable in Settings → Advanced). Recent (≤ N days) Rails stay in the queue — they're still worth a decision. **Button copy says exactly what happens**: `Ignore items older than 7 days` (not the earlier, poetic "Let these pass" — vague copy forces users to guess the action). Confirmation names the impact: *"Ignore N unmarked items older than 7 days? They stay in history as 'unmarked' but no longer appear in this queue."* History is not rewritten; only the queue is shortened.
 
 **Page form**:
 
