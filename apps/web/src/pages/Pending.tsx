@@ -82,7 +82,7 @@ export function Pending() {
       fire({
         taskId: row.taskId,
         railId: row.railId,
-        railName: row.railName,
+        displayName: row.railName,
         action: 'done',
       });
     },
@@ -94,7 +94,7 @@ export function Pending() {
       fire({
         taskId: row.taskId,
         railId: row.railId,
-        railName: row.railName,
+        displayName: row.railName,
         action: 'archive',
       });
     },

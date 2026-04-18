@@ -54,7 +54,7 @@ export function TodayTrack() {
       fire({
         taskId: entry.taskId,
         railId: entry.railId,
-        railName: entry.railName,
+        displayName: entry.railName,
         action,
       });
     },
@@ -79,7 +79,7 @@ export function TodayTrack() {
       fire({
         taskId: task.id,
         railId: rail.id,
-        railName: rail.name,
+        displayName: rail.name,
         action,
       });
     },

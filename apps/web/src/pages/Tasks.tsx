@@ -42,6 +42,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/primitives/DropdownMenu';
 import { SchedulePopover } from '@/components/SchedulePopover';
+import { ReasonToast } from '@/components/ReasonToast';
+import { useReasonToast } from '@/components/useReasonToast';
 
 // ERD §5.5 Tasks view. Chunk E = list + filters + search + task CRUD.
 // Scheduling popover (Chunk F) + Trash hard-delete UX (Chunk G) ship
@@ -467,12 +469,20 @@ function MainPanel({
   const tasksMap = useStore((s) => s.tasks);
   const adhocEventsMap = useStore((s) => s.adhocEvents);
   const linesMap = useStore((s) => s.lines);
+  const railsMap = useStore((s) => s.rails);
   const createTask = useStore((s) => s.createTask);
   const updateTask = useStore((s) => s.updateTask);
-  const archiveTask = useStore((s) => s.archiveTask);
   const restoreTask = useStore((s) => s.restoreTask);
   const deleteTask = useStore((s) => s.deleteTask);
   const purgeTask = useStore((s) => s.purgeTask);
+
+  // Wire complete / archive actions through the Reason toast so users
+  // get 6s undo + optional reason-tag capture (ERD §5.2). Direct
+  // archiveTask / status-flip paths that used to fire immediately now
+  // go through `fire()` instead.
+  const { toast, fire, handleAddTag, handleUndo, handleClose } = useReasonToast(
+    'pending-queue',
+  );
 
   // Narrow the tasks map to what this selection cares about, before
   // the search/status filters run. Filtering by selection first keeps
@@ -743,17 +753,40 @@ function MainPanel({
       />
 
       {(() => {
+        const displayNameFor = (task: Task): string => {
+          if (task.slot) {
+            const rail = railsMap[task.slot.railId];
+            if (rail) return rail.name;
+          }
+          return task.title;
+        };
         const rowProps = {
           linesMap,
-          onToggleDone: (task: Task) =>
-            void updateTask(task.id, {
-              status: task.status === 'done' ? 'pending' : 'done',
-              doneAt:
-                task.status === 'done'
-                  ? undefined
-                  : new Date().toISOString(),
+          onToggleDone: (task: Task) => {
+            // Un-marking (done → pending) is a direct revert, no
+            // reason-tag capture makes sense. Marking done goes
+            // through the toast so the user gets 6s undo.
+            if (task.status === 'done') {
+              void updateTask(task.id, {
+                status: 'pending',
+                doneAt: undefined,
+              });
+              return;
+            }
+            fire({
+              taskId: task.id,
+              ...(task.slot && { railId: task.slot.railId }),
+              displayName: displayNameFor(task),
+              action: 'done',
+            });
+          },
+          onArchive: (task: Task) =>
+            fire({
+              taskId: task.id,
+              ...(task.slot && { railId: task.slot.railId }),
+              displayName: displayNameFor(task),
+              action: 'archive',
             }),
-          onArchive: (task: Task) => void archiveTask(task.id),
           onRestore: (task: Task) => void restoreTask(task.id),
           onDelete: (task: Task) => void deleteTask(task.id),
           onPurge: handlePurge,
@@ -798,6 +831,13 @@ function MainPanel({
           onClose={() => setDetailTaskId(null)}
         />
       )}
+
+      <ReasonToast
+        state={toast}
+        onAddTag={handleAddTag}
+        onUndo={handleUndo}
+        onClose={handleClose}
+      />
     </div>
   );
 }
@@ -1343,10 +1383,17 @@ function TaskDetailDrawer({
             <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
               排期
             </span>
-            <ScheduleInfo task={task} />
-            <span className="text-2xs text-ink-tertiary">
-              通过任务行的 📅 / 🕒 按钮修改排期；这里只展示。
-            </span>
+            <div className="flex items-center gap-2">
+              <ScheduleInfo task={task} />
+              <SchedulePopover task={task}>
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-1 text-xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+                >
+                  {task.slot ? '修改' : '排期…'}
+                </button>
+              </SchedulePopover>
+            </div>
           </div>
         </div>
 
