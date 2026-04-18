@@ -23,10 +23,7 @@ export type EventType =
   | 'template.created'
   | 'template.updated'
   | 'template.deleted'
-  // RailInstance (wall-clock log — v0.4+ status lives on Task)
-  | 'instance.created'
-  | 'instance.time-shifted'
-  // Shift records
+  // Shift records (anchored to Task from v0.4)
   | 'shift.recorded'
   // Check-in surface (Signal response)
   | 'signal.acted'

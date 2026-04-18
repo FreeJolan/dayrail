@@ -10,9 +10,7 @@
 
 import {
   INBOX_LINE_ID,
-  ensureTodayInstances,
   materializeAutoTasksForToday,
-  selectActiveTemplateKey,
   toIsoDate,
   useStore,
   type Line,
@@ -51,19 +49,12 @@ export async function boot(): Promise<void> {
   //    rule exists" rather than "any weekday rule exists".
   await ensureBuiltinWeekdayRules();
 
-  // 5. Materialise today's rail instances. Idempotent: on subsequent
-  //    boots we skip rails that already have an instance for today.
-  const today = toIsoDate();
-  const templateKey = selectActiveTemplateKey(useStore.getState());
-  if (templateKey) {
-    await ensureTodayInstances(today, templateKey);
-  }
-
-  // 6. Materialise today's habit auto-tasks (§10.2 strategy Ⅱ).
+  // 5. Materialise today's habit auto-tasks (§10.2 strategy Ⅱ).
   //    Idempotent — deterministic ids + (habit, cycle) markers make
   //    this a no-op after the first call within the same cycle. The
   //    Cycle-View / rhythm-strip / Calendar triggers will later close
   //    the week-wide window when the user opens those surfaces.
+  const today = toIsoDate();
   await materializeAutoTasksForToday(today);
 }
 

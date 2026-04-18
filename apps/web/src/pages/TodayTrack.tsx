@@ -7,9 +7,8 @@ import {
   useStore,
   type CarriedTaskRow,
   type Rail,
-  type RailInstance,
-  type Shift,
   type Task,
+  type TimelineRow,
 } from '@dayrail/core';
 import {
   CheckInStrip,
@@ -18,7 +17,10 @@ import {
 } from '@/components/CheckInStrip';
 import { RailCard } from '@/components/RailCard';
 import { ReasonToast } from '@/components/ReasonToast';
-import { useReasonToast } from '@/components/useReasonToast';
+import {
+  latestTagsForTask,
+  useReasonToast,
+} from '@/components/useReasonToast';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,8 +40,9 @@ export function TodayTrack() {
   const today = toIsoDate(now.asDate);
 
   const rails = useStore((s) => s.rails);
-  const railInstances = useStore((s) => s.railInstances);
   const tasks = useStore((s) => s.tasks);
+  const templates = useStore((s) => s.templates);
+  const calendarRules = useStore((s) => s.calendarRules);
   const shifts = useStore((s) => s.shifts);
   const updateTask = useStore((s) => s.updateTask);
 
@@ -51,7 +54,6 @@ export function TodayTrack() {
     (entry: CheckInEntry, action: CheckInAction) => {
       fire({
         taskId: entry.taskId,
-        ...(entry.railInstanceId && { railInstanceId: entry.railInstanceId }),
         railId: entry.railId,
         railName: entry.railName,
         action,
@@ -60,58 +62,48 @@ export function TodayTrack() {
     [fire],
   );
 
-  // Timeline hover action bar: receives the RailInstance id. Looks up
-  // the Task carrying this (date, railId) and writes to Task.status.
-  // Bare rails (no carrying Task) offer no action — the action bar
-  // just won't do anything when clicked, because there's nothing to
-  // mark. In practice this is rare (habit rails always have auto-tasks
-  // today, project rails only show hover actions when scheduled).
+  // Timeline hover action bar. The `railId` identifies the row on
+  // today's timeline. If the row has a carrying Task we fire on it;
+  // bare rails (no Task) are no-op per ERD §5.6.
   const handleTimelineAction = useCallback(
-    (instanceId: string, action: CheckInAction) => {
-      const inst = railInstances[instanceId];
-      if (!inst) return;
-      const rail = rails[inst.railId];
+    (railId: string, action: CheckInAction) => {
+      const rail = rails[railId];
       if (!rail) return;
       const task = Object.values(tasks).find(
         (t) =>
           t.slot &&
-          t.slot.date === inst.date &&
-          t.slot.railId === inst.railId &&
+          t.slot.date === today &&
+          t.slot.railId === railId &&
           t.status !== 'deleted',
       );
       if (!task) return;
       fire({
         taskId: task.id,
-        railInstanceId: instanceId,
         railId: rail.id,
         railName: rail.name,
         action,
       });
     },
-    [tasks, rails, railInstances, fire],
+    [tasks, rails, today, fire],
+  );
+
+  const timelineRows = useMemo<TimelineRow[]>(
+    () =>
+      selectTodayTimeline({ rails, tasks, templates, calendarRules }, today),
+    [rails, tasks, templates, calendarRules, today],
   );
 
   const timeline = useMemo<SampleRail[]>(
-    () =>
-      selectTodayTimeline({ railInstances }, today)
-        .map((inst) =>
-          adaptToSample(
-            inst,
-            rails[inst.railId],
-            findTaskForSlot(tasks, inst.date, inst.railId),
-            now.asDate,
-          ),
-        )
-        .filter((r): r is SampleRail => r !== null),
-    [railInstances, rails, tasks, today, now.asDate],
+    () => timelineRows.map((r) => adaptToSample(r, now.asDate)),
+    [timelineRows, now.asDate],
   );
 
   const checkinQueue = useMemo<CheckInEntry[]>(
     () =>
-      selectCheckinQueue({ tasks, rails, railInstances }, now.asDate).map(
-        (row) => carriedRowToCheckInEntry(row),
+      selectCheckinQueue({ tasks, rails }, now.asDate).map((row) =>
+        carriedRowToCheckInEntry(row),
       ),
-    [tasks, rails, railInstances, now.asDate],
+    [tasks, rails, now.asDate],
   );
 
   // Timeline hides two states:
@@ -127,24 +119,25 @@ export function TodayTrack() {
   );
   const deferredToday = useMemo<DeferredRow[]>(
     () =>
-      timeline
-        .filter((r) => r.state === 'deferred')
-        .map((r) => ({ ...r, tags: tagsForInstance(r.id, shifts) })),
-    [timeline, shifts],
+      timelineRows
+        .filter((r) => r.task?.status === 'deferred')
+        .map((r) => ({
+          ...adaptToSample(r, now.asDate),
+          tags: r.task ? latestTagsForTask(r.task.id, shifts) : [],
+        })),
+    [timelineRows, shifts, now.asDate],
   );
 
-  // Undefer / "put it back on today". Receives a RailInstance id (the
-  // DeferredSection keys rows on that). Finds the carrying Task and
-  // resets its status back to `pending`.
+  // Undefer / "put it back on today". DeferredSection keys rows on
+  // railId (we're always today). Finds the carrying Task and resets
+  // its status back to `pending`.
   const handleRevert = useCallback(
-    (instanceId: string) => {
-      const inst = railInstances[instanceId];
-      if (!inst) return;
+    (railId: string) => {
       const task = Object.values(tasks).find(
         (t) =>
           t.slot &&
-          t.slot.date === inst.date &&
-          t.slot.railId === inst.railId &&
+          t.slot.date === today &&
+          t.slot.railId === railId &&
           t.status !== 'deleted',
       );
       if (!task) return;
@@ -155,7 +148,7 @@ export function TodayTrack() {
         archivedAt: undefined,
       });
     },
-    [tasks, railInstances, updateTask],
+    [tasks, today, updateTask],
   );
 
   // Reset today: sweep every Task carrying a today-slot and push it
@@ -205,22 +198,6 @@ export function TodayTrack() {
   );
 }
 
-// Pulled out so both the "Later" (deferred) strip and (in v0.3) the
-// Pending page can share the same lookup rule: tags from the *most
-// recent* Shift for this instance, capped at whatever the caller
-// renders.
-function tagsForInstance(
-  instanceId: string,
-  shifts: Record<string, { railInstanceId: string; at: string; tags?: string[] }>,
-): string[] {
-  let latest: { at: string; tags?: string[] } | undefined;
-  for (const shift of Object.values(shifts)) {
-    if (shift.railInstanceId !== instanceId) continue;
-    if (!latest || shift.at > latest.at) latest = shift;
-  }
-  return latest?.tags ?? [];
-}
-
 interface DeferredRow extends SampleRail {
   tags: string[];
 }
@@ -252,16 +229,14 @@ function sample(d: Date): LiveNow {
 }
 
 // ------------------------------------------------------------------
-// Domain → display adapter. RailInstance + Rail + carrying Task +
-// wall-clock now give the 5-state SampleRail shape the existing
-// components were built around. v0.4: completion status comes from the
-// carrying Task (ERD §10.1); RailInstance is just the wall-clock shell.
+// Domain → display adapter. v0.4: TimelineRow (rail + optional task +
+// planned window) maps to the 5-state SampleRail the RailCard renders.
+// Completion status comes from the carrying Task (ERD §10.1).
 // ------------------------------------------------------------------
 
 function carriedRowToCheckInEntry(row: CarriedTaskRow): CheckInEntry {
   return {
     taskId: row.task.id,
-    ...(row.railInstance && { railInstanceId: row.railInstance.id }),
     railId: row.rail.id,
     railName: row.rail.name,
     ...(row.rail.subtitle && { subtitle: row.rail.subtitle }),
@@ -271,29 +246,10 @@ function carriedRowToCheckInEntry(row: CarriedTaskRow): CheckInEntry {
   };
 }
 
-function findTaskForSlot(
-  tasks: Record<string, Task>,
-  date: string,
-  railId: string,
-): Task | undefined {
-  for (const t of Object.values(tasks)) {
-    if (!t.slot) continue;
-    if (t.slot.date !== date || t.slot.railId !== railId) continue;
-    if (t.status === 'deleted') continue;
-    return t;
-  }
-  return undefined;
-}
-
-function adaptToSample(
-  inst: RailInstance,
-  rail: Rail | undefined,
-  task: Task | undefined,
-  now: Date,
-): SampleRail | null {
-  if (!rail) return null;
-  const startMs = Date.parse(inst.plannedStart);
-  const endMs = Date.parse(inst.plannedEnd);
+function adaptToSample(row: TimelineRow, now: Date): SampleRail {
+  const { rail, task } = row;
+  const startMs = Date.parse(row.plannedStart);
+  const endMs = Date.parse(row.plannedEnd);
   const nowMs = now.getTime();
 
   let state: RailState;
@@ -306,11 +262,13 @@ function adaptToSample(
   else state = 'pending';
 
   return {
-    id: inst.id,
+    // v0.4: SampleRail.id carries the rail id (was RailInstance.id in v0.3).
+    // Timeline is always one date so this is collision-free.
+    id: rail.id,
     name: rail.name,
     subtitle: rail.subtitle,
-    start: inst.plannedStart.slice(11, 16) || '00:00',
-    end: inst.plannedEnd.slice(11, 16) || '00:00',
+    start: row.plannedStart.slice(11, 16) || '00:00',
+    end: row.plannedEnd.slice(11, 16) || '00:00',
     color: rail.color as RailColor,
     state,
     showInCheckin: rail.showInCheckin,

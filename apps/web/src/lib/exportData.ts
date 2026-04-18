@@ -16,7 +16,6 @@ interface ExportBundle {
     rails: unknown;
     lines: unknown;
     tasks: unknown;
-    railInstances: unknown;
     signals: unknown;
     shifts: unknown;
     adhocEvents: unknown;
@@ -38,7 +37,6 @@ export function exportLocalData(): void {
       rails: s.rails,
       lines: s.lines,
       tasks: s.tasks,
-      railInstances: s.railInstances,
       signals: s.signals,
       shifts: s.shifts,
       adhocEvents: s.adhocEvents,

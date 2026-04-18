@@ -1,16 +1,19 @@
-// Today Track helpers — date formatting, instance materialisation, and
-// check-in / pending queue selectors.
+// Today Track helpers — date formatting + check-in / pending /
+// timeline selectors.
 //
 // Conventions:
 //   - Date strings are local wall-clock "YYYY-MM-DD" (no timezone).
 //   - Datetime strings are local "YYYY-MM-DDTHH:MM" (no seconds, no Z).
 //     `Date.parse` on these yields local time on modern engines, which
 //     is what we want for "ended before now?" comparisons.
-//   - All v0.2 code is single-device / single-timezone. Multi-device
-//     clock reconciliation is deferred to sync work.
+//
+// v0.4: `RailInstance` is removed. Today's timeline is now synthesised
+// directly from `(rails × active template × recurrence)` with an
+// optional Task overlay for cell state. Check-in / Pending queues
+// iterate Tasks and join Rail for the planned window.
 
-import { useStore, type DayRailState } from './store';
-import type { Rail, RailInstance, Task } from './types';
+import { type DayRailState, resolveTemplateForDate } from './store';
+import type { Rail, Recurrence, Task } from './types';
 
 export function toIsoDate(d: Date = new Date()): string {
   const yr = d.getFullYear();
@@ -26,75 +29,54 @@ export function toIsoDateTime(date: string, minutesSinceMidnight: number): strin
 }
 
 // ------------------------------------------------------------------
-// Materialisation — turn the active template's rails into concrete
-// RailInstances for a given date. Idempotent by `(date, railId)`.
+// Active-template resolution.
 // ------------------------------------------------------------------
 
-/** Pick the template whose rails should drive today. v0.2 is CalendarRule-
- *  naive — until the rules engine lands in a later milestone, we fall
- *  back to the first built-in template (usually 'workday'). */
+/** Pick the template whose rails should drive today. Walks CalendarRules
+ *  first, then falls back to the first built-in template. */
 export function selectActiveTemplateKey(
-  state: Pick<DayRailState, 'templates'>,
+  state: Pick<DayRailState, 'templates' | 'calendarRules'>,
+  date: string = toIsoDate(),
 ): string | null {
-  const templates = Object.values(state.templates);
-  if (templates.length === 0) return null;
-  const builtIn = templates.find((t) => t.isDefault);
-  return (builtIn ?? templates[0]!).key;
+  const fallback = (): string | null => {
+    const templates = Object.values(state.templates);
+    if (templates.length === 0) return null;
+    return (templates.find((t) => t.isDefault) ?? templates[0]!).key;
+  };
+  return resolveTemplateForDate(state, date, fallback);
 }
 
-export async function ensureTodayInstances(
-  date: string,
-  templateKey: string,
-): Promise<void> {
-  const state = useStore.getState();
-  const rails = Object.values(state.rails).filter(
-    (r) => r.templateKey === templateKey,
-  );
-  const existingRailIds = new Set(
-    Object.values(state.railInstances)
-      .filter((i) => i.date === date)
-      .map((i) => i.railId),
-  );
-  for (const rail of rails) {
-    if (existingRailIds.has(rail.id)) continue;
-    await state.createRailInstance({
-      id: `inst-${date}-${rail.id}`,
-      railId: rail.id,
-      date,
-      plannedStart: toIsoDateTime(date, rail.startMinutes),
-      plannedEnd: toIsoDateTime(
-        date,
-        rail.startMinutes + rail.durationMinutes,
-      ),
-    });
+// ------------------------------------------------------------------
+// Recurrence helper (mirrors autoTask.recurrenceCovers so callers in
+// this file don't need a circular import).
+// ------------------------------------------------------------------
+
+function recurrenceCovers(recurrence: Recurrence, dateIso: string): boolean {
+  const dow = new Date(`${dateIso}T00:00:00`).getDay();
+  switch (recurrence.kind) {
+    case 'daily':
+      return true;
+    case 'weekdays':
+      return dow >= 1 && dow <= 5;
+    case 'custom':
+      return recurrence.weekdays.includes(dow);
   }
 }
 
 // ------------------------------------------------------------------
-// Queue selectors — both for Today Track's check-in strip and the
-// separate Pending screen. They share the same source data but differ
-// in the freshness bucket.
+// Shared row shape for check-in / Pending queues.
 // ------------------------------------------------------------------
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-function byPlannedStart(a: RailInstance, b: RailInstance): number {
-  return a.plannedStart.localeCompare(b.plannedStart);
-}
-
 /** Task + Rail + planned window. v0.4 check-in / Pending queue rows
- *  bundle all three so UI code doesn't have to re-join. The associated
- *  RailInstance (if present) is included for audit / Shift writes;
- *  status semantics live on `task`. */
+ *  bundle all three so UI code doesn't have to re-join. Status lives
+ *  on `task.status`; planned window is derived from rail + slot.date. */
 export interface CarriedTaskRow {
   task: Task;
   rail: Rail;
   plannedStart: string; // ISO datetime
   plannedEnd: string; // ISO datetime
-  /** RailInstance for the same (date, railId), if materialised. v0.4
-   *  keeps writing to RailInstance.status as a dual-write so legacy
-   *  surfaces don't regress; Stage 9 drops this. */
-  railInstance: RailInstance | undefined;
 }
 
 function plannedWindow(rail: Rail, date: string): { start: string; end: string } {
@@ -102,17 +84,6 @@ function plannedWindow(rail: Rail, date: string): { start: string; end: string }
     start: toIsoDateTime(date, rail.startMinutes),
     end: toIsoDateTime(date, rail.startMinutes + rail.durationMinutes),
   };
-}
-
-function findInstanceFor(
-  railInstances: Record<string, RailInstance>,
-  railId: string,
-  date: string,
-): RailInstance | undefined {
-  for (const inst of Object.values(railInstances)) {
-    if (inst.railId === railId && inst.date === date) return inst;
-  }
-  return undefined;
 }
 
 function byPlannedStartRow(a: CarriedTaskRow, b: CarriedTaskRow): number {
@@ -125,7 +96,7 @@ function byPlannedStartRow(a: CarriedTaskRow, b: CarriedTaskRow): number {
  *  excluded. Bare rails (no Task on `(date, railId)`) do NOT surface —
  *  the v0.4 rule is "needs marking" is a Task-level concept (§5.6). */
 export function selectCheckinQueue(
-  state: Pick<DayRailState, 'tasks' | 'rails' | 'railInstances'>,
+  state: Pick<DayRailState, 'tasks' | 'rails'>,
   now: Date = new Date(),
 ): CarriedTaskRow[] {
   const nowMs = now.getTime();
@@ -142,13 +113,7 @@ export function selectCheckinQueue(
     if (Number.isNaN(endMs)) continue;
     if (endMs > nowMs) continue; // hasn't ended yet
     if (endMs <= cutoff) continue; // > 24 h ago — §5.7 queue
-    rows.push({
-      task,
-      rail,
-      plannedStart: start,
-      plannedEnd: end,
-      railInstance: findInstanceFor(state.railInstances, rail.id, task.slot.date),
-    });
+    rows.push({ task, rail, plannedStart: start, plannedEnd: end });
   }
   return rows.sort(byPlannedStartRow);
 }
@@ -158,9 +123,9 @@ export function selectCheckinQueue(
  *  2. Tasks with `status = 'pending'` whose planned window ended
  *     (any age — the check-in strip shows the last 24 h subset).
  *  Future `pending`, terminal `done / archived / deleted`, and Tasks
- *  without a slot are excluded (no schedule = no queue position). */
+ *  without a slot are excluded. */
 export function selectPendingQueue(
-  state: Pick<DayRailState, 'tasks' | 'rails' | 'railInstances'>,
+  state: Pick<DayRailState, 'tasks' | 'rails'>,
   now: Date = new Date(),
 ): CarriedTaskRow[] {
   const nowMs = now.getTime();
@@ -176,24 +141,57 @@ export function selectPendingQueue(
       if (Number.isNaN(endMs)) continue;
       if (endMs > nowMs) continue;
     }
-    rows.push({
-      task,
-      rail,
-      plannedStart: start,
-      plannedEnd: end,
-      railInstance: findInstanceFor(state.railInstances, rail.id, task.slot.date),
-    });
+    rows.push({ task, rail, plannedStart: start, plannedEnd: end });
   }
   return rows.sort(byPlannedStartRow);
 }
 
-/** Today's timeline: every instance on the given date, in planned-start
- *  order. Used by the main Today Track list. */
+// ------------------------------------------------------------------
+// Today-timeline selector.
+// ------------------------------------------------------------------
+
+export interface TimelineRow {
+  /** Key: `${railId}|${date}` — guaranteed unique per day. */
+  key: string;
+  rail: Rail;
+  date: string;
+  plannedStart: string;
+  plannedEnd: string;
+  /** Carrying task if one exists on this (date, railId); else undefined. */
+  task: Task | undefined;
+}
+
+/** Today's timeline: every rail the active template covers whose
+ *  recurrence fires on `date`, in planned-start order. Cell state is
+ *  derived by the caller from `row.task?.status`. */
 export function selectTodayTimeline(
-  state: Pick<DayRailState, 'railInstances'>,
+  state: Pick<DayRailState, 'rails' | 'tasks' | 'templates' | 'calendarRules'>,
   date: string,
-): RailInstance[] {
-  return Object.values(state.railInstances)
-    .filter((i) => i.date === date)
-    .sort(byPlannedStart);
+): TimelineRow[] {
+  const activeTemplate = selectActiveTemplateKey(state, date);
+  if (!activeTemplate) return [];
+  const rails = Object.values(state.rails).filter(
+    (r) => r.templateKey === activeTemplate && recurrenceCovers(r.recurrence, date),
+  );
+  // Index tasks by (date, railId) to O(1) the lookup per row.
+  const taskByKey = new Map<string, Task>();
+  for (const t of Object.values(state.tasks)) {
+    if (!t.slot) continue;
+    if (t.status === 'deleted') continue;
+    if (t.slot.date !== date) continue;
+    taskByKey.set(`${t.slot.railId}|${date}`, t);
+  }
+  const rows: TimelineRow[] = rails.map((rail) => {
+    const { start, end } = plannedWindow(rail, date);
+    const task = taskByKey.get(`${rail.id}|${date}`);
+    return {
+      key: `${rail.id}|${date}`,
+      rail,
+      date,
+      plannedStart: start,
+      plannedEnd: end,
+      task,
+    };
+  });
+  return rows.sort((a, b) => a.plannedStart.localeCompare(b.plannedStart));
 }

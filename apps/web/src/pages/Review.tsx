@@ -104,7 +104,6 @@ export function Review() {
   );
 
   const rails = useStore((s) => s.rails);
-  const railInstances = useStore((s) => s.railInstances);
   const tasks = useStore((s) => s.tasks);
   const templates = useStore((s) => s.templates);
   const calendarRules = useStore((s) => s.calendarRules);
@@ -124,7 +123,6 @@ export function Review() {
   const data = useMemo<ReviewScopeData>(() => {
     const stateSlice = {
       rails,
-      railInstances,
       tasks,
       templates,
       calendarRules,
@@ -160,7 +158,6 @@ export function Review() {
     scope,
     anchor,
     rails,
-    railInstances,
     tasks,
     templates,
     calendarRules,

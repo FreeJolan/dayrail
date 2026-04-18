@@ -81,12 +81,11 @@ export function SideNav() {
   // Subscribe to the raw maps; derive via useMemo so Zustand's
   // reference-equality short-circuit kicks in instead of comparing a
   // freshly-built array every tick.
-  const railInstances = useStore((s) => s.railInstances);
   const tasks = useStore((s) => s.tasks);
   const rails = useStore((s) => s.rails);
   const pendingCount = useMemo(
-    () => selectPendingQueue({ tasks, rails, railInstances }).length,
-    [tasks, rails, railInstances],
+    () => selectPendingQueue({ tasks, rails }).length,
+    [tasks, rails],
   );
 
   return (
