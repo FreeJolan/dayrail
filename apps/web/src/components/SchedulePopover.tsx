@@ -166,7 +166,7 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
               </select>
               {railOptions.length === 0 && (
                 <p className="mt-2 text-xs text-ink-tertiary">
-                  还没有 Rail。去 Template Editor 建一条，或切自由时间。
+                  还没有 Rail。去 Template Editor 建一条，或改成"直接指定时间"。
                 </p>
               )}
               {railId && (
@@ -256,9 +256,9 @@ function ModePicker({
   value: Mode;
   onChange: (m: Mode) => void;
 }) {
-  const opts: Array<{ key: Mode; label: string; hint: string }> = [
-    { key: 'rail', label: '绑定 Rail', hint: '默认推荐' },
-    { key: 'free', label: '自由时间', hint: 'Ad-hoc 逃生口' },
+  const opts: Array<{ key: Mode; label: string }> = [
+    { key: 'rail', label: '排到某条 Rail' },
+    { key: 'free', label: '直接指定时间' },
   ];
   return (
     <div className="flex gap-2">
@@ -285,10 +285,7 @@ function ModePicker({
                   : 'border-hairline/80',
               )}
             />
-            <span className="flex min-w-0 flex-col">
-              <span className="text-sm text-ink-primary">{o.label}</span>
-              <span className="text-xs text-ink-tertiary">{o.hint}</span>
-            </span>
+            <span className="text-sm text-ink-primary">{o.label}</span>
           </button>
         );
       })}
