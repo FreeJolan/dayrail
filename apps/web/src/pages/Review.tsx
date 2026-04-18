@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import {
   ChevronLeft,
@@ -7,14 +7,16 @@ import {
   MessageSquareQuote,
   Sparkles,
 } from 'lucide-react';
-import {
-  SAMPLE_CYCLE_REVIEW,
-  SAMPLE_DAY_REVIEW,
-  SAMPLE_MONTH_REVIEW,
-  type ReviewScopeData,
-} from '@/data/sampleReview';
+import { useStore } from '@dayrail/core';
+import { type ReviewScopeData } from '@/data/sampleReview';
 import { RhythmHeatmap } from '@/components/RhythmHeatmap';
 import { ShiftTagBars } from '@/components/ShiftTagBars';
+import {
+  cycleDatesFor,
+  deriveReviewData,
+  monthDatesFor,
+} from './reviewFromStore';
+import { toIsoDate } from './cycleFromStore';
 
 // ERD §5.8 F2 Review: per-scope top-to-bottom waterfall.
 //   title → rhythm heatmap → Top-5 Shift tags → Ad-hoc hint → AI cards
@@ -34,14 +36,107 @@ const SCOPES: Array<{ key: Scope; label: string }> = [
 
 export function Review() {
   const [scope, setScope] = useState<Scope>('cycle');
-  const data = pickData(scope);
+  // Period anchor. Day: specific date; Cycle: any date in the target
+  // week (Monday-anchored); Month: first of the target month.
+  const [anchor, setAnchor] = useState<Date>(() => new Date());
   const [aiEnabled, setAiEnabled] = useState(false);
+
+  const rails = useStore((s) => s.rails);
+  const railInstances = useStore((s) => s.railInstances);
+  const tasks = useStore((s) => s.tasks);
+  const templates = useStore((s) => s.templates);
+  const calendarRules = useStore((s) => s.calendarRules);
+  const shifts = useStore((s) => s.shifts);
+  const adhocEvents = useStore((s) => s.adhocEvents);
+
+  const data = useMemo<ReviewScopeData>(() => {
+    if (scope === 'day') {
+      const date = toIsoDate(anchor);
+      return deriveReviewData(
+        {
+          rails,
+          railInstances,
+          tasks,
+          templates,
+          calendarRules,
+          shifts,
+          adhocEvents,
+        },
+        {
+          scope,
+          label: formatDayLabel(anchor),
+          dates: [date],
+        },
+      );
+    }
+    if (scope === 'cycle') {
+      const dates = cycleDatesFor(anchor);
+      return deriveReviewData(
+        {
+          rails,
+          railInstances,
+          tasks,
+          templates,
+          calendarRules,
+          shifts,
+          adhocEvents,
+        },
+        {
+          scope,
+          label: formatCycleLabel(dates[0]!, dates[6]!),
+          dates,
+        },
+      );
+    }
+    const dates = monthDatesFor(anchor.getFullYear(), anchor.getMonth() + 1);
+    return deriveReviewData(
+      {
+        rails,
+        railInstances,
+        tasks,
+        templates,
+        calendarRules,
+        shifts,
+        adhocEvents,
+      },
+      {
+        scope,
+        label: formatMonthLabel(anchor),
+        dates,
+      },
+    );
+  }, [
+    scope,
+    anchor,
+    rails,
+    railInstances,
+    tasks,
+    templates,
+    calendarRules,
+    shifts,
+    adhocEvents,
+  ]);
+
+  const shiftAnchor = (direction: -1 | 1) => {
+    setAnchor((d) => {
+      const next = new Date(d);
+      if (scope === 'day') next.setDate(next.getDate() + direction);
+      else if (scope === 'cycle') next.setDate(next.getDate() + direction * 7);
+      else next.setMonth(next.getMonth() + direction);
+      return next;
+    });
+  };
 
   return (
     <div className="flex w-full flex-col pl-10 pr-8 xl:pl-14">
       <TopBar scope={scope} onScopeChange={setScope} />
 
-      <PeriodPager data={data} />
+      <PeriodPager
+        data={data}
+        onPrev={() => shiftAnchor(-1)}
+        onNext={() => shiftAnchor(1)}
+        onToday={() => setAnchor(new Date())}
+      />
 
       <div className="flex flex-col gap-10 pb-16 pt-8">
         {/* Per-scope waterfall */}
@@ -56,10 +151,25 @@ export function Review() {
   );
 }
 
-function pickData(scope: Scope): ReviewScopeData {
-  if (scope === 'day') return SAMPLE_DAY_REVIEW;
-  if (scope === 'month') return SAMPLE_MONTH_REVIEW;
-  return SAMPLE_CYCLE_REVIEW;
+function formatDayLabel(d: Date): string {
+  return d.toLocaleDateString('en-US', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+function formatCycleLabel(startIso: string, endIso: string): string {
+  const s = new Date(`${startIso}T00:00:00`);
+  const e = new Date(`${endIso}T00:00:00`);
+  const fmt = (x: Date) =>
+    x.toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
+  return `${fmt(s)} – ${fmt(e)}`;
+}
+
+function formatMonthLabel(d: Date): string {
+  return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 }
 
 function TopBar({
@@ -120,15 +230,24 @@ function ScopeSegmented({
   );
 }
 
-function PeriodPager({ data }: { data: ReviewScopeData }) {
+function PeriodPager({
+  data,
+  onPrev,
+  onNext,
+  onToday,
+}: {
+  data: ReviewScopeData;
+  onPrev: () => void;
+  onNext: () => void;
+  onToday: () => void;
+}) {
   return (
     <div className="hairline-b sticky top-[52px] z-20 -mx-10 flex h-9 items-center gap-3 bg-surface-0 px-10">
       <button
         type="button"
         aria-label="Previous period"
-        title="上一周期（v0.2 启用）"
-        disabled
-        className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-ink-tertiary/50 transition hover:bg-surface-2 disabled:cursor-not-allowed"
+        onClick={onPrev}
+        className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
       >
         <ChevronLeft className="h-3.5 w-3.5" strokeWidth={1.8} />
       </button>
@@ -138,11 +257,17 @@ function PeriodPager({ data }: { data: ReviewScopeData }) {
       <button
         type="button"
         aria-label="Next period"
-        title="下一周期（v0.2 启用）"
-        disabled
-        className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-ink-tertiary/50 transition hover:bg-surface-2 disabled:cursor-not-allowed"
+        onClick={onNext}
+        className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
       >
         <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.8} />
+      </button>
+      <button
+        type="button"
+        onClick={onToday}
+        className="rounded-sm px-2 py-1 font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+      >
+        Today
       </button>
       <span className="ml-2 text-xs text-ink-tertiary">
         {describeScope(data.scope)}
