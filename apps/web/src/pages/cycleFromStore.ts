@@ -77,10 +77,8 @@ export interface DerivedCycle {
 }
 
 /** Build a Cycle-View-shaped snapshot from live store state for the
- *  given 7-day window. Slots reflect each scheduled Task:
- *    - Task.slot within range → `planned-task` cell
- *    - (Future work: read RailInstance.status for past-day cells to
- *       light up done / shifted / skipped states — Chunk 3 territory.) */
+ *  given 7-day window. Cell state is derived from `Task.status`
+ *  (ERD §10.1 single-source-of-truth rule). */
 export function deriveCycleFromStore(
   state: Pick<
     DayRailState,

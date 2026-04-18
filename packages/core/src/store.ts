@@ -46,7 +46,6 @@ import {
   type Line,
   type Rail,
   type RailColor,
-  type RailInstance,
   type Recurrence,
   type Shift,
   type ShiftType,
@@ -67,7 +66,6 @@ export interface DayRailState {
   error?: string;
   templates: Record<TemplateKey, Template>;
   rails: Record<string, Rail>;
-  railInstances: Record<string, RailInstance>;
   signals: Record<string, Signal>;
   shifts: Record<string, Shift>;
   lines: Record<string, Line>;
@@ -94,13 +92,12 @@ interface DayRailActions {
   createRail: (rail: Rail, sessionId?: string) => Promise<void>;
   updateRail: (id: string, patch: Partial<Rail>, sessionId?: string) => Promise<void>;
   deleteRail: (id: string, sessionId?: string) => Promise<void>;
-  // --- rail instances (wall-clock log; v0.4+ status is on Task) ---
-  createRailInstance: (inst: RailInstance) => Promise<void>;
+  // --- audit for check-in / Pending actions ---
   /** Audit a §5.6 check-in button press. `Task.status` is written by
    *  the caller (updateTask) before this runs — recordSignal only
-   *  logs the intent + optional Shift-tag anchor. */
+   *  logs intent + provides the anchor any subsequent Shift wants. */
   recordSignal: (
-    instanceId: string,
+    taskId: string,
     response: SignalResponse,
     surface: Signal['surface'],
   ) => Promise<void>;
@@ -248,7 +245,6 @@ type ReducerState = Pick<
   DayRailState,
   | 'templates'
   | 'rails'
-  | 'railInstances'
   | 'signals'
   | 'shifts'
   | 'lines'
@@ -268,14 +264,9 @@ interface TemplatePayload extends Omit<Template, 'isDefault'> {
 interface RailPayload extends Omit<Rail, 'recurrence'> {
   recurrence?: Recurrence;
 }
-interface InstanceTimeShiftPayload {
-  id: string;
-  plannedStart?: string;
-  plannedEnd?: string;
-}
 interface ShiftPayload {
   id: string;
-  railInstanceId: string;
+  taskId: string;
   type: ShiftType;
   at: string;
   payload?: Record<string, unknown>;
@@ -284,7 +275,7 @@ interface ShiftPayload {
 }
 interface SignalPayload {
   id: string;
-  railInstanceId: string;
+  taskId: string;
   actedAt: string;
   response: SignalResponse;
   surface: Signal['surface'];
@@ -331,28 +322,11 @@ function applyEventInPlace(
       delete state.rails[id];
       break;
     }
-    case 'instance.created': {
-      const inst = payload as unknown as RailInstance;
-      state.railInstances[inst.id] = { ...inst };
-      break;
-    }
-    case 'instance.time-shifted': {
-      const p = payload as unknown as InstanceTimeShiftPayload;
-      const existing = state.railInstances[p.id];
-      if (existing) {
-        state.railInstances[p.id] = {
-          ...existing,
-          plannedStart: p.plannedStart ?? existing.plannedStart,
-          plannedEnd: p.plannedEnd ?? existing.plannedEnd,
-        };
-      }
-      break;
-    }
     case 'shift.recorded': {
       const p = payload as unknown as ShiftPayload;
       state.shifts[p.id] = {
         id: p.id,
-        railInstanceId: p.railInstanceId,
+        taskId: p.taskId,
         type: p.type,
         at: p.at,
         payload: p.payload ?? {},
@@ -365,7 +339,7 @@ function applyEventInPlace(
       const p = payload as unknown as SignalPayload;
       state.signals[p.id] = {
         id: p.id,
-        railInstanceId: p.railInstanceId,
+        taskId: p.taskId,
         actedAt: p.actedAt,
         response: p.response,
         surface: p.surface,
@@ -490,7 +464,6 @@ type SnapshotPayload = Pick<
   DayRailState,
   | 'templates'
   | 'rails'
-  | 'railInstances'
   | 'signals'
   | 'shifts'
   | 'lines'
@@ -506,7 +479,6 @@ function emptyReducerState(): ReducerState {
   return {
     templates: {},
     rails: {},
-    railInstances: {},
     signals: {},
     shifts: {},
     lines: {},
@@ -523,7 +495,6 @@ function snapshotFromState(s: DayRailState): SnapshotPayload {
   return {
     templates: s.templates,
     rails: s.rails,
-    railInstances: s.railInstances,
     signals: s.signals,
     shifts: s.shifts,
     lines: s.lines,
@@ -685,7 +656,6 @@ export const useStore = create<DayRailStore>()(
       ready: false,
       templates: {},
       rails: {},
-      railInstances: {},
       signals: {},
       shifts: {},
       lines: {},
@@ -717,7 +687,6 @@ export const useStore = create<DayRailStore>()(
             if (snap) {
               reducerState.templates = { ...(snap.state.templates ?? {}) };
               reducerState.rails = { ...(snap.state.rails ?? {}) };
-              reducerState.railInstances = { ...(snap.state.railInstances ?? {}) };
               reducerState.signals = { ...(snap.state.signals ?? {}) };
               reducerState.shifts = { ...(snap.state.shifts ?? {}) };
               reducerState.lines = { ...(snap.state.lines ?? {}) };
@@ -735,7 +704,6 @@ export const useStore = create<DayRailStore>()(
             }
             draft.templates = reducerState.templates;
             draft.rails = reducerState.rails;
-            draft.railInstances = reducerState.railInstances;
             draft.signals = reducerState.signals;
             draft.shifts = reducerState.shifts;
             draft.lines = reducerState.lines;
@@ -877,19 +845,7 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
-      createRailInstance: async (inst) => {
-        const event = await appendEvent({
-          aggregateId: `instance:${inst.id}`,
-          type: 'instance.created',
-          payload: { ...inst },
-        });
-        set((draft) => {
-          applyEventInPlace(draft, event.type, event.payload);
-        });
-        afterMutation();
-      },
-
-      recordSignal: async (instanceId, response, surface) => {
+      recordSignal: async (taskId, response, surface) => {
         // v0.4: Signal is pure audit. The caller (§5.6 check-in / §5.7
         // Pending) has already written the corresponding Task.status
         // via updateTask; recordSignal just logs intent + provides the
@@ -897,11 +853,11 @@ export const useStore = create<DayRailStore>()(
         const signalId = ulidLite('sig');
         const actedAt = new Date().toISOString();
         const event = await appendEvent({
-          aggregateId: `instance:${instanceId}`,
+          aggregateId: `task:${taskId}`,
           type: 'signal.acted',
           payload: {
             id: signalId,
-            railInstanceId: instanceId,
+            taskId,
             actedAt,
             response,
             surface,
@@ -915,7 +871,7 @@ export const useStore = create<DayRailStore>()(
 
       recordShift: async (shift) => {
         const event = await appendEvent({
-          aggregateId: `instance:${shift.railInstanceId}`,
+          aggregateId: `task:${shift.taskId}`,
           type: 'shift.recorded',
           payload: { ...shift },
         });
@@ -1469,7 +1425,6 @@ export const useStore = create<DayRailStore>()(
           }
           draft.templates = reducerState.templates;
           draft.rails = reducerState.rails;
-          draft.railInstances = reducerState.railInstances;
           draft.signals = reducerState.signals;
           draft.shifts = reducerState.shifts;
           draft.lines = reducerState.lines;

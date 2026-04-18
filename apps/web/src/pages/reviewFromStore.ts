@@ -43,7 +43,6 @@ export function deriveReviewData(
   state: Pick<
     DayRailState,
     | 'rails'
-    | 'railInstances'
     | 'tasks'
     | 'templates'
     | 'calendarRules'
@@ -163,14 +162,14 @@ function countApplied(row: HeatmapRow): number {
 }
 
 function aggregateShiftTags(
-  state: Pick<DayRailState, 'shifts' | 'railInstances'>,
+  state: Pick<DayRailState, 'shifts' | 'tasks'>,
   dates: string[],
 ): ShiftTagStat[] {
   const dateSet = new Set(dates);
   const tally = new Map<string, number>();
   for (const sh of Object.values(state.shifts)) {
-    const inst = state.railInstances[sh.railInstanceId];
-    if (!inst || !dateSet.has(inst.date)) continue;
+    const task = state.tasks[sh.taskId];
+    if (!task?.slot || !dateSet.has(task.slot.date)) continue;
     for (const tag of sh.tags ?? []) {
       tally.set(tag, (tally.get(tag) ?? 0) + 1);
     }

@@ -10,7 +10,10 @@ import {
 } from '@dayrail/core';
 import { RAIL_COLOR_HEX } from '@/components/railColors';
 import { ReasonToast } from '@/components/ReasonToast';
-import { useReasonToast } from '@/components/useReasonToast';
+import {
+  latestTagsForTask,
+  useReasonToast,
+} from '@/components/useReasonToast';
 import type { RailColor } from '@/data/sample';
 
 // ERD §5.7 — Pending queue. Master list of "awaiting a decision":
@@ -27,7 +30,6 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 interface PendingRow {
   taskId: string;
-  railInstanceId?: string;
   railId: string;
   date: string; // YYYY-MM-DD
   start: string; // HH:MM
@@ -46,7 +48,6 @@ interface PendingRow {
 
 export function Pending() {
   const rails = useStore((s) => s.rails);
-  const railInstances = useStore((s) => s.railInstances);
   const tasks = useStore((s) => s.tasks);
   const shifts = useStore((s) => s.shifts);
   const updateTask = useStore((s) => s.updateTask);
@@ -58,10 +59,10 @@ export function Pending() {
 
   const rows = useMemo<PendingRow[]>(() => {
     const now = new Date();
-    return selectPendingQueue({ tasks, rails, railInstances }, now).map(
+    return selectPendingQueue({ tasks, rails }, now).map(
       (r) => adaptRow(r, shifts, now),
     );
-  }, [tasks, rails, railInstances, shifts]);
+  }, [tasks, rails, shifts]);
 
   const summary = useMemo(
     () => ({
@@ -80,7 +81,6 @@ export function Pending() {
     (row: PendingRow) => {
       fire({
         taskId: row.taskId,
-        ...(row.railInstanceId && { railInstanceId: row.railInstanceId }),
         railId: row.railId,
         railName: row.railName,
         action: 'done',
@@ -93,7 +93,6 @@ export function Pending() {
     (row: PendingRow) => {
       fire({
         taskId: row.taskId,
-        ...(row.railInstanceId && { railInstanceId: row.railInstanceId }),
         railId: row.railId,
         railName: row.railName,
         action: 'archive',
@@ -179,7 +178,6 @@ function adaptRow(
     : Math.max(0, Math.floor((now.getTime() - startMs) / MS_PER_DAY));
   return {
     taskId: row.task.id,
-    ...(row.railInstance && { railInstanceId: row.railInstance.id }),
     railId: row.rail.id,
     date: row.task.slot?.date ?? '',
     start: row.plannedStart.slice(11, 16) || '00:00',
@@ -189,21 +187,9 @@ function adaptRow(
     ...(row.rail.subtitle && { subtitle: row.rail.subtitle }),
     title: row.task.title,
     source: row.task.status === 'deferred' ? 'deferred' : 'unmarked',
-    tags: row.railInstance ? tagsForInstance(row.railInstance.id, shifts) : [],
+    tags: latestTagsForTask(row.task.id, shifts),
     ageDays,
   };
-}
-
-function tagsForInstance(
-  instanceId: string,
-  shifts: Record<string, Shift>,
-): string[] {
-  let latest: Shift | undefined;
-  for (const shift of Object.values(shifts)) {
-    if (shift.railInstanceId !== instanceId) continue;
-    if (!latest || shift.at > latest.at) latest = shift;
-  }
-  return latest?.tags ?? [];
 }
 
 interface Group {

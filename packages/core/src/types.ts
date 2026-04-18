@@ -68,33 +68,19 @@ export interface Slot {
   taskIds: string[];
 }
 
-/** v0.4: `RailInstance` narrows to a wall-clock log (ERD §10.1).
- *  Completion status lives on `Task.status` — if you need to know
- *  "was this done / deferred / archived?", query the carrying Task
- *  by `(date, railId)`. This entity is retained only as an audit
- *  anchor for Shifts and as a place to stamp `actualEnd` when an
- *  occurrence wraps up. A later sweep may fold it into Task. */
-export interface RailInstance {
-  id: string;
-  railId: string;
-  date: string;
-  plannedStart: string;
-  plannedEnd: string;
-  actualStart?: string;
-  actualEnd?: string;
-  overrides?: Partial<Pick<Rail, 'name' | 'color' | 'icon' | 'durationMinutes'>>;
-  sessionId?: string;
-}
-
 /** §5.2: only two Shift types survive v0.2 — each matches a terminal-
  *  or-semi-terminal status transition. Within-day postponing is
  *  handled via Cycle-View drag (not a Shift); swap / resize / replace
  *  are re-evaluated in v0.3. */
 export type ShiftType = 'defer' | 'archive';
 
+/** An audit record attached to a Task occurrence when the user
+ *  deferred / archived it. Multiple tags + optional reason. v0.4:
+ *  anchored to `taskId` (was `railInstanceId` before the RailInstance
+ *  entity removal). */
 export interface Shift {
   id: string;
-  railInstanceId: string;
+  taskId: string;
   type: ShiftType;
   at: string;
   payload: Record<string, unknown>;
@@ -108,9 +94,12 @@ export interface Shift {
  *  `'skip' | 'shift' | 'ignore'` — those were semantically overlapping. */
 export type SignalResponse = 'done' | 'defer' | 'archive';
 
+/** Audit log of a §5.6 / §5.7 button press. The status update itself
+ *  lives on `Task.status`; this event exists so the user can trace
+ *  "I pressed Later at 14:32 from the check-in strip". */
 export interface Signal {
   id: string;
-  railInstanceId: string;
+  taskId: string;
   actedAt: string;
   response: SignalResponse;
   surface: 'check-in-strip' | 'pending-queue';

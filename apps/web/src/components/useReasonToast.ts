@@ -1,7 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import {
   useStore,
-  type RailInstance,
   type Shift,
   type ShiftType,
   type Signal,
@@ -22,8 +21,7 @@ import type {
 // (so the user can trace "I pressed Later at 14:32"), and commits a
 // Shift record on close if the user added any tags.
 //
-// RailInstance.status doesn't exist anymore — the only thing the
-// RailInstance entity buys us today is an anchor for Signal + Shift.
+// RailInstance is gone — Shift + Signal anchor directly to Task.
 
 type TaskStatus = Task['status'];
 
@@ -31,7 +29,6 @@ export function useReasonToast(surface: Signal['surface']): {
   toast: ReasonToastState | null;
   fire: (opts: {
     taskId: string;
-    railInstanceId?: string;
     railName: string;
     railId: string;
     action: ToastAction;
@@ -40,7 +37,6 @@ export function useReasonToast(surface: Signal['surface']): {
   handleUndo: () => void;
   handleClose: () => void;
 } {
-  const railInstances = useStore((s) => s.railInstances);
   const tasks = useStore((s) => s.tasks);
   const shifts = useStore((s) => s.shifts);
   const recordSignal = useStore((s) => s.recordSignal);
@@ -51,17 +47,13 @@ export function useReasonToast(surface: Signal['surface']): {
   // Committed-on-close state; refs because they don't drive rendering.
   const tagsRef = useRef<string[]>([]);
   const taskIdRef = useRef<string | null>(null);
-  const instanceIdRef = useRef<string | null>(null);
   const actionRef = useRef<ToastAction | null>(null);
-  // Pre-action task snapshot so Undo restores precisely. Matters on
-  // Pending page: acting on a `deferred` item and undoing should go
-  // back to `deferred`, not demote to `pending`.
+  // Pre-action task snapshot so Undo restores precisely.
   const prevTaskStatusRef = useRef<TaskStatus | null>(null);
 
   const fire = useCallback(
-    ({ taskId, railInstanceId, railName, railId, action }: {
+    ({ taskId, railName, railId, action }: {
       taskId: string;
-      railInstanceId?: string;
       railName: string;
       railId: string;
       action: ToastAction;
@@ -84,27 +76,21 @@ export function useReasonToast(surface: Signal['surface']): {
       if (action === 'archive') patch.archivedAt = nowIso;
       void updateTask(taskId, patch);
 
-      // Signal event — pure audit. Still keyed to RailInstance because
-      // Shifts (committed on close) need that anchor.
-      if (railInstanceId) {
-        void recordSignal(railInstanceId, action, surface);
-      }
+      // Signal event — pure audit. Anchored on Task.
+      void recordSignal(taskId, action, surface);
 
       tagsRef.current = [];
       taskIdRef.current = taskId;
-      instanceIdRef.current = railInstanceId ?? null;
       actionRef.current = action;
       setToast({
         action,
-        instanceId: railInstanceId ?? taskId,
+        instanceId: taskId, // the toast still uses `instanceId` as an opaque key
         railName,
         isRecurring: true,
-        recommendedTags: railInstanceId
-          ? topTagsForRail(railId, railInstances, shifts)
-          : [],
+        recommendedTags: topTagsForRail(railId, tasks, shifts),
       });
     },
-    [tasks, railInstances, shifts, recordSignal, updateTask, surface],
+    [tasks, shifts, recordSignal, updateTask, surface],
   );
 
   const handleAddTag = useCallback((tag: string) => {
@@ -128,28 +114,26 @@ export function useReasonToast(surface: Signal['surface']): {
     }
     tagsRef.current = [];
     taskIdRef.current = null;
-    instanceIdRef.current = null;
     actionRef.current = null;
     prevTaskStatusRef.current = null;
   }, [updateTask]);
 
   const handleClose = useCallback(() => {
     const tags = tagsRef.current;
-    const iid = instanceIdRef.current;
+    const tid = taskIdRef.current;
     const action = actionRef.current;
     setToast(null);
     tagsRef.current = [];
     taskIdRef.current = null;
-    instanceIdRef.current = null;
     actionRef.current = null;
     prevTaskStatusRef.current = null;
-    if (!iid || !action) return;
+    if (!tid || !action) return;
     if (action === 'done') return; // done isn't a Shift
     if (tags.length === 0) return;
     const shiftType: ShiftType = action === 'defer' ? 'defer' : 'archive';
     const shift: Shift = {
-      id: `shift-${iid}-${Date.now().toString(36)}`,
-      railInstanceId: iid,
+      id: `shift-${tid}-${Date.now().toString(36)}`,
+      taskId: tid,
       type: shiftType,
       at: new Date().toISOString(),
       payload: {},
@@ -161,17 +145,18 @@ export function useReasonToast(surface: Signal['surface']): {
   return { toast, fire, handleAddTag, handleUndo, handleClose };
 }
 
-// Exposed for callers that need the same ranking without going through
-// the toast.
+/** Top 3 Shift tags ever used on this Rail. v0.4: Shifts anchor to
+ *  Tasks, so we join Shift.taskId → Task.slot.railId to find matches.
+ *  Consumers that need this without the toast can call it directly. */
 export function topTagsForRail(
   railId: string,
-  railInstances: Record<string, RailInstance>,
+  tasks: Record<string, Task>,
   shifts: Record<string, Shift>,
 ): string[] {
   const counts = new Map<string, number>();
   for (const shift of Object.values(shifts)) {
-    const inst = railInstances[shift.railInstanceId];
-    if (!inst || inst.railId !== railId) continue;
+    const task = tasks[shift.taskId];
+    if (!task?.slot || task.slot.railId !== railId) continue;
     for (const tag of shift.tags ?? []) {
       counts.set(tag, (counts.get(tag) ?? 0) + 1);
     }
@@ -180,4 +165,19 @@ export function topTagsForRail(
     .sort((a, b) => b[1] - a[1])
     .slice(0, 3)
     .map(([tag]) => tag);
+}
+
+/** Latest Shift tags for a specific Task (for the Today-Track deferred
+ *  strip / Pending-page row badge). Returns the most recent Shift's
+ *  tags, not an aggregate. */
+export function latestTagsForTask(
+  taskId: string,
+  shifts: Record<string, Shift>,
+): string[] {
+  let latest: Shift | undefined;
+  for (const shift of Object.values(shifts)) {
+    if (shift.taskId !== taskId) continue;
+    if (!latest || shift.at > latest.at) latest = shift;
+  }
+  return latest?.tags ?? [];
 }

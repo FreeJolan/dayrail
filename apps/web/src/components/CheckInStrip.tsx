@@ -9,14 +9,13 @@ import { RAIL_COLOR_HEX } from './railColors';
 // collapse to a summary line that can be expanded.
 //
 // v0.4: the queue item is a Task-carrying row (ERD §10.1). The component
-// passes the whole entry back to onAction so the caller can write to
-// Task + optionally RailInstance without another lookup.
+// passes the whole entry back to onAction so the caller can write Task
+// state + recordSignal without another lookup.
 
 export type CheckInAction = 'done' | 'defer' | 'archive';
 
 export interface CheckInEntry {
   taskId: string;
-  railInstanceId?: string;
   railId: string;
   railName: string;
   subtitle?: string;

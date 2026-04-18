@@ -181,50 +181,31 @@ export const tracks = sqliteTable('tracks', {
   templateKey: text('template_key'),
 });
 
-export const railInstances = sqliteTable(
-  'rail_instances',
-  {
-    id: text('id').primaryKey(),
-    railId: text('rail_id').notNull(),
-    date: text('date').notNull(),
-    plannedStart: text('planned_start').notNull(),
-    plannedEnd: text('planned_end').notNull(),
-    actualStart: text('actual_start'),
-    actualEnd: text('actual_end'),
-    overrides: text('overrides'), // JSON or null
-    sessionId: text('session_id'),
-  },
-  (t) => ({
-    dateIdx: index('rail_instances_date_idx').on(t.date),
-    railIdx: index('rail_instances_rail_idx').on(t.railId),
-  }),
-);
-
 export const shifts = sqliteTable(
   'shifts',
   {
     id: text('id').primaryKey(),
-    railInstanceId: text('rail_instance_id').notNull(),
-    type: text('type').notNull(), // postpone / swap / skip / resize / replace
+    taskId: text('task_id').notNull(),
+    type: text('type').notNull(), // defer / archive
     at: text('at').notNull(),
     payload: text('payload').notNull(), // JSON
     /** Comma-joined tag array (normalised via §5.2 tag library in v0.3). */
     tags: text('tags'),
     reason: text('reason'), // 500-char cap enforced at write time
   },
-  (t) => ({ instanceIdx: index('shifts_instance_idx').on(t.railInstanceId) }),
+  (t) => ({ taskIdx: index('shifts_task_idx').on(t.taskId) }),
 );
 
 export const signals = sqliteTable(
   'signals',
   {
     id: text('id').primaryKey(),
-    railInstanceId: text('rail_instance_id').notNull(),
+    taskId: text('task_id').notNull(),
     actedAt: text('acted_at').notNull(),
-    response: text('response').notNull(), // done / skip / shift / ignore
+    response: text('response').notNull(), // done / defer / archive
     surface: text('surface').notNull(), // check-in-strip / pending-queue
   },
-  (t) => ({ instanceIdx: index('signals_instance_idx').on(t.railInstanceId) }),
+  (t) => ({ taskIdx: index('signals_task_idx').on(t.taskId) }),
 );
 
 export const lines = sqliteTable('lines', {
@@ -407,39 +388,25 @@ CREATE TABLE IF NOT EXISTS tracks (
   template_key TEXT
 );
 
-CREATE TABLE IF NOT EXISTS rail_instances (
-  id TEXT PRIMARY KEY,
-  rail_id TEXT NOT NULL,
-  date TEXT NOT NULL,
-  planned_start TEXT NOT NULL,
-  planned_end TEXT NOT NULL,
-  actual_start TEXT,
-  actual_end TEXT,
-  overrides TEXT,
-  session_id TEXT
-);
-CREATE INDEX IF NOT EXISTS rail_instances_date_idx ON rail_instances(date);
-CREATE INDEX IF NOT EXISTS rail_instances_rail_idx ON rail_instances(rail_id);
-
 CREATE TABLE IF NOT EXISTS shifts (
   id TEXT PRIMARY KEY,
-  rail_instance_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
   type TEXT NOT NULL,
   at TEXT NOT NULL,
   payload TEXT NOT NULL,
   tags TEXT,
   reason TEXT
 );
-CREATE INDEX IF NOT EXISTS shifts_instance_idx ON shifts(rail_instance_id);
+CREATE INDEX IF NOT EXISTS shifts_task_idx ON shifts(task_id);
 
 CREATE TABLE IF NOT EXISTS signals (
   id TEXT PRIMARY KEY,
-  rail_instance_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
   acted_at TEXT NOT NULL,
   response TEXT NOT NULL,
   surface TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS signals_instance_idx ON signals(rail_instance_id);
+CREATE INDEX IF NOT EXISTS signals_task_idx ON signals(task_id);
 
 CREATE TABLE IF NOT EXISTS lines (
   id TEXT PRIMARY KEY,
