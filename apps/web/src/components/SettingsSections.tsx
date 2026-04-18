@@ -7,6 +7,7 @@ import {
   GripVertical,
   Plus,
   Sparkles,
+  Trash2,
   X,
 } from 'lucide-react';
 import {
@@ -17,6 +18,7 @@ import {
   TextField,
   Toggle,
 } from './SettingsPrimitives';
+import { resetLocalData } from '@/lib/resetLocalData';
 
 // ============ Appearance ============
 
@@ -458,7 +460,54 @@ export function AdvancedSection() {
         <KeyValue label="Review period" value="C1 · Apr 13 – Apr 19" mono />
         <KeyValue label="Pending 日期组" value="04.16 · THU · 1 天前" mono />
       </div>
+      <DangerZone />
     </SettingsSectionShell>
+  );
+}
+
+function DangerZone() {
+  const [resetting, setResetting] = useState(false);
+
+  const handleReset = async () => {
+    const msg =
+      '重置本地数据会清空 OPFS 里的所有事件 / 快照 / 缓存，页面刷新后按初始种子重新跑。\n\n这个操作不可撤销 —— 继续？';
+    if (!window.confirm(msg)) return;
+    setResetting(true);
+    try {
+      await resetLocalData();
+    } catch (err) {
+      setResetting(false);
+      window.alert(
+        `重置失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
+  return (
+    <div className="hairline-t mt-1 pt-6">
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-1">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            Danger zone
+          </span>
+          <h3 className="text-sm text-ink-primary">重置本地数据</h3>
+          <p className="text-xs text-ink-tertiary">
+            清空 OPFS 里的事件日志、快照、缓存；刷新后 `boot()` 会按
+            sample templates / rails 重新 seed。schema 升级或排查坏状态
+            时用。
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleReset}
+          disabled={resetting}
+          className="inline-flex items-center gap-1.5 self-start rounded-md border border-hairline/60 px-3 py-1.5 text-xs text-ink-secondary transition hover:border-red-500/60 hover:bg-red-500/5 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Trash2 className="h-3.5 w-3.5" strokeWidth={1.6} />
+          {resetting ? '正在清空…' : '清空并重载'}
+        </button>
+      </div>
+    </div>
   );
 }
 
