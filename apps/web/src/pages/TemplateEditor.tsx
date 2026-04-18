@@ -192,6 +192,20 @@ export function TemplateEditor() {
     window.alert('重置到默认 —— v0.3 衔接。当前走 ⤺ 撤销本次编辑 回到 session baseline。');
   };
 
+  const createBlankTemplate = async () => {
+    const proposedName = window.prompt('新模板名字？', '新模板');
+    if (!proposedName) return;
+    const name = proposedName.trim();
+    if (!name) return;
+    const existingKeys = new Set(templates.map((t) => t.key));
+    const newKey = uniqueTemplateKey(name, existingKeys);
+    await upsertTemplateAction(
+      { key: newKey, name, isDefault: false },
+      sessionId ?? undefined,
+    );
+    navigate(`/templates/${newKey}`);
+  };
+
   const duplicateTemplate = async () => {
     const proposedName = window.prompt(
       `复制「${currentTemplate.label}」到新模板，名字？`,
@@ -324,9 +338,7 @@ export function TemplateEditor() {
         templates={templatesForTabs}
         active={activeKey}
         onSelect={setActiveKey}
-        onNew={() => {
-          /* v0.3 — create a new custom template */
-        }}
+        onNew={() => void createBlankTemplate()}
       />
 
       <SummaryStrip rails={sortedEditable} />
