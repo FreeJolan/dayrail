@@ -123,6 +123,10 @@ export interface Line {
   isDefault?: boolean;
   plannedStart?: string;
   plannedEnd?: string;
+  /** Long-form free text. Used by the v0.4 habit detail page for
+   *  capturing goals / context ("why I started", "target event") —
+   *  available on any Line kind though, no enforcement. */
+  note?: string;
   createdAt: number;
   archivedAt?: number;
   deletedAt?: number;

@@ -43,6 +43,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/primitives/DropdownMenu';
 import { SchedulePopover } from '@/components/SchedulePopover';
+import { HabitDetail } from './HabitDetail';
 import { ReasonToast } from '@/components/ReasonToast';
 import {
   latestTagsForTask,
@@ -740,24 +741,29 @@ function MainPanel({
       />
 
       {isHabitView && selectedHabit && (
-        <HabitPhasePanel lineId={selectedHabit.id} />
+        <>
+          <HabitPhasePanel lineId={selectedHabit.id} />
+          <HabitDetail habit={selectedHabit} />
+        </>
       )}
 
-      {canCreate && (
+      {!isHabitView && canCreate && (
         <NewTaskInput onCreate={handleCreate} placeholder="+ 新任务 · Enter" />
       )}
 
-      <FilterBar
-        filters={filters}
-        onChange={setFilters}
-        lineChoices={
-          isArchived || isTrash
-            ? distinctLinesForScope(tasksInScope, linesMap)
-            : []
-        }
-      />
+      {!isHabitView && (
+        <FilterBar
+          filters={filters}
+          onChange={setFilters}
+          lineChoices={
+            isArchived || isTrash
+              ? distinctLinesForScope(tasksInScope, linesMap)
+              : []
+          }
+        />
+      )}
 
-      {(() => {
+      {!isHabitView && (() => {
         const displayNameFor = (task: Task): string => {
           if (task.slot) {
             const rail = railsMap[task.slot.railId];

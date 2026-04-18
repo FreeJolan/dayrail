@@ -218,6 +218,7 @@ export const lines = sqliteTable('lines', {
   isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
   plannedStart: text('planned_start'),
   plannedEnd: text('planned_end'),
+  note: text('note'),
   createdAt: integer('created_at').notNull(),
   archivedAt: integer('archived_at'),
   deletedAt: integer('deleted_at'),
@@ -417,6 +418,7 @@ CREATE TABLE IF NOT EXISTS lines (
   is_default INTEGER NOT NULL DEFAULT 0,
   planned_start TEXT,
   planned_end TEXT,
+  note TEXT,
   created_at INTEGER NOT NULL,
   archived_at INTEGER,
   deleted_at INTEGER
