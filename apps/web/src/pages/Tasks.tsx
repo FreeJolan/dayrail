@@ -1,5 +1,10 @@
 import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import {
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from 'react-router-dom';
 import { clsx } from 'clsx';
 import {
   Archive,
@@ -291,8 +296,6 @@ interface Filters {
   search: string;
 }
 
-const DEFAULT_FILTERS: Filters = { search: '' };
-
 function MainPanel({
   selection,
   inbox,
@@ -302,7 +305,26 @@ function MainPanel({
   inbox: Line | undefined;
   projects: Line[];
 }) {
-  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  // Search query in URL (`?q=foo`) so bookmarking / sharing a
+  // filtered view works. Empty query → param stripped entirely, no
+  // noise in the URL for the common case.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filters: Filters = { search: searchParams.get('q') ?? '' };
+  const setFilters = useCallback(
+    (next: Filters) => {
+      setSearchParams(
+        (prev) => {
+          const n = new URLSearchParams(prev);
+          const q = next.search;
+          if (q) n.set('q', q);
+          else n.delete('q');
+          return n;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
 
   const tasksMap = useStore((s) => s.tasks);
   const linesMap = useStore((s) => s.lines);
