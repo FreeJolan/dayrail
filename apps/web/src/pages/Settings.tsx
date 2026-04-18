@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useCallback } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { clsx } from 'clsx';
 import {
   Cloud,
@@ -21,6 +22,18 @@ import {
 
 type SectionKey = 'appearance' | 'sync' | 'ai' | 'advanced' | 'about';
 
+const SECTION_KEYS: SectionKey[] = [
+  'appearance',
+  'sync',
+  'ai',
+  'advanced',
+  'about',
+];
+
+function isSectionKey(s: string | undefined): s is SectionKey {
+  return !!s && (SECTION_KEYS as string[]).includes(s);
+}
+
 interface NavItem {
   key: SectionKey;
   label: string;
@@ -36,7 +49,14 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export function Settings() {
-  const [active, setActive] = useState<SectionKey>('appearance');
+  const { section } = useParams<{ section?: string }>();
+  const navigate = useNavigate();
+  const active: SectionKey = isSectionKey(section) ? section : 'appearance';
+
+  const setActive = useCallback(
+    (next: SectionKey) => navigate(`/settings/${next}`),
+    [navigate],
+  );
 
   return (
     <div className="flex min-h-screen w-full">

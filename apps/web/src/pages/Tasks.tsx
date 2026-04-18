@@ -1,4 +1,5 @@
 import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { clsx } from 'clsx';
 import {
   Archive,
@@ -36,10 +37,45 @@ type Selection =
   | { kind: 'archived' }
   | { kind: 'trash' };
 
-const DEFAULT_SELECTION: Selection = { kind: 'inbox' };
+/** Map the current URL to a Selection. `/tasks/inbox` / `.../archived` /
+ *  `.../trash` are static; `/tasks/line/:lineId` takes the route param. */
+function selectionFromLocation(
+  pathname: string,
+  lineId: string | undefined,
+): Selection {
+  if (pathname.startsWith('/tasks/line/') && lineId) {
+    return { kind: 'line', lineId };
+  }
+  if (pathname === '/tasks/archived') return { kind: 'archived' };
+  if (pathname === '/tasks/trash') return { kind: 'trash' };
+  return { kind: 'inbox' };
+}
+
+function pathForSelection(s: Selection): string {
+  switch (s.kind) {
+    case 'inbox':
+      return '/tasks/inbox';
+    case 'line':
+      return `/tasks/line/${s.lineId}`;
+    case 'archived':
+      return '/tasks/archived';
+    case 'trash':
+      return '/tasks/trash';
+  }
+}
 
 export function Tasks() {
-  const [selection, setSelection] = useState<Selection>(DEFAULT_SELECTION);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { lineId } = useParams<{ lineId?: string }>();
+  const selection = useMemo(
+    () => selectionFromLocation(location.pathname, lineId),
+    [location.pathname, lineId],
+  );
+  const setSelection = useCallback(
+    (next: Selection) => navigate(pathForSelection(next)),
+    [navigate],
+  );
   // Subscribe to the raw map, not a selector that sorts/filters — Zustand
   // shallow-compares output, and `Object.values(...).sort()` returns a
   // fresh array every render → infinite loop.
@@ -75,7 +111,7 @@ export function Tasks() {
       createdAt: Date.now(),
     });
     setSelection({ kind: 'line', lineId: id });
-  }, [createLine]);
+  }, [createLine, setSelection]);
 
   return (
     <div className="flex min-h-screen w-full">

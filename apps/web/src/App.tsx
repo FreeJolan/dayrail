@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { TodayTrack } from './pages/TodayTrack';
 import { TemplateEditor } from './pages/TemplateEditor';
 import { CycleView } from './pages/CycleView';
@@ -7,79 +7,56 @@ import { Tasks } from './pages/Tasks';
 import { Pending } from './pages/Pending';
 import { Settings } from './pages/Settings';
 import { Calendar } from './pages/Calendar';
-import { SideNav, type NavKey } from './components/SideNav';
+import { SideNav } from './components/SideNav';
 import { TooltipProvider } from './components/primitives/Tooltip';
 
-// Simple state-based routing for the static-mock phase. When we add
-// real persistence + proper routing, swap this for `react-router` or
-// the App Router equivalent — but for now a single `useState` is
-// smaller than a dependency.
+// ERD §5.0 App Shell · v0.2 routing (react-router-dom v6). URL scheme
+// locked in `docs/v0.2-plan.md §3`:
+//   /                       → Today Track
+//   /cycle                  → Cycle View (anchored to current week)
+//   /tasks                  → redirects to /tasks/inbox
+//   /tasks/inbox
+//   /tasks/line/:lineId
+//   /tasks/archived
+//   /tasks/trash
+//   /review
+//   /pending
+//   /calendar
+//   /templates              → redirects to /templates/workday
+//   /templates/:templateKey
+//   /settings               → redirects to /settings/appearance
+//   /settings/:section      → section ∈ appearance / sync / ai / advanced / about
+//
+// Filters / search / Cycle anchorDate are deliberately not in the URL —
+// see ERD change-log 2026-04-18 for the rationale.
 
 export default function App() {
-  const [page, setPage] = useState<NavKey>('today');
-
   return (
-    <TooltipProvider delayDuration={200} skipDelayDuration={300}>
-      <div className="flex min-h-screen w-full bg-surface-0">
-        <SideNav active={page} onNavigate={setPage} />
-        <main className="flex-1">
-          {page === 'today' && <TodayTrack />}
-          {page === 'template' && <TemplateEditor />}
-          {page === 'cycle' && <CycleView />}
-          {page === 'review' && <Review />}
-          {page === 'tasks' && <Tasks />}
-          {page === 'pending' && <Pending />}
-          {page === 'settings' && <Settings />}
-          {page === 'calendar' && <Calendar />}
-          {page !== 'today' &&
-            page !== 'template' &&
-            page !== 'cycle' &&
-            page !== 'review' &&
-            page !== 'tasks' &&
-            page !== 'pending' &&
-            page !== 'settings' &&
-            page !== 'calendar' && <ComingSoon page={page} />}
-        </main>
-      </div>
-    </TooltipProvider>
+    <BrowserRouter>
+      <TooltipProvider delayDuration={200} skipDelayDuration={300}>
+        <div className="flex min-h-screen w-full bg-surface-0">
+          <SideNav />
+          <main className="flex-1">
+            <Routes>
+              <Route path="/" element={<TodayTrack />} />
+              <Route path="/cycle" element={<CycleView />} />
+              <Route path="/tasks" element={<Navigate to="/tasks/inbox" replace />} />
+              <Route path="/tasks/inbox" element={<Tasks />} />
+              <Route path="/tasks/line/:lineId" element={<Tasks />} />
+              <Route path="/tasks/archived" element={<Tasks />} />
+              <Route path="/tasks/trash" element={<Tasks />} />
+              <Route path="/review" element={<Review />} />
+              <Route path="/pending" element={<Pending />} />
+              <Route path="/calendar" element={<Calendar />} />
+              <Route path="/templates" element={<TemplateEditor />} />
+              <Route path="/templates/:templateKey" element={<TemplateEditor />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/settings/:section" element={<Settings />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </main>
+        </div>
+      </TooltipProvider>
+    </BrowserRouter>
   );
-}
-
-function ComingSoon({ page }: { page: NavKey }) {
-  return (
-    <div className="flex w-full items-center pl-14 pt-24">
-      <div className="max-w-md">
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          Next milestone
-        </span>
-        <h2 className="mt-2 font-mono text-2xl tabular-nums text-ink-primary">
-          {labelFor(page)}
-        </h2>
-        <p className="mt-3 text-sm text-ink-secondary">
-          未实装。先把 Today 与 Template Editor 两屏打磨到位，再按 ERD §5.2/§5.3/§5.5/§5.7/§5.8/§5.9 的顺序补齐。
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function labelFor(page: NavKey): string {
-  switch (page) {
-    case 'today':
-      return 'Today Track';
-    case 'template':
-      return 'Template Editor';
-    case 'cycle':
-      return 'Cycle View (§5.3)';
-    case 'tasks':
-      return 'Tasks (§5.5)';
-    case 'review':
-      return 'Review (§5.8)';
-    case 'calendar':
-      return 'Calendar (§5.4 Calendar)';
-    case 'pending':
-      return 'Unresolved queue (§5.7)';
-    case 'settings':
-      return 'Settings (§5.9)';
-  }
 }
