@@ -1,11 +1,13 @@
 import { clsx } from 'clsx';
+import { Link } from 'react-router-dom';
 import type { SampleCycle } from '@/data/sampleCycle';
 import { RAIL_COLOR_HEX } from './railColors';
 
 // ERD §5.3 D5 — 36 px sticky summary strip below the Cycle top bar.
 // Shows the Top-3 Line progress bars: <LineName> N/M. Numbers derived
 // live from scheduled slots + done counts. Mono to match Template
-// Editor's strip grammar (E5 sibling).
+// Editor's strip grammar (E5 sibling). Bars link into Tasks filtered
+// to that Line so Planner mode stays one click from the backlog.
 
 interface Props {
   cycle: SampleCycle;
@@ -22,6 +24,7 @@ export function CycleSummaryStrip({ cycle }: Props) {
           cycle.topLines.map((line) => (
             <LineBar
               key={line.id}
+              id={line.id}
               name={line.name}
               done={line.done}
               planned={line.planned}
@@ -39,11 +42,13 @@ export function CycleSummaryStrip({ cycle }: Props) {
 }
 
 function LineBar({
+  id,
   name,
   done,
   planned,
   color,
 }: {
+  id: string;
   name: string;
   done: number;
   planned: number;
@@ -51,8 +56,12 @@ function LineBar({
 }) {
   const pct = planned > 0 ? Math.round((done / planned) * 100) : 0;
   return (
-    <div className="flex min-w-[180px] items-center gap-3">
-      <span className="font-mono text-xs text-ink-secondary whitespace-nowrap">
+    <Link
+      to={`/tasks/line/${id}`}
+      className="group flex min-w-[180px] items-center gap-3 rounded-sm px-1 -mx-1 transition hover:bg-surface-2"
+      title={`在 Tasks 中查看 ${name}`}
+    >
+      <span className="font-mono text-xs text-ink-secondary whitespace-nowrap group-hover:text-ink-primary">
         {name}
       </span>
       <div
@@ -70,6 +79,6 @@ function LineBar({
         {done}
         <span className="text-ink-tertiary">/{planned}</span>
       </span>
-    </div>
+    </Link>
   );
 }
