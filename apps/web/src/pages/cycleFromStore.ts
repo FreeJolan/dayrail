@@ -6,7 +6,12 @@
 // wire-up keeps the UI layer mostly intact and only swaps the data
 // source.
 
-import type { DayRailState, Rail, Task } from '@dayrail/core';
+import type {
+  DayRailState,
+  Rail,
+  RailInstance,
+  Task,
+} from '@dayrail/core';
 import { resolveTemplateForDate, singleDateRuleId } from '@dayrail/core';
 import type {
   CycleDay,
@@ -80,7 +85,12 @@ export interface DerivedCycle {
 export function deriveCycleFromStore(
   state: Pick<
     DayRailState,
-    'templates' | 'rails' | 'tasks' | 'lines' | 'calendarRules'
+    | 'templates'
+    | 'rails'
+    | 'tasks'
+    | 'lines'
+    | 'calendarRules'
+    | 'railInstances'
   >,
   startDate: Date,
 ): DerivedCycle {
@@ -112,13 +122,22 @@ export function deriveCycleFromStore(
     railsByTemplate[key]!.sort((a, b) => a.startMin - b.startMin);
   }
 
-  const slots: CycleSlot[] = [];
+  // Map (railId, date) → RailInstance for quick lookup when deriving
+  // past-day cell states from check-in history.
+  const instanceByKey = new Map<string, RailInstance>();
+  for (const inst of Object.values(state.railInstances)) {
+    if (inst.date < startIso || inst.date > endIso) continue;
+    instanceByKey.set(`${inst.railId}|${inst.date}`, inst);
+  }
+
+  const slotsByKey = new Map<string, CycleSlot>();
   for (const task of Object.values(state.tasks)) {
     if (task.status === 'archived' || task.status === 'deleted') continue;
     if (!task.slot) continue;
     const { date, railId } = task.slot;
     if (date < startIso || date > endIso) continue;
-    slots.push({
+    const key = `${railId}|${date}`;
+    slotsByKey.set(key, {
       railId,
       date,
       state: task.status === 'done' ? 'done' : 'planned-task',
@@ -126,6 +145,49 @@ export function deriveCycleFromStore(
       taskId: task.id,
     });
   }
+
+  // Fold RailInstance check-in state into the slot map. Instance state
+  // wins for done / deferred / archived — those are user-driven
+  // terminal or semi-terminal signals and should reflect in the grid
+  // even if no Task was scheduled into the cell. A `done` instance
+  // paired with a `done` task preserves the task name; a `deferred`
+  // instance promotes the cell to the `skipped` hatch regardless of
+  // whether a Task was there.
+  for (const [key, inst] of instanceByKey.entries()) {
+    const existingSlot = slotsByKey.get(key);
+    if (inst.status === 'done') {
+      slotsByKey.set(key, {
+        railId: inst.railId,
+        date: inst.date,
+        state: 'done',
+        ...(existingSlot?.taskName !== undefined && {
+          taskName: existingSlot.taskName,
+        }),
+        ...(existingSlot?.taskId !== undefined && { taskId: existingSlot.taskId }),
+      });
+    } else if (inst.status === 'deferred') {
+      slotsByKey.set(key, {
+        railId: inst.railId,
+        date: inst.date,
+        state: 'skipped',
+        ...(existingSlot?.taskName !== undefined && {
+          taskName: existingSlot.taskName,
+        }),
+      });
+    } else if (inst.status === 'archived') {
+      slotsByKey.set(key, {
+        railId: inst.railId,
+        date: inst.date,
+        state: 'na',
+      });
+    }
+    // status === 'pending' falls through: future day keeps its
+    // task-derived state; past day without a Task stays planned-empty
+    // (we don't show stale-pending as skipped because the user hasn't
+    // explicitly decided yet — the Unresolved queue is where that lives).
+  }
+
+  const slots: CycleSlot[] = [...slotsByKey.values()];
 
   // topLines: cheapest bar for the summary strip — pick three Projects
   // (kind='project') by task count in the current cycle window. Good
