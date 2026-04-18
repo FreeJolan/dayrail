@@ -54,7 +54,12 @@ interface Props {
   onClearOverride: (date: string) => void;
   onDropTask?: (taskId: string, date: string, railId: string) => void;
   onClearSlot?: (taskId: string) => void;
+  onMarkTaskDone?: (taskId: string) => void;
   onQuickCreate?: (date: string, railId: string, title: string) => void;
+  /** Look up the Project / Habit a task belongs to, so the slot
+   *  popover can render the Line name + color without each cell
+   *  subscribing to the store directly. */
+  lineLookup?: (taskId: string) => { name: string; color?: RailColor } | undefined;
 }
 
 export function CycleSection({
@@ -69,7 +74,9 @@ export function CycleSection({
   onClearOverride,
   onDropTask,
   onClearSlot,
+  onMarkTaskDone,
   onQuickCreate,
+  lineLookup,
 }: Props) {
   const stripColor = RAIL_COLOR_HEX[templateColor];
   const [hoverKey, setHoverKey] = useState<string | null>(null);
@@ -200,17 +207,30 @@ export function CycleSection({
                             </PopoverTrigger>
                             <PopoverContent
                               align="center"
-                              className="w-[240px]"
+                              className="w-[260px]"
                             >
-                              <SlotPopoverBody
-                                taskName={slot.taskName ?? ''}
-                                railName={rail.name}
-                                date={d.date}
-                                onClear={() => {
-                                  onClearSlot(slot.taskId!);
-                                  setOpenPopoverKey(null);
-                                }}
-                              />
+                              {(() => {
+                                const line = slot.taskId
+                                  ? lineLookup?.(slot.taskId)
+                                  : undefined;
+                                return (
+                                  <SlotPopoverBody
+                                    taskName={slot.taskName ?? ''}
+                                    railName={rail.name}
+                                    date={d.date}
+                                    lineName={line?.name}
+                                    lineColor={line?.color}
+                                    onMarkDone={() => {
+                                      onMarkTaskDone?.(slot.taskId!);
+                                      setOpenPopoverKey(null);
+                                    }}
+                                    onClear={() => {
+                                      onClearSlot(slot.taskId!);
+                                      setOpenPopoverKey(null);
+                                    }}
+                                  />
+                                );
+                              })()}
                             </PopoverContent>
                           </Popover>
                         ) : (
@@ -520,11 +540,17 @@ function SlotPopoverBody({
   taskName,
   railName,
   date,
+  lineName,
+  lineColor,
+  onMarkDone,
   onClear,
 }: {
   taskName: string;
   railName: string;
   date: string;
+  lineName?: string;
+  lineColor?: RailColor;
+  onMarkDone: () => void;
   onClear: () => void;
 }) {
   return (
@@ -533,18 +559,40 @@ function SlotPopoverBody({
         <span className="line-clamp-2 text-sm text-ink-primary">
           {taskName || '未命名任务'}
         </span>
+        {lineName && (
+          <span className="flex items-center gap-1.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            {lineColor && (
+              <span
+                aria-hidden
+                className="h-2 w-[2px] rounded-sm"
+                style={{ background: RAIL_COLOR_HEX[lineColor] }}
+              />
+            )}
+            {lineName}
+          </span>
+        )}
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
           {railName} · {formatSlotDate(date)}
         </span>
       </div>
-      <button
-        type="button"
-        onClick={onClear}
-        className="inline-flex items-center gap-1.5 self-start rounded-md bg-surface-2 px-2 py-1 text-xs text-ink-primary transition hover:bg-surface-3"
-      >
-        <X className="h-3 w-3" strokeWidth={1.8} />
-        移除排期
-      </button>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={onMarkDone}
+          className="inline-flex items-center gap-1.5 rounded-md bg-surface-2 px-2 py-1 text-xs text-ink-primary transition hover:bg-surface-3"
+        >
+          <Check className="h-3 w-3" strokeWidth={2} />
+          标记完成
+        </button>
+        <button
+          type="button"
+          onClick={onClear}
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          <X className="h-3 w-3" strokeWidth={1.8} />
+          移除排期
+        </button>
+      </div>
     </div>
   );
 }
