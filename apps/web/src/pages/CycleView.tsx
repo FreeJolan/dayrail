@@ -1,7 +1,12 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Calendar, ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react';
-import { INBOX_LINE_ID, useStore } from '@dayrail/core';
+import {
+  Calendar,
+  ChevronLeft,
+  ChevronRight,
+  MoreHorizontal,
+} from 'lucide-react';
+import { INBOX_LINE_ID, useStore, type EditSession } from '@dayrail/core';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import { CycleSummaryStrip } from '@/components/CycleSummaryStrip';
 import {
@@ -9,6 +14,7 @@ import {
   type TemplateChoice,
 } from '@/components/CycleSection';
 import { BacklogDrawer } from '@/components/BacklogDrawer';
+import { EditSessionIndicator } from '@/components/EditSessionIndicator';
 import type { CycleDay, CycleSlot } from '@/data/sampleCycle';
 import type { RailColor } from '@/data/sample';
 import {
@@ -19,14 +25,10 @@ import {
   toIsoDate,
 } from './cycleFromStore';
 
-// ERD §5.3 Cycle View.
-// Reads live store data (templates / rails / tasks / lines / calendarRules);
-// renders a rolling 7-day window anchored on the Monday of the week
-// `anchorDate` falls in. Per-day Template resolution goes through
-// `pickTemplateForDate` — CalendarRule single-date overrides win,
-// else a weekday heuristic picks workday / restday. Every mutation
-// (drag-drop, template override, slot clear) is immediate-apply; the
-// ERD §5.3.1 Edit Session stays out of scope for v0.2 (deferred to v0.3).
+// ERD §5.3 Cycle View, v0.3 with a real Edit Session (§5.3.1).
+// Every mutation from this page (drag-drop, template override, slot
+// clear, quick-create, mark-done) is tagged with the view's sessionId
+// so "⤺ 撤销本次编辑" rolls back the whole batch in one step.
 
 export function CycleView() {
   const navigate = useNavigate();
@@ -45,6 +47,32 @@ export function CycleView() {
   const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
   const createTask = useStore((s) => s.createTask);
   const updateTask = useStore((s) => s.updateTask);
+  const openEditSession = useStore((s) => s.openEditSession);
+  const closeEditSession = useStore((s) => s.closeEditSession);
+  const undoEditSessionAction = useStore((s) => s.undoEditSession);
+
+  // --- session bookkeeping (ERD §5.3.1) ---
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let openedId: string | null = null;
+    openEditSession('cycle-planner').then((s: EditSession) => {
+      if (cancelled) {
+        void closeEditSession(s.id);
+        return;
+      }
+      openedId = s.id;
+      setSessionId(s.id);
+    });
+    return () => {
+      cancelled = true;
+      if (openedId) void closeEditSession(openedId);
+    };
+  }, [openEditSession, closeEditSession]);
+  const session = useStore((s) =>
+    sessionId ? s.sessions[sessionId] : undefined,
+  );
+  const changeCount = session?.changeCount ?? 0;
 
   const weekStart = useMemo(() => startOfWeekMonday(anchorDate), [anchorDate]);
 
@@ -90,21 +118,21 @@ export function CycleView() {
         const msg = `切换到"${templateName}"会把这一天的 ${orphans.length} 个已排任务移出，可以随时从 Backlog 拖回来。继续？`;
         if (!window.confirm(msg)) return;
         for (const t of orphans) {
-          await unscheduleTask(t.id);
+          await unscheduleTask(t.id, sessionId ?? undefined);
         }
       }
       await apply();
     },
-    [tasks, rails, templates, unscheduleTask],
+    [tasks, rails, templates, unscheduleTask, sessionId],
   );
 
   const overrideDay = useCallback(
     (date: string, nextTemplate: TemplateKey) => {
       void applyTemplateSwitch(date, nextTemplate, () =>
-        overrideCycleDay(date, nextTemplate),
+        overrideCycleDay(date, nextTemplate, sessionId ?? undefined),
       );
     },
-    [applyTemplateSwitch, overrideCycleDay],
+    [applyTemplateSwitch, overrideCycleDay, sessionId],
   );
 
   const clearOverride = useCallback(
@@ -114,10 +142,10 @@ export function CycleView() {
       const target =
         pickTemplateForDate({ templates, calendarRules: {} }, date) ?? '';
       void applyTemplateSwitch(date, target, () =>
-        clearCycleDayOverride(date),
+        clearCycleDayOverride(date, sessionId ?? undefined),
       );
     },
-    [applyTemplateSwitch, clearCycleDayOverride, templates],
+    [applyTemplateSwitch, clearCycleDayOverride, templates, sessionId],
   );
 
   // Group days by templateKey preserving first-appearance order.
@@ -138,30 +166,31 @@ export function CycleView() {
 
   const handleDropTask = useCallback(
     (taskId: string, date: string, railId: string) => {
-      void scheduleTaskToRail(taskId, {
-        cycleId: `cycle-${date}`,
-        date,
-        railId,
-      });
+      void scheduleTaskToRail(
+        taskId,
+        { cycleId: `cycle-${date}`, date, railId },
+        sessionId ?? undefined,
+      );
     },
-    [scheduleTaskToRail],
+    [scheduleTaskToRail, sessionId],
   );
 
   const handleClearSlot = useCallback(
     (taskId: string) => {
-      void unscheduleTask(taskId);
+      void unscheduleTask(taskId, sessionId ?? undefined);
     },
-    [unscheduleTask],
+    [unscheduleTask, sessionId],
   );
 
   const handleMarkTaskDone = useCallback(
     (taskId: string) => {
-      void updateTask(taskId, {
-        status: 'done',
-        doneAt: new Date().toISOString(),
-      });
+      void updateTask(
+        taskId,
+        { status: 'done', doneAt: new Date().toISOString() },
+        sessionId ?? undefined,
+      );
     },
-    [updateTask],
+    [updateTask, sessionId],
   );
 
   const handleOpenTaskProject = useCallback(
@@ -200,16 +229,19 @@ export function CycleView() {
       const maxOrder = Object.values(tasks)
         .filter((t) => t.lineId === lineId)
         .reduce((m, t) => Math.max(m, t.order), 0);
-      void createTask({
-        id: `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-        lineId,
-        title,
-        order: maxOrder + 1,
-        status: 'pending',
-        slot: { cycleId: `cycle-${date}`, date, railId },
-      });
+      void createTask(
+        {
+          id: `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+          lineId,
+          title,
+          order: maxOrder + 1,
+          status: 'pending',
+          slot: { cycleId: `cycle-${date}`, date, railId },
+        },
+        sessionId ?? undefined,
+      );
     },
-    [createTask, rails, tasks],
+    [createTask, rails, tasks, sessionId],
   );
 
   const shiftWeek = useCallback((deltaDays: number) => {
@@ -220,6 +252,16 @@ export function CycleView() {
     });
   }, []);
 
+  const handleUndoSession = useCallback(async () => {
+    if (!sessionId) return;
+    await undoEditSessionAction(sessionId);
+    // `undoEditSession` closes the session inside the store. Open a
+    // fresh one so any further edits this page-visit get grouped
+    // together rather than leaking into "no session".
+    const next = await openEditSession('cycle-planner');
+    setSessionId(next.id);
+  }, [sessionId, undoEditSessionAction, openEditSession]);
+
   return (
     <div className="flex min-h-screen w-full">
       <div className="flex min-w-0 flex-1 flex-col pl-10 pr-6 xl:pl-14">
@@ -228,6 +270,8 @@ export function CycleView() {
           onPrev={() => shiftWeek(-7)}
           onNext={() => shiftWeek(7)}
           onToday={() => setAnchorDate(new Date())}
+          changeCount={changeCount}
+          onUndoSession={handleUndoSession}
         />
 
         <CycleSummaryStrip cycle={cycle} />
@@ -282,11 +326,15 @@ function TopBar({
   onPrev,
   onNext,
   onToday,
+  changeCount,
+  onUndoSession,
 }: {
   label: string;
   onPrev: () => void;
   onNext: () => void;
   onToday: () => void;
+  changeCount: number;
+  onUndoSession: () => void;
 }) {
   return (
     <header className="sticky top-0 z-40 -mx-10 flex h-[52px] items-center justify-between gap-4 bg-surface-0 px-10">
@@ -326,6 +374,10 @@ function TopBar({
       </div>
 
       <div className="flex items-center gap-3">
+        <EditSessionIndicator
+          changeCount={changeCount}
+          onUndo={onUndoSession}
+        />
         <button
           type="button"
           aria-label="Cycle menu"

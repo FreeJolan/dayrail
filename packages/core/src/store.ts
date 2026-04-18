@@ -99,8 +99,12 @@ interface DayRailActions {
   restoreLine: (id: string) => Promise<void>;
   purgeLine: (id: string) => Promise<void>;
   // --- tasks (units of work inside a Line, §5.5) ---
-  createTask: (task: Task) => Promise<void>;
-  updateTask: (id: string, patch: Partial<Task>) => Promise<void>;
+  createTask: (task: Task, sessionId?: string) => Promise<void>;
+  updateTask: (
+    id: string,
+    patch: Partial<Task>,
+    sessionId?: string,
+  ) => Promise<void>;
   /** Status transitions as dedicated actions so the event log captures
    *  intent cleanly (task.archived vs task.updated with status=archived). */
   archiveTask: (id: string) => Promise<void>;
@@ -113,6 +117,7 @@ interface DayRailActions {
   scheduleTaskToRail: (
     taskId: string,
     slot: { cycleId: string; date: string; railId: string },
+    sessionId?: string,
   ) => Promise<void>;
   /** Mode B: schedule the task into a free time window. Creates an
    *  AdhocEvent with `taskId` back-reference. Clears `task.slot` (if
@@ -128,14 +133,18 @@ interface DayRailActions {
   /** Remove whichever schedule the task has (Slot or Ad-hoc). No-op
    *  if the task is already unscheduled. No Shift / status change —
    *  this is "I hadn't done it yet, take it off my plan". */
-  unscheduleTask: (taskId: string) => Promise<void>;
+  unscheduleTask: (taskId: string, sessionId?: string) => Promise<void>;
   // --- calendar rules (§5.4 CalendarRule) ---
   /** Write a `single-date` CalendarRule binding `date` to `templateKey`.
    *  Deduplicated by the deterministic id `cr-single-{date}` — flipping
    *  the same day repeatedly is one row's worth of events, not N. */
-  overrideCycleDay: (date: string, templateKey: TemplateKey) => Promise<void>;
+  overrideCycleDay: (
+    date: string,
+    templateKey: TemplateKey,
+    sessionId?: string,
+  ) => Promise<void>;
   /** Remove the single-date override for `date`. No-op if absent. */
-  clearCycleDayOverride: (date: string) => Promise<void>;
+  clearCycleDayOverride: (date: string, sessionId?: string) => Promise<void>;
   /** Upsert a weekday rule (one per template; flipping a template's
    *  coverage replaces the old row). `weekdays` uses 0 = Sunday. */
   upsertWeekdayRule: (
@@ -159,6 +168,21 @@ interface DayRailActions {
   /** Remove any CalendarRule by id (weekday / date-range / cycle /
    *  single-date — caller names the rule explicitly). */
   removeCalendarRule: (id: string) => Promise<void>;
+  // --- ad-hoc events (standalone; task-backed adhocs live under
+  //     scheduleTaskFreeTime + unscheduleTask) ---
+  /** Create a standalone AdhocEvent on a given date. Returns the id. */
+  createAdhocEvent: (opts: {
+    date: string;
+    name: string;
+    startMinutes: number;
+    durationMinutes: number;
+    color?: RailColor;
+    lineId?: string;
+  }) => Promise<string>;
+  /** Soft-delete a standalone AdhocEvent. Refuses task-backed events
+   *  (taskId set) — those are owned by their Task's schedule state
+   *  and must be unwound via `unscheduleTask`. */
+  deleteAdhocEvent: (id: string) => Promise<void>;
   // --- sessions ---
   openEditSession: (surface: string) => Promise<EditSession>;
   closeEditSession: (sessionId: string) => Promise<void>;
@@ -872,23 +896,27 @@ export const useStore = create<DayRailStore>()(
 
       // ---- Task CRUD (§5.5) --------------------------------------
 
-      createTask: async (task) => {
+      createTask: async (task, sessionId) => {
         const event = await appendEvent({
           aggregateId: `task:${task.id}`,
           type: 'task.created',
           payload: { ...task },
+          sessionId,
         });
         set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        if (sessionId) await touchSession(sessionId);
         afterMutation();
       },
 
-      updateTask: async (id, patch) => {
+      updateTask: async (id, patch, sessionId) => {
         const event = await appendEvent({
           aggregateId: `task:${id}`,
           type: 'task.updated',
           payload: { id, ...patch },
+          sessionId,
         });
         set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        if (sessionId) await touchSession(sessionId);
         afterMutation();
       },
 
@@ -939,9 +967,11 @@ export const useStore = create<DayRailStore>()(
 
       // ---- Task scheduling (§5.5.2) ------------------------------
 
-      scheduleTaskToRail: async (taskId, slot) => {
+      scheduleTaskToRail: async (taskId, slot, sessionId) => {
         // If the task currently has a free-time Ad-hoc backing it, drop
-        // it first — modes A and B are mutually exclusive.
+        // it first — modes A and B are mutually exclusive. Both the
+        // Ad-hoc deletion and the schedule event share the session tag
+        // so session-level undo takes the pair back together.
         const adhocs = get().adhocEvents;
         for (const adhoc of Object.values(adhocs)) {
           if (adhoc.taskId === taskId && adhoc.status === 'active') {
@@ -953,6 +983,7 @@ export const useStore = create<DayRailStore>()(
                 status: 'deleted',
                 deletedAt: new Date().toISOString(),
               },
+              sessionId,
             });
             set((draft) =>
               applyEventInPlace(draft, del.type, del.payload),
@@ -963,8 +994,10 @@ export const useStore = create<DayRailStore>()(
           aggregateId: `task:${taskId}`,
           type: 'task.scheduled',
           payload: { id: taskId, slot },
+          sessionId,
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        if (sessionId) await touchSession(sessionId);
         afterMutation();
       },
 
@@ -1021,7 +1054,7 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
-      overrideCycleDay: async (date, templateKey) => {
+      overrideCycleDay: async (date, templateKey, sessionId) => {
         const id = singleDateRuleId(date);
         const payload: CalendarRule = {
           id,
@@ -1039,20 +1072,24 @@ export const useStore = create<DayRailStore>()(
           aggregateId: `calendar-rule:${id}`,
           type: 'calendar-rule.upserted',
           payload: payload as unknown as Record<string, unknown>,
+          sessionId,
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        if (sessionId) await touchSession(sessionId);
         afterMutation();
       },
 
-      clearCycleDayOverride: async (date) => {
+      clearCycleDayOverride: async (date, sessionId) => {
         const id = singleDateRuleId(date);
         if (!get().calendarRules[id]) return;
         const ev = await appendEvent({
           aggregateId: `calendar-rule:${id}`,
           type: 'calendar-rule.removed',
           payload: { id },
+          sessionId,
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        if (sessionId) await touchSession(sessionId);
         afterMutation();
       },
 
@@ -1126,15 +1163,65 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
-      unscheduleTask: async (taskId) => {
+      createAdhocEvent: async (opts) => {
+        const id = ulidLite('adhoc');
+        const payload: AdhocEvent = {
+          id,
+          date: opts.date,
+          name: opts.name,
+          startMinutes: opts.startMinutes,
+          durationMinutes: opts.durationMinutes,
+          status: 'active',
+          ...(opts.color && { color: opts.color }),
+          ...(opts.lineId && { lineId: opts.lineId }),
+        };
+        const ev = await appendEvent({
+          aggregateId: `adhoc:${id}`,
+          type: 'adhoc.created',
+          payload: payload as unknown as Record<string, unknown>,
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+        return id;
+      },
+
+      deleteAdhocEvent: async (id) => {
+        const ad = get().adhocEvents[id];
+        if (!ad) return;
+        if (ad.taskId) {
+          // Task-backed adhocs are owned by the Task's schedule state.
+          // Unscheduling the Task is the right path — refuse here so
+          // we don't leave a Task pointing at a deleted slot.
+          throw new Error(
+            '不能直接删除绑定 Task 的 Ad-hoc 事件 —— 去 Tasks 视图把任务移出自由时间排期。',
+          );
+        }
+        if (ad.status === 'deleted') return;
+        const ev = await appendEvent({
+          aggregateId: `adhoc:${id}`,
+          type: 'adhoc.deleted',
+          payload: {
+            id,
+            status: 'deleted',
+            deletedAt: new Date().toISOString(),
+          },
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+      },
+
+      unscheduleTask: async (taskId, sessionId) => {
         const task = get().tasks[taskId];
+        let touched = false;
         if (task?.slot) {
           const ev = await appendEvent({
             aggregateId: `task:${taskId}`,
             type: 'task.unscheduled',
             payload: { id: taskId, slot: undefined },
+            sessionId,
           });
           set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+          touched = true;
         }
         for (const adhoc of Object.values(get().adhocEvents)) {
           if (adhoc.taskId === taskId && adhoc.status === 'active') {
@@ -1146,10 +1233,13 @@ export const useStore = create<DayRailStore>()(
                 status: 'deleted',
                 deletedAt: new Date().toISOString(),
               },
+              sessionId,
             });
             set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+            touched = true;
           }
         }
+        if (touched && sessionId) await touchSession(sessionId);
         afterMutation();
       },
 
