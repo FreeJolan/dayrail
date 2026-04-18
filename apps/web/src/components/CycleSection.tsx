@@ -1,5 +1,6 @@
 import { clsx } from 'clsx';
 import { useState } from 'react';
+import { X } from 'lucide-react';
 import {
   type CycleDay,
   type CycleSlot,
@@ -13,6 +14,11 @@ import {
 import { RAIL_COLOR_HEX } from './railColors';
 import { CycleCell } from './CycleCell';
 import { TASK_DRAG_MIME } from './BacklogDrawer';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from './primitives/Popover';
 
 // ERD §5.3 D1-1B — per-template stacked section. Each section is a
 // self-contained mini-grid. Structure:
@@ -34,6 +40,7 @@ interface Props {
   slotsByKey: Map<string, CycleSlot>; // key = `${railId}|${date}`
   todayISO: string;
   onDropTask?: (taskId: string, date: string, railId: string) => void;
+  onClearSlot?: (taskId: string) => void;
 }
 
 export function CycleSection({
@@ -44,9 +51,11 @@ export function CycleSection({
   slotsByKey,
   todayISO,
   onDropTask,
+  onClearSlot,
 }: Props) {
   const stripColor = RAIL_COLOR_HEX[templateColor];
   const [hoverKey, setHoverKey] = useState<string | null>(null);
+  const [openPopoverKey, setOpenPopoverKey] = useState<string | null>(null);
 
   return (
     <section
@@ -88,7 +97,9 @@ export function CycleSection({
                 {days.map((d) => {
                   const slot = slotsByKey.get(`${rail.id}|${d.date}`);
                   const cellKey = `${rail.id}|${d.date}`;
-                  const canDrop = onDropTask != null;
+                  // Only empty cells accept drops — preventing a second
+                  // task from silently shadowing an existing slot.
+                  const canDrop = onDropTask != null && slot == null;
                   const isHover = hoverKey === cellKey;
                   return (
                     <td
@@ -140,12 +151,52 @@ export function CycleSection({
                       )}
                     >
                       {slot ? (
-                        <CycleCell
-                          state={slot.state}
-                          color={rail.color}
-                          taskName={slot.taskName}
-                          meta={slot.meta}
-                        />
+                        slot.state === 'planned-task' &&
+                        slot.taskId &&
+                        onClearSlot ? (
+                          <Popover
+                            open={openPopoverKey === cellKey}
+                            onOpenChange={(o) =>
+                              setOpenPopoverKey(o ? cellKey : null)
+                            }
+                          >
+                            <PopoverTrigger asChild>
+                              <button
+                                type="button"
+                                className="block w-full text-left"
+                                aria-label={`Slot for ${slot.taskName ?? 'task'}`}
+                              >
+                                <CycleCell
+                                  state={slot.state}
+                                  color={rail.color}
+                                  taskName={slot.taskName}
+                                  meta={slot.meta}
+                                />
+                              </button>
+                            </PopoverTrigger>
+                            <PopoverContent
+                              align="center"
+                              className="w-[240px]"
+                            >
+                              <SlotPopoverBody
+                                taskName={slot.taskName ?? ''}
+                                railName={rail.name}
+                                date={d.date}
+                                onClear={() => {
+                                  onClearSlot(slot.taskId!);
+                                  setOpenPopoverKey(null);
+                                }}
+                              />
+                            </PopoverContent>
+                          </Popover>
+                        ) : (
+                          <CycleCell
+                            state={slot.state}
+                            color={rail.color}
+                            taskName={slot.taskName}
+                            meta={slot.meta}
+                          />
+                        )
                       ) : (
                         <CycleCell state="planned-empty" color={rail.color} />
                       )}
@@ -265,4 +316,46 @@ function RailRowLabel({ rail }: { rail: EditableRail }) {
       </span>
     </div>
   );
+}
+
+function SlotPopoverBody({
+  taskName,
+  railName,
+  date,
+  onClear,
+}: {
+  taskName: string;
+  railName: string;
+  date: string;
+  onClear: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1">
+        <span className="line-clamp-2 text-sm text-ink-primary">
+          {taskName || '未命名任务'}
+        </span>
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          {railName} · {formatSlotDate(date)}
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={onClear}
+        className="inline-flex items-center gap-1.5 self-start rounded-md bg-surface-2 px-2 py-1 text-xs text-ink-primary transition hover:bg-surface-3"
+      >
+        <X className="h-3 w-3" strokeWidth={1.8} />
+        移除排期
+      </button>
+    </div>
+  );
+}
+
+function formatSlotDate(iso: string): string {
+  const d = new Date(`${iso}T00:00:00`);
+  return d.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: '2-digit',
+  });
 }

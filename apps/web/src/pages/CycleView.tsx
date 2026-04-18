@@ -42,6 +42,7 @@ export function CycleView() {
   const rails = useStore((s) => s.rails);
   const tasks = useStore((s) => s.tasks);
   const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
+  const unscheduleTask = useStore((s) => s.unscheduleTask);
 
   const weekStart = useMemo(() => startOfWeekMonday(anchorDate), [anchorDate]);
 
@@ -124,6 +125,13 @@ export function CycleView() {
     [scheduleTaskToRail],
   );
 
+  const handleClearSlot = useCallback(
+    (taskId: string) => {
+      void unscheduleTask(taskId);
+    },
+    [unscheduleTask],
+  );
+
   const shiftWeek = useCallback((deltaDays: number) => {
     setAnchorDate((d) => {
       const next = new Date(d);
@@ -173,6 +181,7 @@ export function CycleView() {
                 slotsByKey={slotMap}
                 todayISO={todayISO}
                 onDropTask={handleDropTask}
+                onClearSlot={handleClearSlot}
               />
             );
           })}
