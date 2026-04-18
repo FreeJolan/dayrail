@@ -1,6 +1,6 @@
 # DayRail 产品设计文档（ERD）
 
-> **状态**：活文档 —— 这里的任何决策都可以被推翻。最近更新 2026-04-18（§5.5 从 `Projects / Lines View` 重构为 `Tasks 视图`，定位为"任务管理主入口"—— 侧栏导航树（随手记 + Projects + Habits + 回收站）+ 跨 Project 的 task 列表 / 搜索 / 过滤 + 排期 popover 两种模式（绑 Rail · 默认 / 自由时间 · 逃生口）；新增内置 Inbox Line（`isDefault: true`、不可删）作为"不挑 Project"的 task 默认容器；全面可逆性 + 软删除模型（Task / Line / AdhocEvent 状态加 `'deleted'`，回收站入口 + 二次确认的硬删 `*.purged`）；`AdhocEvent` 加 `taskId` 字段承接自由时间模式排期；Project 进度条改为条件渲染（仅有 milestone task 时显示），任务数永远显示；开放式 Project（无 plannedEnd）明确不计为风险；§10 Task/Line/AdhocEvent 类型定义同步更新；术语精简：`Chunk` 统一改 `Task`（types + events + schema + UI + ERD 全路径改名），降低 jargon 负担；`Line` 作为内部容器类型保留（`kind: 'project' \| 'habit' \| 'group'` 的 union 父类），但**UI 里永远展示具体形态 Project / Habit / Group / Tag**，不再出现"Line"这个字；`Pending` view 改名 `待决定 / Unresolved` 和 `status='pending'` 解耦；§5.7 Pending 不做 24h 老化，成为"等待决定"全集，check-in 条是其"近 24h"的子集）。历史：2026-04-17（check-in 动作集简化：旧的 `完成/跳过/Shift/忽略` 四按钮 + 四子动作 sheet 合并为三按钮 `完成 / 以后再说 / 归档`；`RailInstance.status` 改为 `pending / done / deferred / archived`（`active / skipped` 弃用，"当前进行中"纯墙钟派生）；Shift sheet 替换为 6 秒 Reason toast（3 枚快速 tag chip + undo，无强制 reason）；Postpone / Replace / Swap / Resize 从 Shift 类型里下架，Postpone 交给 Cycle View 拖拽，其余留 v0.3 重评；Pending 队列重命名并收编 `deferred` 条目 + 超 24h stale 的 pending —— 两个来源一个出口；§5.8 Review 热力图三分语义改绑 `deferred / archived / pending-stale`）。历史：2026-04-16（A 组 UI 底线：同步状态徽章、Now View 节奏条、Ad-hoc 叠层、编辑会话通用化、Cycle 记号改 C1、日期格式表落地；B 组 Now View 结构：多 Task pill 行、Slot 三形态、Next Rail 视觉、去掉铁轨副视图、`CURRENT RAIL` chip、Now 顶栏 `Now` + Mono 副标；C 组 Today Track Shift 交互：Skipped 态改 hatching、桌面 hover 出动作栏、Active 主 CTA 改 tonal `Done`、统一 Shift 标签 sheet、去 bento 保留单条时间线；D 组 Cycle View 骨架：按 Template 堆叠 section、顶部 day header 唯一模板切换入口、Cycle pager picker、summary strip 聚合、`⤺ 撤销本次编辑` 按钮、hatching 三分语义、Backlog 变 split drawer；E 组 Template Editor：删 Save 按钮 / 首次进入 inline 引导、Radix 10 色 popover、顶栏 tab + 2px 色条 + dashed `+ 新建模板`、summary strip 聚合、card 式 Rail 行 + time pill popover picker、行间 gap chip `+ 填充 Rail`、`⋯` 行菜单放 Line 绑定 / check-in toggle；通知重审：删 OS push / Capacitor 通知 / 通知权限链路，Signal 塌缩为 `showInCheckin` 布尔，§5.6 / §5.7 合成一条主线 —— check-in 条 + Pending 队列是同一机制前后两个时态；F 组 缺失页面：Projects / Settings 共用 master-detail 形态，Review 单尺度瀑布 + 节奏匹配度热力图（状态染色 + hatching 三分语义），Pending 队列按日期反序 + 每行 4 动作 + 侧栏 `·` 小点不显数字，Calendar 月历网格 + 点日弹 popover + 高级规则 drawer 四 section，新增 §5.9 Settings 定 5 section + 主题三档默认跟随系统 + i18n 语言在外观 / 时间制 + AI locale 在高级；G 组 设计语言：Terracotta CTA 用 `orange-9/10/11` 三档纯色不用渐变；No-Line Rule 明文白名单（装饰色条 + sticky hairline + focus ring）；Surface 四档 `sand-1..4` 取代 `border` 表达层级；圆角 token `sharp / sm / md / lg` = `0 / 6 / 10 / 16`；整站零 glassmorphism；非对称为默认布局。视觉实装阶段调整：Rail 色板从原 10 色剔除 `olive / mauve / gray`（与 sage / slate 近乎同色、或失去色相识别度），换入 `grass / indigo / plum` 覆盖饱和绿 / 冷静蓝 / 创作紫空位，保持 10 色不变但辨识度拉满；CN 主字体从 PingFang 改为 Noto Sans SC（思源黑体）以获得跨平台一致渲染。Terracotta CTA 从 `orange-9` 实测过于鲜亮，改绑 `bronze-9` 以贴合 ERD 原意的 #C97B4A 暖赭石基调）。
+> **状态**：活文档 —— 这里的任何决策都可以被推翻。最近更新 2026-04-18（Cycle View CalendarRule 持久化：§5.3 的 CycleDay 模板切换从"本地 state"改为即时写 `calendar-rule.upserted` / `calendar-rule.removed` 事件；`cr-single-{date}` 去重 id；§5.3.1 Edit Session v0.2 范围收窄到只剩 Template Editor，Cycle View 会话级 undo 推迟到 v0.3，面内的误触回退由 Slot popover 的"移除排期" + CycleDay 的"恢复默认"两条单条动作承担；§10 CalendarRule 补 v0.2 实装细则——只 single-date 生效、id 规则、priority=100、事件形态）。历史：2026-04-18（§5.5 从 `Projects / Lines View` 重构为 `Tasks 视图`，定位为"任务管理主入口"—— 侧栏导航树（随手记 + Projects + Habits + 回收站）+ 跨 Project 的 task 列表 / 搜索 / 过滤 + 排期 popover 两种模式（绑 Rail · 默认 / 自由时间 · 逃生口）；新增内置 Inbox Line（`isDefault: true`、不可删）作为"不挑 Project"的 task 默认容器；全面可逆性 + 软删除模型（Task / Line / AdhocEvent 状态加 `'deleted'`，回收站入口 + 二次确认的硬删 `*.purged`）；`AdhocEvent` 加 `taskId` 字段承接自由时间模式排期；Project 进度条改为条件渲染（仅有 milestone task 时显示），任务数永远显示；开放式 Project（无 plannedEnd）明确不计为风险；§10 Task/Line/AdhocEvent 类型定义同步更新；术语精简：`Chunk` 统一改 `Task`（types + events + schema + UI + ERD 全路径改名），降低 jargon 负担；`Line` 作为内部容器类型保留（`kind: 'project' \| 'habit' \| 'group'` 的 union 父类），但**UI 里永远展示具体形态 Project / Habit / Group / Tag**，不再出现"Line"这个字；`Pending` view 改名 `待决定 / Unresolved` 和 `status='pending'` 解耦；§5.7 Pending 不做 24h 老化，成为"等待决定"全集，check-in 条是其"近 24h"的子集）。历史：2026-04-17（check-in 动作集简化：旧的 `完成/跳过/Shift/忽略` 四按钮 + 四子动作 sheet 合并为三按钮 `完成 / 以后再说 / 归档`；`RailInstance.status` 改为 `pending / done / deferred / archived`（`active / skipped` 弃用，"当前进行中"纯墙钟派生）；Shift sheet 替换为 6 秒 Reason toast（3 枚快速 tag chip + undo，无强制 reason）；Postpone / Replace / Swap / Resize 从 Shift 类型里下架，Postpone 交给 Cycle View 拖拽，其余留 v0.3 重评；Pending 队列重命名并收编 `deferred` 条目 + 超 24h stale 的 pending —— 两个来源一个出口；§5.8 Review 热力图三分语义改绑 `deferred / archived / pending-stale`）。历史：2026-04-16（A 组 UI 底线：同步状态徽章、Now View 节奏条、Ad-hoc 叠层、编辑会话通用化、Cycle 记号改 C1、日期格式表落地；B 组 Now View 结构：多 Task pill 行、Slot 三形态、Next Rail 视觉、去掉铁轨副视图、`CURRENT RAIL` chip、Now 顶栏 `Now` + Mono 副标；C 组 Today Track Shift 交互：Skipped 态改 hatching、桌面 hover 出动作栏、Active 主 CTA 改 tonal `Done`、统一 Shift 标签 sheet、去 bento 保留单条时间线；D 组 Cycle View 骨架：按 Template 堆叠 section、顶部 day header 唯一模板切换入口、Cycle pager picker、summary strip 聚合、`⤺ 撤销本次编辑` 按钮、hatching 三分语义、Backlog 变 split drawer；E 组 Template Editor：删 Save 按钮 / 首次进入 inline 引导、Radix 10 色 popover、顶栏 tab + 2px 色条 + dashed `+ 新建模板`、summary strip 聚合、card 式 Rail 行 + time pill popover picker、行间 gap chip `+ 填充 Rail`、`⋯` 行菜单放 Line 绑定 / check-in toggle；通知重审：删 OS push / Capacitor 通知 / 通知权限链路，Signal 塌缩为 `showInCheckin` 布尔，§5.6 / §5.7 合成一条主线 —— check-in 条 + Pending 队列是同一机制前后两个时态；F 组 缺失页面：Projects / Settings 共用 master-detail 形态，Review 单尺度瀑布 + 节奏匹配度热力图（状态染色 + hatching 三分语义），Pending 队列按日期反序 + 每行 4 动作 + 侧栏 `·` 小点不显数字，Calendar 月历网格 + 点日弹 popover + 高级规则 drawer 四 section，新增 §5.9 Settings 定 5 section + 主题三档默认跟随系统 + i18n 语言在外观 / 时间制 + AI locale 在高级；G 组 设计语言：Terracotta CTA 用 `orange-9/10/11` 三档纯色不用渐变；No-Line Rule 明文白名单（装饰色条 + sticky hairline + focus ring）；Surface 四档 `sand-1..4` 取代 `border` 表达层级；圆角 token `sharp / sm / md / lg` = `0 / 6 / 10 / 16`；整站零 glassmorphism；非对称为默认布局。视觉实装阶段调整：Rail 色板从原 10 色剔除 `olive / mauve / gray`（与 sage / slate 近乎同色、或失去色相识别度），换入 `grass / indigo / plum` 覆盖饱和绿 / 冷静蓝 / 创作紫空位，保持 10 色不变但辨识度拉满；CN 主字体从 PingFang 改为 Noto Sans SC（思源黑体）以获得跨平台一致渲染。Terracotta CTA 从 `orange-9` 实测过于鲜亮，改绑 `bronze-9` 以贴合 ERD 原意的 #C97B4A 暖赭石基调）。
 >
 > 本文档描述 DayRail 的产品逻辑、交互设计与技术选型。它不是最终蓝图，而是设计意图与取舍的记录（包括我们考虑过又否决掉的方案），方便贡献者理解代码**为什么**长成这样。
 >
@@ -353,8 +353,9 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
 
 - 应用标题 `Cycle View`（Inter bold，与其它视图一致）。
 - **Cycle picker（pager 形态）**：`< 4月 C1 · 04/07–04/13 · 当前 >`。`<` / `>` 独立按钮翻页；中间 Inter 月份 + Mono 日期段 + 包含今天的 Cycle 右侧挂一枚 `当前` pill（Mono 9px）。**`C` 而非 `W`**，刻意避开 ISO 周号歧义（见 §9.7 Cycle 记号规则）。点击中间标签 → popover：按月分组的 Cycle 列表（可滚）+ 起止日期编辑器（直接输入 YYYY-MM-DD，保存后按"次日 → 下一 Sunday"规则级联重算未来 Cycles）+ `回到当前 Cycle` 按钮。
-- **`⤺ 撤销本次编辑 · N`**：紧邻 picker 右侧。N = 当前 Edit Session（§5.3.1）内累计的持久化 mutation 数；N=0 时按钮 disabled 但**保留占位**（避免布局抖动）。Hover tooltip：`空闲 15 分钟后，这段编辑会归档，无法整段撤销；单条操作的 Ctrl+Z / Cmd+Z 不受影响。`
 - 右端：settings / account 图标（与其它视图顶栏一致）。
+
+（**v0.2 决定：Cycle View 所有规划操作 = 即时持久化**（CycleDay 模板切换写 `calendar-rule.upserted` / `calendar-rule.removed`、Slot 拖拽直接走 `task.scheduled` / `task.unscheduled`），不走 §5.3.1 的 Edit Session。顶栏的 `⤺ 撤销本次编辑 · N` 按钮推迟到 v0.3 —— 届时再开一次 review，看真实使用频率决定要不要重开这个入口。）
 
 **顶栏下方 summary strip（约 16px 高，`surface-container-low` 底，左右 6px padding）**：
 
@@ -373,7 +374,7 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
   - **不生效的列**：底色 `slate step 2` + 文字 `slate step 8`；**该列向下延伸的所有 cell 都走 hatched 不可用态**（见"cell 可编辑性"）。
 - **Section 主体 grid**：行 = 该 Template 的每条 Rail；列 = Cycle 内 7 天。左栏独立列（≈ 160px 宽）：`[4px Rail 自色条] Mono 时段 08:00–12:00 + 小号 Rail 名`。Cell 对齐该 Rail 在该日的 Slot 内容。
 - **顶部大 header（跨所有 section、唯一）**：位于 Cycle picker / summary strip 之下、第一个 section 之上；一行纯日期 `Mon 12 / Tue 13 / Wed 14 / Thu 15 / Fri 16 / Sat 17 / Sun 18`。今天那一列：primary step 2 底色 + 顶部 2px primary step 9 标识条（覆盖 section mini-header 的 Template 色染）。**周末不再特别着色** —— 是不是 restday 完全由用户给那一天选的 Template 决定；Stitch 的 Sat/Sun tertiary 染色明确废弃。
-- **顶部大 header 同时是 CycleDay 模板切换入口（唯一入口）**：点击任意日期格 → popover 列出所有已创建模板，每项 `radio + Template 色条 + 名称`，末尾 `+ 新建模板`。选中 → 该天 CycleDay.templateKey 更新，各 section 的 mini-header / cell 自动重绘（旧 section 该列变 hatched、新 section 该列亮起）。section mini-header 本身**只读**，不作切换入口 —— 一件事只一个入口。
+- **顶部大 header 同时是 CycleDay 模板切换入口（唯一入口）**：点击任意日期格 → popover 列出所有已创建模板，每项 `radio + Template 色条 + 名称`，末尾 `+ 新建模板`。选中 → 写入一条 `calendar-rule.upserted`（`kind: 'single-date'`、id 按 `cr-single-{date}` 去重，同一日反复切换就是 `update`）；回到默认启发（§5.4 CalendarRule 工作日规则）的话点 `恢复默认` → 写 `calendar-rule.removed`。各 section 的 mini-header / cell 立即重绘（旧 section 该列变 hatched、新 section 该列亮起）。section mini-header 本身**只读**，不作切换入口 —— 一件事只一个入口。
 
 **单元格（Slot）可编辑性**：
 
@@ -400,14 +401,14 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
 
 **会话模型**：
 
-- 进入任何一个"深度编辑"视图（MVP 范围：Cycle View、Template Editor；未来同机制扩展到 Line 编辑、Calendar 规则编辑等）就开启一次**隐式会话**。
+- 进入任何一个"深度编辑"视图（v0.2 范围：**只有 Template Editor**；Cycle View 的会话延到 v0.3；未来同机制可扩展到 Line 编辑、Calendar 规则编辑等）就开启一次**隐式会话**。
 - 此期间产生的每条持久化 mutation（RailInstance override、Template Rail 增删改、Slot 绑定变化、Template 元信息修改…）共用一个 `sessionId`（内部字段，从不命名、也不在 UI 中暴露）。
 - 视图顶部或 `⋯` 菜单内固定露一个按钮：**"撤销本次编辑"** —— 一次性回退当前会话中的所有 mutation。
 - 离开视图（或空闲超时 15 分钟）会话关闭，这组改动不再能作为一批撤销；个别 mutation 仍可按日常方式单独编辑。
 
 **范围与边界**：
 
-- **Cycle View**：规划会话，覆盖该视图内的所有 RailInstance override 和 Slot 内容变化。
+- **Cycle View**（v0.3+）：规划会话将覆盖该视图内的所有 RailInstance override 和 Slot 内容变化。**v0.2 范围内 Cycle View 的规划操作走即时持久化**（CalendarRule 写 single-date 事件、Slot 拖拽走 task.scheduled），不进会话；当面的"误触"靠 Slot popover 的"移除排期"按钮和 CycleDay 的"恢复默认"按钮单条回退。
 - **Template Editor**：编辑会话，覆盖当前 Template 的所有 Rail 增删改 + 元信息（color、name、description）变更。"撤销本次编辑"让用户放心大胆地试 —— 删错 Rail、拖错时段，一按还原。
 - 规划后在 Today Track 做的微调产生独立 mutation，不属于任何会话。
 - **重复出现的规划模式**（考试周、出差周、假期周）请走 **Template**：新建一份专门的模板，通过 Calendar 的日期范围规则挂上去 —— 这才是可复用多周安排的合适去处。没有"把这次规划保存下来"的流程。
@@ -1130,6 +1131,11 @@ type CalendarRule = {
   // single-date:{ templateId, date: 'YYYY-MM-DD' }
   value: unknown;
   priority: number; // 数值大者优先
+  // v0.2 实装范围：仅 `single-date`（Cycle View 里点某天切 template 的覆盖场景）。
+  //   - id 规则：`cr-single-{date}`（同一天反复切就是 update，避免同日多条）
+  //   - priority：默认 100（> weekday 启发的隐式 0）
+  //   - 事件：`calendar-rule.upserted`（payload = { id, kind, value, priority }）/ `calendar-rule.removed`（payload = { id }）
+  // 其他 kind 的 shape 保留，weekday / cycle / date-range 的 resolver + UI 落在 v0.3 Calendar 视图再一起做。
 };
 
 type RailInstance = {

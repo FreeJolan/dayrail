@@ -2,7 +2,6 @@ import { useCallback, useMemo, useState } from 'react';
 import { Calendar, ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react';
 import { useStore } from '@dayrail/core';
 import type { TemplateKey } from '@/data/sampleTemplate';
-import { EditSessionIndicator } from '@/components/EditSessionIndicator';
 import { CycleSummaryStrip } from '@/components/CycleSummaryStrip';
 import {
   CycleMasterDayHeader,
@@ -18,54 +17,39 @@ import {
   toIsoDate,
 } from './cycleFromStore';
 
-// ERD §5.3 Cycle View, first live-data pass.
-//
-// Scope of this commit:
-//   - Reads templates / rails / tasks from the store.
-//   - Renders a rolling 7-day window anchored on the Monday of the
-//     week `anchorDate` falls in.
-//   - Per-day Template is picked by a weekday heuristic
-//     (pickTemplateForDate) — CalendarRule is not wired, so user
-//     "override" clicks currently only update local state. Persisting
-//     overrides + the Cycle picker popover come in later chunks.
-//   - Backlog drawer still reads from sample data (chunk 2).
-//   - Drag-drop to schedule lands in chunk 3.
+// ERD §5.3 Cycle View.
+// Reads live store data (templates / rails / tasks / lines / calendarRules);
+// renders a rolling 7-day window anchored on the Monday of the week
+// `anchorDate` falls in. Per-day Template resolution goes through
+// `pickTemplateForDate` — CalendarRule single-date overrides win,
+// else a weekday heuristic picks workday / restday. Every mutation
+// (drag-drop, template override, slot clear) is immediate-apply; the
+// ERD §5.3.1 Edit Session stays out of scope for v0.2 (deferred to v0.3).
 
 export function CycleView() {
   const [anchorDate, setAnchorDate] = useState<Date>(() => new Date());
   const [backlogOpen, setBacklogOpen] = useState(true);
-  // Local-only override map until we wire the CalendarRule persistence
-  // path in a subsequent chunk.
-  const [overrides, setOverrides] = useState<Record<string, TemplateKey>>({});
 
   const templates = useStore((s) => s.templates);
   const rails = useStore((s) => s.rails);
   const tasks = useStore((s) => s.tasks);
   const lines = useStore((s) => s.lines);
+  const calendarRules = useStore((s) => s.calendarRules);
   const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
   const unscheduleTask = useStore((s) => s.unscheduleTask);
+  const overrideCycleDay = useStore((s) => s.overrideCycleDay);
+  const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
 
   const weekStart = useMemo(() => startOfWeekMonday(anchorDate), [anchorDate]);
 
-  const { cycle: baseCycle, railsByTemplate } = useMemo(
+  const { cycle, railsByTemplate } = useMemo(
     () =>
-      deriveCycleFromStore({ templates, rails, tasks, lines }, weekStart),
-    [templates, rails, tasks, lines, weekStart],
+      deriveCycleFromStore(
+        { templates, rails, tasks, lines, calendarRules },
+        weekStart,
+      ),
+    [templates, rails, tasks, lines, calendarRules, weekStart],
   );
-
-  // Fold local overrides into the derived cycle's days so the header
-  // reacts immediately to user template switching.
-  const cycle = useMemo(() => {
-    if (Object.keys(overrides).length === 0) return baseCycle;
-    return {
-      ...baseCycle,
-      days: baseCycle.days.map((d) => {
-        const nextKey = overrides[d.date];
-        if (!nextKey || nextKey === d.templateKey) return d;
-        return { ...d, templateKey: nextKey, overridden: true };
-      }),
-    };
-  }, [baseCycle, overrides]);
 
   const todayISO = toIsoDate(new Date());
 
@@ -81,18 +65,17 @@ export function CycleView() {
 
   const overrideDay = useCallback(
     (date: string, nextTemplate: TemplateKey) => {
-      setOverrides((prev) => ({ ...prev, [date]: nextTemplate }));
+      void overrideCycleDay(date, nextTemplate);
     },
-    [],
+    [overrideCycleDay],
   );
 
-  const clearOverride = useCallback((date: string) => {
-    setOverrides((prev) => {
-      if (!(date in prev)) return prev;
-      const { [date]: _, ...rest } = prev;
-      return rest;
-    });
-  }, []);
+  const clearOverride = useCallback(
+    (date: string) => {
+      void clearCycleDayOverride(date);
+    },
+    [clearCycleDayOverride],
+  );
 
   // Group days by templateKey preserving first-appearance order.
   const groups = useMemo(() => {
@@ -109,11 +92,6 @@ export function CycleView() {
     for (const s of cycle.slots) m.set(`${s.railId}|${s.date}`, s);
     return m;
   }, [cycle]);
-
-  // Unsaved-changes indicator — v0.2 just mirrors the override map size.
-  // When the Cycle-View Edit Session is wired (a later chunk), this
-  // reads session.changeCount instead.
-  const changeCount = Object.keys(overrides).length;
 
   const handleDropTask = useCallback(
     (taskId: string, date: string, railId: string) => {
@@ -146,7 +124,6 @@ export function CycleView() {
       <div className="flex min-w-0 flex-1 flex-col pl-10 pr-6 xl:pl-14">
         <TopBar
           label={formatWeekLabel(cycle.startDate, cycle.endDate)}
-          changeCount={changeCount}
           onPrev={() => shiftWeek(-7)}
           onNext={() => shiftWeek(7)}
           onToday={() => setAnchorDate(new Date())}
@@ -207,13 +184,11 @@ export function CycleView() {
 
 function TopBar({
   label,
-  changeCount,
   onPrev,
   onNext,
   onToday,
 }: {
   label: string;
-  changeCount: number;
   onPrev: () => void;
   onNext: () => void;
   onToday: () => void;
@@ -256,7 +231,6 @@ function TopBar({
       </div>
 
       <div className="flex items-center gap-3">
-        <EditSessionIndicator changeCount={changeCount} />
         <button
           type="button"
           aria-label="Cycle menu"

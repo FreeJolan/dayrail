@@ -165,6 +165,28 @@ export interface AdhocEvent {
   deletedAt?: string;
 }
 
+/** ERD §5.4 rule that decides which Template applies to a given date.
+ *  v0.2 implements `single-date` only — the "I want Friday to be a
+ *  rest day this week" override written from Cycle View. Other kinds
+ *  (`weekday`, `cycle`, `date-range`) are reserved shapes that the
+ *  resolver + Calendar-view UI will honor in v0.3. */
+export type CalendarRuleKind = 'weekday' | 'cycle' | 'date-range' | 'single-date';
+
+export interface CalendarRuleSingleDate {
+  date: string; // YYYY-MM-DD
+  templateKey: TemplateKey;
+}
+
+export interface CalendarRule {
+  id: string;
+  kind: CalendarRuleKind;
+  /** Higher wins. single-date written from Cycle View defaults to 100 —
+   *  above the implicit 0 from the weekday heuristic. */
+  priority: number;
+  value: CalendarRuleSingleDate | Record<string, unknown>;
+  createdAt: number;
+}
+
 /** A unit of work within a Line. ERD pre-v0.2.1 called this "Chunk";
  *  renamed to "Task" to match universal TODO-tool vocabulary. */
 export interface Task {

@@ -246,6 +246,7 @@ export const calendarRules = sqliteTable('calendar_rules', {
   kind: text('kind').notNull(), // weekday / cycle / date-range / single-date
   value: text('value').notNull(), // JSON
   priority: integer('priority').notNull().default(0),
+  createdAt: integer('created_at').notNull(),
 });
 
 export const adhocEvents = sqliteTable(
@@ -439,7 +440,8 @@ CREATE TABLE IF NOT EXISTS calendar_rules (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
   value TEXT NOT NULL,
-  priority INTEGER NOT NULL DEFAULT 0
+  priority INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS adhoc_events (
