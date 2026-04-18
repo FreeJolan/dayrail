@@ -8,7 +8,12 @@ import { Pending } from './pages/Pending';
 import { Settings } from './pages/Settings';
 import { Calendar } from './pages/Calendar';
 import { SideNav } from './components/SideNav';
+import { ShortcutCheatsheet } from './components/ShortcutCheatsheet';
 import { TooltipProvider } from './components/primitives/Tooltip';
+import {
+  useCheatsheetToggle,
+  useGlobalShortcuts,
+} from './lib/keyboardShortcuts';
 
 // ERD §5.0 App Shell · v0.2 routing (react-router-dom v6). URL scheme
 // locked in `docs/v0.2-plan.md §3`:
@@ -34,31 +39,42 @@ export default function App() {
   return (
     <BrowserRouter>
       <TooltipProvider delayDuration={200} skipDelayDuration={300}>
-        <div className="flex min-h-screen w-full bg-surface-0">
-          <SideNav />
-          <main className="flex-1">
-            <Routes>
-              <Route path="/" element={<TodayTrack />} />
-              <Route path="/cycle" element={<CycleView />} />
-              <Route path="/tasks" element={<Navigate to="/tasks/inbox" replace />} />
-              <Route path="/tasks/inbox" element={<Tasks />} />
-              <Route path="/tasks/line/:lineId" element={<Tasks />} />
-              <Route path="/tasks/archived" element={<Tasks />} />
-              <Route path="/tasks/trash" element={<Tasks />} />
-              <Route path="/review" element={<Review />} />
-              <Route path="/review/:scope" element={<Review />} />
-              <Route path="/review/:scope/:anchor" element={<Review />} />
-              <Route path="/pending" element={<Pending />} />
-              <Route path="/calendar" element={<Calendar />} />
-              <Route path="/templates" element={<TemplateEditor />} />
-              <Route path="/templates/:templateKey" element={<TemplateEditor />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/settings/:section" element={<Settings />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </main>
-        </div>
+        <Shell />
       </TooltipProvider>
     </BrowserRouter>
+  );
+}
+
+// Split out so the shortcut hooks live inside <BrowserRouter> (they
+// call `useNavigate`).
+function Shell() {
+  const cheatsheet = useCheatsheetToggle();
+  useGlobalShortcuts(cheatsheet.show);
+  return (
+    <div className="flex min-h-screen w-full bg-surface-0">
+      <SideNav />
+      <main className="flex-1">
+        <Routes>
+          <Route path="/" element={<TodayTrack />} />
+          <Route path="/cycle" element={<CycleView />} />
+          <Route path="/tasks" element={<Navigate to="/tasks/inbox" replace />} />
+          <Route path="/tasks/inbox" element={<Tasks />} />
+          <Route path="/tasks/line/:lineId" element={<Tasks />} />
+          <Route path="/tasks/archived" element={<Tasks />} />
+          <Route path="/tasks/trash" element={<Tasks />} />
+          <Route path="/review" element={<Review />} />
+          <Route path="/review/:scope" element={<Review />} />
+          <Route path="/review/:scope/:anchor" element={<Review />} />
+          <Route path="/pending" element={<Pending />} />
+          <Route path="/calendar" element={<Calendar />} />
+          <Route path="/templates" element={<TemplateEditor />} />
+          <Route path="/templates/:templateKey" element={<TemplateEditor />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="/settings/:section" element={<Settings />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </main>
+      <ShortcutCheatsheet open={cheatsheet.open} onClose={cheatsheet.hide} />
+    </div>
   );
 }
