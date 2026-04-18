@@ -46,6 +46,8 @@ export default function App() {
               <Route path="/tasks/archived" element={<Tasks />} />
               <Route path="/tasks/trash" element={<Tasks />} />
               <Route path="/review" element={<Review />} />
+              <Route path="/review/:scope" element={<Review />} />
+              <Route path="/review/:scope/:anchor" element={<Review />} />
               <Route path="/pending" element={<Pending />} />
               <Route path="/calendar" element={<Calendar />} />
               <Route path="/templates" element={<TemplateEditor />} />

@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { clsx } from 'clsx';
 import {
   ChevronLeft,
@@ -34,12 +35,48 @@ const SCOPES: Array<{ key: Scope; label: string }> = [
   { key: 'month', label: 'Month' },
 ];
 
+const VALID_SCOPES: Scope[] = ['day', 'cycle', 'month'];
+
+function isScope(s: string | undefined): s is Scope {
+  return !!s && (VALID_SCOPES as string[]).includes(s);
+}
+
+function parseAnchor(iso: string | undefined): Date | null {
+  if (!iso) return null;
+  // Strict YYYY-MM-DD; reject anything else so the URL stays predictable.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  const d = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 export function Review() {
-  const [scope, setScope] = useState<Scope>('cycle');
-  // Period anchor. Day: specific date; Cycle: any date in the target
-  // week (Monday-anchored); Month: first of the target month.
-  const [anchor, setAnchor] = useState<Date>(() => new Date());
+  const { scope: scopeParam, anchor: anchorParam } = useParams<{
+    scope?: string;
+    anchor?: string;
+  }>();
+  const navigate = useNavigate();
+  const scope: Scope = isScope(scopeParam) ? scopeParam : 'cycle';
+  const anchor = useMemo(
+    () => parseAnchor(anchorParam) ?? new Date(),
+    [anchorParam],
+  );
   const [aiEnabled, setAiEnabled] = useState(false);
+
+  // Keep the URL the source of truth. Anchor edits produce a navigate()
+  // call; a scope change carries the current anchor along so you
+  // don't lose your place switching between Day / Cycle / Month.
+  const setScope = useCallback(
+    (next: Scope) => {
+      navigate(`/review/${next}/${toIsoDate(anchor)}`);
+    },
+    [anchor, navigate],
+  );
+  const setAnchor = useCallback(
+    (next: Date) => {
+      navigate(`/review/${scope}/${toIsoDate(next)}`);
+    },
+    [scope, navigate],
+  );
 
   const rails = useStore((s) => s.rails);
   const railInstances = useStore((s) => s.railInstances);
@@ -118,13 +155,11 @@ export function Review() {
   ]);
 
   const shiftAnchor = (direction: -1 | 1) => {
-    setAnchor((d) => {
-      const next = new Date(d);
-      if (scope === 'day') next.setDate(next.getDate() + direction);
-      else if (scope === 'cycle') next.setDate(next.getDate() + direction * 7);
-      else next.setMonth(next.getMonth() + direction);
-      return next;
-    });
+    const next = new Date(anchor);
+    if (scope === 'day') next.setDate(next.getDate() + direction);
+    else if (scope === 'cycle') next.setDate(next.getDate() + direction * 7);
+    else next.setMonth(next.getMonth() + direction);
+    setAnchor(next);
   };
 
   return (
