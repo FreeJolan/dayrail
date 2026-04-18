@@ -6,7 +6,7 @@
 // Scope (day / cycle / month) is expressed by passing different date
 // ranges; the derivation is the same.
 
-import type { DayRailState } from '@dayrail/core';
+import type { DayRailState, Task } from '@dayrail/core';
 import type {
   HeatmapRow,
   HeatmapState,
@@ -62,19 +62,14 @@ export function deriveReviewData(
     templateByDate.set(date, pickTemplateForDate(state, date));
   }
 
-  // Index railInstances by (railId|date) for O(1) state lookup.
-  const instanceByKey = new Map<string, (typeof state.railInstances)[string]>();
-  for (const inst of Object.values(state.railInstances)) {
-    instanceByKey.set(`${inst.railId}|${inst.date}`, inst);
-  }
-
-  // Index done tasks by (railId|date) so "Task finished" overrides a
-  // pending/missing instance into a `done` cell.
-  const doneTaskByKey = new Set<string>();
+  // v0.4: Task.status is the single source of truth (ERD §10.1).
+  // Index tasks by (railId|date) — both hand-built and auto-habit
+  // tasks flow through the same path.
+  const taskByKey = new Map<string, Task>();
   for (const task of Object.values(state.tasks)) {
-    if (task.status !== 'done') continue;
+    if (task.status === 'deleted') continue;
     if (!task.slot) continue;
-    doneTaskByKey.add(`${task.slot.railId}|${task.slot.date}`);
+    taskByKey.set(`${task.slot.railId}|${task.slot.date}`, task);
   }
 
   // Filter rails to those bound to the selected habit Line when
@@ -101,15 +96,14 @@ export function deriveReviewData(
       frequency++;
 
       const key = `${rail.id}|${date}`;
-      const inst = instanceByKey.get(key);
-      const taskDone = doneTaskByKey.has(key);
+      const task = taskByKey.get(key);
 
       let cell: HeatmapState;
-      if (inst?.status === 'done' || taskDone) {
+      if (task?.status === 'done') {
         cell = 'done';
-      } else if (inst?.status === 'deferred') {
+      } else if (task?.status === 'deferred') {
         cell = 'shifted';
-      } else if (inst?.status === 'archived') {
+      } else if (task?.status === 'archived') {
         cell = 'skipped';
       } else {
         // No terminal state yet: past days count as unmarked (stale-

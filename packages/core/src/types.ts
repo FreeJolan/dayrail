@@ -68,13 +68,12 @@ export interface Slot {
   taskIds: string[];
 }
 
-/** §4.4 state machine. "Currently happening" is NOT a status — it's
- *  purely wall-clock-derived (plannedStart ≤ now ≤ plannedEnd while
- *  status === 'pending'). The v0.2-early `active` / `skipped` are
- *  retired; their roles collapse into wall-clock derivation,
- *  `deferred`, and `archived` respectively. */
-export type RailInstanceStatus = 'pending' | 'done' | 'deferred' | 'archived';
-
+/** v0.4: `RailInstance` narrows to a wall-clock log (ERD §10.1).
+ *  Completion status lives on `Task.status` — if you need to know
+ *  "was this done / deferred / archived?", query the carrying Task
+ *  by `(date, railId)`. This entity is retained only as an audit
+ *  anchor for Shifts and as a place to stamp `actualEnd` when an
+ *  occurrence wraps up. A later sweep may fold it into Task. */
 export interface RailInstance {
   id: string;
   railId: string;
@@ -83,7 +82,6 @@ export interface RailInstance {
   plannedEnd: string;
   actualStart?: string;
   actualEnd?: string;
-  status: RailInstanceStatus;
   overrides?: Partial<Pick<Rail, 'name' | 'color' | 'icon' | 'durationMinutes'>>;
   sessionId?: string;
 }

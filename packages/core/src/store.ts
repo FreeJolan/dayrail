@@ -47,7 +47,6 @@ import {
   type Rail,
   type RailColor,
   type RailInstance,
-  type RailInstanceStatus,
   type Recurrence,
   type Shift,
   type ShiftType,
@@ -95,9 +94,11 @@ interface DayRailActions {
   createRail: (rail: Rail, sessionId?: string) => Promise<void>;
   updateRail: (id: string, patch: Partial<Rail>, sessionId?: string) => Promise<void>;
   deleteRail: (id: string, sessionId?: string) => Promise<void>;
-  // --- rail instances (Today Track / check-in) ---
+  // --- rail instances (wall-clock log; v0.4+ status is on Task) ---
   createRailInstance: (inst: RailInstance) => Promise<void>;
-  markRailInstance: (id: string, status: RailInstanceStatus) => Promise<void>;
+  /** Audit a §5.6 check-in button press. `Task.status` is written by
+   *  the caller (updateTask) before this runs — recordSignal only
+   *  logs the intent + optional Shift-tag anchor. */
   recordSignal: (
     instanceId: string,
     response: SignalResponse,
@@ -267,12 +268,6 @@ interface TemplatePayload extends Omit<Template, 'isDefault'> {
 interface RailPayload extends Omit<Rail, 'recurrence'> {
   recurrence?: Recurrence;
 }
-interface InstanceStatusPayload {
-  id: string;
-  status: RailInstanceStatus;
-  actualStart?: string;
-  actualEnd?: string;
-}
 interface InstanceTimeShiftPayload {
   id: string;
   plannedStart?: string;
@@ -339,19 +334,6 @@ function applyEventInPlace(
     case 'instance.created': {
       const inst = payload as unknown as RailInstance;
       state.railInstances[inst.id] = { ...inst };
-      break;
-    }
-    case 'instance.status-changed': {
-      const p = payload as unknown as InstanceStatusPayload;
-      const existing = state.railInstances[p.id];
-      if (existing) {
-        state.railInstances[p.id] = {
-          ...existing,
-          status: p.status,
-          actualStart: p.actualStart ?? existing.actualStart,
-          actualEnd: p.actualEnd ?? existing.actualEnd,
-        };
-      }
       break;
     }
     case 'instance.time-shifted': {
@@ -907,28 +889,11 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
-      markRailInstance: async (id, status) => {
-        // status → wall-clock correlations: stamp actualEnd on any
-        // terminal-or-semi-terminal transition out of `pending`. For
-        // `done` this doubles as "finish time"; for deferred/archived
-        // it simply marks when the user made that call. No actualStart
-        // yet — v0.3 will introduce "start now" when the active state
-        // gets its own UI.
-        const now = new Date().toISOString();
-        const payload: InstanceStatusPayload = { id, status };
-        if (status !== 'pending') payload.actualEnd = now;
-        const event = await appendEvent({
-          aggregateId: `instance:${id}`,
-          type: 'instance.status-changed',
-          payload: { ...payload },
-        });
-        set((draft) => {
-          applyEventInPlace(draft, event.type, event.payload);
-        });
-        afterMutation();
-      },
-
       recordSignal: async (instanceId, response, surface) => {
+        // v0.4: Signal is pure audit. The caller (§5.6 check-in / §5.7
+        // Pending) has already written the corresponding Task.status
+        // via updateTask; recordSignal just logs intent + provides the
+        // anchor any subsequent Shift record wants.
         const signalId = ulidLite('sig');
         const actedAt = new Date().toISOString();
         const event = await appendEvent({
@@ -946,14 +911,6 @@ export const useStore = create<DayRailStore>()(
           applyEventInPlace(draft, event.type, event.payload);
         });
         afterMutation();
-        // All three responses flip the instance status so downstream
-        // queries (Pending, Review) don't need to join signal history.
-        const statusByResponse: Record<SignalResponse, RailInstanceStatus> = {
-          done: 'done',
-          defer: 'deferred',
-          archive: 'archived',
-        };
-        await get().markRailInstance(instanceId, statusByResponse[response]);
       },
 
       recordShift: async (shift) => {
