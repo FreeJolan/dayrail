@@ -134,7 +134,7 @@ export function BacklogDrawer({ open, onToggle }: Props) {
               Drag → day cell
             </p>
             <p className="mt-1 text-xs text-ink-tertiary">
-              拖拽在 chunk 3 接入；当前可在 Tasks 视图用排期按钮设定。
+              把任务拖到右侧某天某条 Rail 的格子上即可排期。
             </p>
           </div>
         </>
@@ -142,6 +142,11 @@ export function BacklogDrawer({ open, onToggle }: Props) {
     </aside>
   );
 }
+
+/** Mime type our drag uses to pass a task id between the Backlog
+ *  drawer and Cycle-section drop targets. Keeping it exported here
+ *  so the drop side can reference the same string. */
+export const TASK_DRAG_MIME = 'application/x-dayrail-task';
 
 function BacklogCard({
   task,
@@ -156,7 +161,15 @@ function BacklogCard({
     ? RAIL_COLOR_HEX[projectColor as keyof typeof RAIL_COLOR_HEX]
     : undefined;
   return (
-    <div className="group flex items-start gap-2 rounded-md bg-surface-1 px-2 py-2 transition hover:bg-surface-2">
+    <div
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData(TASK_DRAG_MIME, task.id);
+        e.dataTransfer.setData('text/plain', task.title);
+        e.dataTransfer.effectAllowed = 'move';
+      }}
+      className="group flex cursor-grab items-start gap-2 rounded-md bg-surface-1 px-2 py-2 transition hover:bg-surface-2 active:cursor-grabbing"
+    >
       {accent && (
         <span
           aria-hidden
