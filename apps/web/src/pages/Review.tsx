@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { clsx } from 'clsx';
 import {
   ChevronLeft,
@@ -8,14 +8,16 @@ import {
   MessageSquareQuote,
   Sparkles,
 } from 'lucide-react';
-import { useStore } from '@dayrail/core';
+import { selectHabitPhasesByLine, useStore, type Line } from '@dayrail/core';
 import { type ReviewScopeData } from '@/data/sampleReview';
 import { RhythmHeatmap } from '@/components/RhythmHeatmap';
 import { ShiftTagBars } from '@/components/ShiftTagBars';
 import {
+  buildPhaseBands,
   cycleDatesFor,
   deriveReviewData,
   monthDatesFor,
+  type PhaseBand,
 } from './reviewFromStore';
 import { toIsoDate } from './cycleFromStore';
 
@@ -61,21 +63,44 @@ export function Review() {
     [anchorParam],
   );
   const [aiEnabled, setAiEnabled] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const habitLineId = searchParams.get('habit') ?? undefined;
 
   // Keep the URL the source of truth. Anchor edits produce a navigate()
   // call; a scope change carries the current anchor along so you
   // don't lose your place switching between Day / Cycle / Month.
   const setScope = useCallback(
     (next: Scope) => {
-      navigate(`/review/${next}/${toIsoDate(anchor)}`);
+      // Preserve any ?habit= filter when changing scope.
+      const query = searchParams.toString();
+      navigate(
+        `/review/${next}/${toIsoDate(anchor)}${query ? `?${query}` : ''}`,
+      );
     },
-    [anchor, navigate],
+    [anchor, navigate, searchParams],
   );
   const setAnchor = useCallback(
     (next: Date) => {
-      navigate(`/review/${scope}/${toIsoDate(next)}`);
+      const query = searchParams.toString();
+      navigate(
+        `/review/${scope}/${toIsoDate(next)}${query ? `?${query}` : ''}`,
+      );
     },
-    [scope, navigate],
+    [scope, navigate, searchParams],
+  );
+  const setHabitLineId = useCallback(
+    (next: string | undefined) => {
+      setSearchParams(
+        (prev) => {
+          const n = new URLSearchParams(prev);
+          if (next) n.set('habit', next);
+          else n.delete('habit');
+          return n;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
   );
 
   const rails = useStore((s) => s.rails);
@@ -85,63 +110,52 @@ export function Review() {
   const calendarRules = useStore((s) => s.calendarRules);
   const shifts = useStore((s) => s.shifts);
   const adhocEvents = useStore((s) => s.adhocEvents);
+  const lines = useStore((s) => s.lines);
+  const habitPhases = useStore((s) => s.habitPhases);
+
+  const habits = useMemo<Line[]>(
+    () =>
+      Object.values(lines)
+        .filter((l) => l.kind === 'habit' && l.status === 'active')
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [lines],
+  );
 
   const data = useMemo<ReviewScopeData>(() => {
+    const stateSlice = {
+      rails,
+      railInstances,
+      tasks,
+      templates,
+      calendarRules,
+      shifts,
+      adhocEvents,
+    };
     if (scope === 'day') {
       const date = toIsoDate(anchor);
-      return deriveReviewData(
-        {
-          rails,
-          railInstances,
-          tasks,
-          templates,
-          calendarRules,
-          shifts,
-          adhocEvents,
-        },
-        {
-          scope,
-          label: formatDayLabel(anchor),
-          dates: [date],
-        },
-      );
+      return deriveReviewData(stateSlice, {
+        scope,
+        label: formatDayLabel(anchor),
+        dates: [date],
+        ...(habitLineId && { habitLineId }),
+      });
     }
     if (scope === 'cycle') {
       const dates = cycleDatesFor(anchor);
-      return deriveReviewData(
-        {
-          rails,
-          railInstances,
-          tasks,
-          templates,
-          calendarRules,
-          shifts,
-          adhocEvents,
-        },
-        {
-          scope,
-          label: formatCycleLabel(dates[0]!, dates[6]!),
-          dates,
-        },
-      );
+      return deriveReviewData(stateSlice, {
+        scope,
+        label: formatCycleLabel(dates[0]!, dates[6]!),
+        dates,
+        ...(habitLineId && { habitLineId }),
+      });
     }
     const dates = monthDatesFor(anchor.getFullYear(), anchor.getMonth() + 1);
-    return deriveReviewData(
-      {
-        rails,
-        railInstances,
-        tasks,
-        templates,
-        calendarRules,
-        shifts,
-        adhocEvents,
-      },
-      {
-        scope,
-        label: formatMonthLabel(anchor),
-        dates,
-      },
-    );
+    return deriveReviewData(stateSlice, {
+      scope,
+      label: formatMonthLabel(anchor),
+      dates,
+      ...(habitLineId && { habitLineId }),
+    });
   }, [
     scope,
     anchor,
@@ -152,7 +166,14 @@ export function Review() {
     calendarRules,
     shifts,
     adhocEvents,
+    habitLineId,
   ]);
+
+  const phaseBands = useMemo<PhaseBand[]>(() => {
+    if (!habitLineId) return [];
+    const phases = selectHabitPhasesByLine({ habitPhases }, habitLineId);
+    return buildPhaseBands(phases, data.dates);
+  }, [habitLineId, habitPhases, data.dates]);
 
   const shiftAnchor = (direction: -1 | 1) => {
     const next = new Date(anchor);
@@ -173,9 +194,17 @@ export function Review() {
         onToday={() => setAnchor(new Date())}
       />
 
+      {habits.length > 0 && (
+        <HabitFilterRow
+          habits={habits}
+          value={habitLineId}
+          onChange={setHabitLineId}
+        />
+      )}
+
       <div className="flex flex-col gap-10 pb-16 pt-8">
         {/* Per-scope waterfall */}
-        <RhythmHeatmap data={data} />
+        <RhythmHeatmap data={data} phaseBands={phaseBands} />
         <ShiftTagBars tags={data.shiftTags} />
         {data.adhocHint && <AdhocHintCard hint={data.adhocHint} />}
         <AISection enabled={aiEnabled} onToggle={() => setAiEnabled((v) => !v)} />
@@ -205,6 +234,54 @@ function formatCycleLabel(startIso: string, endIso: string): string {
 
 function formatMonthLabel(d: Date): string {
   return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+}
+
+function HabitFilterRow({
+  habits,
+  value,
+  onChange,
+}: {
+  habits: Line[];
+  value: string | undefined;
+  onChange: (next: string | undefined) => void;
+}) {
+  return (
+    <div className="hairline-b flex flex-wrap items-center gap-2 -mx-10 px-10 pb-3">
+      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+        Habit 节奏
+      </span>
+      <button
+        type="button"
+        onClick={() => onChange(undefined)}
+        className={clsx(
+          'rounded-sm px-2 py-0.5 text-xs transition',
+          value == null
+            ? 'bg-ink-primary text-surface-0'
+            : 'bg-surface-1 text-ink-secondary hover:bg-surface-2 hover:text-ink-primary',
+        )}
+      >
+        所有 Rail
+      </button>
+      {habits.map((h) => {
+        const active = value === h.id;
+        return (
+          <button
+            key={h.id}
+            type="button"
+            onClick={() => onChange(active ? undefined : h.id)}
+            className={clsx(
+              'rounded-sm px-2 py-0.5 text-xs transition',
+              active
+                ? 'bg-ink-primary text-surface-0'
+                : 'bg-surface-1 text-ink-secondary hover:bg-surface-2 hover:text-ink-primary',
+            )}
+          >
+            {h.name}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function TopBar({

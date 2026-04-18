@@ -22,6 +22,20 @@ export interface DeriveReviewInput {
   scope: ReviewScopeData['scope'];
   label: string;
   dates: string[]; // ISO YYYY-MM-DD
+  /** Optional habit-line filter. When set, only rails bound to this
+   *  habit (`rail.defaultLineId === habitLineId`) contribute rows. */
+  habitLineId?: string;
+}
+
+/** Phase-band overlay data for a habit's rhythm view. Each entry is
+ *  a contiguous column range where one phase was active on the
+ *  date axis, derived from HabitPhase records + the scope's dates. */
+export interface PhaseBand {
+  phaseId: string;
+  label: string;
+  /** Inclusive column indices into `dates`. */
+  startCol: number;
+  endCol: number;
 }
 
 /** Assemble one scope's snapshot from live store state. */
@@ -38,7 +52,7 @@ export function deriveReviewData(
   >,
   input: DeriveReviewInput,
 ): ReviewScopeData {
-  const { scope, label, dates } = input;
+  const { scope, label, dates, habitLineId } = input;
   const todayIso = toIsoDate(new Date());
 
   // Pre-resolve the applicable template per date so each rail lookup
@@ -63,7 +77,12 @@ export function deriveReviewData(
     doneTaskByKey.add(`${task.slot.railId}|${task.slot.date}`);
   }
 
-  const rails = Object.values(state.rails);
+  // Filter rails to those bound to the selected habit Line when
+  // habit scope is active. Rails without a `defaultLineId` (general-
+  // purpose rails) only surface in "all" view.
+  const rails = Object.values(state.rails).filter(
+    (r) => !habitLineId || r.defaultLineId === habitLineId,
+  );
   const rows: HeatmapRow[] = [];
   let totalSlots = 0;
   let totalDone = 0;
@@ -231,4 +250,56 @@ export function monthDatesFor(year: number, month: number): string[] {
     out.push(toIsoDate(new Date(first.getFullYear(), first.getMonth(), d)));
   }
   return out;
+}
+
+/** Build phase-band overlays for a habit's rhythm view.
+ *
+ *  For each HabitPhase whose startDate falls on or before the last
+ *  date in `dates`, we emit a band covering the column range where
+ *  that phase was "active" — from max(phase.startDate, dates[0]) to
+ *  min(nextPhase.startDate - 1 day, dates[last]). Phases fully in
+ *  the future of `dates[0]` get a band only if their startDate is
+ *  within the window. Phases fully before `dates[0]` are included
+ *  as a single leading band.
+ */
+export function buildPhaseBands(
+  phases: Array<{ id: string; name: string; startDate: string }>,
+  dates: string[],
+): PhaseBand[] {
+  if (dates.length === 0 || phases.length === 0) return [];
+  const sorted = [...phases].sort((a, b) =>
+    a.startDate.localeCompare(b.startDate),
+  );
+  const first = dates[0]!;
+  const last = dates[dates.length - 1]!;
+
+  const bands: PhaseBand[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const cur = sorted[i]!;
+    const nextStart = sorted[i + 1]?.startDate;
+    // The phase's active span on the date axis. Inclusive on both
+    // ends in ISO-string compare since all dates are YYYY-MM-DD.
+    const spanFrom = cur.startDate > first ? cur.startDate : first;
+    const spanTo = nextStart
+      ? isoDatePlus(nextStart, -1)
+      : last;
+    if (spanFrom > last) continue; // phase is wholly in the future of the window
+    if (spanTo < first) continue; // phase was replaced before the window opened
+    const startCol = dates.indexOf(spanFrom);
+    const endCol = dates.indexOf(spanTo);
+    if (startCol < 0 || endCol < 0) continue;
+    bands.push({
+      phaseId: cur.id,
+      label: cur.name,
+      startCol,
+      endCol,
+    });
+  }
+  return bands;
+}
+
+function isoDatePlus(iso: string, n: number): string {
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() + n);
+  return toIsoDate(d);
 }
