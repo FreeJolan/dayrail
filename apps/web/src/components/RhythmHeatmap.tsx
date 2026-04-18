@@ -17,11 +17,22 @@ import { HeatmapLegend } from './HeatmapLegend';
 // Cells are READ-ONLY. Smaller than CycleCell (the editor). Hover
 // tooltip surfaces `{Rail name} · {date} · status`.
 
-interface Props {
-  data: ReviewScopeData;
+interface PhaseBand {
+  phaseId: string;
+  label: string;
+  startCol: number;
+  endCol: number;
 }
 
-export function RhythmHeatmap({ data }: Props) {
+interface Props {
+  data: ReviewScopeData;
+  /** Optional habit-phase overlay. When present, a thin band row
+   *  renders above the weekday header showing which phase was
+   *  active across each column. */
+  phaseBands?: PhaseBand[];
+}
+
+export function RhythmHeatmap({ data, phaseBands = [] }: Props) {
   return (
     <div className="flex flex-col gap-3">
       <Header label={data.label} match={data.rhythmMatchPct} done={data.totalDone} total={data.totalSlots} />
@@ -37,6 +48,9 @@ export function RhythmHeatmap({ data }: Props) {
         </colgroup>
 
         <thead>
+          {phaseBands.length > 0 && (
+            <PhaseBandRow bands={phaseBands} totalCols={data.dates.length} />
+          )}
           <tr>
             <th className="pb-2 text-left align-bottom">
               <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
@@ -67,12 +81,79 @@ export function RhythmHeatmap({ data }: Props) {
         </thead>
 
         <tbody>
-          {data.rows.map((r) => (
-            <HeatRow key={r.railId} row={r} dates={data.dates} />
-          ))}
+          {data.rows.length === 0 ? (
+            <tr>
+              <td
+                colSpan={1 + data.dates.length}
+                className="py-8 text-center text-xs text-ink-tertiary"
+              >
+                这个周期内此 habit 没有对应的 Rail 实例
+              </td>
+            </tr>
+          ) : (
+            data.rows.map((r) => (
+              <HeatRow key={r.railId} row={r} dates={data.dates} />
+            ))
+          )}
         </tbody>
       </table>
     </div>
+  );
+}
+
+function PhaseBandRow({
+  bands,
+  totalCols,
+}: {
+  bands: PhaseBand[];
+  totalCols: number;
+}) {
+  // Layout: one <th> spanning the row-label column (empty), then
+  // colSpan-merged <th>s for each band + any uncovered columns.
+  // Walk left→right, filling gaps between bands with empty cells so
+  // the layout aligns with the weekday header row below.
+  const sorted = [...bands].sort((a, b) => a.startCol - b.startCol);
+  const cells: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const band of sorted) {
+    if (band.startCol > cursor) {
+      cells.push(
+        <th
+          key={`gap-${cursor}`}
+          colSpan={band.startCol - cursor}
+          aria-hidden
+        />,
+      );
+    }
+    const span = band.endCol - band.startCol + 1;
+    cells.push(
+      <th
+        key={`band-${band.phaseId}`}
+        colSpan={span}
+        className="pb-1 align-bottom"
+      >
+        <div
+          title={band.label}
+          className="rounded-sm bg-surface-3 px-1.5 py-0.5"
+        >
+          <span className="truncate font-mono text-2xs uppercase tracking-widest text-ink-secondary">
+            {band.label}
+          </span>
+        </div>
+      </th>,
+    );
+    cursor = band.endCol + 1;
+  }
+  if (cursor < totalCols) {
+    cells.push(
+      <th key={`gap-${cursor}-tail`} colSpan={totalCols - cursor} aria-hidden />,
+    );
+  }
+  return (
+    <tr>
+      <th aria-hidden />
+      {cells}
+    </tr>
   );
 }
 
