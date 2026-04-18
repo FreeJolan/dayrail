@@ -1,6 +1,6 @@
 import { clsx } from 'clsx';
 import { useState } from 'react';
-import { Check, ChevronDown, X } from 'lucide-react';
+import { ArrowUpRight, Check, ChevronDown, X } from 'lucide-react';
 import {
   type CycleDay,
   type CycleSlot,
@@ -55,6 +55,7 @@ interface Props {
   onDropTask?: (taskId: string, date: string, railId: string) => void;
   onClearSlot?: (taskId: string) => void;
   onMarkTaskDone?: (taskId: string) => void;
+  onOpenTaskProject?: (taskId: string) => void;
   onQuickCreate?: (date: string, railId: string, title: string) => void;
   /** Look up the Project / Habit a task belongs to, so the slot
    *  popover can render the Line name + color without each cell
@@ -75,6 +76,7 @@ export function CycleSection({
   onDropTask,
   onClearSlot,
   onMarkTaskDone,
+  onOpenTaskProject,
   onQuickCreate,
   lineLookup,
 }: Props) {
@@ -228,6 +230,14 @@ export function CycleSection({
                                       onClearSlot(slot.taskId!);
                                       setOpenPopoverKey(null);
                                     }}
+                                    onOpenProject={
+                                      onOpenTaskProject
+                                        ? () => {
+                                            onOpenTaskProject(slot.taskId!);
+                                            setOpenPopoverKey(null);
+                                          }
+                                        : undefined
+                                    }
                                   />
                                 );
                               })()}
@@ -544,6 +554,7 @@ function SlotPopoverBody({
   lineColor,
   onMarkDone,
   onClear,
+  onOpenProject,
 }: {
   taskName: string;
   railName: string;
@@ -552,25 +563,44 @@ function SlotPopoverBody({
   lineColor?: RailColor;
   onMarkDone: () => void;
   onClear: () => void;
+  onOpenProject?: () => void;
 }) {
+  const lineChip = lineName && (
+    <>
+      {lineColor && (
+        <span
+          aria-hidden
+          className="h-2 w-[2px] rounded-sm"
+          style={{ background: RAIL_COLOR_HEX[lineColor] }}
+        />
+      )}
+      {lineName}
+    </>
+  );
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
         <span className="line-clamp-2 text-sm text-ink-primary">
           {taskName || '未命名任务'}
         </span>
-        {lineName && (
-          <span className="flex items-center gap-1.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-            {lineColor && (
-              <span
-                aria-hidden
-                className="h-2 w-[2px] rounded-sm"
-                style={{ background: RAIL_COLOR_HEX[lineColor] }}
+        {lineName &&
+          (onOpenProject ? (
+            <button
+              type="button"
+              onClick={onOpenProject}
+              className="group flex items-center gap-1.5 self-start font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:text-ink-primary"
+            >
+              {lineChip}
+              <ArrowUpRight
+                className="h-2.5 w-2.5 opacity-0 transition group-hover:opacity-100"
+                strokeWidth={1.8}
               />
-            )}
-            {lineName}
-          </span>
-        )}
+            </button>
+          ) : (
+            <span className="flex items-center gap-1.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              {lineChip}
+            </span>
+          ))}
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
           {railName} · {formatSlotDate(date)}
         </span>

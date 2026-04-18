@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Calendar, ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react';
 import { INBOX_LINE_ID, useStore } from '@dayrail/core';
 import type { TemplateKey } from '@/data/sampleTemplate';
@@ -28,6 +29,7 @@ import {
 // ERD §5.3.1 Edit Session stays out of scope for v0.2 (deferred to v0.3).
 
 export function CycleView() {
+  const navigate = useNavigate();
   const [anchorDate, setAnchorDate] = useState<Date>(() => new Date());
   const [backlogOpen, setBacklogOpen] = useState(true);
 
@@ -162,6 +164,21 @@ export function CycleView() {
     [updateTask],
   );
 
+  const handleOpenTaskProject = useCallback(
+    (taskId: string) => {
+      const task = tasks[taskId];
+      if (!task) return;
+      // Inbox is its own nav entry in the Tasks view, so route it
+      // specifically; everything else goes to /tasks/line/:lineId.
+      const target =
+        task.lineId === INBOX_LINE_ID
+          ? '/tasks/inbox'
+          : `/tasks/line/${task.lineId}`;
+      navigate(target);
+    },
+    [navigate, tasks],
+  );
+
   const lineLookup = useCallback(
     (taskId: string) => {
       const task = tasks[taskId];
@@ -235,6 +252,7 @@ export function CycleView() {
                 onDropTask={handleDropTask}
                 onClearSlot={handleClearSlot}
                 onMarkTaskDone={handleMarkTaskDone}
+                onOpenTaskProject={handleOpenTaskProject}
                 onQuickCreate={handleQuickCreate}
                 lineLookup={lineLookup}
               />
