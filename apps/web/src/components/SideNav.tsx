@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Calendar,
@@ -13,7 +13,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { clsx } from 'clsx';
-import { CHECKIN_QUEUE } from '@/data/sample';
+import { selectPendingQueue, useStore } from '@dayrail/core';
 
 // Left sticky rail nav. Default expanded (labels visible) to teach
 // first-time users what each icon means; collapsible to icon-only for
@@ -78,7 +78,14 @@ export function SideNav() {
     window.localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0');
   }, [collapsed]);
 
-  const pendingCount = CHECKIN_QUEUE.length;
+  // Subscribe to the raw map; derive via useMemo so Zustand's
+  // reference-equality short-circuit kicks in instead of comparing a
+  // freshly-built array every tick.
+  const railInstances = useStore((s) => s.railInstances);
+  const pendingCount = useMemo(
+    () => selectPendingQueue({ railInstances }).length,
+    [railInstances],
+  );
 
   return (
     <aside
