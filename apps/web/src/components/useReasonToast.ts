@@ -16,14 +16,14 @@ import type {
 // strip on Today Track and the Pending page wire into it so all
 // three action surfaces behave identically.
 //
-// v0.4 source-of-truth rule (ERD §10.1): status lives on Task. This
-// hook writes `Task.status` as the primary effect; RailInstance.status
-// gets a dual-write for parity with legacy surfaces that still read
-// it, and a Signal event is recorded for audit. A Shift record lands
-// on close if the user added any tags.
+// v0.4 source-of-truth rule (ERD §10.1): status lives on Task.
+// This hook writes `Task.status` + stamps the matching timestamp
+// (doneAt / deferredAt / archivedAt), logs a Signal event for audit
+// (so the user can trace "I pressed Later at 14:32"), and commits a
+// Shift record on close if the user added any tags.
 //
-// The Undo path restores Task.status AND RailInstance.status to the
-// pre-action values so both halves of the dual-write unwind together.
+// RailInstance.status doesn't exist anymore — the only thing the
+// RailInstance entity buys us today is an anchor for Signal + Shift.
 
 type TaskStatus = Task['status'];
 
@@ -45,7 +45,6 @@ export function useReasonToast(surface: Signal['surface']): {
   const shifts = useStore((s) => s.shifts);
   const recordSignal = useStore((s) => s.recordSignal);
   const recordShift = useStore((s) => s.recordShift);
-  const markRailInstance = useStore((s) => s.markRailInstance);
   const updateTask = useStore((s) => s.updateTask);
 
   const [toast, setToast] = useState<ReasonToastState | null>(null);
@@ -54,11 +53,10 @@ export function useReasonToast(surface: Signal['surface']): {
   const taskIdRef = useRef<string | null>(null);
   const instanceIdRef = useRef<string | null>(null);
   const actionRef = useRef<ToastAction | null>(null);
-  // Pre-action snapshots so Undo restores precisely (not a hardcoded
-  // 'pending'). Matters on Pending page: acting on a `deferred` item
-  // and undoing should go back to `deferred`, not demote to `pending`.
+  // Pre-action task snapshot so Undo restores precisely. Matters on
+  // Pending page: acting on a `deferred` item and undoing should go
+  // back to `deferred`, not demote to `pending`.
   const prevTaskStatusRef = useRef<TaskStatus | null>(null);
-  const prevInstanceStatusRef = useRef<RailInstance['status'] | null>(null);
 
   const fire = useCallback(
     ({ taskId, railInstanceId, railName, railId, action }: {
@@ -86,11 +84,9 @@ export function useReasonToast(surface: Signal['surface']): {
       if (action === 'archive') patch.archivedAt = nowIso;
       void updateTask(taskId, patch);
 
-      // Dual-write to RailInstance.status (deprecated, cleaned up in
-      // v0.5) + record the Signal event for audit.
+      // Signal event — pure audit. Still keyed to RailInstance because
+      // Shifts (committed on close) need that anchor.
       if (railInstanceId) {
-        const inst = railInstances[railInstanceId];
-        prevInstanceStatusRef.current = inst?.status ?? null;
         void recordSignal(railInstanceId, action, surface);
       }
 
@@ -121,26 +117,21 @@ export function useReasonToast(surface: Signal['surface']): {
     const tid = taskIdRef.current;
     const prevTaskStatus = prevTaskStatusRef.current;
     if (tid && prevTaskStatus) {
-      const patch: Partial<Task> = { status: prevTaskStatus };
-      // Clear the stamps we may have just set so the restored row is
-      // a clean revert (no orphan doneAt/deferredAt/archivedAt).
-      patch.doneAt = undefined;
-      patch.deferredAt = undefined;
-      patch.archivedAt = undefined;
-      void updateTask(tid, patch);
-    }
-    const iid = instanceIdRef.current;
-    const prevInstanceStatus = prevInstanceStatusRef.current;
-    if (iid && prevInstanceStatus) {
-      void markRailInstance(iid, prevInstanceStatus);
+      // Clear the stamp fields we may have just set so the restored
+      // row is a clean revert.
+      void updateTask(tid, {
+        status: prevTaskStatus,
+        doneAt: undefined,
+        deferredAt: undefined,
+        archivedAt: undefined,
+      });
     }
     tagsRef.current = [];
     taskIdRef.current = null;
     instanceIdRef.current = null;
     actionRef.current = null;
     prevTaskStatusRef.current = null;
-    prevInstanceStatusRef.current = null;
-  }, [markRailInstance, updateTask]);
+  }, [updateTask]);
 
   const handleClose = useCallback(() => {
     const tags = tagsRef.current;
@@ -152,7 +143,6 @@ export function useReasonToast(surface: Signal['surface']): {
     instanceIdRef.current = null;
     actionRef.current = null;
     prevTaskStatusRef.current = null;
-    prevInstanceStatusRef.current = null;
     if (!iid || !action) return;
     if (action === 'done') return; // done isn't a Shift
     if (tags.length === 0) return;

@@ -66,7 +66,6 @@ export async function ensureTodayInstances(
         date,
         rail.startMinutes + rail.durationMinutes,
       ),
-      status: 'pending',
     });
   }
 }

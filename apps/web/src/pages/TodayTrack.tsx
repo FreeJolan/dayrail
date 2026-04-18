@@ -9,6 +9,7 @@ import {
   type Rail,
   type RailInstance,
   type Shift,
+  type Task,
 } from '@dayrail/core';
 import {
   CheckInStrip,
@@ -40,7 +41,7 @@ export function TodayTrack() {
   const railInstances = useStore((s) => s.railInstances);
   const tasks = useStore((s) => s.tasks);
   const shifts = useStore((s) => s.shifts);
-  const markRailInstance = useStore((s) => s.markRailInstance);
+  const updateTask = useStore((s) => s.updateTask);
 
   const { toast, fire, handleAddTag, handleUndo, handleClose } = useReasonToast(
     'check-in-strip',
@@ -59,10 +60,12 @@ export function TodayTrack() {
     [fire],
   );
 
-  // Timeline hover action bar: receives the RailInstance id. v0.4 we
-  // look up the carrying Task so the write lands on `Task.status`; if
-  // no Task exists for this (date, railId) we fall back to the legacy
-  // RailInstance-only path (Stage 9 will remove the fallback).
+  // Timeline hover action bar: receives the RailInstance id. Looks up
+  // the Task carrying this (date, railId) and writes to Task.status.
+  // Bare rails (no carrying Task) offer no action — the action bar
+  // just won't do anything when clicked, because there's nothing to
+  // mark. In practice this is rare (habit rails always have auto-tasks
+  // today, project rails only show hover actions when scheduled).
   const handleTimelineAction = useCallback(
     (instanceId: string, action: CheckInAction) => {
       const inst = railInstances[instanceId];
@@ -76,33 +79,31 @@ export function TodayTrack() {
           t.slot.railId === inst.railId &&
           t.status !== 'deleted',
       );
-      if (task) {
-        fire({
-          taskId: task.id,
-          railInstanceId: instanceId,
-          railId: rail.id,
-          railName: rail.name,
-          action,
-        });
-      } else {
-        const nextStatus =
-          action === 'done'
-            ? 'done'
-            : action === 'defer'
-              ? 'deferred'
-              : 'archived';
-        void markRailInstance(instanceId, nextStatus);
-      }
+      if (!task) return;
+      fire({
+        taskId: task.id,
+        railInstanceId: instanceId,
+        railId: rail.id,
+        railName: rail.name,
+        action,
+      });
     },
-    [tasks, rails, railInstances, fire, markRailInstance],
+    [tasks, rails, railInstances, fire],
   );
 
   const timeline = useMemo<SampleRail[]>(
     () =>
       selectTodayTimeline({ railInstances }, today)
-        .map((inst) => adaptToSample(inst, rails[inst.railId], now.asDate))
+        .map((inst) =>
+          adaptToSample(
+            inst,
+            rails[inst.railId],
+            findTaskForSlot(tasks, inst.date, inst.railId),
+            now.asDate,
+          ),
+        )
         .filter((r): r is SampleRail => r !== null),
-    [railInstances, rails, today, now.asDate],
+    [railInstances, rails, tasks, today, now.asDate],
   );
 
   const checkinQueue = useMemo<CheckInEntry[]>(
@@ -132,27 +133,56 @@ export function TodayTrack() {
     [timeline, shifts],
   );
 
+  // Undefer / "put it back on today". Receives a RailInstance id (the
+  // DeferredSection keys rows on that). Finds the carrying Task and
+  // resets its status back to `pending`.
   const handleRevert = useCallback(
     (instanceId: string) => {
-      void markRailInstance(instanceId, 'pending');
+      const inst = railInstances[instanceId];
+      if (!inst) return;
+      const task = Object.values(tasks).find(
+        (t) =>
+          t.slot &&
+          t.slot.date === inst.date &&
+          t.slot.railId === inst.railId &&
+          t.status !== 'deleted',
+      );
+      if (!task) return;
+      void updateTask(task.id, {
+        status: 'pending',
+        doneAt: undefined,
+        deferredAt: undefined,
+        archivedAt: undefined,
+      });
     },
-    [markRailInstance],
+    [tasks, railInstances, updateTask],
   );
 
+  // Reset today: sweep every Task carrying a today-slot and push it
+  // back to `pending` (done/deferred/archived alike). Useful after a
+  // bulk mis-tag.
   const handleResetDay = useCallback(() => {
-    const todayInstances = Object.values(railInstances).filter(
-      (i) => i.date === today && i.status !== 'pending',
+    const todaysTasks = Object.values(tasks).filter(
+      (t) =>
+        t.slot?.date === today &&
+        t.status !== 'pending' &&
+        t.status !== 'deleted',
     );
-    if (todayInstances.length === 0) {
-      window.alert('今日暂无需要重置的 Rail —— 所有实例都是 pending 状态。');
+    if (todaysTasks.length === 0) {
+      window.alert('今日暂无需要重置的 Rail —— 所有任务都是 pending。');
       return;
     }
-    const msg = `把今日 ${todayInstances.length} 条已操作的 Rail 重置回模板状态（全部设为 pending）？此操作本身可通过再次 check-in 回复。`;
+    const msg = `把今日 ${todaysTasks.length} 条已操作的任务重置回 pending？本次重置可通过再次 check-in 撤回。`;
     if (!window.confirm(msg)) return;
-    for (const inst of todayInstances) {
-      void markRailInstance(inst.id, 'pending');
+    for (const t of todaysTasks) {
+      void updateTask(t.id, {
+        status: 'pending',
+        doneAt: undefined,
+        deferredAt: undefined,
+        archivedAt: undefined,
+      });
     }
-  }, [railInstances, today, markRailInstance]);
+  }, [tasks, today, updateTask]);
 
   return (
     <div className="flex w-full max-w-[780px] flex-col gap-8 py-10 pl-10 pr-10 lg:pl-14 xl:pl-20">
@@ -222,10 +252,10 @@ function sample(d: Date): LiveNow {
 }
 
 // ------------------------------------------------------------------
-// Domain → display adapter. RailInstance + Rail + wall-clock now give
-// the 5-state SampleRail shape the existing components were built
-// around. Encapsulated here so the component layer doesn't need to
-// know about HLC / instance status rules.
+// Domain → display adapter. RailInstance + Rail + carrying Task +
+// wall-clock now give the 5-state SampleRail shape the existing
+// components were built around. v0.4: completion status comes from the
+// carrying Task (ERD §10.1); RailInstance is just the wall-clock shell.
 // ------------------------------------------------------------------
 
 function carriedRowToCheckInEntry(row: CarriedTaskRow): CheckInEntry {
@@ -241,9 +271,24 @@ function carriedRowToCheckInEntry(row: CarriedTaskRow): CheckInEntry {
   };
 }
 
+function findTaskForSlot(
+  tasks: Record<string, Task>,
+  date: string,
+  railId: string,
+): Task | undefined {
+  for (const t of Object.values(tasks)) {
+    if (!t.slot) continue;
+    if (t.slot.date !== date || t.slot.railId !== railId) continue;
+    if (t.status === 'deleted') continue;
+    return t;
+  }
+  return undefined;
+}
+
 function adaptToSample(
   inst: RailInstance,
   rail: Rail | undefined,
+  task: Task | undefined,
   now: Date,
 ): SampleRail | null {
   if (!rail) return null;
@@ -252,9 +297,9 @@ function adaptToSample(
   const nowMs = now.getTime();
 
   let state: RailState;
-  if (inst.status === 'done') state = 'done';
-  else if (inst.status === 'deferred') state = 'deferred';
-  else if (inst.status === 'archived') state = 'archived';
+  if (task?.status === 'done') state = 'done';
+  else if (task?.status === 'deferred') state = 'deferred';
+  else if (task?.status === 'archived') state = 'archived';
   else if (!Number.isNaN(startMs) && startMs <= nowMs && nowMs <= endMs)
     state = 'current';
   else if (!Number.isNaN(endMs) && endMs < nowMs) state = 'unmarked';

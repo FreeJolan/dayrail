@@ -23,9 +23,8 @@ export type EventType =
   | 'template.created'
   | 'template.updated'
   | 'template.deleted'
-  // RailInstance (Today Track / Pending)
+  // RailInstance (wall-clock log — v0.4+ status lives on Task)
   | 'instance.created'
-  | 'instance.status-changed'
   | 'instance.time-shifted'
   // Shift records
   | 'shift.recorded'

@@ -51,7 +51,6 @@ export function CycleView() {
   const tasks = useStore((s) => s.tasks);
   const lines = useStore((s) => s.lines);
   const calendarRules = useStore((s) => s.calendarRules);
-  const railInstances = useStore((s) => s.railInstances);
   const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
   const unscheduleTask = useStore((s) => s.unscheduleTask);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
@@ -93,10 +92,10 @@ export function CycleView() {
   const { cycle, railsByTemplate } = useMemo(
     () =>
       deriveCycleFromStore(
-        { templates, rails, tasks, lines, calendarRules, railInstances },
+        { templates, rails, tasks, lines, calendarRules },
         weekStart,
       ),
-    [templates, rails, tasks, lines, calendarRules, railInstances, weekStart],
+    [templates, rails, tasks, lines, calendarRules, weekStart],
   );
 
   const todayISO = toIsoDate(new Date());

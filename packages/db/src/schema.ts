@@ -191,7 +191,6 @@ export const railInstances = sqliteTable(
     plannedEnd: text('planned_end').notNull(),
     actualStart: text('actual_start'),
     actualEnd: text('actual_end'),
-    status: text('status').notNull().default('pending'), // pending / active / done / skipped
     overrides: text('overrides'), // JSON or null
     sessionId: text('session_id'),
   },
@@ -416,7 +415,6 @@ CREATE TABLE IF NOT EXISTS rail_instances (
   planned_end TEXT NOT NULL,
   actual_start TEXT,
   actual_end TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',
   overrides TEXT,
   session_id TEXT
 );
