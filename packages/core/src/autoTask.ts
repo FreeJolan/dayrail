@@ -103,21 +103,22 @@ export async function materializeAutoTasks(
   range: MaterializeRange,
 ): Promise<void> {
   const state = useStore.getState();
-  const habits = Object.values(state.lines).filter(
-    (l) => l.kind === 'habit' && l.status === 'active',
-  );
-  if (habits.length === 0) return;
+  const bindings = Object.values(state.habitBindings);
+  if (bindings.length === 0) return;
 
-  for (const habit of habits) {
-    const railsForHabit = Object.values(state.rails).filter(
-      (r) => r.defaultLineId === habit.id,
-    );
-    if (railsForHabit.length === 0) continue;
+  // Group bindings by habitId so we can track (habitId, cycleId)
+  // markers consistently across bindings of the same habit.
+  const byHabit = new Map<string, typeof bindings>();
+  for (const b of bindings) {
+    const list = byHabit.get(b.habitId) ?? [];
+    list.push(b);
+    byHabit.set(b.habitId, list);
+  }
 
-    // Collect (cycleId → first date, last date) the range touches.
-    // We only mark a cycle complete when the range fully covers it —
-    // partial coverage (e.g. "just today") doesn't close the cycle
-    // so a later Cycle-View-wide pass will finish it off.
+  for (const [habitId, habitBindings] of byHabit) {
+    const habit = state.lines[habitId];
+    if (!habit || habit.status !== 'active') continue;
+
     const cyclesTouched = new Map<string, { start: string; end: string }>();
 
     for (const date of iterDates(range.startDate, range.endDate)) {
@@ -130,17 +131,20 @@ export async function materializeAutoTasks(
 
       const tplKey = resolveTemplateForDate(state, date, () => null);
       if (!tplKey) continue;
+      const dow = new Date(`${date}T00:00:00`).getDay();
 
-      for (const rail of railsForHabit) {
+      for (const binding of habitBindings) {
+        const rail = state.rails[binding.railId];
+        if (!rail) continue;
         if (rail.templateKey !== tplKey) continue;
         if (!recurrenceCovers(rail.recurrence, date)) continue;
+        if (binding.weekdays && !binding.weekdays.includes(dow)) continue;
 
         const task: Task = buildAutoTask(habit.id, habit.name, rail, date);
         await state.upsertAutoTask(task);
       }
     }
 
-    // Mark cycles that the range fully covered (Mon–Sun).
     for (const [cid, span] of cyclesTouched) {
       const mondayIso = cid.replace('cycle-', '');
       const endOfCycle = addDays(mondayIso, 6);

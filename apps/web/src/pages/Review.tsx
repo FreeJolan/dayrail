@@ -111,6 +111,7 @@ export function Review() {
   const adhocEvents = useStore((s) => s.adhocEvents);
   const lines = useStore((s) => s.lines);
   const habitPhases = useStore((s) => s.habitPhases);
+  const habitBindings = useStore((s) => s.habitBindings);
 
   const habits = useMemo<Line[]>(
     () =>
@@ -128,6 +129,7 @@ export function Review() {
       calendarRules,
       shifts,
       adhocEvents,
+      habitBindings,
     };
     if (scope === 'day') {
       const date = toIsoDate(anchor);
@@ -163,6 +165,7 @@ export function Review() {
     calendarRules,
     shifts,
     adhocEvents,
+    habitBindings,
     habitLineId,
   ]);
 

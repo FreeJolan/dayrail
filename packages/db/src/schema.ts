@@ -108,7 +108,6 @@ export const rails = sqliteTable(
     showInCheckin: integer('show_in_checkin', { mode: 'boolean' })
       .notNull()
       .default(true),
-    defaultLineId: text('default_line_id'),
     /** Serialised Recurrence (see §10). Mostly 'weekdays' in MVP. */
     recurrence: text('recurrence').notNull().default('{"kind":"weekdays"}'),
   },
@@ -144,6 +143,23 @@ export const habitPhases = sqliteTable(
     createdAt: integer('created_at').notNull(),
   },
   (t) => ({ lineIdx: index('habit_phases_line_idx').on(t.lineId) }),
+);
+
+// HabitBinding records (§5.5.0 / §10.2; v0.4+). habit ↔ rail
+// relationship. weekdays is a JSON-encoded number[] when set.
+export const habitBindings = sqliteTable(
+  'habit_bindings',
+  {
+    id: text('id').primaryKey(),
+    habitId: text('habit_id').notNull(),
+    railId: text('rail_id').notNull(),
+    weekdays: text('weekdays'), // JSON number[] or null
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => ({
+    habitIdx: index('habit_bindings_habit_idx').on(t.habitId),
+    railIdx: index('habit_bindings_rail_idx').on(t.railId),
+  }),
 );
 
 export const cycleDays = sqliteTable(
@@ -341,7 +357,6 @@ CREATE TABLE IF NOT EXISTS rails (
   color TEXT NOT NULL,
   icon TEXT,
   show_in_checkin INTEGER NOT NULL DEFAULT 1,
-  default_line_id TEXT,
   recurrence TEXT NOT NULL DEFAULT '{"kind":"weekdays"}'
 );
 CREATE INDEX IF NOT EXISTS rails_template_idx ON rails(template_key);
@@ -364,6 +379,16 @@ CREATE TABLE IF NOT EXISTS habit_phases (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS habit_phases_line_idx ON habit_phases(line_id);
+
+CREATE TABLE IF NOT EXISTS habit_bindings (
+  id TEXT PRIMARY KEY,
+  habit_id TEXT NOT NULL,
+  rail_id TEXT NOT NULL,
+  weekdays TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS habit_bindings_habit_idx ON habit_bindings(habit_id);
+CREATE INDEX IF NOT EXISTS habit_bindings_rail_idx ON habit_bindings(rail_id);
 
 CREATE TABLE IF NOT EXISTS cycle_days (
   cycle_id TEXT NOT NULL REFERENCES cycles(id) ON DELETE CASCADE,

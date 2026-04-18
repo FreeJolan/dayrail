@@ -60,6 +60,9 @@ export type EventType =
   // Habit-phase tracking (§5.5.0; v0.3.3+)
   | 'habit-phase.upserted'
   | 'habit-phase.removed'
+  // Habit bindings — habit ↔ rail relationship (§5.5.0; v0.4+)
+  | 'habit-binding.upserted'
+  | 'habit-binding.removed'
   // Auto-task materialization markers (§10.2; v0.4+)
   | 'auto-task-marker.set';
 

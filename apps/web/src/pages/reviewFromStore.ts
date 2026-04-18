@@ -48,6 +48,7 @@ export function deriveReviewData(
     | 'calendarRules'
     | 'shifts'
     | 'adhocEvents'
+    | 'habitBindings'
   >,
   input: DeriveReviewInput,
 ): ReviewScopeData {
@@ -72,10 +73,17 @@ export function deriveReviewData(
   }
 
   // Filter rails to those bound to the selected habit Line when
-  // habit scope is active. Rails without a `defaultLineId` (general-
-  // purpose rails) only surface in "all" view.
+  // habit scope is active. v0.4: the habit↔rail relationship lives
+  // in HabitBinding, not Rail.defaultLineId.
+  const railIdsForHabit = habitLineId
+    ? new Set(
+        Object.values(state.habitBindings)
+          .filter((b) => b.habitId === habitLineId)
+          .map((b) => b.railId),
+      )
+    : null;
   const rails = Object.values(state.rails).filter(
-    (r) => !habitLineId || r.defaultLineId === habitLineId,
+    (r) => !railIdsForHabit || railIdsForHabit.has(r.id),
   );
   const rows: HeatmapRow[] = [];
   let totalSlots = 0;

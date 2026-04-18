@@ -170,7 +170,7 @@ function railToEditable(rail: Rail): EditableRail {
     endMin,
     color: rail.color as RailColor,
     showInCheckin: rail.showInCheckin,
-    defaultLineId: rail.defaultLineId ?? null,
+    defaultLineId: null,
   };
 }
 
