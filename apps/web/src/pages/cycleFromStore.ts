@@ -257,6 +257,30 @@ function computeTopLines(
     });
 }
 
+/** Tasks that would be orphaned if day `date` flipped to template
+ *  `nextTemplateKey`. Orphans are tasks whose `slot` points at a Rail
+ *  that does NOT belong to the new template — they'd still carry
+ *  slot metadata, but no Cycle cell would render them. Callers
+ *  (`CycleView`'s override handler) use this to gate the switch
+ *  behind a small confirmation + batch `task.unscheduled`. */
+export function findOrphanTasksForTemplateSwitch(
+  state: Pick<DayRailState, 'tasks' | 'rails'>,
+  date: string,
+  nextTemplateKey: string,
+): Task[] {
+  const nextRailIds = new Set(
+    Object.values(state.rails)
+      .filter((r) => r.templateKey === nextTemplateKey)
+      .map((r) => r.id),
+  );
+  return Object.values(state.tasks).filter((t) => {
+    if (t.status === 'archived' || t.status === 'deleted') return false;
+    if (!t.slot) return false;
+    if (t.slot.date !== date) return false;
+    return !nextRailIds.has(t.slot.railId);
+  });
+}
+
 /** Unscheduled tasks that should appear in the Backlog drawer.
  *  Open-ended filter — includes anything not in a terminal state, not
  *  Rail-bound, and not backed by an active Ad-hoc. */

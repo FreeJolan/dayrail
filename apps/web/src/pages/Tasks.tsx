@@ -1,10 +1,11 @@
-import { forwardRef, useCallback, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import {
   Archive,
   ArchiveRestore,
   Calendar as CalendarIcon,
   Check,
+  ChevronRight,
   Circle,
   CircleDot,
   Inbox,
@@ -250,14 +251,11 @@ function ColorDot({ color }: { color?: Line['color'] }) {
 // Main panel: header · new-task input · filter bar · task list.
 // ------------------------------------------------------------------
 
-type StatusFilter = 'all' | 'open' | 'done';
-
 interface Filters {
-  status: StatusFilter;
   search: string;
 }
 
-const DEFAULT_FILTERS: Filters = { status: 'open', search: '' };
+const DEFAULT_FILTERS: Filters = { search: '' };
 
 function MainPanel({
   selection,
@@ -312,18 +310,6 @@ function MainPanel({
     const q = filters.search.trim().toLowerCase();
     return tasksInScope
       .filter((t) => {
-        if (selection.kind === 'archived' || selection.kind === 'trash') {
-          // Status filter is not meaningful — those views are already
-          // status-scoped.
-          return true;
-        }
-        if (filters.status === 'open') {
-          return t.status === 'pending' || t.status === 'in-progress';
-        }
-        if (filters.status === 'done') return t.status === 'done';
-        return true;
-      })
-      .filter((t) => {
         if (!q) return true;
         return (
           t.title.toLowerCase().includes(q) ||
@@ -331,7 +317,21 @@ function MainPanel({
         );
       })
       .sort((a, b) => a.order - b.order);
-  }, [tasksInScope, filters, selection.kind]);
+  }, [tasksInScope, filters]);
+
+  // Split into the two collapsible groups for inbox / line views.
+  // Archived / trash don't split — they're status-scoped lists already.
+  const openTasks = useMemo(
+    () =>
+      filteredTasks.filter(
+        (t) => t.status === 'pending' || t.status === 'in-progress',
+      ),
+    [filteredTasks],
+  );
+  const doneTasks = useMemo(
+    () => filteredTasks.filter((t) => t.status === 'done'),
+    [filteredTasks],
+  );
 
   const handleCreate = useCallback(
     (title: string) => {
@@ -426,33 +426,51 @@ function MainPanel({
         <NewTaskInput onCreate={handleCreate} placeholder="+ 新任务 · Enter" />
       )}
 
-      <FilterBar
-        filters={filters}
-        onChange={setFilters}
-        hideStatus={isTrash || isArchived}
-      />
+      <FilterBar filters={filters} onChange={setFilters} />
 
-      {filteredTasks.length === 0 ? (
-        <EmptyState selection={selection} hasQuery={filters.search.length > 0} />
-      ) : (
-        <TaskList
-          tasks={filteredTasks}
-          linesMap={linesMap}
-          showProjectPill={isArchived || isTrash}
-          onToggleDone={(task) =>
+      {(() => {
+        const rowProps = {
+          linesMap,
+          onToggleDone: (task: Task) =>
             void updateTask(task.id, {
               status: task.status === 'done' ? 'pending' : 'done',
-              doneAt: task.status === 'done' ? undefined : new Date().toISOString(),
-            })
-          }
-          onArchive={(task) => void archiveTask(task.id)}
-          onRestore={(task) => void restoreTask(task.id)}
-          onDelete={(task) => void deleteTask(task.id)}
-          onPurge={handlePurge}
-          isTrash={isTrash}
-          isArchived={isArchived}
-        />
-      )}
+              doneAt:
+                task.status === 'done'
+                  ? undefined
+                  : new Date().toISOString(),
+            }),
+          onArchive: (task: Task) => void archiveTask(task.id),
+          onRestore: (task: Task) => void restoreTask(task.id),
+          onDelete: (task: Task) => void deleteTask(task.id),
+          onPurge: handlePurge,
+        };
+        if (isTrash || isArchived) {
+          return filteredTasks.length === 0 ? (
+            <EmptyState
+              selection={selection}
+              hasQuery={filters.search.length > 0}
+            />
+          ) : (
+            <TaskList
+              tasks={filteredTasks}
+              showProjectPill
+              isTrash={isTrash}
+              isArchived={isArchived}
+              {...rowProps}
+            />
+          );
+        }
+        return (
+          <GroupedTaskList
+            openTasks={openTasks}
+            doneTasks={doneTasks}
+            searchActive={filters.search.trim().length > 0}
+            selection={selection}
+            hasQuery={filters.search.length > 0}
+            {...rowProps}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -587,35 +605,12 @@ function NewTaskInput({
 function FilterBar({
   filters,
   onChange,
-  hideStatus,
 }: {
   filters: Filters;
   onChange: (next: Filters) => void;
-  hideStatus?: boolean;
 }) {
-  const statusChips: Array<{ key: StatusFilter; label: string }> = [
-    { key: 'open', label: '未完成' },
-    { key: 'done', label: '已完成' },
-    { key: 'all', label: '全部' },
-  ];
   return (
     <div className="flex flex-wrap items-center gap-2">
-      {!hideStatus &&
-        statusChips.map((c) => (
-          <button
-            key={c.key}
-            type="button"
-            onClick={() => onChange({ ...filters, status: c.key })}
-            className={clsx(
-              'rounded-sm px-2.5 py-1 text-xs font-medium transition',
-              filters.status === c.key
-                ? 'bg-ink-primary text-surface-0'
-                : 'bg-surface-1 text-ink-secondary hover:bg-surface-2 hover:text-ink-primary',
-            )}
-          >
-            {c.label}
-          </button>
-        ))}
       <label className="ml-auto flex h-8 items-center gap-2 rounded-md border border-hairline/60 bg-surface-0 px-2.5 transition hover:border-hairline focus-within:border-ink-secondary">
         <Search className="h-3.5 w-3.5 shrink-0 text-ink-tertiary" strokeWidth={1.6} />
         <input
@@ -627,6 +622,152 @@ function FilterBar({
         />
       </label>
     </div>
+  );
+}
+
+// ------------------------------------------------------------------
+// Grouped list — open + completed, each section collapsible.
+// ------------------------------------------------------------------
+
+function GroupedTaskList({
+  openTasks,
+  doneTasks,
+  searchActive,
+  selection,
+  hasQuery,
+  linesMap,
+  onToggleDone,
+  onArchive,
+  onRestore,
+  onDelete,
+  onPurge,
+}: {
+  openTasks: Task[];
+  doneTasks: Task[];
+  searchActive: boolean;
+  selection: Selection;
+  hasQuery: boolean;
+  linesMap: Record<string, Line>;
+  onToggleDone: (task: Task) => void;
+  onArchive: (task: Task) => void;
+  onRestore: (task: Task) => void;
+  onDelete: (task: Task) => void;
+  onPurge: (task: Task) => void;
+}) {
+  const [openExpanded, setOpenExpanded] = useState(true);
+  const [doneExpanded, setDoneExpanded] = useState(false);
+
+  // Auto-expand the Completed section whenever Open is empty — "you're
+  // done, look back at what you did" flips the defaults.
+  useEffect(() => {
+    if (openTasks.length === 0) setDoneExpanded(true);
+  }, [openTasks.length]);
+
+  // Search overrides manual collapse state — if the user is typing a
+  // query, both matching groups open so their results are visible.
+  const showOpenBody = searchActive || openExpanded;
+  const showDoneBody = searchActive || doneExpanded;
+
+  if (openTasks.length === 0 && doneTasks.length === 0) {
+    return <EmptyState selection={selection} hasQuery={hasQuery} />;
+  }
+
+  const listRowProps = {
+    linesMap,
+    onToggleDone,
+    onArchive,
+    onRestore,
+    onDelete,
+    onPurge,
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Section
+        label="未完成"
+        count={openTasks.length}
+        expanded={showOpenBody}
+        onToggle={() => setOpenExpanded((v) => !v)}
+        locked={searchActive}
+      >
+        {openTasks.length === 0 ? (
+          <p className="px-1 py-3 text-sm text-ink-tertiary">
+            都搞定了 ✓
+          </p>
+        ) : (
+          <TaskList
+            tasks={openTasks}
+            showProjectPill={selection.kind === 'inbox'}
+            isTrash={false}
+            isArchived={false}
+            {...listRowProps}
+          />
+        )}
+      </Section>
+      {doneTasks.length > 0 && (
+        <Section
+          label="已完成"
+          count={doneTasks.length}
+          expanded={showDoneBody}
+          onToggle={() => setDoneExpanded((v) => !v)}
+          locked={searchActive}
+        >
+          <TaskList
+            tasks={doneTasks}
+            showProjectPill={selection.kind === 'inbox'}
+            isTrash={false}
+            isArchived={false}
+            {...listRowProps}
+          />
+        </Section>
+      )}
+    </div>
+  );
+}
+
+function Section({
+  label,
+  count,
+  expanded,
+  onToggle,
+  locked,
+  children,
+}: {
+  label: string;
+  count: number;
+  expanded: boolean;
+  onToggle: () => void;
+  locked: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <section>
+      <button
+        type="button"
+        onClick={locked ? undefined : onToggle}
+        disabled={locked}
+        className={clsx(
+          'group flex w-full items-center gap-2 py-1.5 text-left transition',
+          locked ? 'cursor-default' : 'hover:text-ink-primary',
+        )}
+      >
+        <ChevronRight
+          aria-hidden
+          className={clsx(
+            'h-3.5 w-3.5 text-ink-tertiary transition-transform',
+            expanded && 'rotate-90',
+          )}
+          strokeWidth={1.8}
+        />
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-secondary group-hover:text-ink-primary">
+          {label}
+        </span>
+        <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+          {count}
+        </span>
+      </button>
+      {expanded && <div className="pt-1">{children}</div>}
+    </section>
   );
 }
 
