@@ -277,6 +277,7 @@ function MainPanel({
   const archiveTask = useStore((s) => s.archiveTask);
   const restoreTask = useStore((s) => s.restoreTask);
   const deleteTask = useStore((s) => s.deleteTask);
+  const purgeTask = useStore((s) => s.purgeTask);
 
   // Narrow the tasks map to what this selection cares about, before
   // the search/status filters run. Filtering by selection first keeps
@@ -376,9 +377,50 @@ function MainPanel({
   const isTrash = selection.kind === 'trash';
   const isArchived = selection.kind === 'archived';
 
+  const handlePurge = useCallback(
+    (task: Task) => {
+      const msg = `永久删除「${task.title}」？\n这个操作不可撤销。`;
+      if (!window.confirm(msg)) return;
+      void purgeTask(task.id);
+    },
+    [purgeTask],
+  );
+
+  const handleEmptyTrash = useCallback(() => {
+    const deleted = Object.values(tasksMap).filter(
+      (t) => t.status === 'deleted',
+    );
+    if (deleted.length === 0) return;
+    const msg = `清空回收站？将永久删除 ${deleted.length} 条任务，不可撤销。`;
+    if (!window.confirm(msg)) return;
+    for (const t of deleted) void purgeTask(t.id);
+  }, [purgeTask, tasksMap]);
+
+  const trashCount = useMemo(
+    () =>
+      Object.values(tasksMap).filter((t) => t.status === 'deleted').length,
+    [tasksMap],
+  );
+
   return (
     <div className="flex w-full max-w-[960px] flex-col gap-6 px-10 py-10">
-      <PageHeader overline={overline} title={title} selection={selection} />
+      <PageHeader
+        overline={overline}
+        title={title}
+        selection={selection}
+        rightSlot={
+          isTrash && trashCount > 0 ? (
+            <button
+              type="button"
+              onClick={handleEmptyTrash}
+              className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs text-ink-tertiary transition hover:bg-surface-2 hover:text-red-500"
+            >
+              <Trash2 className="h-3.5 w-3.5" strokeWidth={1.6} />
+              清空回收站 · {trashCount}
+            </button>
+          ) : null
+        }
+      />
 
       {canCreate && (
         <NewTaskInput onCreate={handleCreate} placeholder="+ 新任务 · Enter" />
@@ -406,6 +448,7 @@ function MainPanel({
           onArchive={(task) => void archiveTask(task.id)}
           onRestore={(task) => void restoreTask(task.id)}
           onDelete={(task) => void deleteTask(task.id)}
+          onPurge={handlePurge}
           isTrash={isTrash}
           isArchived={isArchived}
         />
@@ -422,10 +465,12 @@ function PageHeader({
   overline,
   title,
   selection,
+  rightSlot,
 }: {
   overline: string;
   title: string;
   selection: Selection;
+  rightSlot?: React.ReactNode;
 }) {
   const tasksMap = useStore((s) => s.tasks);
 
@@ -469,12 +514,15 @@ function PageHeader({
             {title}
           </h2>
         </div>
-        {stats && stats.total > 0 && (
-          <span className="font-mono text-sm tabular-nums text-ink-secondary">
-            {stats.done}
-            <span className="text-ink-tertiary">/{stats.total}</span> 任务
-          </span>
-        )}
+        <div className="flex items-center gap-4">
+          {stats && stats.total > 0 && (
+            <span className="font-mono text-sm tabular-nums text-ink-secondary">
+              {stats.done}
+              <span className="text-ink-tertiary">/{stats.total}</span> 任务
+            </span>
+          )}
+          {rightSlot}
+        </div>
       </div>
       {stats?.hasMilestone && (
         <div className="flex items-center gap-3">
@@ -594,6 +642,7 @@ function TaskList({
   onArchive,
   onRestore,
   onDelete,
+  onPurge,
   isTrash,
   isArchived,
 }: {
@@ -604,6 +653,7 @@ function TaskList({
   onArchive: (task: Task) => void;
   onRestore: (task: Task) => void;
   onDelete: (task: Task) => void;
+  onPurge: (task: Task) => void;
   isTrash: boolean;
   isArchived: boolean;
 }) {
@@ -618,6 +668,7 @@ function TaskList({
             onArchive={() => onArchive(task)}
             onRestore={() => onRestore(task)}
             onDelete={() => onDelete(task)}
+            onPurge={() => onPurge(task)}
             isTrash={isTrash}
             isArchived={isArchived}
           />
@@ -634,6 +685,7 @@ function TaskRow({
   onArchive,
   onRestore,
   onDelete,
+  onPurge,
   isTrash,
   isArchived,
 }: {
@@ -643,6 +695,7 @@ function TaskRow({
   onArchive: () => void;
   onRestore: () => void;
   onDelete: () => void;
+  onPurge: () => void;
   isTrash: boolean;
   isArchived: boolean;
 }) {
@@ -701,7 +754,7 @@ function TaskRow({
               icon={<Undo2 className="h-3.5 w-3.5" strokeWidth={1.8} />}
             />
             <IconAction
-              onClick={() => window.alert('永久删除在 Chunk G 接入。')}
+              onClick={onPurge}
               label="永久删除"
               title="永久删除（不可恢复）"
               icon={<Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} />}
