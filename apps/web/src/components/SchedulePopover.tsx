@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import { Check } from 'lucide-react';
 import { toIsoDate, useStore, type Rail, type Task } from '@dayrail/core';
+import { pickTemplateForDate } from '@/pages/cycleFromStore';
 import {
   Popover,
   PopoverContent,
@@ -13,10 +14,11 @@ import { RAIL_COLOR_HEX } from './railColors';
 //   A · Bind to a Rail on the chosen date (default)
 //   B · Free time window (backed by an AdhocEvent)
 //
-// Pre-v0.3 simplification: CalendarRule isn't wired yet, so mode A
-// lists every Rail the user has — grouped by Template — regardless
-// of which Template fires on the chosen date. Once Cycle → Template
-// mapping lands we'll narrow the list.
+// Mode A narrows the Rail list to the Template that resolves for the
+// selected date (CalendarRule → weekday heuristic). Rails from other
+// Templates are still reachable via the fallback group at the bottom
+// for users who want to pin across templates without editing rules
+// first.
 
 type Mode = 'rail' | 'free';
 
@@ -40,6 +42,7 @@ export function SchedulePopover({ task, children }: Props) {
 function Body({ task, onDone }: { task: Task; onDone: () => void }) {
   const railsMap = useStore((s) => s.rails);
   const templatesMap = useStore((s) => s.templates);
+  const calendarRules = useStore((s) => s.calendarRules);
   const adhocsMap = useStore((s) => s.adhocEvents);
   const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
   const scheduleTaskFreeTime = useStore((s) => s.scheduleTaskFreeTime);
@@ -67,23 +70,36 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
   const [startMin, setStartMin] = useState(initialStart);
   const [endMin, setEndMin] = useState(initialStart + initialDuration);
 
+  const resolvedTemplateKey = useMemo(
+    () => pickTemplateForDate({ templates: templatesMap, calendarRules }, date),
+    [templatesMap, calendarRules, date],
+  );
+
   const railOptions = useMemo(() => {
     const rails = Object.values(railsMap).sort(
       (a, b) => a.startMinutes - b.startMinutes,
     );
-    // Group by templateKey for clarity.
     const groups = new Map<string, Rail[]>();
     for (const r of rails) {
       const list = groups.get(r.templateKey) ?? [];
       list.push(r);
       groups.set(r.templateKey, list);
     }
-    return [...groups.entries()].map(([templateKey, rs]) => ({
+    // Surface the template that actually fires on this date first; the
+    // rest still render in `templatesMap` order so cross-template
+    // scheduling stays one click away.
+    const entries = [...groups.entries()].sort(([a], [b]) => {
+      if (a === resolvedTemplateKey) return -1;
+      if (b === resolvedTemplateKey) return 1;
+      return 0;
+    });
+    return entries.map(([templateKey, rs]) => ({
       templateKey,
       templateName: templatesMap[templateKey]?.name ?? templateKey,
       rails: rs,
+      active: templateKey === resolvedTemplateKey,
     }));
-  }, [railsMap, templatesMap]);
+  }, [railsMap, templatesMap, resolvedTemplateKey]);
 
   const canConfirm =
     mode === 'rail'
@@ -155,7 +171,10 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
               >
                 <option value="">选择 Rail…</option>
                 {railOptions.map((g) => (
-                  <optgroup key={g.templateKey} label={g.templateName}>
+                  <optgroup
+                    key={g.templateKey}
+                    label={g.active ? `${g.templateName} · 当天模板` : g.templateName}
+                  >
                     {g.rails.map((r) => (
                       <option key={r.id} value={r.id}>
                         {formatRailOption(r)}
