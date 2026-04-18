@@ -15,6 +15,12 @@ import {
 } from '@/components/CycleSection';
 import { BacklogDrawer } from '@/components/BacklogDrawer';
 import { EditSessionIndicator } from '@/components/EditSessionIndicator';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/primitives/Popover';
+import { clsx } from 'clsx';
 import type { CycleDay, CycleSlot } from '@/data/sampleCycle';
 import type { RailColor } from '@/data/sample';
 import {
@@ -24,6 +30,11 @@ import {
   startOfWeekMonday,
   toIsoDate,
 } from './cycleFromStore';
+import {
+  cycleLabel,
+  cycleRangeLabel,
+  enumerateCycles,
+} from './cycleNotation';
 
 // ERD §5.3 Cycle View, v0.3 with a real Edit Session (§5.3.1).
 // Every mutation from this page (drag-drop, template override, slot
@@ -266,10 +277,11 @@ export function CycleView() {
     <div className="flex min-h-screen w-full">
       <div className="flex min-w-0 flex-1 flex-col pl-10 pr-6 xl:pl-14">
         <TopBar
-          label={formatWeekLabel(cycle.startDate, cycle.endDate)}
+          anchorDate={anchorDate}
           onPrev={() => shiftWeek(-7)}
           onNext={() => shiftWeek(7)}
           onToday={() => setAnchorDate(new Date())}
+          onPickCycle={(monday) => setAnchorDate(monday)}
           changeCount={changeCount}
           onUndoSession={handleUndoSession}
         />
@@ -322,20 +334,27 @@ export function CycleView() {
 }
 
 function TopBar({
-  label,
+  anchorDate,
   onPrev,
   onNext,
   onToday,
+  onPickCycle,
   changeCount,
   onUndoSession,
 }: {
-  label: string;
+  anchorDate: Date;
   onPrev: () => void;
   onNext: () => void;
   onToday: () => void;
+  onPickCycle: (monday: Date) => void;
   changeCount: number;
   onUndoSession: () => void;
 }) {
+  const monday = startOfWeekMonday(anchorDate);
+  const labelText = cycleLabel(monday);
+  const rangeText = cycleRangeLabel(monday);
+  const todayMondayIso = toIsoDate(startOfWeekMonday(new Date()));
+  const isCurrentCycle = toIsoDate(monday) === todayMondayIso;
   return (
     <header className="sticky top-0 z-40 -mx-10 flex h-[52px] items-center justify-between gap-4 bg-surface-0 px-10">
       <div className="flex items-center gap-2">
@@ -346,19 +365,23 @@ function TopBar({
           <button
             type="button"
             onClick={onPrev}
-            aria-label="Previous week"
+            aria-label="Previous cycle"
             className="rounded-sm p-1 text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
           >
             <ChevronLeft className="h-3.5 w-3.5" strokeWidth={1.8} />
           </button>
-          <Calendar className="h-3.5 w-3.5 text-ink-tertiary" strokeWidth={1.6} />
-          <span className="font-mono text-sm tabular-nums text-ink-primary">
-            {label}
-          </span>
+          <CyclePickerTrigger
+            anchorDate={anchorDate}
+            labelText={labelText}
+            rangeText={rangeText}
+            isCurrentCycle={isCurrentCycle}
+            onPick={onPickCycle}
+            onToday={onToday}
+          />
           <button
             type="button"
             onClick={onNext}
-            aria-label="Next week"
+            aria-label="Next cycle"
             className="rounded-sm p-1 text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
           >
             <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.8} />
@@ -390,6 +413,108 @@ function TopBar({
   );
 }
 
+function CyclePickerTrigger({
+  anchorDate,
+  labelText,
+  rangeText,
+  isCurrentCycle,
+  onPick,
+  onToday,
+}: {
+  anchorDate: Date;
+  labelText: string;
+  rangeText: string;
+  isCurrentCycle: boolean;
+  onPick: (monday: Date) => void;
+  onToday: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const groups = useMemo(() => enumerateCycles(anchorDate), [anchorDate]);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 text-left transition hover:bg-surface-2"
+        >
+          <Calendar
+            className="h-3.5 w-3.5 text-ink-tertiary"
+            strokeWidth={1.6}
+          />
+          <span className="font-mono text-sm tabular-nums text-ink-primary">
+            {labelText}
+          </span>
+          <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+            · {rangeText}
+          </span>
+          {isCurrentCycle && (
+            <span className="rounded-sm bg-ink-primary px-1 font-mono text-[9px] uppercase tracking-widest text-surface-0">
+              当前
+            </span>
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        sideOffset={6}
+        className="max-h-[420px] w-[260px] overflow-y-auto p-1"
+      >
+        <div className="flex items-center justify-between px-3 pb-1 pt-1.5">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            Cycles
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              onToday();
+              setOpen(false);
+            }}
+            className="rounded-sm px-1.5 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            回到当前
+          </button>
+        </div>
+        {groups.map((g) => (
+          <div key={`${g.year}-${g.month}`} className="flex flex-col">
+            <span className="px-3 pb-0.5 pt-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary/80">
+              {g.label}
+            </span>
+            {g.entries.map((entry) => {
+              const active = toIsoDate(entry.monday) === toIsoDate(anchorDate);
+              return (
+                <button
+                  key={entry.startIso}
+                  type="button"
+                  onClick={() => {
+                    onPick(entry.monday);
+                    setOpen(false);
+                  }}
+                  className={clsx(
+                    'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition',
+                    active ? 'bg-surface-2' : 'hover:bg-surface-2',
+                  )}
+                >
+                  <span className="font-mono text-xs text-ink-primary">
+                    {entry.cycleLabel}
+                  </span>
+                  <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+                    {entry.rangeLabel}
+                  </span>
+                  {entry.isCurrent && (
+                    <span className="ml-auto rounded-sm bg-ink-primary px-1 font-mono text-[9px] uppercase tracking-widest text-surface-0">
+                      当前
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function CycleFooter({
   cycle,
   groupCount,
@@ -407,10 +532,3 @@ function CycleFooter({
   );
 }
 
-function formatWeekLabel(startIso: string, endIso: string): string {
-  const start = new Date(`${startIso}T00:00:00`);
-  const end = new Date(`${endIso}T00:00:00`);
-  const fmt = (d: Date) =>
-    d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
-  return `${fmt(start)} – ${fmt(end)}`;
-}
