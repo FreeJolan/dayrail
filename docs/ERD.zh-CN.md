@@ -1,6 +1,6 @@
 # DayRail 产品设计文档（ERD）
 
-> **状态**：活文档 —— 这里的任何决策都可以被推翻。最近更新 2026-04-19（数据模型一致性大整理 · v0.4 基石）。合并发布六件事：(1) §10 新增"**三轴速览**" + "**完成状态归属规则**"——Line / Rail × Template × Time / Task 三轴正交，`Task.status` 成为所有完成语义的单一真源，RailInstance 收窄为"墙钟日志"（actualStart/End + Shift 标签），不再和 Task.status 并列承担"做没做"的问题。修掉 v0.3 遗留的"Tasks 页勾完成但 Today Track 仍显 pending"这类一致性裂缝。(2) habit 的"每次发生"改为一条 **auto-task**（幂等 id = `task-auto-{habitId}-{date}`，`lineId = habitId`，`title = habit.name`）。habit Line 硬约束"下不持有手工 Task"；NewTaskInput 永不暴露给 habit 详情页。habit 和 project 完全对齐完成路径 —— Today Track / Pending / Review 全部查 Task.status。(3) §10.2 定下 Auto-task 物化策略 Ⅱ · **按需 on-demand**，触发点：Today Track boot / Cycle View 切换 / 节奏带打开 / Calendar 翻月 / Review 切 scope / 节奏带点回填。每个 `(habitId, cycleId)` 物化一次就打标记，后续不重算；幂等 id 兜底。(4) §10.3 定下 Habit 配置变更规则：改 Rail 的 recurrence / 时间 / templateKey / defaultLineId 之一时，扫 `[今天, 最远已物化 cycle 末尾]`，**只影响** `status='pending' AND plannedStart > now` 的 auto-task（purge + 按新配置补齐），已完成 / 跳过 / 归档的保留。三类事件（task.purged + task.created + rail.updated）在同一个 Edit Session 下，一键回滚。保存前 confirm。(5) §5.5.0 加 **A+B 节奏带交互**：A 只读 + B 点击回填（done / skipped / shifted / clear），点未物化格子现场 upsert。主路（今天）在 Today Track，兜底（忘标 / 漏开 app / 事后补打）在节奏带原地。(6) §5.5.0 **明确关闭** "habit 和 Rail 合并为单一实体"的开放问题 —— 当前三轴分离是特性不是债：Template = 结构不同的一天，habit 是"安排*进*一天的活动"不是"凌驾*于*日历的 cron"，新建模板时重新安排 habit 本来就是 Template 的题中之义。原"跨模板抄很多 rail"、"请病假 habit 不 fire"、"新模板要手动迁移"三个 framing 统一翻转：这些都不是痛点，是设计。§5.6 / §5.7 / §5.8 写路径全部改为读写 Task.status，RailInstance.status 字段在 v0.4 进入 deprecated 状态（保留到 v0.5 清理）。历史：2026-04-18（§5.5.0 Habits 视图心智校正（v0.4 锚点）：用户视角 **habit = 一件反复发生的事**，不是"一堆 Task 的桶"。Project 是 N 个 Task 聚成一个目标；Habit 是 1 件带 recurrence 的事。Habit Line 增加硬约束"不持有 Task"；habit 详情页去 Project 化——去掉 NewTaskInput / FilterBar / GroupedTaskList，改为"名 + 色 + 当前 phase" → 近 14 天节奏带 → 绑定 Rail 列表 → Phase 时间线 → 备注 → Danger。曾讨论过的"habit 下折叠 Task 小抽屉"（B 方案）明确放弃，方向不一致的心智代价 > 杂事便利。`Line.kind='habit'` 最终是否并入 Rail 族合并为单实体留作 schema 级开放问题，本次不碰。历史：2026-04-18（§5.5.0 Habits 真实装（v0.3.3）：habit 分两档——"简单 habit"（默认，为保持固定强度而做，不暴露 phase 概念）和"进阶 habit"（opt-in，手动启用 phase 追踪后可加任意多个时间段标签）。HabitPhase 是纯用户定义的时间段 label（`{ name, description?, startDate }`），没有 endDate、没有预设枚举、没有自动升降、没有 streak / 完成率派生——这些都延到 v0.4 Review 集成。"启用 / 未启用"完全从关联 HabitPhase 记录数派生，不加 `Line.phaseEnabled` 冗余字段。§10 原先 over-engineered 的 `type Phase`（带 advanceRule / railOverrides）下架，换成 `type HabitPhase`；`type Line` 的 phases/currentPhaseId/tasks 内嵌字段拿掉，`kind` 作为 union discriminator，关联数据走独立实体；`Line.createdAt` / `archivedAt` / `deletedAt` 统一到 `number` (epoch ms) 对齐实装。新事件 `habit-phase.upserted` / `habit-phase.removed`。历史：2026-04-18（§5.3.1 Edit Session v0.3 扩到 Cycle View：进入 `/cycle` 开隐式会话；CycleDay 模板切换、Slot drag-drop 排 / 撤排、slot popover "移除排期" / "标记完成"、空格 quick-create、orphan 守护批量 unschedule 全部挂同一 `sessionId`；顶栏常驻"⤺ 撤销本次编辑 · N"按钮一键回滚整批，离开或 15 min idle 自动关。Core 侧对 `overrideCycleDay` / `clearCycleDayOverride` / `scheduleTaskToRail` / `unscheduleTask` / `createTask` / `updateTask` 全部加 optional `sessionId` 参数，appendEvent 带上后 `undoEditSession` 的 drop-session-events 直接一并回滚。单条撤销路径（slot popover 移除 / CycleDay 恢复默认）保留。历史：2026-04-18（§5.4 CalendarRule v0.3 高级规则开动：weekday / cycle / date-range 三种 kind 的 typed `value` + resolver + UI 全部上线。Resolver 按 priority desc 遍历所有规则（single-date 100 > date-range 50 > cycle 30 > weekday 10），miss 才回退内置启发。weekday 规则首次启动自动 seed（workday 覆盖周一-五 / restday 覆盖周末），行为与旧硬编码启发等价、无 breaking change、OPFS 不用清。"高级日历规则" drawer 重新挂上：四段（single-date / date-range / cycle / weekday），每段列表 + 新建 form + 删除；v0.3 采"删 + 重建"，真 in-place edit 留 v0.3.1；drawer **不**走 §5.3.1 Edit Session（即时持久化，与 Cycle View 同策略）。§10 CalendarRule 类型块补 typed value variants + v0.3 实装规矩；§5.4 drawer 小节同步细化。历史：2026-04-18（路由库 + URL 结构拍板：v0.2 用 `react-router-dom` v6，不上 `@tanstack/router`——类型化 params 的卖点对当前复杂度溢价过高；URL 结构 `/` / `/cycle` / `/tasks` + `/tasks/inbox` / `/tasks/line/:lineId` / `/tasks/archived` / `/tasks/trash` / `/review` / `/pending` / `/calendar` / `/templates` / `/templates/:key` / `/settings` / `/settings/:section`。进 URL 的状态：Tasks selection、Settings section、Template tab；搜索 / 过滤 chip / Cycle anchorDate 留本地 state 不入 URL。详见 `docs/v0.2-plan.md §3`。历史：2026-04-18（§5.3 Cycle View 顶部 DAYS 区块合并：原"顶部大 header（跨所有 section、唯一）"取消；section mini-header 从只读升级为**唯一**模板切换入口——每个日期格本身就是触发器，点开同一套 popover（模板列表 + 覆盖态时多一条"恢复默认"），overridden 指示点从顶部 DayButton 挪进 mini-header 的日期格。理由：两处 DAYS 行信息重复、顶部区块和 sticky summary strip 挤占纵向空间；保留"一件事一个入口"——只是入口从"顶部唯一 master"挪成"每个 section 的 mini-header 里自己那几天"。历史：2026-04-18（§5.3 Cycle View 切换模板时的 orphan-task 守护：旧模板下的 Rail 被新模板"切走"时，已排到这些 Rail 的 task 会被静默孤立；现在加一层确认——N=0 静默切，N>0 弹 `将移出 N 个已排任务 · 继续 / 取消`，continue 后批量 `task.unscheduled` 再写规则；"恢复默认"同规则。§5.5 Tasks 视图列表形态调整：状态 chip 从顶部移除，列表主体改为"未完成 / 已完成"两段折叠——未完成展开、已完成默认折叠、未完成空时已完成自动展开并在位置放"都搞定了 ✓"；Archived / Trash 仍只在左栏有入口；搜索命中时两段都展开。历史：2026-04-18（Cycle View CalendarRule 持久化：§5.3 的 CycleDay 模板切换从"本地 state"改为即时写 `calendar-rule.upserted` / `calendar-rule.removed` 事件；`cr-single-{date}` 去重 id；§5.3.1 Edit Session v0.2 范围收窄到只剩 Template Editor，Cycle View 会话级 undo 推迟到 v0.3，面内的误触回退由 Slot popover 的"移除排期" + CycleDay 的"恢复默认"两条单条动作承担；§10 CalendarRule 补 v0.2 实装细则——只 single-date 生效、id 规则、priority=100、事件形态）。历史：2026-04-18（§5.5 从 `Projects / Lines View` 重构为 `Tasks 视图`，定位为"任务管理主入口"—— 侧栏导航树（随手记 + Projects + Habits + 回收站）+ 跨 Project 的 task 列表 / 搜索 / 过滤 + 排期 popover 两种模式（绑 Rail · 默认 / 自由时间 · 逃生口）；新增内置 Inbox Line（`isDefault: true`、不可删）作为"不挑 Project"的 task 默认容器；全面可逆性 + 软删除模型（Task / Line / AdhocEvent 状态加 `'deleted'`，回收站入口 + 二次确认的硬删 `*.purged`）；`AdhocEvent` 加 `taskId` 字段承接自由时间模式排期；Project 进度条改为条件渲染（仅有 milestone task 时显示），任务数永远显示；开放式 Project（无 plannedEnd）明确不计为风险；§10 Task/Line/AdhocEvent 类型定义同步更新；术语精简：`Chunk` 统一改 `Task`（types + events + schema + UI + ERD 全路径改名），降低 jargon 负担；`Line` 作为内部容器类型保留（`kind: 'project' \| 'habit' \| 'group'` 的 union 父类），但**UI 里永远展示具体形态 Project / Habit / Group / Tag**，不再出现"Line"这个字；`Pending` view 改名 `待决定 / Unresolved` 和 `status='pending'` 解耦；§5.7 Pending 不做 24h 老化，成为"等待决定"全集，check-in 条是其"近 24h"的子集）。历史：2026-04-17（check-in 动作集简化：旧的 `完成/跳过/Shift/忽略` 四按钮 + 四子动作 sheet 合并为三按钮 `完成 / 以后再说 / 归档`；`RailInstance.status` 改为 `pending / done / deferred / archived`（`active / skipped` 弃用，"当前进行中"纯墙钟派生）；Shift sheet 替换为 6 秒 Reason toast（3 枚快速 tag chip + undo，无强制 reason）；Postpone / Replace / Swap / Resize 从 Shift 类型里下架，Postpone 交给 Cycle View 拖拽，其余留 v0.3 重评；Pending 队列重命名并收编 `deferred` 条目 + 超 24h stale 的 pending —— 两个来源一个出口；§5.8 Review 热力图三分语义改绑 `deferred / archived / pending-stale`）。历史：2026-04-16（A 组 UI 底线：同步状态徽章、Now View 节奏条、Ad-hoc 叠层、编辑会话通用化、Cycle 记号改 C1、日期格式表落地；B 组 Now View 结构：多 Task pill 行、Slot 三形态、Next Rail 视觉、去掉铁轨副视图、`CURRENT RAIL` chip、Now 顶栏 `Now` + Mono 副标；C 组 Today Track Shift 交互：Skipped 态改 hatching、桌面 hover 出动作栏、Active 主 CTA 改 tonal `Done`、统一 Shift 标签 sheet、去 bento 保留单条时间线；D 组 Cycle View 骨架：按 Template 堆叠 section、顶部 day header 唯一模板切换入口、Cycle pager picker、summary strip 聚合、`⤺ 撤销本次编辑` 按钮、hatching 三分语义、Backlog 变 split drawer；E 组 Template Editor：删 Save 按钮 / 首次进入 inline 引导、Radix 10 色 popover、顶栏 tab + 2px 色条 + dashed `+ 新建模板`、summary strip 聚合、card 式 Rail 行 + time pill popover picker、行间 gap chip `+ 填充 Rail`、`⋯` 行菜单放 Line 绑定 / check-in toggle；通知重审：删 OS push / Capacitor 通知 / 通知权限链路，Signal 塌缩为 `showInCheckin` 布尔，§5.6 / §5.7 合成一条主线 —— check-in 条 + Pending 队列是同一机制前后两个时态；F 组 缺失页面：Projects / Settings 共用 master-detail 形态，Review 单尺度瀑布 + 节奏匹配度热力图（状态染色 + hatching 三分语义），Pending 队列按日期反序 + 每行 4 动作 + 侧栏 `·` 小点不显数字，Calendar 月历网格 + 点日弹 popover + 高级规则 drawer 四 section，新增 §5.9 Settings 定 5 section + 主题三档默认跟随系统 + i18n 语言在外观 / 时间制 + AI locale 在高级；G 组 设计语言：Terracotta CTA 用 `orange-9/10/11` 三档纯色不用渐变；No-Line Rule 明文白名单（装饰色条 + sticky hairline + focus ring）；Surface 四档 `sand-1..4` 取代 `border` 表达层级；圆角 token `sharp / sm / md / lg` = `0 / 6 / 10 / 16`；整站零 glassmorphism；非对称为默认布局。视觉实装阶段调整：Rail 色板从原 10 色剔除 `olive / mauve / gray`（与 sage / slate 近乎同色、或失去色相识别度），换入 `grass / indigo / plum` 覆盖饱和绿 / 冷静蓝 / 创作紫空位，保持 10 色不变但辨识度拉满；CN 主字体从 PingFang 改为 Noto Sans SC（思源黑体）以获得跨平台一致渲染。Terracotta CTA 从 `orange-9` 实测过于鲜亮，改绑 `bronze-9` 以贴合 ERD 原意的 #C97B4A 暖赭石基调）。
+> **状态**：活文档 —— 这里的任何决策都可以被推翻。最近更新 2026-04-19（v0.4 habit 绑定收敛 + Task 编辑面铺开）。四件事一起定：(1) 新增 `HabitBinding` 实体（habitId + railId + 可选 weekdays 过滤器），取代原来 `Rail.defaultLineId === habit.id` 的绑定方式；修掉"两个 habit 同一时段不同 weekday 会在同一 template 里挤两条 rail"的结构性扭曲。(2) `Rail.defaultLineId` 字段彻底删除，曾承担的两个职责分别交给 `HabitBinding` 和"以后真需要再加"。Cycle quick-create 默认落 Inbox。(3) Today Track RailCard + Cycle View slot popover 都接入 TaskDetailDrawer，可以就地改备注 / 子任务 / 里程碑 / 排期。(4) Auto-task 的编辑权限表定稿：title / schedule / milestone 只读（它们是 habit 属性），note / subItems 可改（这是"本次上下文"）；habit 改名只影响未来新物化的 auto-task，老的因 materializer 幂等不会被回写。§5.5.0 / §10.2 / §10.3 / §10.4 / §5.2 / §5.3 一并更新。历史：2026-04-19（数据模型一致性大整理 · v0.4 基石）。合并发布六件事：(1) §10 新增"**三轴速览**" + "**完成状态归属规则**"——Line / Rail × Template × Time / Task 三轴正交，`Task.status` 成为所有完成语义的单一真源，RailInstance 收窄为"墙钟日志"（actualStart/End + Shift 标签），不再和 Task.status 并列承担"做没做"的问题。修掉 v0.3 遗留的"Tasks 页勾完成但 Today Track 仍显 pending"这类一致性裂缝。(2) habit 的"每次发生"改为一条 **auto-task**（幂等 id = `task-auto-{habitId}-{date}`，`lineId = habitId`，`title = habit.name`）。habit Line 硬约束"下不持有手工 Task"；NewTaskInput 永不暴露给 habit 详情页。habit 和 project 完全对齐完成路径 —— Today Track / Pending / Review 全部查 Task.status。(3) §10.2 定下 Auto-task 物化策略 Ⅱ · **按需 on-demand**，触发点：Today Track boot / Cycle View 切换 / 节奏带打开 / Calendar 翻月 / Review 切 scope / 节奏带点回填。每个 `(habitId, cycleId)` 物化一次就打标记，后续不重算；幂等 id 兜底。(4) §10.3 定下 Habit 配置变更规则：改 Rail 的 recurrence / 时间 / templateKey / defaultLineId 之一时，扫 `[今天, 最远已物化 cycle 末尾]`，**只影响** `status='pending' AND plannedStart > now` 的 auto-task（purge + 按新配置补齐），已完成 / 跳过 / 归档的保留。三类事件（task.purged + task.created + rail.updated）在同一个 Edit Session 下，一键回滚。保存前 confirm。(5) §5.5.0 加 **A+B 节奏带交互**：A 只读 + B 点击回填（done / skipped / shifted / clear），点未物化格子现场 upsert。主路（今天）在 Today Track，兜底（忘标 / 漏开 app / 事后补打）在节奏带原地。(6) §5.5.0 **明确关闭** "habit 和 Rail 合并为单一实体"的开放问题 —— 当前三轴分离是特性不是债：Template = 结构不同的一天，habit 是"安排*进*一天的活动"不是"凌驾*于*日历的 cron"，新建模板时重新安排 habit 本来就是 Template 的题中之义。原"跨模板抄很多 rail"、"请病假 habit 不 fire"、"新模板要手动迁移"三个 framing 统一翻转：这些都不是痛点，是设计。§5.6 / §5.7 / §5.8 写路径全部改为读写 Task.status，RailInstance.status 字段在 v0.4 进入 deprecated 状态（保留到 v0.5 清理）。历史：2026-04-18（§5.5.0 Habits 视图心智校正（v0.4 锚点）：用户视角 **habit = 一件反复发生的事**，不是"一堆 Task 的桶"。Project 是 N 个 Task 聚成一个目标；Habit 是 1 件带 recurrence 的事。Habit Line 增加硬约束"不持有 Task"；habit 详情页去 Project 化——去掉 NewTaskInput / FilterBar / GroupedTaskList，改为"名 + 色 + 当前 phase" → 近 14 天节奏带 → 绑定 Rail 列表 → Phase 时间线 → 备注 → Danger。曾讨论过的"habit 下折叠 Task 小抽屉"（B 方案）明确放弃，方向不一致的心智代价 > 杂事便利。`Line.kind='habit'` 最终是否并入 Rail 族合并为单实体留作 schema 级开放问题，本次不碰。历史：2026-04-18（§5.5.0 Habits 真实装（v0.3.3）：habit 分两档——"简单 habit"（默认，为保持固定强度而做，不暴露 phase 概念）和"进阶 habit"（opt-in，手动启用 phase 追踪后可加任意多个时间段标签）。HabitPhase 是纯用户定义的时间段 label（`{ name, description?, startDate }`），没有 endDate、没有预设枚举、没有自动升降、没有 streak / 完成率派生——这些都延到 v0.4 Review 集成。"启用 / 未启用"完全从关联 HabitPhase 记录数派生，不加 `Line.phaseEnabled` 冗余字段。§10 原先 over-engineered 的 `type Phase`（带 advanceRule / railOverrides）下架，换成 `type HabitPhase`；`type Line` 的 phases/currentPhaseId/tasks 内嵌字段拿掉，`kind` 作为 union discriminator，关联数据走独立实体；`Line.createdAt` / `archivedAt` / `deletedAt` 统一到 `number` (epoch ms) 对齐实装。新事件 `habit-phase.upserted` / `habit-phase.removed`。历史：2026-04-18（§5.3.1 Edit Session v0.3 扩到 Cycle View：进入 `/cycle` 开隐式会话；CycleDay 模板切换、Slot drag-drop 排 / 撤排、slot popover "移除排期" / "标记完成"、空格 quick-create、orphan 守护批量 unschedule 全部挂同一 `sessionId`；顶栏常驻"⤺ 撤销本次编辑 · N"按钮一键回滚整批，离开或 15 min idle 自动关。Core 侧对 `overrideCycleDay` / `clearCycleDayOverride` / `scheduleTaskToRail` / `unscheduleTask` / `createTask` / `updateTask` 全部加 optional `sessionId` 参数，appendEvent 带上后 `undoEditSession` 的 drop-session-events 直接一并回滚。单条撤销路径（slot popover 移除 / CycleDay 恢复默认）保留。历史：2026-04-18（§5.4 CalendarRule v0.3 高级规则开动：weekday / cycle / date-range 三种 kind 的 typed `value` + resolver + UI 全部上线。Resolver 按 priority desc 遍历所有规则（single-date 100 > date-range 50 > cycle 30 > weekday 10），miss 才回退内置启发。weekday 规则首次启动自动 seed（workday 覆盖周一-五 / restday 覆盖周末），行为与旧硬编码启发等价、无 breaking change、OPFS 不用清。"高级日历规则" drawer 重新挂上：四段（single-date / date-range / cycle / weekday），每段列表 + 新建 form + 删除；v0.3 采"删 + 重建"，真 in-place edit 留 v0.3.1；drawer **不**走 §5.3.1 Edit Session（即时持久化，与 Cycle View 同策略）。§10 CalendarRule 类型块补 typed value variants + v0.3 实装规矩；§5.4 drawer 小节同步细化。历史：2026-04-18（路由库 + URL 结构拍板：v0.2 用 `react-router-dom` v6，不上 `@tanstack/router`——类型化 params 的卖点对当前复杂度溢价过高；URL 结构 `/` / `/cycle` / `/tasks` + `/tasks/inbox` / `/tasks/line/:lineId` / `/tasks/archived` / `/tasks/trash` / `/review` / `/pending` / `/calendar` / `/templates` / `/templates/:key` / `/settings` / `/settings/:section`。进 URL 的状态：Tasks selection、Settings section、Template tab；搜索 / 过滤 chip / Cycle anchorDate 留本地 state 不入 URL。详见 `docs/v0.2-plan.md §3`。历史：2026-04-18（§5.3 Cycle View 顶部 DAYS 区块合并：原"顶部大 header（跨所有 section、唯一）"取消；section mini-header 从只读升级为**唯一**模板切换入口——每个日期格本身就是触发器，点开同一套 popover（模板列表 + 覆盖态时多一条"恢复默认"），overridden 指示点从顶部 DayButton 挪进 mini-header 的日期格。理由：两处 DAYS 行信息重复、顶部区块和 sticky summary strip 挤占纵向空间；保留"一件事一个入口"——只是入口从"顶部唯一 master"挪成"每个 section 的 mini-header 里自己那几天"。历史：2026-04-18（§5.3 Cycle View 切换模板时的 orphan-task 守护：旧模板下的 Rail 被新模板"切走"时，已排到这些 Rail 的 task 会被静默孤立；现在加一层确认——N=0 静默切，N>0 弹 `将移出 N 个已排任务 · 继续 / 取消`，continue 后批量 `task.unscheduled` 再写规则；"恢复默认"同规则。§5.5 Tasks 视图列表形态调整：状态 chip 从顶部移除，列表主体改为"未完成 / 已完成"两段折叠——未完成展开、已完成默认折叠、未完成空时已完成自动展开并在位置放"都搞定了 ✓"；Archived / Trash 仍只在左栏有入口；搜索命中时两段都展开。历史：2026-04-18（Cycle View CalendarRule 持久化：§5.3 的 CycleDay 模板切换从"本地 state"改为即时写 `calendar-rule.upserted` / `calendar-rule.removed` 事件；`cr-single-{date}` 去重 id；§5.3.1 Edit Session v0.2 范围收窄到只剩 Template Editor，Cycle View 会话级 undo 推迟到 v0.3，面内的误触回退由 Slot popover 的"移除排期" + CycleDay 的"恢复默认"两条单条动作承担；§10 CalendarRule 补 v0.2 实装细则——只 single-date 生效、id 规则、priority=100、事件形态）。历史：2026-04-18（§5.5 从 `Projects / Lines View` 重构为 `Tasks 视图`，定位为"任务管理主入口"—— 侧栏导航树（随手记 + Projects + Habits + 回收站）+ 跨 Project 的 task 列表 / 搜索 / 过滤 + 排期 popover 两种模式（绑 Rail · 默认 / 自由时间 · 逃生口）；新增内置 Inbox Line（`isDefault: true`、不可删）作为"不挑 Project"的 task 默认容器；全面可逆性 + 软删除模型（Task / Line / AdhocEvent 状态加 `'deleted'`，回收站入口 + 二次确认的硬删 `*.purged`）；`AdhocEvent` 加 `taskId` 字段承接自由时间模式排期；Project 进度条改为条件渲染（仅有 milestone task 时显示），任务数永远显示；开放式 Project（无 plannedEnd）明确不计为风险；§10 Task/Line/AdhocEvent 类型定义同步更新；术语精简：`Chunk` 统一改 `Task`（types + events + schema + UI + ERD 全路径改名），降低 jargon 负担；`Line` 作为内部容器类型保留（`kind: 'project' \| 'habit' \| 'group'` 的 union 父类），但**UI 里永远展示具体形态 Project / Habit / Group / Tag**，不再出现"Line"这个字；`Pending` view 改名 `待决定 / Unresolved` 和 `status='pending'` 解耦；§5.7 Pending 不做 24h 老化，成为"等待决定"全集，check-in 条是其"近 24h"的子集）。历史：2026-04-17（check-in 动作集简化：旧的 `完成/跳过/Shift/忽略` 四按钮 + 四子动作 sheet 合并为三按钮 `完成 / 以后再说 / 归档`；`RailInstance.status` 改为 `pending / done / deferred / archived`（`active / skipped` 弃用，"当前进行中"纯墙钟派生）；Shift sheet 替换为 6 秒 Reason toast（3 枚快速 tag chip + undo，无强制 reason）；Postpone / Replace / Swap / Resize 从 Shift 类型里下架，Postpone 交给 Cycle View 拖拽，其余留 v0.3 重评；Pending 队列重命名并收编 `deferred` 条目 + 超 24h stale 的 pending —— 两个来源一个出口；§5.8 Review 热力图三分语义改绑 `deferred / archived / pending-stale`）。历史：2026-04-16（A 组 UI 底线：同步状态徽章、Now View 节奏条、Ad-hoc 叠层、编辑会话通用化、Cycle 记号改 C1、日期格式表落地；B 组 Now View 结构：多 Task pill 行、Slot 三形态、Next Rail 视觉、去掉铁轨副视图、`CURRENT RAIL` chip、Now 顶栏 `Now` + Mono 副标；C 组 Today Track Shift 交互：Skipped 态改 hatching、桌面 hover 出动作栏、Active 主 CTA 改 tonal `Done`、统一 Shift 标签 sheet、去 bento 保留单条时间线；D 组 Cycle View 骨架：按 Template 堆叠 section、顶部 day header 唯一模板切换入口、Cycle pager picker、summary strip 聚合、`⤺ 撤销本次编辑` 按钮、hatching 三分语义、Backlog 变 split drawer；E 组 Template Editor：删 Save 按钮 / 首次进入 inline 引导、Radix 10 色 popover、顶栏 tab + 2px 色条 + dashed `+ 新建模板`、summary strip 聚合、card 式 Rail 行 + time pill popover picker、行间 gap chip `+ 填充 Rail`、`⋯` 行菜单放 Line 绑定 / check-in toggle；通知重审：删 OS push / Capacitor 通知 / 通知权限链路，Signal 塌缩为 `showInCheckin` 布尔，§5.6 / §5.7 合成一条主线 —— check-in 条 + Pending 队列是同一机制前后两个时态；F 组 缺失页面：Projects / Settings 共用 master-detail 形态，Review 单尺度瀑布 + 节奏匹配度热力图（状态染色 + hatching 三分语义），Pending 队列按日期反序 + 每行 4 动作 + 侧栏 `·` 小点不显数字，Calendar 月历网格 + 点日弹 popover + 高级规则 drawer 四 section，新增 §5.9 Settings 定 5 section + 主题三档默认跟随系统 + i18n 语言在外观 / 时间制 + AI locale 在高级；G 组 设计语言：Terracotta CTA 用 `orange-9/10/11` 三档纯色不用渐变；No-Line Rule 明文白名单（装饰色条 + sticky hairline + focus ring）；Surface 四档 `sand-1..4` 取代 `border` 表达层级；圆角 token `sharp / sm / md / lg` = `0 / 6 / 10 / 16`；整站零 glassmorphism；非对称为默认布局。视觉实装阶段调整：Rail 色板从原 10 色剔除 `olive / mauve / gray`（与 sage / slate 近乎同色、或失去色相识别度），换入 `grass / indigo / plum` 覆盖饱和绿 / 冷静蓝 / 创作紫空位，保持 10 色不变但辨识度拉满；CN 主字体从 PingFang 改为 Noto Sans SC（思源黑体）以获得跨平台一致渲染。Terracotta CTA 从 `orange-9` 实测过于鲜亮，改绑 `bronze-9` 以贴合 ERD 原意的 #C97B4A 暖赭石基调）。
 >
 > 本文档描述 DayRail 的产品逻辑、交互设计与技术选型。它不是最终蓝图，而是设计意图与取舍的记录（包括我们考虑过又否决掉的方案），方便贡献者理解代码**为什么**长成这样。
 >
@@ -345,6 +345,8 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
 
 **不做"Bento 未来块"**：Today Track 从头到尾是单一时间线，未来 Rail 以 pending 态延续在主轨上；**不**为下午时段或"远处"Rail 另开卡片网格。原因：DayRail 数据模型没有"参与者头像 / 专注强度"这类字段，另开 bento 只能拼装视觉噪声；时间线形态也和 Now View §5.1、Cycle View §5.3 保持统一视觉系统。
 
+**任务详情编辑**（v0.4 新增）：RailCard 上点击对应 rail 行 → 打开 TaskDetailDrawer（沿用 §5.5 那一个组件），可就地改备注 / 子任务 / 里程碑 / 排期。**对 habit 的 auto-task**，编辑权限按 §5.5.0 "Auto-task 的编辑性" 表 —— title / schedule / milestone 只读，note / subItems 可改。rail 上无承载 Task 时（空 rail）点击无响应。RailCard 还在行内展示「N/M 子任务」「有备注」这些小徽标，不用开抽屉就能一眼扫到。
+
 ### 5.3 Cycle View（周期视图 / 规划模式）
 
 用于**提前规划**和**整体考察**。以 **Cycle** 为单位 —— 默认一个 Cycle 是 7 天，但在长节假日等场景可以延长（下一个 Cycle 自动从次日起算、默认延展到下一个 Sunday）。
@@ -379,7 +381,7 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
 **单元格（Slot）可编辑性**：
 
 - 空 Slot（Template 生效 + 无内容）：虚线 border + 显眼的 `+ 添加`；hover 实化。点击弹 popover：`[新建 Task 到 Project]` / `[从已有 Task 挑选]` / `[快速文本 taskName]`。
-- 有内容 Slot：顶部按 order 列出 Task pill（左 4px **Project** 色条 + 名称 + 可选 `milestonePercent`），底部若有 `taskName` 则以小号灰字附一行。点击 pill → 弹层 `[标记完成]` / `[移除此处分配]` / `[打开 Project]`。
+- 有内容 Slot：顶部按 order 列出 Task pill（左 4px **Project** 色条 + 名称 + 可选 `milestonePercent`），底部若有 `taskName` 则以小号灰字附一行。点击 pill → 弹层 `[标记完成]` / `[移除此处分配]` / `[查看详情 …]` / `[打开 Project]`。「查看详情」打开同一个 TaskDetailDrawer (§5.5)，habit auto-task 适用 §5.5.0 的编辑权限表 (title / schedule / milestone 只读)。Cell 上额外展示「N/M 子任务」「有备注」小徽标。
 - **"Rail 不适用"cell**（该列 Template 不生效 → 整列所有 cell）：**Rail step 4** 色 2px 间距对角斜线 hatching + 中心 Mono `—` + `cursor: not-allowed`。使用 step 4（而非 Skipped 的 step 6）让"不适用"比"被跳过"更淡，传达"这格根本没这条 Rail"而非"你曾经要在这里做事"。
 - **视觉语义三分**（全 app 统一）：**实线 = 正常内容** / **虚线 = 可添加 or Ad-hoc 叠层** / **hatching = 降格状态（Skipped / 不适用）**。任何新交互必须落到这三类之一，不新增第四类。
 
@@ -522,8 +524,23 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
 
 - `Line.kind='habit'` 下**不持有手工 Task**。NewTaskInput 对 habit 详情页永不暴露。用户的临时任务（买跑鞋 / 查心率）自行决定 —— 丢 Inbox 或建 Project，habit 下不作为挂靠点。
 - habit 的"每次发生"在数据上体现为一条 **auto-task**（`id = task-auto-{habitId}-{date}`、`lineId = habitId`、`title = habit.name`）。auto-task 和手工 Task 共用同一套 `Task.status` 生命周期 —— `pending / in-progress / done / archived / deleted` 语义一致。
-- habit 的节奏由 **1+ 条绑定 Rail**（`Rail.defaultLineId === habit.id`）决定。一个 habit 可以绑多条 Rail（工作日 06:30 晨跑 + 周末 07:30 晨跑），仍是"同一件事"。
+- habit 的节奏由 **独立实体 `HabitBinding`** 决定（v0.4 更正）：每条 binding = habit + 已有 Rail + 可选的 `weekdays` 过滤器。一个 habit 可以有多条 binding，对应"跨模板 / 跨时段"的复合节奏（工作日 06:30 晨跑 + 周末 07:30 晨跑）。见 §10.4 HabitBinding 定义、§10.2 物化算法。
+- **旧的 `Rail.defaultLineId` 字段在 v0.4 中完全移除**。它原本承担"habit 绑定"+"Project 快速排期默认 Line"两个职责，前者交给 `HabitBinding`，后者在没有真正 Line picker 的前提下从未可用 —— 一并删干净。Cycle View 的 quick-create 默认落 Inbox。未来如果需要"Rail → Project 默认"，另开一个独立字段 + 真正的 picker。
 - **完成状态唯一真源** = `Task.status`（见 §10.1）。Today Track check-in / habit 详情节奏带 / Pending 队列 / Review 全部读写 auto-task 的 status，不再读 RailInstance.status。
+
+##### Auto-task 的编辑性
+
+auto-task 在 UI 层和手工 Task 绝大部分行为一致，唯一差异在**哪些字段可改**：
+
+| 字段 | 手工 Task | Auto-task |
+|---|---|---|
+| `title` | 可改 | **只读** —— 始终等于 habit.name；habit 改名仅影响未来物化出的新 auto-task，旧的保持当时的名字（materializer 幂等，不回写） |
+| `note` | 可改 | **可改** —— "今天状态不太好" 这类一次性上下文 |
+| `subItems` | 可改 | **可改** —— "拉伸 5 分钟 / 跑 20 分钟 / 冷却 5 分钟" 这类一次性子项 |
+| `slot` (排期) | 可改 | **只读** —— 排期本质是 HabitBinding 的规则；想改节奏去改 HabitBinding |
+| `milestonePercent` | 可改 | **隐藏** —— habit 没有里程碑概念 |
+| `status` | 可改 | 可改（走 check-in / Pending 路径） |
+| 删除 / 归档 | 可 | 可（但当日 auto-task 归档了不影响明天再生） |
 
 ##### Habit 排期随 Template 走是特性，不是债
 
@@ -1262,31 +1279,44 @@ Habit 下的 auto-task 不预先一次性生成、也不事件日志里手动塞
 
 **"已物化过"标记**：对每个 `(habitId, cycleId)` 记录一次物化标记（字段待定，可能挂在 Line 上或独立实体），**物化过的 cycle 不再重算**，避免 habit 配置变更后历史又多出一堆 auto-task。
 
-**算法（单次物化 `[startDate, endDate]`）**：
+**算法（单次物化 `[startDate, endDate]`）· v0.4 · 以 HabitBinding 为主**：
 ```
-for habit in habits (lines where kind='habit'):
-  for rail in rails where defaultLineId = habit.id:
-    for date in [startDate .. endDate]:
-      if (habit.id, cycleIdOf(date)) is already marked: continue
-      if activeTemplate(date) !== rail.templateKey: continue
-      if !rail.recurrence covers date: continue
-      upsert Task {
-        id: `task-auto-${habit.id}-${date}`,
-        lineId: habit.id,
-        title: habit.name,
-        slot: { cycleId: cycleIdOf(date), date, railId: rail.id },
-        status: 'pending',
-      }
+for binding in habitBindings:
+  rail = rails[binding.railId]
+  habit = lines[binding.habitId]
+  if !habit or habit.status != 'active' or !rail: continue
+
+  for date in [startDate .. endDate]:
+    if (habit.id, cycleIdOf(date)) is already marked: continue
+    if activeTemplate(date) !== rail.templateKey: continue
+    if !rail.recurrence covers date: continue
+    if binding.weekdays && !binding.weekdays.includes(dayOfWeek(date)): continue
+
+    upsert Task {
+      id: `task-auto-${habit.id}-${date}`,
+      lineId: habit.id,
+      title: habit.name,
+      slot: { cycleId: cycleIdOf(date), date, railId: rail.id },
+      status: 'pending',
+      source: 'auto-habit',
+    }
   mark (habit.id, cycleId) as materialized for cycles fully inside [startDate, endDate]
 ```
 
+说明：`upsert` 在 id 已存在时是 no-op —— 这是 habit 改名后老 auto-task 不会被回写的底线（§5.5.0 Auto-task 编辑性表的 title 只读行依赖这条不变式）。
+
 **从未物化的过去 cycle**（用户回看漏开 app 的历史）：打开时照常物化一次。用户事后在节奏带回填状态 = 当前判断的记录，不是"伪造历史"—— 真实发生过的事由 Signal 日志保真。
 
-### 10.3 Habit 配置变更规则（影响 auto-task 生成的字段改动）
+### 10.3 Habit 配置变更规则（影响 auto-task 生成的改动）
 
-用户改动 Rail 的 `recurrence` / `startMinutes` / `durationMinutes` / `templateKey` / `defaultLineId` 之一时，可能改变 "哪些 (habit, date) 该有 auto-task"。这类变更按如下规则处理：
+可能改变 "哪些 (habit, date) 该有 auto-task" 的变更面有两类：
 
-**0. 保存前 confirm**（仅当 Rail 绑着一个 habit Line 时）：
+- **Rail 级**：改 `recurrence` / `startMinutes` / `durationMinutes` / `templateKey`
+- **HabitBinding 级**：新增 / 删除 binding、改 `weekdays` 过滤器
+
+两类都走同一条规则处理。
+
+**0. 保存前 confirm**（仅当改动会影响某个 habit 的未来 auto-task 时）：
 
 ```
 这个改动会影响 habit「<habit 名>」的排期。
@@ -1297,25 +1327,26 @@ for habit in habits (lines where kind='habit'):
 
 **1. 确认后，在同一个 Edit Session（§5.3.1）下**：
 - 扫描窗口：`[今天, 最远已物化 cycle 的末尾]`
-- 符合 `(status = 'pending') AND (plannedStart > now)` 的 auto-task → **硬删**（`task.purged`，非软删 —— 这些 occurrence "从未发生过"）
+- 符合 `source = 'auto-habit' AND status = 'pending' AND plannedStart > now` 的 auto-task → **硬删**（`task.purged`，非软删 —— 这些 occurrence "从未发生过"）
 - 按新配置补齐同窗口里缺的 auto-task
 
 **2. 不动的范围**：
 - `status !== 'pending'` 的 auto-task（已经是事实，不能追溯）
 - `plannedStart <= now` 的 auto-task（"今天这个时段已过"，即使 pending 也视为事实）
 - 未物化的过去 cycle（从未算过的时段不因配置变更而补）
+- 用户在未来 auto-task 上写过的 note / subItems —— 会随 purge 一并失去（它们属于"未发生的未来事件"的临时内容，失去可接受）
 
 **3. 事件日志**：
 - 若干 `task.purged`
 - 若干 `task.created`
-- 一个 `rail.updated`
+- 一个 `rail.updated` **或** `habit-binding.upserted` / `habit-binding.removed`
 
 三者在同一个 sessionId 下 → 用户误改配置时一次 undo 回到原样。
 
 **边界情况**：
-- Rail 解绑 habit（`defaultLineId` 从 habit.id 改为空）= 全部现有 auto-task 按上述规则 purge，不补新的
-- Rail 换绑另一个 habit = 老 habit 的 auto-task 按规则清，新 habit 的 auto-task 按规则补
-- habit Line 归档 / 删除 = 跟随 Line 生命周期，不单独触发
+- 删除 HabitBinding = 该 binding 生成的未来 auto-task 按规则 purge，不补新的
+- HabitBinding 改 weekdays = 不再命中的未来日期 purge，新命中的日期补齐
+- habit Line 归档 / 删除 = 跟随 Line 生命周期，其所有 binding 失效，未来 auto-task 停止生成（过去的保留）
 
 ### 10.4 类型定义
 
@@ -1334,7 +1365,19 @@ type Rail = {
   recurrence: Recurrence; // daily | weekdays | custom(weekdays[])
   showInCheckin: boolean;      // true = 打开 App 时浮出 check-in 条（§5.6）；false = 静默走完，不进 check-in 条、也不进Pending 队列
   templateKey: TemplateKey; // 所属模板
-  lineId?: string;         // 一对多：多个 Rail 可共享同一 lineId
+  // v0.4: `defaultLineId` 字段移除。原本承担"habit 绑定 + Project 默认 Line"两职责,前者由 HabitBinding 承担,后者在没有真 Line picker 的前提下从未工作,一并删干净。
+};
+
+// v0.4 新增: habit 与 rail 的关系实体(见 §5.5.0 / §10.2)
+type HabitBinding = {
+  id: string;
+  habitId: string;   // 指向 Line.id (kind='habit')
+  railId: string;    // 指向 Rail.id
+  // 可选的 weekdays 过滤器(0=日 ... 6=六)。和 rail.recurrence 做 AND:
+  // rail 要先 fire,然后 date 的 dayOfWeek 还得在这个列表里才物化 auto-task。
+  // undefined = 不额外过滤(rail 哪天 fire 就哪天物化)。
+  weekdays?: number[];
+  createdAt: number; // epoch ms
 };
 
 type Template = {
