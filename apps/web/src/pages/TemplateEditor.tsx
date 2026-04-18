@@ -149,7 +149,12 @@ export function TemplateEditor() {
   const createRailAction = useStore((s) => s.createRail);
   const deleteRailAction = useStore((s) => s.deleteRail);
   const upsertTemplateAction = useStore((s) => s.upsertTemplate);
+  const deleteTemplateAction = useStore((s) => s.deleteTemplate);
   const undoEditSessionAction = useStore((s) => s.undoEditSession);
+  // Reads used only by destructive actions; kept on the top level so
+  // the handler closures don't have to reach back into store.getState.
+  const calendarRules = useStore((s) => s.calendarRules);
+  const tasks = useStore((s) => s.tasks);
 
   const mutate = (id: string, patch: Partial<EditableRail>) => {
     const railPatch = editablePatchToRail(patch);
@@ -222,9 +227,48 @@ export function TemplateEditor() {
     navigate(`/templates/${newKey}`);
   };
 
-  const deleteTemplate = () => {
+  const deleteTemplate = async () => {
     if (currentTemplate.builtIn) return;
-    window.alert('删除模板 —— store 尚未暴露 deleteTemplate，稍后拆单独一刀上。');
+    // Safety 1: CalendarRule bindings. We refuse if any rule resolves
+    // to this template — deleting would silently change how days
+    // render. User has to edit the rule first.
+    const boundRules = Object.values(calendarRules).filter((rule) => {
+      if (rule.kind === 'cycle') {
+        return (rule.value as { mapping: string[] }).mapping.includes(activeKey);
+      }
+      return (rule.value as { templateKey: string }).templateKey === activeKey;
+    });
+    if (boundRules.length > 0) {
+      window.alert(
+        `无法删除「${currentTemplate.label}」：有 ${boundRules.length} 条 Calendar 规则仍指向它，请先在 Calendar 里改规则。`,
+      );
+      return;
+    }
+    // Safety 2: scheduled tasks. Live tasks bound to rails under this
+    // template would orphan their slot data. Same policy as Cycle
+    // template switch — user unschedules first.
+    const railIds = new Set(rails.map((r) => r.id));
+    const liveBoundTasks = Object.values(tasks).filter(
+      (t) =>
+        t.status !== 'archived' &&
+        t.status !== 'deleted' &&
+        t.slot &&
+        railIds.has(t.slot.railId),
+    );
+    if (liveBoundTasks.length > 0) {
+      window.alert(
+        `无法删除「${currentTemplate.label}」：有 ${liveBoundTasks.length} 条任务仍排在它的 Rail 上，请先在 Tasks 里取消排期。`,
+      );
+      return;
+    }
+    const msg = `确定删除模板「${currentTemplate.label}」？\n将一并移除它的 ${rails.length} 条 Rail。本次会话内可用「撤销本次编辑」回滚。`;
+    if (!window.confirm(msg)) return;
+    await deleteTemplateAction(activeKey, sessionId ?? undefined);
+    // Hop to another template so the page doesn't try to render the
+    // deleted one. Prefer the default, else the first remaining.
+    const remaining = templates.filter((t) => t.key !== activeKey);
+    const next = remaining.find((t) => t.isDefault) ?? remaining[0];
+    if (next) navigate(`/templates/${next.key}`);
   };
 
   const fillGap = (startMin: number, endMin: number) => {
