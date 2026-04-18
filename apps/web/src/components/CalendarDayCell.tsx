@@ -1,10 +1,9 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
-import { Check, Plus } from 'lucide-react';
+import { Check } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from './primitives/Popover';
-import { SAMPLE_TEMPLATES } from '@/data/sampleTemplate';
 import type { TemplateKey } from '@/data/sampleTemplate';
-import { adhocOn, isOverridden, resolveTemplate } from '@/data/sampleCalendar';
+import type { RailColor } from '@/data/sample';
 import { RAIL_COLOR_HEX } from './railColors';
 
 // Individual day cell on the Calendar month grid (ERD §5.4 F4).
@@ -18,15 +17,40 @@ import { RAIL_COLOR_HEX } from './railColors';
 //    used as a date marker, not as a structural separator — kept
 //    deliberately restrained, no terracotta per G1).
 
+export interface DayCellAdhoc {
+  id: string;
+  /** `HH:MM`-formatted start time; used for the inline label. */
+  startLabel: string;
+  /** `HH:MM–HH:MM` for tooltips / full title. */
+  rangeLabel: string;
+  name: string;
+  color: RailColor;
+}
+
+export interface DayCellTemplateChoice {
+  key: TemplateKey;
+  label: string;
+  color: RailColor;
+}
+
 interface Props {
   date: string;
   inMonth: boolean;
   weekday: number;
   dayNum: number;
   isToday: boolean;
+  /** Currently applied template key for this date (after CalendarRule
+   *  resolution + weekday heuristic fallback). Nullable for the rare
+   *  "no template exists at all" edge case during first boot. */
+  templateKey: TemplateKey | null;
+  /** Whether the active template came from an explicit rule (single-
+   *  date in v0.2; date-range / cycle in v0.3) rather than the
+   *  heuristic — drives the overridden dot. */
+  overridden: boolean;
+  templateChoices: DayCellTemplateChoice[];
+  adhocs: DayCellAdhoc[];
   onOverride: (date: string, tpl: TemplateKey) => void;
   onClearOverride: (date: string) => void;
-  onAddAdhoc: (date: string) => void;
 }
 
 const WEEKDAY_SHORT_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -37,15 +61,15 @@ export function CalendarDayCell({
   weekday,
   dayNum,
   isToday,
+  templateKey,
+  overridden,
+  templateChoices,
+  adhocs,
   onOverride,
   onClearOverride,
-  onAddAdhoc,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const { templateKey, fromRule } = resolveTemplate(date);
-  const overridden = isOverridden(date);
-  const adhocs = adhocOn(date);
-  const template = SAMPLE_TEMPLATES.find((t) => t.key === templateKey);
+  const template = templateChoices.find((t) => t.key === templateKey);
   const templateHex = template ? RAIL_COLOR_HEX[template.color] : undefined;
 
   return (
@@ -87,14 +111,14 @@ export function CalendarDayCell({
               {overridden && (
                 <span
                   aria-hidden
-                  title={fromRule === 'single-date' ? '单日覆盖' : '范围覆盖'}
+                  title="overridden from the weekday default"
                   className="h-1.5 w-1.5 rounded-full bg-cta"
                 />
               )}
               {adhocs.slice(0, 3).map((a) => (
                 <span
                   key={a.id}
-                  title={`${a.start}–${a.end} · ${a.name}`}
+                  title={`${a.rangeLabel} · ${a.name}`}
                   aria-hidden
                   className="h-1.5 w-1.5 rounded-full"
                   style={{ background: RAIL_COLOR_HEX[a.color] }}
@@ -115,7 +139,7 @@ export function CalendarDayCell({
                   className="mr-1 inline-block h-1.5 w-1.5 -translate-y-px rounded-full align-middle"
                   style={{ background: RAIL_COLOR_HEX[a.color] }}
                 />
-                {a.start} {a.name}
+                {a.startLabel} {a.name}
               </span>
             ))}
             {adhocs.length > 2 && (
@@ -129,7 +153,7 @@ export function CalendarDayCell({
                 inMonth ? 'text-ink-tertiary' : 'text-ink-tertiary/60',
               )}
             >
-              {template?.label ?? templateKey}
+              {template?.label ?? templateKey ?? '—'}
             </span>
           </div>
         </button>
@@ -145,7 +169,7 @@ export function CalendarDayCell({
           </span>
         </div>
         <ul className="flex flex-col">
-          {SAMPLE_TEMPLATES.map((t) => {
+          {templateChoices.map((t) => {
             const active = t.key === templateKey;
             return (
               <li key={t.key}>
@@ -175,31 +199,20 @@ export function CalendarDayCell({
           })}
         </ul>
 
-        <div className="mx-3 my-1 h-px bg-surface-3" />
-
-        <button
-          type="button"
-          onClick={() => {
-            onAddAdhoc(date);
-            setOpen(false);
-          }}
-          className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-        >
-          <Plus className="h-3 w-3" strokeWidth={1.8} />
-          今日添加 Ad-hoc Event
-        </button>
-
         {overridden && (
-          <button
-            type="button"
-            onClick={() => {
-              onClearOverride(date);
-              setOpen(false);
-            }}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-          >
-            清除此日覆盖
-          </button>
+          <>
+            <div className="mx-3 my-1 h-px bg-surface-3" />
+            <button
+              type="button"
+              onClick={() => {
+                onClearOverride(date);
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+            >
+              恢复默认
+            </button>
+          </>
         )}
       </PopoverContent>
     </Popover>

@@ -1,38 +1,137 @@
-import { useState } from 'react';
-import { ChevronLeft, ChevronRight, Settings2 } from 'lucide-react';
-import { CalendarDayCell } from '@/components/CalendarDayCell';
-import { CalendarRulesDrawer } from '@/components/CalendarRulesDrawer';
+import { useCallback, useMemo, useState } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import {
-  SAMPLE_RULES,
-  buildMonthGrid,
-  monthLabel,
-} from '@/data/sampleCalendar';
+  pickTemplateForDate,
+  toIsoDate,
+} from './cycleFromStore';
+import { findOrphanTasksForTemplateSwitch } from './cycleFromStore';
+import {
+  INBOX_LINE_ID,
+  singleDateRuleId,
+  useStore,
+  type AdhocEvent,
+} from '@dayrail/core';
+import {
+  CalendarDayCell,
+  type DayCellAdhoc,
+  type DayCellTemplateChoice,
+} from '@/components/CalendarDayCell';
+import { buildMonthGrid, monthLabel } from '@/data/sampleCalendar';
 import type { TemplateKey } from '@/data/sampleTemplate';
+import type { RailColor } from '@/data/sample';
 
-// ERD §5.4 F4 — Calendar month view. Single-column page (no backlog
-// drawer); left sidebar is supplied by App.tsx.
+// ERD §5.4 F4 — Calendar month view, live-data edition. Template
+// resolution follows the same priority chain as Cycle View:
+// `calendar-rule.upserted` (single-date) first, then the weekday
+// heuristic. Advanced rules (weekday / cycle / date-range editable
+// via a drawer) are v0.3 — the drawer button is off for v0.2 so the
+// UI doesn't promise something it can't deliver.
 
-const TODAY_ISO = '2026-04-17';
+// Suppress the unused-import warning since INBOX_LINE_ID is only used
+// indirectly by the lib-pickTemplateForDate call chain.
+void INBOX_LINE_ID;
 
 export function Calendar() {
-  const [{ year, month }, setMonth] = useState({ year: 2026, month: 4 });
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const now = useMemo(() => new Date(), []);
+  const [{ year, month }, setMonth] = useState({
+    year: now.getFullYear(),
+    month: now.getMonth() + 1,
+  });
+  const todayIso = toIsoDate(now);
 
-  const cells = buildMonthGrid(year, month);
+  const templates = useStore((s) => s.templates);
+  const tasks = useStore((s) => s.tasks);
+  const rails = useStore((s) => s.rails);
+  const calendarRules = useStore((s) => s.calendarRules);
+  const adhocEvents = useStore((s) => s.adhocEvents);
+  const overrideCycleDay = useStore((s) => s.overrideCycleDay);
+  const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
+  const unscheduleTask = useStore((s) => s.unscheduleTask);
 
-  const gotoPrev = () => {
+  const cells = useMemo(() => buildMonthGrid(year, month), [year, month]);
+
+  const templateChoices = useMemo<DayCellTemplateChoice[]>(
+    () =>
+      Object.values(templates).map((t) => ({
+        key: t.key,
+        label: t.name,
+        color: (t.color ?? 'slate') as RailColor,
+      })),
+    [templates],
+  );
+
+  // Bucket active ad-hoc events by date so each cell pulls its own
+  // slice in O(1). Deleted events are filtered; task-backed (free-
+  // time scheduled) and standalone ad-hocs both render here.
+  const adhocByDate = useMemo(() => {
+    const m = new Map<string, DayCellAdhoc[]>();
+    for (const ev of Object.values(adhocEvents)) {
+      if (ev.status !== 'active') continue;
+      const list = m.get(ev.date) ?? [];
+      list.push(adhocToCell(ev));
+      m.set(ev.date, list);
+    }
+    for (const list of m.values()) list.sort((a, b) => a.startLabel.localeCompare(b.startLabel));
+    return m;
+  }, [adhocEvents]);
+
+  const gotoPrev = () =>
     setMonth(({ year, month }) =>
       month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 },
     );
-  };
-  const gotoNext = () => {
+  const gotoNext = () =>
     setMonth(({ year, month }) =>
       month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 },
     );
-  };
-  const gotoToday = () => setMonth({ year: 2026, month: 4 });
+  const gotoToday = () =>
+    setMonth({ year: now.getFullYear(), month: now.getMonth() + 1 });
 
-  const noop = (_: string, __?: TemplateKey) => {};
+  // Orphan-guarded switch — same logic as CycleView. Shared behavior
+  // kept inline here (not re-exported) since there's no third caller
+  // yet; promote to a hook if a fourth shows up.
+  const applyTemplateSwitch = useCallback(
+    async (
+      date: string,
+      nextTemplateKey: TemplateKey,
+      apply: () => Promise<void>,
+    ) => {
+      const orphans = findOrphanTasksForTemplateSwitch(
+        { tasks, rails },
+        date,
+        nextTemplateKey,
+      );
+      if (orphans.length > 0) {
+        const templateName = templates[nextTemplateKey]?.name ?? nextTemplateKey;
+        const msg = `切换到"${templateName}"会把这一天的 ${orphans.length} 个已排任务移出，可以随时从 Backlog 拖回来。继续？`;
+        if (!window.confirm(msg)) return;
+        for (const t of orphans) {
+          await unscheduleTask(t.id);
+        }
+      }
+      await apply();
+    },
+    [tasks, rails, templates, unscheduleTask],
+  );
+
+  const handleOverride = useCallback(
+    (date: string, nextTemplate: TemplateKey) => {
+      void applyTemplateSwitch(date, nextTemplate, () =>
+        overrideCycleDay(date, nextTemplate),
+      );
+    },
+    [applyTemplateSwitch, overrideCycleDay],
+  );
+
+  const handleClearOverride = useCallback(
+    (date: string) => {
+      const target =
+        pickTemplateForDate({ templates, calendarRules: {} }, date) ?? '';
+      void applyTemplateSwitch(date, target, () =>
+        clearCycleDayOverride(date),
+      );
+    },
+    [applyTemplateSwitch, clearCycleDayOverride, templates],
+  );
 
   return (
     <div className="flex w-full flex-col pl-10 pr-10 xl:pl-14">
@@ -42,39 +141,61 @@ export function Calendar() {
         onPrev={gotoPrev}
         onNext={gotoNext}
         onToday={gotoToday}
-        onOpenDrawer={() => setDrawerOpen(true)}
       />
 
       <WeekdayHeader />
 
       <div className="grid grid-cols-7 gap-1 pb-10">
-        {cells.map((cell) => (
-          <CalendarDayCell
-            key={cell.date}
-            date={cell.date}
-            inMonth={cell.inMonth}
-            weekday={cell.weekday}
-            dayNum={cell.dayNum}
-            isToday={cell.date === TODAY_ISO}
-            onOverride={noop}
-            onClearOverride={() => {}}
-            onAddAdhoc={() => {}}
-          />
-        ))}
+        {cells.map((cell) => {
+          const templateKey =
+            pickTemplateForDate(
+              { templates, calendarRules },
+              cell.date,
+            ) ?? null;
+          const overridden = Boolean(
+            calendarRules[singleDateRuleId(cell.date)],
+          );
+          return (
+            <CalendarDayCell
+              key={cell.date}
+              date={cell.date}
+              inMonth={cell.inMonth}
+              weekday={cell.weekday}
+              dayNum={cell.dayNum}
+              isToday={cell.date === todayIso}
+              templateKey={templateKey}
+              overridden={overridden}
+              templateChoices={templateChoices}
+              adhocs={adhocByDate.get(cell.date) ?? []}
+              onOverride={handleOverride}
+              onClearOverride={handleClearOverride}
+            />
+          );
+        })}
       </div>
 
       <Footer />
-
-      <CalendarRulesDrawer
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        rules={SAMPLE_RULES}
-      />
     </div>
   );
 }
 
-// ---------- top ----------
+function adhocToCell(ev: AdhocEvent): DayCellAdhoc {
+  const start = fmtHHMM(ev.startMinutes);
+  const end = fmtHHMM(ev.startMinutes + ev.durationMinutes);
+  return {
+    id: ev.id,
+    startLabel: start,
+    rangeLabel: `${start}–${end}`,
+    name: ev.name,
+    color: (ev.color ?? 'slate') as RailColor,
+  };
+}
+
+function fmtHHMM(total: number): string {
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
 
 function TopBar({
   year,
@@ -82,14 +203,12 @@ function TopBar({
   onPrev,
   onNext,
   onToday,
-  onOpenDrawer,
 }: {
   year: number;
   month: number;
   onPrev: () => void;
   onNext: () => void;
   onToday: () => void;
-  onOpenDrawer: () => void;
 }) {
   return (
     <header className="sticky top-0 z-30 flex h-[56px] items-center justify-between gap-4 bg-surface-0 pt-6">
@@ -127,15 +246,6 @@ function TopBar({
           </button>
         </div>
       </div>
-
-      <button
-        type="button"
-        onClick={onOpenDrawer}
-        className="inline-flex items-center gap-2 rounded-md bg-surface-1 px-3 py-1.5 text-sm text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-      >
-        <Settings2 className="h-3.5 w-3.5" strokeWidth={1.8} />
-        高级日历规则
-      </button>
     </header>
   );
 }
@@ -160,9 +270,9 @@ function Footer() {
   return (
     <footer className="flex items-center justify-between font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
       <span>
-        应用顺序 · 单日 → 范围 → 循环 → 星期几 → 默认
+        优先级 · 单日覆盖 → 星期启发
       </span>
-      <span>ERD §5.4 · static mock</span>
+      <span>ERD §5.4 · v0.2 live</span>
     </footer>
   );
 }
