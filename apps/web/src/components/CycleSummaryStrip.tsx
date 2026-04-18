@@ -18,15 +18,21 @@ export function CycleSummaryStrip({ cycle }: Props) {
         Top Lines
       </span>
       <div className="flex flex-1 items-center gap-5">
-        {cycle.topLines.map((line) => (
-          <LineBar
-            key={line.id}
-            name={line.name}
-            done={line.done}
-            planned={line.planned}
-            color={RAIL_COLOR_HEX[line.color]}
-          />
-        ))}
+        {cycle.topLines.length > 0 ? (
+          cycle.topLines.map((line) => (
+            <LineBar
+              key={line.id}
+              name={line.name}
+              done={line.done}
+              planned={line.planned}
+              color={RAIL_COLOR_HEX[line.color]}
+            />
+          ))
+        ) : (
+          <span className="text-xs text-ink-tertiary">
+            还没有排期；把 Backlog 里的任务拖进去就会出现在这里。
+          </span>
+        )}
       </div>
     </div>
   );
