@@ -55,6 +55,7 @@ interface Props {
   onDropTask?: (taskId: string, date: string, railId: string) => void;
   onClearSlot?: (taskId: string) => void;
   onMarkTaskDone?: (taskId: string) => void;
+  onOpenTaskDetail?: (taskId: string) => void;
   onOpenTaskProject?: (taskId: string) => void;
   onQuickCreate?: (date: string, railId: string, title: string) => void;
   /** Look up the Project / Habit a task belongs to, so the slot
@@ -76,6 +77,7 @@ export function CycleSection({
   onDropTask,
   onClearSlot,
   onMarkTaskDone,
+  onOpenTaskDetail,
   onOpenTaskProject,
   onQuickCreate,
   lineLookup,
@@ -234,6 +236,14 @@ export function CycleSection({
                                       onOpenTaskProject
                                         ? () => {
                                             onOpenTaskProject(slot.taskId!);
+                                            setOpenPopoverKey(null);
+                                          }
+                                        : undefined
+                                    }
+                                    onOpenDetail={
+                                      onOpenTaskDetail
+                                        ? () => {
+                                            onOpenTaskDetail(slot.taskId!);
                                             setOpenPopoverKey(null);
                                           }
                                         : undefined
@@ -555,6 +565,7 @@ function SlotPopoverBody({
   onMarkDone,
   onClear,
   onOpenProject,
+  onOpenDetail,
 }: {
   taskName: string;
   railName: string;
@@ -564,6 +575,7 @@ function SlotPopoverBody({
   onMarkDone: () => void;
   onClear: () => void;
   onOpenProject?: () => void;
+  onOpenDetail?: () => void;
 }) {
   const lineChip = lineName && (
     <>
@@ -605,7 +617,7 @@ function SlotPopoverBody({
           {railName} · {formatSlotDate(date)}
         </span>
       </div>
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         <button
           type="button"
           onClick={onMarkDone}
@@ -614,6 +626,15 @@ function SlotPopoverBody({
           <Check className="h-3 w-3" strokeWidth={2} />
           标记完成
         </button>
+        {onOpenDetail && (
+          <button
+            type="button"
+            onClick={onOpenDetail}
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            查看详情
+          </button>
+        )}
         <button
           type="button"
           onClick={onClear}

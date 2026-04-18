@@ -1,4 +1,4 @@
-import { MoreHorizontal, Copy, Trash2, Link2 } from 'lucide-react';
+import { MoreHorizontal, Copy, Trash2 } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -10,24 +10,24 @@ import {
 } from './primitives/DropdownMenu';
 
 // ERD §5.4 E7: the row-level `⋯` menu on each Rail card.
-//   Delete Rail · Duplicate Rail · Set default Line… · Show on check-in strip
+//   Delete Rail · Duplicate Rail · Show on check-in strip
+//
+// v0.4: the old "Set default Line" entry was removed with
+// Rail.defaultLineId. Habit ↔ Rail relationships live in HabitBinding
+// and are edited from the habit detail page (§5.5.0).
 
 interface Props {
   showInCheckin: boolean;
-  defaultLineName: string | null;
   onToggleCheckin: (next: boolean) => void;
   onDelete: () => void;
   onDuplicate: () => void;
-  onEditLine: () => void;
 }
 
 export function RowMenu({
   showInCheckin,
-  defaultLineName,
   onToggleCheckin,
   onDelete,
   onDuplicate,
-  onEditLine,
 }: Props) {
   return (
     <DropdownMenu>
@@ -42,13 +42,6 @@ export function RowMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuLabel>属性</DropdownMenuLabel>
-        <DropdownMenuItem onSelect={onEditLine}>
-          <Link2 className="h-3.5 w-3.5 text-ink-tertiary" strokeWidth={1.8} />
-          <span className="flex-1">默认 Line</span>
-          <span className="font-mono text-2xs text-ink-tertiary">
-            {defaultLineName ?? '未设'}
-          </span>
-        </DropdownMenuItem>
         <DropdownMenuCheckboxItem
           checked={showInCheckin}
           onCheckedChange={onToggleCheckin}

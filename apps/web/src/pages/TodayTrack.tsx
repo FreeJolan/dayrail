@@ -16,6 +16,7 @@ import {
 } from '@/components/CheckInStrip';
 import { RailCard } from '@/components/RailCard';
 import { ReasonToast } from '@/components/ReasonToast';
+import { TaskDetailDrawer } from './Tasks';
 import {
   latestTagsForTask,
   useReasonToast,
@@ -40,10 +41,13 @@ export function TodayTrack() {
 
   const rails = useStore((s) => s.rails);
   const tasks = useStore((s) => s.tasks);
+  const lines = useStore((s) => s.lines);
   const templates = useStore((s) => s.templates);
   const calendarRules = useStore((s) => s.calendarRules);
   const shifts = useStore((s) => s.shifts);
   const updateTask = useStore((s) => s.updateTask);
+
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
 
   const { toast, fire, handleAddTag, handleUndo, handleClose } = useReasonToast(
     'check-in-strip',
@@ -109,6 +113,23 @@ export function TodayTrack() {
     }
     return out;
   }, [timelineRows, shifts]);
+
+  // railId → taskId for click-to-open-detail on Timeline RailCards.
+  const taskIdByRailId = useMemo<Record<string, string>>(() => {
+    const out: Record<string, string> = {};
+    for (const row of timelineRows) {
+      if (row.task) out[row.rail.id] = row.task.id;
+    }
+    return out;
+  }, [timelineRows]);
+
+  const handleOpenDetail = useCallback(
+    (railId: string) => {
+      const id = taskIdByRailId[railId];
+      if (id) setDetailTaskId(id);
+    },
+    [taskIdByRailId],
+  );
 
   const checkinQueue = useMemo<CheckInEntry[]>(
     () =>
@@ -199,6 +220,7 @@ export function TodayTrack() {
         tagsByRailId={tagsByRailId}
         onAction={handleTimelineAction}
         onUndo={handleRevert}
+        onOpenDetail={handleOpenDetail}
       />
       <Footnote />
       <ReasonToast
@@ -207,6 +229,14 @@ export function TodayTrack() {
         onUndo={handleUndo}
         onClose={handleClose}
       />
+
+      {detailTaskId && tasks[detailTaskId] && (
+        <TaskDetailDrawer
+          task={tasks[detailTaskId]!}
+          line={lines[tasks[detailTaskId]!.lineId]}
+          onClose={() => setDetailTaskId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -384,11 +414,13 @@ function Timeline({
   tagsByRailId,
   onAction,
   onUndo,
+  onOpenDetail,
 }: {
   rails: SampleRail[];
   tagsByRailId: Record<string, string[]>;
   onAction: (instanceId: string, action: CheckInAction) => void;
   onUndo: (instanceId: string) => void;
+  onOpenDetail: (railId: string) => void;
 }) {
   return (
     <section className="flex flex-col gap-2.5">
@@ -404,6 +436,7 @@ function Timeline({
                 tags={tagsByRailId[r.id] ?? []}
                 onAction={(a) => onAction(r.id, a)}
                 onUndo={() => onUndo(r.id)}
+                onOpenDetail={() => onOpenDetail(r.id)}
               />
             </li>
           ))}
