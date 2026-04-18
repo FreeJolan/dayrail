@@ -1152,6 +1152,8 @@ function TaskDetailDrawer({
             </span>
           </label>
 
+          <SubItemsSection task={task} />
+
           <div className="flex flex-col gap-1 pt-2">
             <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
               排期
@@ -1171,6 +1173,159 @@ function TaskDetailDrawer({
         </footer>
       </aside>
     </>
+  );
+}
+
+// Sub-item checklist inside the task detail drawer. Each change
+// (toggle / add / rename / delete) commits one `task.updated` event
+// carrying a fresh `subItems` array — small enough that event-log
+// noise isn't a concern at v0.3 scale.
+
+function SubItemsSection({ task }: { task: Task }) {
+  const updateTask = useStore((s) => s.updateTask);
+  const items = task.subItems ?? [];
+  const [draft, setDraft] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+
+  const writeItems = (next: typeof items) => {
+    void updateTask(task.id, { subItems: next.length > 0 ? next : undefined });
+  };
+
+  const addItem = () => {
+    const trimmed = draft.trim();
+    if (!trimmed) return;
+    writeItems([
+      ...items,
+      { id: freshId('sub'), title: trimmed, done: false },
+    ]);
+    setDraft('');
+  };
+
+  const toggle = (id: string) => {
+    writeItems(
+      items.map((it) => (it.id === id ? { ...it, done: !it.done } : it)),
+    );
+  };
+
+  const remove = (id: string) => {
+    writeItems(items.filter((it) => it.id !== id));
+  };
+
+  const startEdit = (id: string, currentTitle: string) => {
+    setEditingId(id);
+    setEditingTitle(currentTitle);
+  };
+
+  const commitEdit = () => {
+    if (editingId == null) return;
+    const trimmed = editingTitle.trim();
+    if (trimmed) {
+      writeItems(
+        items.map((it) =>
+          it.id === editingId ? { ...it, title: trimmed } : it,
+        ),
+      );
+    }
+    setEditingId(null);
+  };
+
+  const doneCount = items.filter((it) => it.done).length;
+
+  return (
+    <div className="flex flex-col gap-2 pt-2">
+      <div className="flex items-baseline justify-between">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          子任务
+        </span>
+        {items.length > 0 && (
+          <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+            {doneCount}/{items.length}
+          </span>
+        )}
+      </div>
+      {items.length > 0 && (
+        <ul className="flex flex-col gap-0.5">
+          {items.map((it) => (
+            <li
+              key={it.id}
+              className="group flex items-center gap-2 rounded-md px-1.5 py-1 transition hover:bg-surface-1"
+            >
+              <button
+                type="button"
+                onClick={() => toggle(it.id)}
+                aria-label={it.done ? 'Mark sub-item open' : 'Mark sub-item done'}
+                className="shrink-0 text-ink-tertiary transition hover:text-ink-primary"
+              >
+                {it.done ? (
+                  <Check className="h-3.5 w-3.5" strokeWidth={2.2} />
+                ) : (
+                  <Circle className="h-3.5 w-3.5" strokeWidth={1.6} />
+                )}
+              </button>
+              {editingId === it.id ? (
+                <input
+                  type="text"
+                  autoFocus
+                  value={editingTitle}
+                  onChange={(e) => setEditingTitle(e.target.value)}
+                  onBlur={commitEdit}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      (e.target as HTMLInputElement).blur();
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      setEditingId(null);
+                    }
+                  }}
+                  className="h-6 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-1.5 text-xs text-ink-primary outline-none focus:border-ink-secondary"
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => startEdit(it.id, it.title)}
+                  className={clsx(
+                    'flex-1 truncate text-left text-sm',
+                    it.done
+                      ? 'text-ink-tertiary line-through decoration-ink-tertiary/40'
+                      : 'text-ink-primary',
+                  )}
+                >
+                  {it.title}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => remove(it.id)}
+                aria-label="Delete sub-item"
+                className="rounded-sm p-0.5 text-ink-tertiary opacity-0 transition hover:bg-surface-2 hover:text-ink-primary group-hover:opacity-100"
+              >
+                <X className="h-3 w-3" strokeWidth={1.8} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex items-center gap-2 rounded-md border border-hairline/60 bg-surface-0 px-2.5 py-1 focus-within:border-ink-secondary">
+        <Plus className="h-3.5 w-3.5 shrink-0 text-ink-tertiary" strokeWidth={1.6} />
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={
+            items.length === 0 ? '+ 子任务 · Enter' : '继续加一个 · Enter'
+          }
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              addItem();
+            }
+          }}
+          className="h-6 flex-1 bg-transparent text-xs text-ink-primary outline-none placeholder:text-ink-tertiary"
+        />
+      </div>
+    </div>
   );
 }
 
@@ -1731,6 +1886,12 @@ function TaskRow({
           {task.milestonePercent != null && (
             <span className="font-mono text-2xs tabular-nums text-ink-secondary">
               · milestone {task.milestonePercent}%
+            </span>
+          )}
+          {task.subItems && task.subItems.length > 0 && (
+            <span className="font-mono text-2xs tabular-nums text-ink-secondary">
+              · 子任务 {task.subItems.filter((s) => s.done).length}/
+              {task.subItems.length}
             </span>
           )}
         </div>
