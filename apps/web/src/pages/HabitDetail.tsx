@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import { useNavigate } from 'react-router-dom';
-import { Archive, ArrowUpRight, Plus, Trash2 } from 'lucide-react';
+import { Archive, ArrowUpRight, Plus, Trash2, X } from 'lucide-react';
 import {
   materializeAutoTasks,
   mondayOf,
   useStore,
   type Line,
   type Rail,
+  type Recurrence,
   type Task,
+  type Template,
 } from '@dayrail/core';
 import { RAIL_COLOR_HEX, RAIL_COLOR_STEP_4, RAIL_COLOR_STEP_6, RAIL_COLOR_STEP_7 } from '@/components/railColors';
 import type { RailColor } from '@/data/sample';
@@ -86,6 +88,7 @@ export function HabitDetail({ habit }: Props) {
       />
 
       <ScheduleList
+        habit={habit}
         boundRails={boundRails}
         templates={templates}
         onGoToTemplate={(templateKey) => navigate(`/templates/${templateKey}`)}
@@ -276,14 +279,59 @@ function LegendSwatch({
 // ------------------------------------------------------------------
 
 function ScheduleList({
+  habit,
   boundRails,
   templates,
   onGoToTemplate,
 }: {
+  habit: Line;
   boundRails: Rail[];
-  templates: Record<string, { key: string; name: string; color?: string }>;
+  templates: Record<string, Template>;
   onGoToTemplate: (templateKey: string) => void;
 }) {
+  const [formOpen, setFormOpen] = useState(false);
+  const createRail = useStore((s) => s.createRail);
+  const updateRail = useStore((s) => s.updateRail);
+
+  const templateList = useMemo(() => Object.values(templates), [templates]);
+
+  const handleCreate = useCallback(
+    async (opts: {
+      templateKey: string;
+      startMinutes: number;
+      durationMinutes: number;
+      recurrence: Recurrence;
+    }) => {
+      const id = `rail-${habit.id}-${Date.now().toString(36)}`;
+      await createRail({
+        id,
+        templateKey: opts.templateKey,
+        name: habit.name,
+        startMinutes: opts.startMinutes,
+        durationMinutes: opts.durationMinutes,
+        color: (habit.color ?? 'slate') as Rail['color'],
+        showInCheckin: true,
+        defaultLineId: habit.id,
+        recurrence: opts.recurrence,
+      });
+      setFormOpen(false);
+    },
+    [createRail, habit],
+  );
+
+  const handleUnbind = useCallback(
+    async (rail: Rail) => {
+      if (
+        !window.confirm(
+          `把「${rail.name}」从 habit 解绑?Rail 会留在 Template Editor 里 (不会删),只是不再作为此 habit 的节奏。`,
+        )
+      )
+        return;
+      await updateRail(rail.id, { defaultLineId: undefined });
+    },
+    [updateRail],
+  );
+
   return (
     <section aria-label="Habit schedule" className="flex flex-col gap-2">
       <header className="flex items-baseline justify-between">
@@ -294,19 +342,12 @@ function ScheduleList({
           {boundRails.length} 条节奏
         </span>
       </header>
-      {boundRails.length === 0 ? (
+      {boundRails.length === 0 && !formOpen && (
         <p className="rounded-md bg-surface-1 px-3 py-2.5 text-xs text-ink-tertiary">
-          还没有绑定任何 Rail。去
-          <button
-            type="button"
-            onClick={() => onGoToTemplate('workday')}
-            className="mx-1 underline decoration-dotted underline-offset-2 hover:text-ink-secondary"
-          >
-            Template Editor
-          </button>
-          建一条时间带,在它的 `⋯` 菜单里把 default Line 绑到这个 habit。
+          还没有绑定任何节奏。点下方「+ 新节奏」为此 habit 创建一条时间带。
         </p>
-      ) : (
+      )}
+      {boundRails.length > 0 && (
         <ul className="flex flex-col gap-1">
           {boundRails.map((rail) => (
             <ScheduleRow
@@ -314,9 +355,29 @@ function ScheduleList({
               rail={rail}
               templateName={templates[rail.templateKey]?.name ?? rail.templateKey}
               onGoToTemplate={() => onGoToTemplate(rail.templateKey)}
+              onUnbind={() => void handleUnbind(rail)}
             />
           ))}
         </ul>
+      )}
+      {formOpen ? (
+        <NewScheduleForm
+          templates={templateList}
+          defaultTemplateKey={
+            boundRails[0]?.templateKey ?? templateList[0]?.key ?? ''
+          }
+          onSubmit={(opts) => void handleCreate(opts)}
+          onCancel={() => setFormOpen(false)}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setFormOpen(true)}
+          className="inline-flex items-center gap-1.5 self-start rounded-md border border-dashed border-ink-tertiary/50 px-3 py-1.5 text-xs text-ink-secondary transition hover:border-ink-secondary hover:text-ink-primary"
+        >
+          <Plus className="h-3 w-3" strokeWidth={1.8} />
+          新节奏
+        </button>
       )}
     </section>
   );
@@ -326,10 +387,12 @@ function ScheduleRow({
   rail,
   templateName,
   onGoToTemplate,
+  onUnbind,
 }: {
   rail: Rail;
   templateName: string;
   onGoToTemplate: () => void;
+  onUnbind: () => void;
 }) {
   const start = formatMinutes(rail.startMinutes);
   const end = formatMinutes(rail.startMinutes + rail.durationMinutes);
@@ -350,12 +413,210 @@ function ScheduleRow({
         type="button"
         onClick={onGoToTemplate}
         className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-ink-tertiary transition hover:bg-surface-3 hover:text-ink-primary"
+        title="去 Template Editor 编辑时间 / 重复规则"
       >
         编辑
         <ArrowUpRight className="h-3 w-3" strokeWidth={1.8} />
       </button>
+      <button
+        type="button"
+        onClick={onUnbind}
+        className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-ink-tertiary transition hover:bg-surface-3 hover:text-warn"
+        title="解除绑定 (Rail 保留在 Template Editor)"
+      >
+        <X className="h-3 w-3" strokeWidth={1.8} />
+      </button>
     </li>
   );
+}
+
+// Inline rail-create form inside the habit detail. Minimal fields:
+// template, start time, duration, recurrence. Color + name inherit
+// from the habit (name = habit name; color = habit color). Advanced
+// tweaks happen in Template Editor.
+function NewScheduleForm({
+  templates,
+  defaultTemplateKey,
+  onSubmit,
+  onCancel,
+}: {
+  templates: Template[];
+  defaultTemplateKey: string;
+  onSubmit: (opts: {
+    templateKey: string;
+    startMinutes: number;
+    durationMinutes: number;
+    recurrence: Recurrence;
+  }) => void;
+  onCancel: () => void;
+}) {
+  const [templateKey, setTemplateKey] = useState(defaultTemplateKey);
+  const [start, setStart] = useState('07:00');
+  const [end, setEnd] = useState('07:30');
+  const [recurrenceKind, setRecurrenceKind] = useState<
+    'daily' | 'weekdays' | 'custom'
+  >('daily');
+  const [customDays, setCustomDays] = useState<number[]>([1, 3, 5]);
+
+  const submit = useCallback(() => {
+    const s = parseHHMM(start);
+    const e = parseHHMM(end);
+    if (s == null || e == null) return;
+    if (e <= s) return;
+    if (!templateKey) return;
+    const recurrence: Recurrence =
+      recurrenceKind === 'custom'
+        ? { kind: 'custom', weekdays: customDays }
+        : { kind: recurrenceKind };
+    onSubmit({
+      templateKey,
+      startMinutes: s,
+      durationMinutes: e - s,
+      recurrence,
+    });
+  }, [start, end, templateKey, recurrenceKind, customDays, onSubmit]);
+
+  return (
+    <div className="flex flex-col gap-3 rounded-md bg-surface-1 px-3 py-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 text-xs text-ink-secondary">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            模板
+          </span>
+          <select
+            value={templateKey}
+            onChange={(e) => setTemplateKey(e.target.value)}
+            className="h-7 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none focus:border-ink-secondary"
+          >
+            {templates.map((t) => (
+              <option key={t.key} value={t.key}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 text-xs text-ink-secondary">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            时段
+          </span>
+          <input
+            type="time"
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+            className="h-7 rounded-sm border border-hairline/60 bg-surface-0 px-1.5 font-mono text-xs tabular-nums text-ink-primary outline-none focus:border-ink-secondary"
+          />
+          <span className="font-mono text-2xs text-ink-tertiary">→</span>
+          <input
+            type="time"
+            value={end}
+            onChange={(e) => setEnd(e.target.value)}
+            className="h-7 rounded-sm border border-hairline/60 bg-surface-0 px-1.5 font-mono text-xs tabular-nums text-ink-primary outline-none focus:border-ink-secondary"
+          />
+        </label>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          重复
+        </span>
+        <RecurrenceChip
+          active={recurrenceKind === 'daily'}
+          onClick={() => setRecurrenceKind('daily')}
+        >
+          每天
+        </RecurrenceChip>
+        <RecurrenceChip
+          active={recurrenceKind === 'weekdays'}
+          onClick={() => setRecurrenceKind('weekdays')}
+        >
+          工作日
+        </RecurrenceChip>
+        <RecurrenceChip
+          active={recurrenceKind === 'custom'}
+          onClick={() => setRecurrenceKind('custom')}
+        >
+          自定义
+        </RecurrenceChip>
+        {recurrenceKind === 'custom' && (
+          <div className="flex items-center gap-1">
+            {['日', '一', '二', '三', '四', '五', '六'].map((name, idx) => {
+              const active = customDays.includes(idx);
+              return (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() =>
+                    setCustomDays((prev) =>
+                      active
+                        ? prev.filter((x) => x !== idx)
+                        : [...prev, idx].sort(),
+                    )
+                  }
+                  className={clsx(
+                    'h-6 w-6 rounded-sm text-2xs transition',
+                    active
+                      ? 'bg-ink-primary text-surface-0'
+                      : 'bg-surface-2 text-ink-tertiary hover:bg-surface-3',
+                  )}
+                >
+                  {name}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-md px-3 py-1 text-xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          onClick={submit}
+          className="rounded-md bg-ink-primary px-3 py-1 text-xs text-surface-0 transition hover:bg-ink-primary/90"
+        >
+          添加
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RecurrenceChip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        'rounded-sm px-2 py-0.5 text-xs transition',
+        active
+          ? 'bg-ink-primary text-surface-0'
+          : 'bg-surface-2 text-ink-tertiary hover:bg-surface-3',
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function parseHHMM(value: string): number | null {
+  const m = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mi = Number(m[2]);
+  if (h < 0 || h > 23 || mi < 0 || mi > 59) return null;
+  return h * 60 + mi;
 }
 
 function recurrenceLabel(r: Rail['recurrence']): string {
@@ -495,6 +756,3 @@ function formatMinutes(min: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
-// keep the Plus import alive for the eventual "add phase" follow-up
-// button — reserved for v0.4 Stage 5 B (click-to-backfill).
-void Plus;
