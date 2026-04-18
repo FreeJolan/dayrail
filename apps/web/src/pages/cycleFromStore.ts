@@ -7,6 +7,7 @@
 // source.
 
 import type { DayRailState, Rail, Task } from '@dayrail/core';
+import { resolveTemplateForDate, singleDateRuleId } from '@dayrail/core';
 import type {
   CycleDay,
   CycleSlot,
@@ -36,18 +37,24 @@ export function startOfWeekMonday(d: Date = new Date()): Date {
   return r;
 }
 
-/** Pick a Template for a given date. v0.2 has no CalendarRule engine,
- *  so we use a weekday heuristic:
+/** Pick a Template for a given date. CalendarRules (single-date, v0.2)
+ *  win; otherwise fall back to the weekday heuristic:
  *    Mon–Fri → `workday` / first builtIn / first Template
- *    Sat / Sun → `restday` / first builtIn / first Template
- *  When the user explicitly overrides a day the stored value wins;
- *  we don't persist overrides yet in Chunk 1 of the wire-up, so the
- *  heuristic drives everything today.  */
+ *    Sat / Sun → `restday` / first builtIn / first Template */
 export function pickTemplateForDate(
-  state: Pick<DayRailState, 'templates'>,
+  state: Pick<DayRailState, 'templates' | 'calendarRules'>,
   date: string,
 ): TemplateKey | null {
-  const templates = Object.values(state.templates);
+  return resolveTemplateForDate(state, date, (d) =>
+    weekdayHeuristic(state.templates, d),
+  );
+}
+
+function weekdayHeuristic(
+  templatesMap: DayRailState['templates'],
+  date: string,
+): TemplateKey | null {
+  const templates = Object.values(templatesMap);
   if (templates.length === 0) return null;
   const dt = new Date(`${date}T00:00:00`);
   const dow = dt.getDay();
@@ -71,7 +78,10 @@ export interface DerivedCycle {
  *    - (Future work: read RailInstance.status for past-day cells to
  *       light up done / shifted / skipped states — Chunk 3 territory.) */
 export function deriveCycleFromStore(
-  state: Pick<DayRailState, 'templates' | 'rails' | 'tasks' | 'lines'>,
+  state: Pick<
+    DayRailState,
+    'templates' | 'rails' | 'tasks' | 'lines' | 'calendarRules'
+  >,
   startDate: Date,
 ): DerivedCycle {
   const days: CycleDay[] = [];
@@ -79,11 +89,12 @@ export function deriveCycleFromStore(
     const d = new Date(startDate.getTime() + i * DAY_MS);
     const date = toIsoDate(d);
     const templateKey = pickTemplateForDate(state, date) ?? '';
+    const overridden = Boolean(state.calendarRules[singleDateRuleId(date)]);
     days.push({
       date,
       weekday: d.getDay() as CycleDay['weekday'],
       templateKey,
-      overridden: false,
+      overridden,
     });
   }
   const startIso = days[0]!.date;

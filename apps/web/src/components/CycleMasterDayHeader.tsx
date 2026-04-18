@@ -201,7 +201,7 @@ function DayButton({
               }}
               className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
             >
-              清除此日覆盖
+              恢复默认
             </button>
           </>
         )}

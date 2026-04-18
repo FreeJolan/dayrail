@@ -7,7 +7,7 @@
 import type { Database } from './connection';
 import { INITIAL_SCHEMA_SQL } from './schema';
 
-export const LATEST_SCHEMA_VERSION = 3;
+export const LATEST_SCHEMA_VERSION = 4;
 
 export async function runMigrations(db: Database): Promise<void> {
   await db.exec({ sql: INITIAL_SCHEMA_SQL });

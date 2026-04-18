@@ -36,6 +36,8 @@ import {
 import {
   INBOX_LINE_ID,
   type AdhocEvent,
+  type CalendarRule,
+  type CalendarRuleSingleDate,
   type Line,
   type Rail,
   type RailColor,
@@ -66,6 +68,7 @@ export interface DayRailState {
   lines: Record<string, Line>;
   tasks: Record<string, Task>;
   adhocEvents: Record<string, AdhocEvent>;
+  calendarRules: Record<string, CalendarRule>;
   sessions: Record<string, EditSession>;
 }
 
@@ -123,6 +126,14 @@ interface DayRailActions {
    *  if the task is already unscheduled. No Shift / status change —
    *  this is "I hadn't done it yet, take it off my plan". */
   unscheduleTask: (taskId: string) => Promise<void>;
+  // --- calendar rules (§5.4 CalendarRule; v0.2 impl: single-date only) ---
+  /** Write a `single-date` CalendarRule binding `date` to `templateKey`.
+   *  Deduplicated by the deterministic id `cr-single-{date}` — flipping
+   *  the same day repeatedly is one row's worth of events, not N. */
+  overrideCycleDay: (date: string, templateKey: TemplateKey) => Promise<void>;
+  /** Remove the single-date override for `date`, letting the weekday
+   *  heuristic take over again. No-op if no rule exists for the date. */
+  clearCycleDayOverride: (date: string) => Promise<void>;
   // --- sessions ---
   openEditSession: (surface: string) => Promise<EditSession>;
   closeEditSession: (sessionId: string) => Promise<void>;
@@ -147,6 +158,7 @@ type ReducerState = Pick<
   | 'lines'
   | 'tasks'
   | 'adhocEvents'
+  | 'calendarRules'
 >;
 
 // Narrowed local types matching exactly the event payloads the Template
@@ -341,6 +353,22 @@ function applyEventInPlace(
       if (existing) state.adhocEvents[p.id] = { ...existing, ...p };
       break;
     }
+    case 'calendar-rule.upserted': {
+      const p = payload as unknown as CalendarRule;
+      state.calendarRules[p.id] = {
+        id: p.id,
+        kind: p.kind,
+        priority: p.priority,
+        value: p.value,
+        createdAt: p.createdAt,
+      };
+      break;
+    }
+    case 'calendar-rule.removed': {
+      const id = (payload as { id: string }).id;
+      delete state.calendarRules[id];
+      break;
+    }
     default:
       // Unknown event types are no-ops in this store slice.
       break;
@@ -363,6 +391,7 @@ type SnapshotPayload = Pick<
   | 'lines'
   | 'tasks'
   | 'adhocEvents'
+  | 'calendarRules'
 >;
 
 function emptyReducerState(): ReducerState {
@@ -375,6 +404,7 @@ function emptyReducerState(): ReducerState {
     lines: {},
     tasks: {},
     adhocEvents: {},
+    calendarRules: {},
   };
 }
 
@@ -388,11 +418,37 @@ function snapshotFromState(s: DayRailState): SnapshotPayload {
     lines: s.lines,
     tasks: s.tasks,
     adhocEvents: s.adhocEvents,
+    calendarRules: s.calendarRules,
   };
 }
 
 function ulidLite(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Deterministic id for a `single-date` CalendarRule. Flipping the same
+ *  day's template repeatedly resolves to an upsert on one row, not a
+ *  growing pile of same-day rules. */
+export function singleDateRuleId(date: string): string {
+  return `cr-single-${date}`;
+}
+
+/** Resolve the active Template for `date` by consulting CalendarRules
+ *  first (single-date rules win over anything else in v0.2), then
+ *  falling back to the caller-provided weekday heuristic. Returns
+ *  `null` only if no rule AND no heuristic produces a TemplateKey. */
+export function resolveTemplateForDate(
+  state: Pick<DayRailState, 'calendarRules'>,
+  date: string,
+  heuristic: (date: string) => TemplateKey | null,
+): TemplateKey | null {
+  const id = singleDateRuleId(date);
+  const rule = state.calendarRules[id];
+  if (rule && rule.kind === 'single-date') {
+    const value = rule.value as CalendarRuleSingleDate;
+    if (value.templateKey) return value.templateKey;
+  }
+  return heuristic(date);
 }
 
 let unhookSnapshotTriggers: (() => void) | null = null;
@@ -425,6 +481,7 @@ export const useStore = create<DayRailStore>()(
       lines: {},
       tasks: {},
       adhocEvents: {},
+      calendarRules: {},
       sessions: {},
 
       hydrate: async () => {
@@ -453,6 +510,7 @@ export const useStore = create<DayRailStore>()(
               reducerState.lines = { ...(snap.state.lines ?? {}) };
               reducerState.tasks = { ...(snap.state.tasks ?? {}) };
               reducerState.adhocEvents = { ...(snap.state.adhocEvents ?? {}) };
+              reducerState.calendarRules = { ...(snap.state.calendarRules ?? {}) };
             }
             for (const ev of events) {
               applyEventInPlace(reducerState, ev.type, ev.payload);
@@ -465,6 +523,7 @@ export const useStore = create<DayRailStore>()(
             draft.lines = reducerState.lines;
             draft.tasks = reducerState.tasks;
             draft.adhocEvents = reducerState.adhocEvents;
+            draft.calendarRules = reducerState.calendarRules;
             for (const s of recovered) {
               if (!s.closed) draft.sessions[s.id] = s;
             }
@@ -852,6 +911,41 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
+      overrideCycleDay: async (date, templateKey) => {
+        const id = singleDateRuleId(date);
+        const payload: CalendarRule = {
+          id,
+          kind: 'single-date',
+          priority: 100,
+          value: { date, templateKey } as CalendarRuleSingleDate,
+          createdAt: Date.now(),
+        };
+        const existing = get().calendarRules[id];
+        const existingValue = existing?.value as
+          | CalendarRuleSingleDate
+          | undefined;
+        if (existing && existingValue?.templateKey === templateKey) return;
+        const ev = await appendEvent({
+          aggregateId: `calendar-rule:${id}`,
+          type: 'calendar-rule.upserted',
+          payload: payload as unknown as Record<string, unknown>,
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+      },
+
+      clearCycleDayOverride: async (date) => {
+        const id = singleDateRuleId(date);
+        if (!get().calendarRules[id]) return;
+        const ev = await appendEvent({
+          aggregateId: `calendar-rule:${id}`,
+          type: 'calendar-rule.removed',
+          payload: { id },
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+      },
+
       unscheduleTask: async (taskId) => {
         const task = get().tasks[taskId];
         if (task?.slot) {
@@ -916,6 +1010,7 @@ export const useStore = create<DayRailStore>()(
           draft.lines = reducerState.lines;
           draft.tasks = reducerState.tasks;
           draft.adhocEvents = reducerState.adhocEvents;
+          draft.calendarRules = reducerState.calendarRules;
         });
         await closeSession(sessionId);
         set((draft) => {
