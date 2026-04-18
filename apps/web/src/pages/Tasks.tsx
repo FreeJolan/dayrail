@@ -619,7 +619,7 @@ function MainPanel({
     selection.kind === 'inbox'
       ? (inbox?.name ?? 'Inbox')
       : selection.kind === 'line'
-        ? (projects.find((p) => p.id === selection.lineId)?.name ?? 'Project')
+        ? (linesMap[selection.lineId]?.name ?? 'Line')
         : selection.kind === 'archived'
           ? '已归档'
           : '回收站';
