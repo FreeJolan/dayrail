@@ -145,6 +145,22 @@ export interface Line {
  *  user-picked Project default to this Line. */
 export const INBOX_LINE_ID = 'line-inbox';
 
+/** A time-segment label on a `kind='habit'` Line. v0.3.3 scope:
+ *  entirely user-managed — no preset enum, no auto-advance, no
+ *  streak / completion-rate derivation. "Enabled" state for the
+ *  parent habit is derived from the count of associated
+ *  `HabitPhase` records (≥ 1 = enabled). */
+export interface HabitPhase {
+  id: string;
+  lineId: string;
+  name: string;
+  description?: string;
+  /** YYYY-MM-DD. The next phase's `startDate` implicitly closes
+   *  this one; there is no explicit `endDate`. */
+  startDate: string;
+  createdAt: number;
+}
+
 /** A one-off time block that overlays the Track. Either ad-hoc input
  *  (user scheduled "dentist appt" for tomorrow 14:30-16:00) or the
  *  backing record for §5.5.2 Mode-B task scheduling (`taskId` refers
