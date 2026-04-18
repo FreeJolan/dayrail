@@ -23,10 +23,10 @@ import type { RailColor } from '@/data/sample';
 
 // ERD §5.4 F4 — Calendar month view, live-data edition. Template
 // resolution follows the same priority chain as Cycle View:
-// `calendar-rule.upserted` (single-date) first, then the weekday
-// heuristic. Advanced rules (weekday / cycle / date-range editable
-// via a drawer) are v0.3 — the drawer button is off for v0.2 so the
-// UI doesn't promise something it can't deliver.
+// `calendar-rule.upserted` (single-date) first, then the typed rule
+// variants (date-range / cycle / weekday), with `weekday:0..6` as
+// the base layer. The ⚙︎ button opens the CalendarRulesDrawer for
+// editing all four variants.
 
 // Suppress the unused-import warning since INBOX_LINE_ID is only used
 // indirectly by the lib-pickTemplateForDate call chain.
