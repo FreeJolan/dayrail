@@ -22,6 +22,7 @@ import {
 } from '@/data/sampleTemplate';
 import { FirstRunBanner } from '@/components/FirstRunBanner';
 import { EditSessionIndicator } from '@/components/EditSessionIndicator';
+import { RailColorPopover } from '@/components/RailColorPopover';
 import { TemplateTabs } from '@/components/TemplateTabs';
 import { SummaryStrip } from '@/components/SummaryStrip';
 import { TimelineRuler } from '@/components/TimelineRuler';
@@ -241,6 +242,16 @@ export function TemplateEditor() {
     navigate(`/templates/${newKey}`);
   };
 
+  const changeTemplateColor = async (next: SampleTemplate['color']) => {
+    if (next === currentTemplate.color) return;
+    const tpl = templates.find((t) => t.key === activeKey);
+    if (!tpl) return;
+    await upsertTemplateAction(
+      { ...tpl, color: next as Rail['color'] },
+      sessionId ?? undefined,
+    );
+  };
+
   const deleteTemplate = async () => {
     if (currentTemplate.builtIn) return;
     // Safety 1: CalendarRule bindings. We refuse if any rule resolves
@@ -332,6 +343,7 @@ export function TemplateEditor() {
         onReset={resetToDefault}
         onDuplicate={duplicateTemplate}
         onDelete={deleteTemplate}
+        onChangeColor={changeTemplateColor}
       />
 
       <TemplateTabs
@@ -392,6 +404,7 @@ function TopBar({
   onReset,
   onDuplicate,
   onDelete,
+  onChangeColor,
 }: {
   changeCount: number;
   template: SampleTemplate;
@@ -399,6 +412,7 @@ function TopBar({
   onReset: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onChangeColor: (next: SampleTemplate['color']) => void;
 }) {
   const canUndo = changeCount > 0;
   return (
@@ -412,6 +426,7 @@ function TopBar({
         </span>
       </div>
       <div className="flex items-center gap-3">
+        <RailColorPopover value={template.color} onChange={onChangeColor} />
         <EditSessionIndicator
           changeCount={changeCount}
           onUndo={canUndo ? onUndoSession : undefined}
