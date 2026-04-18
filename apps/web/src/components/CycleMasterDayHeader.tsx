@@ -10,9 +10,18 @@ import {
   formatDayLabel,
   type CycleDay,
 } from '@/data/sampleCycle';
-import { SAMPLE_TEMPLATES } from '@/data/sampleTemplate';
 import type { TemplateKey } from '@/data/sampleTemplate';
+import type { RailColor } from '@/data/sample';
 import { RAIL_COLOR_HEX } from './railColors';
+
+/** Minimal template shape the header cares about. Kept as a small
+ *  prop shape so the header can be fed from either sample data or
+ *  live store templates without leaking either type into the other. */
+export interface TemplateChoice {
+  key: TemplateKey;
+  label: string;
+  color: RailColor;
+}
 
 // Compact master day header (ERD D3). Each day is a small button
 // rendered in roughly 56 px of vertical space:
@@ -29,6 +38,7 @@ import { RAIL_COLOR_HEX } from './railColors';
 interface Props {
   days: CycleDay[];
   todayISO: string;
+  templates: TemplateChoice[];
   onOverride: (date: string, nextTemplate: TemplateKey) => void;
   onClearOverride: (date: string) => void;
 }
@@ -36,6 +46,7 @@ interface Props {
 export function CycleMasterDayHeader({
   days,
   todayISO,
+  templates,
   onOverride,
   onClearOverride,
 }: Props) {
@@ -55,6 +66,7 @@ export function CycleMasterDayHeader({
             <DayButton
               day={day}
               isToday={day.date === todayISO}
+              templates={templates}
               onOverride={(tpl) => onOverride(day.date, tpl)}
               onClearOverride={() => onClearOverride(day.date)}
             />
@@ -68,16 +80,20 @@ export function CycleMasterDayHeader({
 function DayButton({
   day,
   isToday,
+  templates,
   onOverride,
   onClearOverride,
 }: {
   day: CycleDay;
   isToday: boolean;
+  templates: TemplateChoice[];
   onOverride: (tpl: TemplateKey) => void;
   onClearOverride: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const template = SAMPLE_TEMPLATES.find((t) => t.key === day.templateKey)!;
+  const template =
+    templates.find((t) => t.key === day.templateKey) ?? templates[0];
+  if (!template) return null;
   const { weekday, dayNum } = formatDayLabel(day);
   const tooltip = day.overridden
     ? `${template.label} · 覆盖`
@@ -145,7 +161,7 @@ function DayButton({
           </span>
         </div>
         <ul className="flex flex-col">
-          {SAMPLE_TEMPLATES.map((t) => {
+          {templates.map((t) => {
             const active = t.key === day.templateKey;
             return (
               <li key={t.key}>

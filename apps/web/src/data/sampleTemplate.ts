@@ -2,7 +2,11 @@
 // subset of ERD §10 Rail / Template types that the editor touches.
 import type { RailColor } from './sample';
 
-export type TemplateKey = 'workday' | 'restday' | 'deep' | 'travel';
+/** Widened from the original closed union so Cycle-View code can feed
+ *  store-held templates (whose keys are user-defined strings) into the
+ *  same prop shapes. The sample defaults (`workday` / `restday` /
+ *  `deep` / `travel`) still work as-is. */
+export type TemplateKey = string;
 
 export interface SampleTemplate {
   key: TemplateKey;
