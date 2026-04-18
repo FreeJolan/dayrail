@@ -4,10 +4,9 @@ import { useStore } from '@dayrail/core';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import { CycleSummaryStrip } from '@/components/CycleSummaryStrip';
 import {
-  CycleMasterDayHeader,
+  CycleSection,
   type TemplateChoice,
-} from '@/components/CycleMasterDayHeader';
-import { CycleSection } from '@/components/CycleSection';
+} from '@/components/CycleSection';
 import { BacklogDrawer } from '@/components/BacklogDrawer';
 import type { CycleDay, CycleSlot } from '@/data/sampleCycle';
 import type { RailColor } from '@/data/sample';
@@ -171,19 +170,6 @@ export function CycleView() {
 
         <CycleSummaryStrip cycle={cycle} />
 
-        <section
-          aria-label="Cycle days overview"
-          className="mt-6 rounded-md bg-surface-1 px-4 py-3"
-        >
-          <CycleMasterDayHeader
-            days={cycle.days}
-            todayISO={todayISO}
-            templates={templateChoices}
-            onOverride={overrideDay}
-            onClearOverride={clearOverride}
-          />
-        </section>
-
         <div className="flex flex-col gap-5 pt-6 pb-16">
           {groups.map(({ templateKey, days }) => {
             const tmpl = templateChoices.find((t) => t.key === templateKey);
@@ -198,6 +184,9 @@ export function CycleView() {
                 days={days}
                 slotsByKey={slotMap}
                 todayISO={todayISO}
+                templateChoices={templateChoices}
+                onOverride={overrideDay}
+                onClearOverride={clearOverride}
                 onDropTask={handleDropTask}
                 onClearSlot={handleClearSlot}
               />
