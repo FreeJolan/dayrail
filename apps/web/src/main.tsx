@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import { boot } from './boot';
 import { injectThemeTokens } from './lib/themeTokens';
 import { initTheme } from './lib/theme';
+import { resetLocalData } from './lib/resetLocalData';
 import './index.css';
 
 // Theme setup runs before React mounts so the loading veil + first
@@ -56,12 +57,34 @@ function LoadingVeil() {
 }
 
 function BootError({ error }: { error: Error }) {
+  const [resetting, setResetting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
   const copy = async () => {
     const text = `${error.name}: ${error.message}\n\n${error.stack ?? ''}`;
     try {
       await navigator.clipboard.writeText(text);
     } catch {
       /* ignore */
+    }
+  };
+  const looksCorrupt = /SQLITE_CORRUPT|malformed|SQLITE_NOTADB/i.test(
+    `${error.name} ${error.message}`,
+  );
+  const wipeAndReload = async () => {
+    if (
+      !window.confirm(
+        '清空本地 OPFS 里的事件 / 快照 / 缓存，然后刷新页面？\n此操作不可撤销。',
+      )
+    ) {
+      return;
+    }
+    setResetting(true);
+    setResetError(null);
+    try {
+      await resetLocalData();
+    } catch (e) {
+      setResetting(false);
+      setResetError((e as Error).message);
     }
   };
   return (
@@ -109,12 +132,50 @@ function BootError({ error }: { error: Error }) {
           <li>浏览器版本过低（Chrome 86+ / Safari 15.2+ / Firefox 可能受限）</li>
           <li>隐私窗口 / 扩展拦截了 OPFS 存储</li>
           <li>WASM 模块未能加载（查看 Network 面板是否有 404）</li>
+          {looksCorrupt && (
+            <li>
+              <strong className="text-ink-secondary">SQLite 数据损坏</strong>
+              —— OPFS 里的数据库文件被截断 / 写坏。需要清空本地数据重启。
+            </li>
+          )}
         </ul>
         <p className="mt-2">
           完整 stack 在浏览器 DevTools Console 里（标签{' '}
           <code className="font-mono">[boot]</code>）。复制粘给我定位。
         </p>
       </div>
+
+      <section className="flex flex-col gap-2">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          Recovery
+        </span>
+        <button
+          type="button"
+          onClick={wipeAndReload}
+          disabled={resetting}
+          className="self-start rounded-md bg-warn px-3 py-2 text-sm font-medium text-surface-0 transition hover:brightness-95 disabled:opacity-50"
+        >
+          {resetting ? '正在清空…' : '清空本地数据并重新启动'}
+        </button>
+        <p className="text-2xs text-ink-tertiary">
+          会清掉 OPFS 里所有 DayRail 的事件 / 快照，刷新后按初始种子重跑。
+        </p>
+        {resetError && (
+          <p className="rounded-sm bg-surface-1 px-3 py-2 text-xs text-warn">
+            清空失败：{resetError}
+            <br />
+            <span className="text-ink-tertiary">
+              最常见：还有另一个同源 tab 没关。先关掉再试；或在 DevTools
+              Console 跑：
+            </span>
+            <code className="mt-1 block font-mono text-2xs text-ink-secondary">
+              {
+                "const r = await navigator.storage.getDirectory(); for await (const n of r.keys()) await r.removeEntry(n, {recursive: true}); location.reload();"
+              }
+            </code>
+          </p>
+        )}
+      </section>
     </div>
   );
 }
