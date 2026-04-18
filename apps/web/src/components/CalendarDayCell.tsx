@@ -177,16 +177,14 @@ export function CalendarDayCell({
             )}
             <span
               className={clsx(
-                'inline-flex items-center rounded-sm px-1 py-0.5 font-mono text-2xs font-medium uppercase tracking-widest',
-                !inMonth && 'text-ink-tertiary/60',
+                'inline-flex items-center rounded-sm px-1.5 py-0.5 font-mono text-2xs font-medium uppercase tracking-widest',
+                !inMonth && 'opacity-60',
               )}
-              style={{
-                color: inMonth && templateHex ? templateHex : undefined,
-                background:
-                  inMonth && templateEdge
-                    ? `${templateEdge}55`
-                    : undefined,
-              }}
+              style={
+                inMonth && templateHex
+                  ? { background: templateHex, color: '#fff' }
+                  : { color: 'rgb(var(--ink-tertiary))' }
+              }
             >
               {template?.label ?? templateKey ?? '—'}
             </span>

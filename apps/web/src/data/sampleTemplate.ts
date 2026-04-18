@@ -30,9 +30,14 @@ export interface EditableRail {
   defaultLineId: string | null;
 }
 
+// Default template palette. Chosen for hue contrast: slate / sage
+// (the v0.3 defaults) were both desaturated grays and collapsed to
+// visually identical tints on the Calendar month grid. indigo +
+// amber are strongly opposed in hue even at low step values, so
+// workday vs restday reads at a glance.
 export const SAMPLE_TEMPLATES: SampleTemplate[] = [
-  { key: 'workday', label: 'Workday', color: 'slate', builtIn: true },
-  { key: 'restday', label: 'Restday', color: 'sage', builtIn: true },
+  { key: 'workday', label: 'Workday', color: 'indigo', builtIn: true },
+  { key: 'restday', label: 'Restday', color: 'amber', builtIn: true },
   { key: 'deep', label: 'Deep Focus', color: 'teal', builtIn: false },
   { key: 'travel', label: 'Travel', color: 'plum', builtIn: false },
 ];
