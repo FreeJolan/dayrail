@@ -700,6 +700,12 @@ function TaskRow({
   isArchived: boolean;
 }) {
   const isDone = task.status === 'done';
+  // §5.5.3 archived / trash rows drop the leftmost circle entirely —
+  // the circle reads as a checkbox-like affordance ("click to check /
+  // multi-select"), which is wrong here: the view context already
+  // tells the user the status. Active rows keep the circle as the
+  // canonical "mark this task done" hit-target.
+  const showStatusToggle = !isArchived && !isTrash;
   return (
     <div
       className={clsx(
@@ -707,19 +713,16 @@ function TaskRow({
         (isDone || isArchived || isTrash) && 'opacity-80',
       )}
     >
-      <button
-        type="button"
-        onClick={onToggleDone}
-        aria-label={isDone ? 'Mark as open' : 'Mark as done'}
-        disabled={isTrash}
-        className={clsx(
-          'shrink-0 transition',
-          !isTrash && 'hover:text-ink-primary',
-          isTrash && 'cursor-not-allowed opacity-60',
-        )}
-      >
-        <StatusIcon status={task.status} />
-      </button>
+      {showStatusToggle && (
+        <button
+          type="button"
+          onClick={onToggleDone}
+          aria-label={isDone ? 'Mark as open' : 'Mark as done'}
+          className="shrink-0 transition hover:text-ink-primary"
+        >
+          <StatusIcon status={task.status} />
+        </button>
+      )}
 
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span
@@ -806,6 +809,9 @@ function TaskRow({
 }
 
 function StatusIcon({ status }: { status: Task['status'] }) {
+  // Only rendered for active rows (pending / in-progress / done); the
+  // caller omits this glyph for archived / deleted rows so the user
+  // doesn't read the circle as a checkbox-style multi-select hint.
   if (status === 'done') {
     return (
       <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-ink-primary/10">
@@ -815,9 +821,6 @@ function StatusIcon({ status }: { status: Task['status'] }) {
   }
   if (status === 'in-progress') {
     return <CircleDot className="h-4 w-4 text-cta" strokeWidth={2} />;
-  }
-  if (status === 'archived' || status === 'deleted') {
-    return <Circle className="h-4 w-4 text-ink-tertiary/60" strokeWidth={1.4} />;
   }
   return <Circle className="h-4 w-4 text-ink-tertiary" strokeWidth={1.8} />;
 }
