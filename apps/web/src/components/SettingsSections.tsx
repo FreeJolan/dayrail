@@ -531,7 +531,7 @@ export function AboutSection() {
           <KeyValue label="版本" value="v0.1-pre · static mock" mono />
           <KeyValue label="构建" value="2026-04-17 · feat/planner-ux" mono />
           <KeyValue label="许可证" value="MIT" />
-          <KeyValue label="维护者" value="guojunnan" />
+          <KeyValue label="维护者" value="FreeJolan" />
         </div>
 
         <div className="flex flex-col gap-1">
