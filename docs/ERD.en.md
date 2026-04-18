@@ -1,6 +1,6 @@
 # DayRail Product Design Document (ERD)
 
-> **Status**: living document — any decision here can be overturned. Last updated 2026-04-18 (§5.5.0 Habits go live (v0.3.3): habits split into two tiers — "simple habits" (default, fixed-intensity, phase concept stays hidden) and "progressive habits" (opt-in; after `+ 启用 phase 追踪` the user can add any number of time-segment labels). HabitPhase is a user-defined time-segment label (`{ name, description?, startDate }`) — no endDate, no preset enum, no auto-advance, no streak / completion-rate derivation (that's v0.4 Review work). Enabled/disabled is derived from count of associated HabitPhase records (≥ 1 = enabled); no `Line.phaseEnabled` flag. §10 replaces the earlier over-engineered `type Phase` (with `advanceRule` / `railOverrides`) with `type HabitPhase`; `type Line` drops the inline `phases` / `currentPhaseId` / `tasks` fields in favor of `kind` as the union discriminator + associated entities; `Line.createdAt` / `archivedAt` / `deletedAt` normalize to `number` (epoch ms) matching the implementation. New events `habit-phase.upserted` / `habit-phase.removed`. History: 2026-04-18 (§5.3.1 Edit Session expanded to Cycle View in v0.3: entering `/cycle` opens an implicit session; CycleDay template switches, Slot drag-drop scheduling / unscheduling, slot-popover "Remove" and "Mark done", quick-create tasks, and orphan-guard batch unscheduling all tag the same `sessionId`; the top bar carries a persistent "⤺ Undo this edit · N" button that rolls the whole batch back in one click (leave / 15-min idle closes the session). Core-side: `overrideCycleDay` / `clearCycleDayOverride` / `scheduleTaskToRail` / `unscheduleTask` / `createTask` / `updateTask` all gain an optional `sessionId` param — `appendEvent` carries it through, and `undoEditSession`'s drop-session-events walker reverts the lot. Per-action rollback entries (slot popover Remove, CycleDay popover Restore default) stay as a finer-grained safety net. History: 2026-04-18 (§5.4 CalendarRule v0.3 advanced rules go live: typed `value` variants for `weekday` / `cycle` / `date-range` + resolver + UI all landed. Resolver walks rules by priority desc (single-date 100 > date-range 50 > cycle 30 > weekday 10), falling back to the built-in heuristic only when every rule misses. Weekday rules are seeded on first boot (workday covers Mon–Fri / restday covers weekends) — behavior matches the old hardcoded heuristic, so no breaking change and OPFS doesn't need wiping. The "Advanced Calendar Rules" drawer returns: four sections (single-date / date-range / cycle / weekday) with list + create-form + delete per section; v0.3 uses a "delete + re-create" edit model (in-place edit lands in v0.3.1); the drawer **does not** enter the §5.3.1 Edit Session — same immediate-apply stance as Cycle View. §10 `type CalendarRule` gains typed value variants + v0.3 implementation notes; §5.4 drawer subsection tightened to match. History: 2026-04-18 (Routing library + URL scheme locked in: v0.2 uses `react-router-dom` v6, not `@tanstack/router` — the typed-params upside is priced above its current complexity payoff. URL scheme: `/` / `/cycle` / `/tasks` + `/tasks/inbox` / `/tasks/line/:lineId` / `/tasks/archived` / `/tasks/trash` / `/review` / `/pending` / `/calendar` / `/templates` / `/templates/:key` / `/settings` / `/settings/:section`. What goes in the URL: Tasks selection, Settings section, Template tab. What stays in component state: search query, filter chips, Cycle View anchorDate — complexity vs payoff doesn't clear the bar for v0.2. See `docs/v0.2-plan.md §3`. History: 2026-04-18 (§5.3 Cycle View top-DAYS block folded into the section mini-headers: the former "top-level day header (single, spans all sections)" is retired; each section mini-header is now the **sole** CycleDay template-switch entry — every date cell is itself the trigger, opening the same popover (template list + a "Restore default" footer when the day is overridden). The overridden indicator dot moves from the top DayButton into the mini-header's date cell. Rationale: two DAYS rows duplicated information and the top block + sticky summary strip ate vertical space; "one action, one entry point" is preserved — the entry just moved from "one top-level master" to "each section's own days within its mini-header". History: 2026-04-18 (§5.3 Cycle View orphan-task guard on template switch: flipping a CycleDay's template could silently orphan Tasks scheduled to the old template's Rails (`task.slot` still pointed at a Rail the new template doesn't render). Now gated: N=0 flips silently; N>0 triggers a small confirm `Switching will remove N scheduled tasks · Continue / Cancel`, which on continue batch-unschedules those Tasks before writing the rule. "Restore default" follows the same guard. §5.5 Tasks view list shape change: Status chips are gone from the top row; the list body now renders as two collapsible groups — "Open" (expanded) and "Completed" (collapsed by default). Open being empty flips Completed open automatically and shows "All clear ✓" in Open's slot. Archived / Trash still live only in the left-column nav; an active search expands both groups. History: 2026-04-18 (Cycle View CalendarRule persistence: §5.3's CycleDay template switch now writes `calendar-rule.upserted` / `calendar-rule.removed` events instead of living in local state, deduplicated by `cr-single-{date}` id; §5.3.1 Edit Session scope for v0.2 narrows to Template Editor only — Cycle View's session-level undo pushes to v0.3, with in-view mistakes walked back via the Slot popover's "Remove assignment" + CycleDay popover's "Restore default" as single-action rollbacks; §10 CalendarRule gains a v0.2-implementation note — only `single-date` kind is live, id convention + priority=100 + event shapes). History: 2026-04-18 (§5.5 refactored from `Projects / Lines View` → `Tasks View`, positioned as the primary task-management surface — left-column nav tree (Inbox + Projects + Habits + Trash) + cross-Project task list with search / filter + a scheduling popover offering two modes (Bind-to-Rail · default / Free-time · escape hatch); a built-in Inbox Line (`isDefault: true`, undeletable) becomes the default container for tasks created without a Project; comprehensive reversibility + soft-delete model (Task / Line / AdhocEvent `status` gains `'deleted'`, Trash entry + a confirmed `*.purged` hard delete); `AdhocEvent` gains `taskId` to back the free-time scheduling mode; Project progress bar becomes conditional (only rendered when at least one task has a milestone), task count always visible; open-ended Projects (missing `plannedEnd`) are explicitly NOT a risk signal; §10 Task/Line/AdhocEvent types updated; terminology audit: `Chunk` renamed to `Task` end-to-end (types + events + schema + UI + ERD) to retire an internal-only jargon term; `Line` stays as an internal umbrella type (`kind: 'project' \| 'habit' \| 'group'`) but **the word "Line" never appears in UI copy** — surfaces always show the concrete Project / Habit / Tag; the `Pending` view is renamed `待决定 / Unresolved` so it no longer overloads the `status='pending'` enum; §5.7 Pending drops its 24h aging filter — it's now the complete "awaiting a decision" set, with the check-in strip serving as the "last-24h" subset view). History: 2026-04-17 (check-in action set simplified: the old four-button `Done / Skip / Shift / Ignore` + four-sub-action sheet collapses into three buttons `Done / Later / Archive`; `RailInstance.status` becomes `pending / done / deferred / archived` (`active` and `skipped` retired — "currently happening" is wall-clock-derived); Shift sheet replaced by a 6-second Reason toast (3 quick-reason tag chips + Undo, no mandatory reason); Postpone / Replace / Swap / Resize removed from the Shift types — within-day postponing is handled by Cycle-View drag, the rest deferred to v0.3; Pending queue renamed and now absorbs both explicit `deferred` items and stale-`pending` items > 24h — two sources, one exit; §5.8 Review heatmap's three-part hatching semantics rebound to `deferred / archived / pending-stale`). History: 2026-04-16 (Group A UI baseline: sync-status badge, Now-View rhythm bar, Ad-hoc overlay, generalized Edit Sessions, Cycle notation → C1, per-view date-format table; Group B Now-View structure: multi-task pill row, three Slot shapes, Next-Rail visual spec, removal of the left rail visualizer, `CURRENT RAIL` chip, Now top-bar `Now` + Mono subtitle; Group C Today-Track Shift interactions: Skipped state via hatching, desktop hover-revealed action bar, Active main CTA → tonal `Done`, unified Shift-tag sheet, single timeline with no bento; Group D Cycle-View skeleton: per-template stacked sections, top day-header as the sole template-switch entry, Cycle pager picker, summary-strip aggregates, `⤺ Undo this edit` button, three-part hatching semantics, Backlog as split drawer; Group E Template Editor: no Save button + first-run inline banner, Radix 10-color popover, sticky tab bar + 2px color strip + dashed `+ New template`, summary strip, card-style Rail row + time-pill popover picker, inter-row gap chip `+ Fill Rail`, `⋯` row menu carrying Line binding / check-in toggle; notification rework: drop OS push / Capacitor notifications / permission pipeline, Signal collapses to a `showInCheckin` boolean, §5.6 and §5.7 unified — the check-in strip and the pending-decisions queue are two tenses of one mechanism; Group F missing screens: Projects / Settings share the master-detail form, Review per-scope waterfall + rhythm-match heatmap (state tints + the three-part hatching semantics), pending-decisions queue is date-reverse grouped with four inline actions per row and the side-nav shows a `·` dot without a number, Calendar is a standard month grid + per-date popover + Advanced-rules drawer with four sections, new §5.9 Settings defines five sections + a three-way theme toggle defaulting to follow-system + Language in Appearance / Time format + AI output-locale in Advanced; Group G design language: Terracotta CTA uses `orange-9/10/11` three solid tones (no gradients); No-Line Rule with explicit whitelist (decorative color strips + sticky hairline + focus rings); four-tier Surface tokens `sand-1..4` replace `border`-based hierarchy; radius tokens `sharp / sm / md / lg` = `0 / 6 / 10 / 16`; zero glassmorphism app-wide; Intentional Asymmetry as the default layout principle. Visual-implementation adjustments: Rail palette drops `olive / mauve / gray` (visually too close to sage / slate, or identity-less), swaps in `grass / indigo / plum` to fill the missing saturated-green / cool-blue / creative-purple slots — still 10 colors but every one perceptibly distinct. CN primary font swapped PingFang → Noto Sans SC (Source Han Sans SC) for cross-platform consistency. Terracotta CTA re-bound from `orange-9` to `bronze-9` — `orange-9` read as SaaS-vivid on screen; `bronze-9` sits much closer to the ERD's original #C97B4A "warm terracotta" intent).
+> **Status**: living document — any decision here can be overturned. Last updated 2026-04-19 (major data-model consistency pass · v0.4 foundation). Six changes bundled: (1) §10 gains a **three-axis overview** + **completion-status ownership rule** — Line / Rail-Template-Time / Task are three orthogonal axes, `Task.status` is the sole source of truth for all completion semantics, and RailInstance narrows to a "wall-clock log" (actualStart/End + Shift tags). This closes the v0.3 cracks where `Task.status` and `RailInstance.status` both existed and could drift apart ("ticked done in Tasks but Today Track still shows pending"). (2) Habit "each occurrence" becomes an **auto-task** (idempotent id `task-auto-{habitId}-{date}`, `lineId = habitId`, `title = habit.name`). Habit Line gains the hard "no hand-built Tasks" constraint; NewTaskInput never renders for habits. Habit and Project converge on the same completion path — Today Track / Pending / Review all query Task.status. (3) §10.2 fixes the auto-task materialization strategy at Ⅱ · **on-demand**, triggered by: Today Track boot / Cycle View switch / rhythm strip open / Calendar month page / Review scope switch / rhythm-strip click-to-backfill. Each `(habitId, cycleId)` materializes once and is marked; idempotent ids prevent duplicate rows. (4) §10.3 defines habit configuration-change rules: when a Rail's recurrence / time / templateKey / defaultLineId changes, we scan `[today, end of furthest materialized cycle]` and **only touch** auto-tasks matching `status='pending' AND plannedStart > now` (purge + top up under the new config); completed / skipped / archived ones stay. All three event types (task.purged + task.created + rail.updated) sit under one Edit Session for one-click undo. Confirm dialog before save. (5) §5.5.0 adds **A+B rhythm-strip interactions**: A is read-only, B lets the user click any cell for `done / skipped / shifted / clear`, upserting (materializing on demand) as needed. Primary path (today) is Today Track; safety net (missed / forgot / retroactive) is inline on the strip. (6) §5.5.0 **explicitly closes** the open question on "collapse habit and Rail into one entity" — the current three-axis separation is a feature: Template = structurally different days, a habit is "an activity scheduled *into* a day" not "a cron over the calendar", and re-planning habits when adding a new template is *the point* of having Templates. The three old framings ("cross-template means copying rails", "sick-day flip makes habit not fire", "new template requires manual migration") all invert: these are not pain points, they are the design. §5.6 / §5.7 / §5.8 write paths are all updated to read/write Task.status; `RailInstance.status` is deprecated in v0.4 and scheduled for cleanup in v0.5. History: 2026-04-18 (§5.5.0 Habit view mental-model correction (v0.4 anchor): from the user's perspective **a habit is one recurring thing**, not a bucket of Tasks. A Project aggregates N Tasks toward a goal; a Habit is one thing with recurrence. Habit Lines gain a hard "hold zero Tasks" constraint; the habit detail page is de-Project-ified — NewTaskInput / FilterBar / GroupedTaskList are removed and replaced with name+color+current-phase → 14-day rhythm strip → bound Rails list → phase timeline → notes → Danger. The previously-discussed "folded Tasks drawer under habit" (Option B) is explicitly rejected — the mental-model cost of a mixed surface outweighs the "where do buy-shoes go" ergonomic. Whether `Line.kind='habit'` eventually collapses into Rail (habit = a Rail family with phase/color, no Line) stays a deferred schema-level open question and is not part of this change. History: 2026-04-18 (§5.5.0 Habits go live (v0.3.3): habits split into two tiers — "simple habits" (default, fixed-intensity, phase concept stays hidden) and "progressive habits" (opt-in; after `+ 启用 phase 追踪` the user can add any number of time-segment labels). HabitPhase is a user-defined time-segment label (`{ name, description?, startDate }`) — no endDate, no preset enum, no auto-advance, no streak / completion-rate derivation (that's v0.4 Review work). Enabled/disabled is derived from count of associated HabitPhase records (≥ 1 = enabled); no `Line.phaseEnabled` flag. §10 replaces the earlier over-engineered `type Phase` (with `advanceRule` / `railOverrides`) with `type HabitPhase`; `type Line` drops the inline `phases` / `currentPhaseId` / `tasks` fields in favor of `kind` as the union discriminator + associated entities; `Line.createdAt` / `archivedAt` / `deletedAt` normalize to `number` (epoch ms) matching the implementation. New events `habit-phase.upserted` / `habit-phase.removed`. History: 2026-04-18 (§5.3.1 Edit Session expanded to Cycle View in v0.3: entering `/cycle` opens an implicit session; CycleDay template switches, Slot drag-drop scheduling / unscheduling, slot-popover "Remove" and "Mark done", quick-create tasks, and orphan-guard batch unscheduling all tag the same `sessionId`; the top bar carries a persistent "⤺ Undo this edit · N" button that rolls the whole batch back in one click (leave / 15-min idle closes the session). Core-side: `overrideCycleDay` / `clearCycleDayOverride` / `scheduleTaskToRail` / `unscheduleTask` / `createTask` / `updateTask` all gain an optional `sessionId` param — `appendEvent` carries it through, and `undoEditSession`'s drop-session-events walker reverts the lot. Per-action rollback entries (slot popover Remove, CycleDay popover Restore default) stay as a finer-grained safety net. History: 2026-04-18 (§5.4 CalendarRule v0.3 advanced rules go live: typed `value` variants for `weekday` / `cycle` / `date-range` + resolver + UI all landed. Resolver walks rules by priority desc (single-date 100 > date-range 50 > cycle 30 > weekday 10), falling back to the built-in heuristic only when every rule misses. Weekday rules are seeded on first boot (workday covers Mon–Fri / restday covers weekends) — behavior matches the old hardcoded heuristic, so no breaking change and OPFS doesn't need wiping. The "Advanced Calendar Rules" drawer returns: four sections (single-date / date-range / cycle / weekday) with list + create-form + delete per section; v0.3 uses a "delete + re-create" edit model (in-place edit lands in v0.3.1); the drawer **does not** enter the §5.3.1 Edit Session — same immediate-apply stance as Cycle View. §10 `type CalendarRule` gains typed value variants + v0.3 implementation notes; §5.4 drawer subsection tightened to match. History: 2026-04-18 (Routing library + URL scheme locked in: v0.2 uses `react-router-dom` v6, not `@tanstack/router` — the typed-params upside is priced above its current complexity payoff. URL scheme: `/` / `/cycle` / `/tasks` + `/tasks/inbox` / `/tasks/line/:lineId` / `/tasks/archived` / `/tasks/trash` / `/review` / `/pending` / `/calendar` / `/templates` / `/templates/:key` / `/settings` / `/settings/:section`. What goes in the URL: Tasks selection, Settings section, Template tab. What stays in component state: search query, filter chips, Cycle View anchorDate — complexity vs payoff doesn't clear the bar for v0.2. See `docs/v0.2-plan.md §3`. History: 2026-04-18 (§5.3 Cycle View top-DAYS block folded into the section mini-headers: the former "top-level day header (single, spans all sections)" is retired; each section mini-header is now the **sole** CycleDay template-switch entry — every date cell is itself the trigger, opening the same popover (template list + a "Restore default" footer when the day is overridden). The overridden indicator dot moves from the top DayButton into the mini-header's date cell. Rationale: two DAYS rows duplicated information and the top block + sticky summary strip ate vertical space; "one action, one entry point" is preserved — the entry just moved from "one top-level master" to "each section's own days within its mini-header". History: 2026-04-18 (§5.3 Cycle View orphan-task guard on template switch: flipping a CycleDay's template could silently orphan Tasks scheduled to the old template's Rails (`task.slot` still pointed at a Rail the new template doesn't render). Now gated: N=0 flips silently; N>0 triggers a small confirm `Switching will remove N scheduled tasks · Continue / Cancel`, which on continue batch-unschedules those Tasks before writing the rule. "Restore default" follows the same guard. §5.5 Tasks view list shape change: Status chips are gone from the top row; the list body now renders as two collapsible groups — "Open" (expanded) and "Completed" (collapsed by default). Open being empty flips Completed open automatically and shows "All clear ✓" in Open's slot. Archived / Trash still live only in the left-column nav; an active search expands both groups. History: 2026-04-18 (Cycle View CalendarRule persistence: §5.3's CycleDay template switch now writes `calendar-rule.upserted` / `calendar-rule.removed` events instead of living in local state, deduplicated by `cr-single-{date}` id; §5.3.1 Edit Session scope for v0.2 narrows to Template Editor only — Cycle View's session-level undo pushes to v0.3, with in-view mistakes walked back via the Slot popover's "Remove assignment" + CycleDay popover's "Restore default" as single-action rollbacks; §10 CalendarRule gains a v0.2-implementation note — only `single-date` kind is live, id convention + priority=100 + event shapes). History: 2026-04-18 (§5.5 refactored from `Projects / Lines View` → `Tasks View`, positioned as the primary task-management surface — left-column nav tree (Inbox + Projects + Habits + Trash) + cross-Project task list with search / filter + a scheduling popover offering two modes (Bind-to-Rail · default / Free-time · escape hatch); a built-in Inbox Line (`isDefault: true`, undeletable) becomes the default container for tasks created without a Project; comprehensive reversibility + soft-delete model (Task / Line / AdhocEvent `status` gains `'deleted'`, Trash entry + a confirmed `*.purged` hard delete); `AdhocEvent` gains `taskId` to back the free-time scheduling mode; Project progress bar becomes conditional (only rendered when at least one task has a milestone), task count always visible; open-ended Projects (missing `plannedEnd`) are explicitly NOT a risk signal; §10 Task/Line/AdhocEvent types updated; terminology audit: `Chunk` renamed to `Task` end-to-end (types + events + schema + UI + ERD) to retire an internal-only jargon term; `Line` stays as an internal umbrella type (`kind: 'project' \| 'habit' \| 'group'`) but **the word "Line" never appears in UI copy** — surfaces always show the concrete Project / Habit / Tag; the `Pending` view is renamed `待决定 / Unresolved` so it no longer overloads the `status='pending'` enum; §5.7 Pending drops its 24h aging filter — it's now the complete "awaiting a decision" set, with the check-in strip serving as the "last-24h" subset view). History: 2026-04-17 (check-in action set simplified: the old four-button `Done / Skip / Shift / Ignore` + four-sub-action sheet collapses into three buttons `Done / Later / Archive`; `RailInstance.status` becomes `pending / done / deferred / archived` (`active` and `skipped` retired — "currently happening" is wall-clock-derived); Shift sheet replaced by a 6-second Reason toast (3 quick-reason tag chips + Undo, no mandatory reason); Postpone / Replace / Swap / Resize removed from the Shift types — within-day postponing is handled by Cycle-View drag, the rest deferred to v0.3; Pending queue renamed and now absorbs both explicit `deferred` items and stale-`pending` items > 24h — two sources, one exit; §5.8 Review heatmap's three-part hatching semantics rebound to `deferred / archived / pending-stale`). History: 2026-04-16 (Group A UI baseline: sync-status badge, Now-View rhythm bar, Ad-hoc overlay, generalized Edit Sessions, Cycle notation → C1, per-view date-format table; Group B Now-View structure: multi-task pill row, three Slot shapes, Next-Rail visual spec, removal of the left rail visualizer, `CURRENT RAIL` chip, Now top-bar `Now` + Mono subtitle; Group C Today-Track Shift interactions: Skipped state via hatching, desktop hover-revealed action bar, Active main CTA → tonal `Done`, unified Shift-tag sheet, single timeline with no bento; Group D Cycle-View skeleton: per-template stacked sections, top day-header as the sole template-switch entry, Cycle pager picker, summary-strip aggregates, `⤺ Undo this edit` button, three-part hatching semantics, Backlog as split drawer; Group E Template Editor: no Save button + first-run inline banner, Radix 10-color popover, sticky tab bar + 2px color strip + dashed `+ New template`, summary strip, card-style Rail row + time-pill popover picker, inter-row gap chip `+ Fill Rail`, `⋯` row menu carrying Line binding / check-in toggle; notification rework: drop OS push / Capacitor notifications / permission pipeline, Signal collapses to a `showInCheckin` boolean, §5.6 and §5.7 unified — the check-in strip and the pending-decisions queue are two tenses of one mechanism; Group F missing screens: Projects / Settings share the master-detail form, Review per-scope waterfall + rhythm-match heatmap (state tints + the three-part hatching semantics), pending-decisions queue is date-reverse grouped with four inline actions per row and the side-nav shows a `·` dot without a number, Calendar is a standard month grid + per-date popover + Advanced-rules drawer with four sections, new §5.9 Settings defines five sections + a three-way theme toggle defaulting to follow-system + Language in Appearance / Time format + AI output-locale in Advanced; Group G design language: Terracotta CTA uses `orange-9/10/11` three solid tones (no gradients); No-Line Rule with explicit whitelist (decorative color strips + sticky hairline + focus rings); four-tier Surface tokens `sand-1..4` replace `border`-based hierarchy; radius tokens `sharp / sm / md / lg` = `0 / 6 / 10 / 16`; zero glassmorphism app-wide; Intentional Asymmetry as the default layout principle. Visual-implementation adjustments: Rail palette drops `olive / mauve / gray` (visually too close to sage / slate, or identity-less), swaps in `grass / indigo / plum` to fill the missing saturated-green / cool-blue / creative-purple slots — still 10 colors but every one perceptibly distinct. CN primary font swapped PingFang → Noto Sans SC (Source Han Sans SC) for cross-platform consistency. Terracotta CTA re-bound from `orange-9` to `bronze-9` — `orange-9` read as SaaS-vivid on screen; `bronze-9` sits much closer to the ERD's original #C97B4A "warm terracotta" intent).
 >
 > This describes DayRail's product logic, interaction design, and tech choices. It is not a final blueprint — it captures intent and trade-offs (including paths we considered and rejected) so contributors can see *why* the code looks the way it does.
 >
@@ -516,22 +516,141 @@ Net effect: the user-facing vocabulary stays Template / Track / Rail / Shift / L
 
 #### 5.5.0 Habits (v0.3.3 goes live; v0.4 deepens)
 
-A Habit is a `Line.kind='habit'` variant — same name / color / Line
-behavior as a Project, just with a preference for **time-segment
-semantics**: a runner moving "twice-a-week 10 min" → "daily 30 min"
-→ "three-times-a-week 5km" benefits from recording the progression.
+**User mental model** (pinned in v0.4): **a habit is one recurring
+thing, not a bucket of things**. A Project aggregates N Tasks toward
+a goal; a Habit is **one thing that repeats**. "Morning run" is just
+morning run — the same thing, every day — you shouldn't be looking
+at a task list of "buy running shoes / check heart rate" *under* the
+habit.
 
-**Two tiers**:
+##### Hard constraints and data shape
 
-- **Simple habit** (default): you want a fixed intensity (daily
-  30-min run for general wellness), no progression goal. **Phase
-  is not exposed**. UI shows only the name, color, and any Rail
-  binding. Mental model is identical to a Project, no new
-  concepts.
-- **Progressive habit** (opt-in): you have staged goals (race
-  training, return-to-sport after injury). In the habit detail
-  you manually `+ 启用 phase 追踪`, after which you add any number
-  of phase time-segment labels.
+- `Line.kind='habit'` **holds no hand-built Tasks**. The habit
+  detail never surfaces a NewTaskInput. Ad-hoc related items (buy
+  shoes / check heart rate) go to Inbox or to a user-created
+  Project — the habit is not an attachment point.
+- A habit's "each occurrence" materializes as an **auto-task**
+  (`id = task-auto-{habitId}-{date}`, `lineId = habitId`,
+  `title = habit.name`). Auto-tasks share the same `Task.status`
+  lifecycle as hand-built Tasks (`pending / in-progress / done /
+  archived / deleted`).
+- A habit's cadence is described by **1+ bound Rails**
+  (`Rail.defaultLineId === habit.id`). One habit can bind several
+  Rails (workday 06:30 + weekend 07:30 both covering "morning
+  run"), but the semantics stay "one thing".
+- **Completion status source of truth** = `Task.status` (see
+  §10.1). Today Track check-in / habit rhythm strip / Pending
+  queue / Review all read and write the auto-task's status —
+  RailInstance.status is no longer consulted.
+
+##### Habit schedule riding Template is a feature, not debt
+
+Binding habits to specific Rails, which means "each new template
+requires re-planning where the habit goes", is a direct consequence
+of DayRail's core philosophy — not tight coupling:
+
+- Template = what this day looks like; workday and restday are not
+  "labels on a day" but **structurally different days**.
+- A habit is "an activity scheduled *into* a day", not "a cron
+  riding *over* the calendar".
+- Creating a new template = reconsidering "how do morning run /
+  breakfast / English reading fit into this day" — that's the
+  point of having a template.
+- Ad-hoc template switch (sick on Wednesday → flip today to
+  restday) = user explicitly saying "today is not a regular
+  workday" → habit not firing is correct.
+
+This reframes several "pain points" from earlier drafts:
+
+| Old framing | v0.4 stance |
+|---|---|
+| Cross-template habit requires multiple rails, tedious copying | This is planning multiple day shapes; the work is intrinsic |
+| Sick-day template flip makes the habit not fire | User already changed the day's structure; not firing is correct |
+| Every habit needs manual migration when adding a new template | New template = new structure; migration is *the* point of Template |
+
+##### Auto-task materialization strategy · Ⅱ (on-demand)
+
+See §10.2. Key points:
+
+- Triggers: Today Track boot / Cycle View switch / rhythm strip
+  open / Calendar month page / Review scope switch / rhythm-strip
+  click-to-backfill.
+- **Materialized `(habitId, cycleId)` is marked and never
+  recomputed** — prevents a config change from later adding a pile
+  of historical auto-tasks.
+- Idempotent ids make repeated triggers a no-op.
+
+##### Habit configuration-change rules
+
+See §10.3. **One-line rule**: when you change a Rail's recurrence /
+start time / duration / templateKey / defaultLineId, only **unstarted**
+auto-tasks (`status='pending' AND plannedStart > now`) are
+affected; completed / skipped / archived ones are kept. A confirm
+dialog fires before save.
+
+##### Two tiers (kept from the v0.3.3 decision):
+
+- **Simple habit** (default): fixed intensity (daily 30-min run
+  for general wellness), no progression goal. **Phase is not
+  exposed**. The detail page shows: name / color / rhythm strip /
+  bound Rails / notes.
+- **Progressive habit** (opt-in): staged goals (race training,
+  return-to-sport). In the detail page you `+ 启用 phase 追踪`,
+  then add phase records; the page starts rendering the phase
+  timeline as soon as the first record lands.
+
+**Habit detail page layout** (fixed in v0.4):
+
+```
+┌───────────────────────────────────────┐
+│  ● <habit name>                       │  ← name + color strip + current-phase subtitle
+├───────────────────────────────────────┤
+│  Rhythm                               │  ← recent 14-day mini heatmap (single RhythmHeatmap row)
+│  ▣▣▢▣░▢▣▣▣ ...                     │     states: done / shifted / skipped / unmarked / empty
+├───────────────────────────────────────┤
+│  Schedule                             │  ← bound Rails list
+│  Weekdays · 06:30-07:00 (workday)     │
+│  Weekends · 07:30-08:00 (restday)     │
+│  [+ Add cadence → Template Editor]    │
+├───────────────────────────────────────┤
+│  Phases (only when enabled)           │  ← v0.3.3 PhaseForm / list, untouched
+├───────────────────────────────────────┤
+│  Notes                                │  ← long-text Line.note-style field, added in v0.4
+├───────────────────────────────────────┤
+│  Danger: Archive / Delete             │
+└───────────────────────────────────────┘
+```
+
+**Does NOT render**: NewTaskInput, FilterBar (schedule chips),
+GroupedTaskList. Those are Project idioms.
+
+##### Rhythm-strip interactions (A+B · read + click-to-backfill)
+
+Cell mapping:
+
+| Visual | Condition |
+|---|---|
+| Green fill · done | auto-task.status = 'done' |
+| Hatching · shifted | auto-task has an associated Shift and status ≠ 'pending' |
+| Hatching · skipped | auto-task.status = 'archived' (skipped this occurrence) |
+| Empty · unmarked | auto-task.status = 'pending' AND plannedStart ≤ now (should have happened, not marked) |
+| Grey · empty | Rail doesn't fire that day (recurrence doesn't cover / template mismatch / rail didn't exist yet) |
+
+**A · Read-only strip** (v0.4 required): states above are
+read-only. Today's check-in goes via the Today Track strip.
+
+**B · Click-to-backfill** (v0.4 required): click any non-empty cell
+→ small menu `done / skipped / shifted / clear`. On choice, upsert
+the auto-task (materialize on the fly if needed; id is idempotent)
+and set status. Empty cells are inert (the rail doesn't fire that
+day — setting a status is meaningless).
+
+**Why both**: A is the primary path (today's occurrence is marked
+from Today Track); B is the safety net (forgot to mark / missed
+opening the app / retroactive entry). Putting B inline on the
+rhythm strip (rather than a separate "edit record" surface) is
+deliberate — the user recognizes "I forgot that day" *while
+looking at the strip*; editing where you see is the natural flow.
 
 **HabitPhase data** (see §10): a pure time-segment label — no
 streak / completion-rate derivation. Each phase is `{ name,
@@ -543,24 +662,37 @@ with `startDate <= today` and the largest `startDate`.
 **Associated HabitPhase records ≥ 1 = enabled; = 0 = disabled**.
 Deleting the last phase flips the habit back to simple mode.
 
-**UI surfaces**:
+**SideNav Habits group** (one row per habit):
 
-| State | Habits list row | Habit detail |
-|---|---|---|
-| No phases | Just the habit name | Standard detail + `+ 启用 phase 追踪` footer |
-| 1+ phases | Habit name + current-phase subtitle | Detail + vertical phase timeline + `+ 新 phase` + per-phase rename / reschedule / delete |
+| State | Row display |
+|---|---|
+| No phases | Habit name |
+| 1+ phases | Habit name + current-phase subtitle |
 
-**Events**: `habit-phase.upserted` (payload = full HabitPhase) /
-`habit-phase.removed` (payload = `{ id }`). ULID ids.
+**Events**:
+- `habit-phase.upserted` (payload = full HabitPhase) /
+  `habit-phase.removed` (payload = `{ id }`). ULID ids.
+- Auto-tasks reuse `task.created` / `task.updated` / `task.purged`;
+  payload carries `source: 'auto-habit'` for audit (doesn't affect
+  reducer semantics).
 
-**Out of scope (v0.3.3)**:
+**Out of scope (v0.4)**:
 - No auto-advance / suggestion. Phase transitions are entirely
   user-driven; no "you've been consistent for 14 days, ready to
   level up?" magic.
-- No streak / completion-rate derivation. Review-view habit
-  rhythm visualization lands in v0.4.
+- No streak / completion-rate derivation. The Review view's habit
+  rhythm already covers that (§5.8); the habit detail only shows
+  a recent mini-strip, it doesn't duplicate.
 - No preset phase enum. Users name their own phases (热身期 /
   基础期 / 冲刺期 / 恢复期 — whatever fits).
+- No "folded Tasks drawer under habit". Option B from the earlier
+  discussion is explicitly rejected — directional inconsistency.
+- **Collapsing habit and Rail into one entity** (removing
+  `Line.kind='habit'`, making habit = Rail family) — **rejected**.
+  The current three-axis separation is a feature, not debt (see the
+  "habit schedule riding Template is a feature" section above);
+  collapsing is premature abstraction that doesn't solve a real
+  problem. The previously-open question is closed.
 
 #### 5.5.1 Inbox
 
@@ -628,7 +760,7 @@ Every destructive action defaults to **soft delete**, with Trash as the recovery
 
 **Projects in Cycle View**: the existing Backlog drawer (§5.3) stays — its role is "drag a task from backlog onto a slot". Tasks view and the drawer are complementary surfaces (manage-tasks vs plan-time).
 
-**Habit / Phase transitions** still live on Habit Lines (§4.1) and land in v0.4. In Tasks view they'll sit in the `Habits` nav group with their own list rules (rhythm tracking, not task-pile management); concrete shape is deferred to v0.4.
+**Habit / Phase transitions** still live on Habit Lines (§4.1) and land in v0.4. In Tasks view they sit in the `Habits` nav group with their own list rules (rhythm tracking, not task-pile management) — see §5.5.0 for the v0.4 habit detail layout.
 
 ---
 
@@ -639,12 +771,13 @@ Every destructive action defaults to **soft delete**, with Trash as the recovery
 - **No system notifications, no native push, no notification-permission prompts.** Neither the Capacitor notification module nor the Web Notification API is integrated.
 - **Signal's only surface = the check-in strip**: when the user **opens the app** (or a new Rail ends while the app is already in the foreground), Today Track shows at the top:
   `☕ "Deep Work" 09:00–11:00 has ended · Done / Later / Archive`
-  - **Trigger condition**: `status = 'pending'` with `plannedEnd < now` and `plannedEnd > now - 24h` (older items sink into the §5.7 Pending queue), with `showInCheckin = true`.
+  - **Trigger condition** (rewritten in v0.4 to match the §10.1 single-source-of-truth rule): for each of today's ended Rails, look at its carrying Task (hand-built Task or a habit's auto-task). A hit is `Task.status = 'pending'` AND `plannedEnd < now` AND `plannedEnd > now - 24h` AND `Rail.showInCheckin = true`. Bare rails (no carrying Task) no longer surface here — "needs marking" is a Task-level concept.
   - **Multiple hits simultaneously** → collapse into a single line `3 ended Rails waiting to be marked ▾`; expanding shows the list. Processing one item does not auto-collapse — the list stays open so batches flow.
-  - **Button semantics (identical to the §5.2 hover action bar)**:
-    - `Done` → `status → done`
-    - `Later` → `status → deferred`, lands in §5.7 Pending queue
-    - `Archive` → `status → archived`, terminal. Recurring Rails also get a 3s toast `Archived today's <name>; tomorrow's will still be generated.`
+  - **Button semantics (identical to the §5.2 hover action bar; v0.4 writes `Task.status`)**:
+    - `Done` → `Task.status → done`
+    - `Later` → `Task.status → deferred` (a new enum value), lands in §5.7 Pending queue
+    - `Archive` → `Task.status → archived`, terminal. Habits' auto-tasks also get a 3s toast `Archived today's <name>; tomorrow will materialize a new auto-task.`
+  - **Signal events still recorded** (`signal.acted` payload carrying railInstanceId + response) for audit, but `Task.status` is the authoritative write. RailInstance.status no longer carries semantics.
   - **Reason toast**: after any action, a 6-second undo-toast appears below the row (as defined in §5.2), offering 3 quick-reason chips for optional tagging.
 - **Per-Rail `showInCheckin` toggle** (default `true`): flipped from the Template Editor row `⋯` menu (see §5.4). Off = the Rail runs silently, never hitting the check-in strip or the Pending queue (fits purely structural Rails like "lunch break" — nothing to track).
 - **No auto-downgrade**: consecutive days of `Done` / `Archive` do not silently turn check-in off. Users can turn it off from Rail settings themselves. Silently deciding "no more check-in" on their behalf would drift from "quiet" into "absent".
@@ -653,12 +786,12 @@ Every destructive action defaults to **soft delete**, with Trash as the recovery
 
 §5.6's check-in strip covers the "just-ended" tense. Rails that went **unmarked further in the past** and Rails the user explicitly **deferred** both collect here. Two sources, one exit.
 
-**Sources**:
+**Sources** (v0.4 queries Task, not RailInstance):
 
-1. **Explicit defer** — the user clicks "Later" in the check-in strip / Today Track. `status → deferred`.
-2. **Ended unmarked** — every `status = 'pending'` instance with `plannedEnd ≤ now` (any age — the previous "> 24h aging" filter is retired).
+1. **Explicit defer** — the user clicks "Later" in the check-in strip / Today Track. `Task.status → deferred`.
+2. **Ended unmarked** — every Task (hand-built or auto-task) with `Task.status = 'pending'` AND `Task.slot.date + Rail.endMinutes ≤ now`. Any age — the previous "> 24h aging" filter is retired.
 
-Pending is the *complete* set of "awaiting a decision"; §5.6's check-in strip is a "last 24h" subset for nudging. The same rail appears in both surfaces and acting on either one removes it from both. Deliberate: the Pending list hides nothing, so the user is never in a "where did that go?" state.
+Pending is the *complete* set of "awaiting a decision"; §5.6's check-in strip is a "last 24h" subset for nudging. The same task appears in both surfaces and acting on either one removes it from both. Deliberate: the Pending list hides nothing, so the user is never in a "where did that go?" state.
 
 **Deliberately rejected design:** "Yesterday's Rail isn't marked — you can't touch today's." This violates the core philosophy (deviation is first-class, archiving has no consequences).
 
@@ -667,14 +800,14 @@ Pending is the *complete* set of "awaiting a decision"; §5.6's check-in strip i
 - The queue never blocks current operations — Today Track / Cycle View / Template Editor flows are untouched.
 - The system does **not** auto-resolve unmarked items to `archived`. Leave them untouched and they stay — that is the user's call.
 - If the same Rail goes unmarked for many days, AI Observe (if enabled) gently suggests adjusting / archiving.
-- **Re-schedule**: in **Cycle View, drag a Pending item onto some day / Rail slot** → `status` returns to `pending` with fresh `plannedStart/End`. Drag is the primary "change of mind" entry, not something done from the §5.7 page itself.
+- **Re-schedule**: in **Cycle View, drag a Pending item onto some day / Rail slot** → `Task.status` returns to `pending` and `Task.slot` points at the new (cycleId, date, railId). Drag is the primary "change of mind" entry, not something done from the §5.7 page itself.
 - **Bulk-archive older items**: when the queue has grown large, the user can bulk-archive items more than N days old (default threshold **7 days**; configurable in Settings → Advanced). Recent (≤ N days) Rails stay in the queue — they're still worth a decision. **Button copy says exactly what happens**: `Archive items older than 7 days` (not the earlier, poetic "Let these pass"). Confirmation names the impact: *"Archive N undecided items older than 7 days? They stay searchable in history but no longer appear in this queue."* History is not rewritten; only the queue is shortened.
 
 **Page form**:
 
 - **Top bar**: title `Pending` + summary line `47 items · oldest Mar 12`; top-right `Archive items older than 7 days` tonal button (muted; trailed by `(affects 31)` counter; only acts on items > 7 days old).
-- **Body**: grouped by date in **reverse order** (most recent on top); each group header `Mar 14 (Fri) · 3 items`; rows list that day's undecided RailInstances. `deferred` and stale-`pending` rows look identical apart from a small left-side glyph.
-- **Each row**: 4px left color strip (`Rail.color` step 9) + Rail name + original planned time `09:00–11:00` (Mono) + three inline small buttons `Done / Archive / Drag to Cycle →`. The first two write status in-place; the third is ghost-styled and nudges the user to Cycle View for re-scheduling.
+- **Body**: grouped by date in **reverse order** (most recent on top); each group header `Mar 14 (Fri) · 3 items`; rows list that day's undecided Tasks. `deferred` and stale-`pending` rows look identical apart from a small left-side glyph.
+- **Each row**: 4px left color strip (`Rail.color` step 9) + Task title (user-authored for hand-built, habit name for auto-tasks) + original planned time `09:00–11:00` (Mono) + three inline small buttons `Done / Archive / Drag to Cycle →`. The first two write `Task.status` in-place; the third is ghost-styled and nudges the user to Cycle View for re-scheduling.
 - **No multi-select, no batch bar**: each decision stands alone; the only batch entry is "Archive items older than 7 days". (Intent: avoid thoughtless "mark everything done" sweeps — that would poison Review data.)
 - **Empty state**: `Queue empty · undecided Rails land here 24 h after they end`.
 - **Side-nav entry**: the `Pending` item in the app's left nav shows a `·` dot only when the queue is `> 0` (**no number shown** — we don't want to anchor a "47 things you didn't do" anxiety number); hover tooltip reveals the exact count.
@@ -683,7 +816,7 @@ Pending is the *complete* set of "awaiting a decision"; §5.6's check-in strip i
 
 - **Outer layout**: Day / Week / Month are three scopes of the same review. On **desktop**, they render side by side. On **mobile**, a **sticky segmented control pinned to the top of the page** (not the card) switches scope; only one scope renders below at a time. The page-level sticky ensures the control stays visible during long Month scrolls. This keeps the page short (no 3× vertical stacking) without losing context. Tabs-in-header were considered and rejected for being less discoverable on narrow screens.
 - **Per-scope internal structure (top-to-bottom waterfall)**: title (e.g. `This week Mar 03 – Mar 09`) → **rhythm-match heatmap** → Top-5 Shift-tag frequency bars → Ad-hoc → Template hint (if any) → AI Observe card (if enabled) → AI Review card (if enabled). AI cards **render nothing at all** when AI is off — no blank placeholders. Gradient is natural: facts first, interpretation after, suggestions sandwiched in between — the natural reading path of a retrospective.
-- **Rhythm-match heatmap**: rows = Rails that appeared in the scope (sorted by frequency desc); columns = the scope's dates (day-scope columns = the day's Rail time slots; week = 7 columns; month = 5–6 week-columns). Each cell tints by its RailInstance status:
+- **Rhythm-match heatmap** (v0.4 queries `Task.status`, not RailInstance.status): rows = Rails that appeared in the scope (sorted by frequency desc); columns = the scope's dates (day-scope columns = the day's Rail time slots; week = 7 columns; month = 5–6 week-columns). Each cell tints by the status of the Task carrying that `(rail, date)` (hand-built Task or habit auto-task):
   - `done` — the Rail's own `color` step 9, solid.
   - `deferred` — step 6 hatching (one of the C-group three-part semantic triad).
   - `archived` — step 7 hatching + a line-through over the cell (a more muted "actively dropped" state).
@@ -1125,6 +1258,193 @@ These are red-line rules — review will bounce violations:
 ---
 
 ## 10. Data Model Draft (v0)
+
+### 10.0 Three-axis overview (read this first)
+
+DayRail's 30+ interfaces look like a lot, but at the concept layer
+there are only **three orthogonal axes**. Every UI is a projection
+of some combination of them.
+
+**Axis 1 · Grouping (Line) — "who owns this thing"**
+
+- `Line` is the internal container. UI always surfaces it as
+  Project / Habit / Tag (by `kind`).
+- Fields: id / name / color / status (active/archived/deleted) /
+  kind / optional plannedStart-End.
+- Built-in Inbox Line (`id='line-inbox'`, `isDefault=true`,
+  undeletable) — default landing spot for Tasks created without a
+  Project.
+
+**Axis 2 · Time (Template → Rail → auto-materialize → RailInstance) — "when does it happen"**
+
+```
+Template ──(contains)──► Rail ──(recurrence + CalendarRule pick firing days)──► RailInstance(per date)
+                          │
+                          └── defaultLineId? (optional bind to a Line)
+```
+
+- `Template`: a "day type" — what this kind of day looks like
+  (workday / restday / travel / …).
+- `Rail`: one time band inside a template. Every rail is anchored
+  to exactly one templateKey.
+- `CalendarRule`: which template applies to a given date
+  (single-date > date-range > cycle > weekday priority).
+- `RailInstance`: a Rail materialized on a specific date. **From
+  v0.4 its role is narrowed to a "wall-clock log"** (actualStart /
+  actualEnd / Shift tags). It is no longer the source of truth for
+  completion status.
+
+**Axis 3 · Unit of work (Task) — "what specifically + did it happen"**
+
+- `Task` belongs to a Line (`lineId`). `status` is **the sole source
+  of truth for completion semantics**.
+- Fields: title / note / order / status / milestonePercent /
+  subItems.
+- **Two mutually exclusive scheduling modes**:
+  - Mode A: `task.slot = { cycleId, date, railId }` — occupies a
+    Rail cell on a given date.
+  - Mode B: `task.slot = undefined`, with one
+    `AdhocEvent.taskId = task.id`.
+- Two sources of Tasks:
+  - **Hand-built**: Project / Inbox flows, user types the title.
+  - **Auto-built** (from v0.4): Habit flows, generated on demand
+    by recurrence; id convention `task-auto-{lineId}-{date}`.
+
+### 10.1 Completion-status ownership (critical rule)
+
+From v0.4 DayRail enforces a **single-source-of-truth principle**
+for "did this happen":
+
+> **`Task.status` is the sole source of truth for all
+> completion / skip / archive semantics.**
+> `RailInstance` only carries wall-clock data (actualStart /
+> actualEnd) and Shift tags.
+
+Concrete rules:
+
+| Scenario | Completion status lives on | How Tasks are created |
+|---|---|---|
+| Project scheduled task | `Task.status` | Hand-built |
+| Habit daily occurrence | `Task.status` (auto-task) | Recurrence-generated (§5.5.0 / §10.2) |
+| Inbox unscheduled wish | `Task.status` (no slot) | Hand-built |
+
+**Why this rule**: before v0.4 `Task.status` and
+`RailInstance.status` coexisted and were written independently,
+producing inconsistency cracks like "ticked done in Tasks but Today
+Track still shows pending". Collapsing them onto Task means Today
+Track / Tasks / Pending / Review all read from one place and the
+cracks close.
+
+**What RailInstance still does**:
+- Wall-clock facts (`actualStart` / `actualEnd`) — "when exactly
+  did this actually happen" is a dimension orthogonal to status,
+  used by Review's rhythm analysis.
+- Anchor for Shifts — "why the deviation" hangs off a RailInstance.
+
+**Habit rides this rule via auto-task**: see §5.5.0 + §10.2. Every
+habit occurrence materializes as a `lineId=habitId` auto-task; the
+habit detail page's rhythm strip and the Review heatmap both query
+auto-tasks.
+
+### 10.2 Auto-task materialization strategy (Ⅱ · on-demand)
+
+Auto-tasks under habits are not pre-generated in one shot, nor
+stuffed into the event log by hand. They **materialize on demand
+per view**.
+
+**Idempotent id**: `task-auto-{habitId}-{date}`. Multiple triggers
+on the same `(habit, date)` only ever produce one row.
+
+**Triggers**:
+- Today Track boot → materialize today
+- Cycle View opens / switches cycle → materialize [startDate, endDate]
+- Habit detail rhythm strip opens → materialize the strip's window
+- Calendar month view pages → materialize that month
+- Review scope switch → materialize the scope window
+- Pending / Tasks views → **do NOT** trigger (they read active data
+  only)
+- Rhythm-strip click-to-backfill (§5.5.0 A+B) → triggers a single
+  `(habit, date)` materialization on click
+
+**"Already materialized" marker**: a marker is recorded per
+`(habitId, cycleId)` (field location TBD — may live on Line or as a
+standalone entity). **Marked cycles are never re-materialized**,
+preventing a habit-config change from later adding a pile of
+historical auto-tasks.
+
+**Algorithm (single pass over `[startDate, endDate]`)**:
+```
+for habit in habits (lines where kind='habit'):
+  for rail in rails where defaultLineId = habit.id:
+    for date in [startDate .. endDate]:
+      if (habit.id, cycleIdOf(date)) is already marked: continue
+      if activeTemplate(date) !== rail.templateKey: continue
+      if !rail.recurrence covers date: continue
+      upsert Task {
+        id: `task-auto-${habit.id}-${date}`,
+        lineId: habit.id,
+        title: habit.name,
+        slot: { cycleId: cycleIdOf(date), date, railId: rail.id },
+        status: 'pending',
+      }
+  mark (habit.id, cycleId) as materialized for cycles fully inside [startDate, endDate]
+```
+
+**Never-materialized past cycles** (user scrolls back to days they
+never opened the app): materialize on view as normal. Backfilling a
+status afterwards in the rhythm strip = "a judgment made today
+about what happened", not "rewriting history" — the ground truth of
+what actually happened lives in the Signal event log.
+
+### 10.3 Habit configuration-change rules (edits that affect auto-task generation)
+
+When the user changes a Rail's `recurrence` / `startMinutes` /
+`durationMinutes` / `templateKey` / `defaultLineId`, the set of
+`(habit, date)` pairs that should have an auto-task may shift.
+Handle those edits as follows:
+
+**0. Confirm before saving** (only when the Rail is bound to a
+habit Line):
+
+```
+This change affects the schedule for habit "<habit name>".
+  · N unstarted auto-tasks will be regenerated under the new config
+  · Completed / skipped / archived ones are kept
+  Continue?
+```
+
+**1. After confirmation, inside a single Edit Session (§5.3.1)**:
+- Scan window: `[today, end of the furthest materialized cycle]`
+- Auto-tasks matching `(status = 'pending') AND (plannedStart > now)`
+  → **hard delete** (`task.purged`, not soft delete — these
+  occurrences "never happened")
+- Top up missing auto-tasks in the same window under the new config
+
+**2. Untouched**:
+- Auto-tasks with `status !== 'pending'` (they're already facts, no
+  retroactive rewriting)
+- Auto-tasks with `plannedStart <= now` ("today's time-slot has
+  passed", pending counted as fact)
+- Past cycles that were never materialized (a config change doesn't
+  retroactively populate periods that were never computed)
+
+**3. Event-log consequence**:
+- A batch of `task.purged`
+- A batch of `task.created`
+- One `rail.updated`
+
+All under the same sessionId → one undo rolls back an
+accidentally-wrong config change fully.
+
+**Edge cases**:
+- Rail unbinds from habit (`defaultLineId` cleared) = all existing
+  auto-tasks purged per the rule above, none regenerated.
+- Rail rebound to a different habit = old habit's auto-tasks cleared
+  per rule, new habit's auto-tasks generated per rule.
+- habit Line archived / deleted = follows Line lifecycle; no extra
+  trigger.
+
+### 10.4 Type definitions
 
 ```ts
 // Discussion baseline; will iterate.
