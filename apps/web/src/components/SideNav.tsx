@@ -78,13 +78,15 @@ export function SideNav() {
     window.localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0');
   }, [collapsed]);
 
-  // Subscribe to the raw map; derive via useMemo so Zustand's
+  // Subscribe to the raw maps; derive via useMemo so Zustand's
   // reference-equality short-circuit kicks in instead of comparing a
   // freshly-built array every tick.
   const railInstances = useStore((s) => s.railInstances);
+  const tasks = useStore((s) => s.tasks);
+  const rails = useStore((s) => s.rails);
   const pendingCount = useMemo(
-    () => selectPendingQueue({ railInstances }).length,
-    [railInstances],
+    () => selectPendingQueue({ tasks, rails, railInstances }).length,
+    [tasks, rails, railInstances],
   );
 
   return (

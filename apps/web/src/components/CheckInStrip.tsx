@@ -1,18 +1,33 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { clsx } from 'clsx';
-import type { SampleRail } from '@/data/sample';
+import type { RailColor } from '@/data/sample';
 import { RAIL_COLOR_HEX } from './railColors';
 
 // §5.6 — the only surface Signal ever appears on. Rendered only when the
 // queue is non-empty. A single Rail expands as an inline row; 2+ Rails
 // collapse to a summary line that can be expanded.
+//
+// v0.4: the queue item is a Task-carrying row (ERD §10.1). The component
+// passes the whole entry back to onAction so the caller can write to
+// Task + optionally RailInstance without another lookup.
 
 export type CheckInAction = 'done' | 'defer' | 'archive';
 
+export interface CheckInEntry {
+  taskId: string;
+  railInstanceId?: string;
+  railId: string;
+  railName: string;
+  subtitle?: string;
+  color: RailColor;
+  start: string; // HH:MM
+  end: string; // HH:MM
+}
+
 interface Props {
-  queue: SampleRail[];
-  onAction: (instanceId: string, action: CheckInAction) => void;
+  queue: CheckInEntry[];
+  onAction: (entry: CheckInEntry, action: CheckInAction) => void;
 }
 
 export function CheckInStrip({ queue, onAction }: Props) {
@@ -47,10 +62,10 @@ export function CheckInStrip({ queue, onAction }: Props) {
 
       {open && (
         <ul className="px-4 pb-3">
-          {queue.map((rail, idx) => (
+          {queue.map((entry, idx) => (
             <CheckInRow
-              key={rail.id}
-              rail={rail}
+              key={entry.taskId}
+              entry={entry}
               first={idx === 0}
               onAction={onAction}
             />
@@ -62,15 +77,15 @@ export function CheckInStrip({ queue, onAction }: Props) {
 }
 
 function CheckInRow({
-  rail,
+  entry,
   first,
   onAction,
 }: {
-  rail: SampleRail;
+  entry: CheckInEntry;
   first: boolean;
-  onAction: (instanceId: string, action: CheckInAction) => void;
+  onAction: (entry: CheckInEntry, action: CheckInAction) => void;
 }) {
-  const accent = RAIL_COLOR_HEX[rail.color];
+  const accent = RAIL_COLOR_HEX[entry.color];
   return (
     <li
       className={clsx(
@@ -84,21 +99,21 @@ function CheckInRow({
         style={{ background: accent }}
       />
       <span className="font-mono text-xs text-ink-tertiary">
-        {rail.start}–{rail.end}
+        {entry.start}–{entry.end}
       </span>
-      <span className="text-sm text-ink-primary">{rail.name}</span>
-      {rail.subtitle && (
-        <span className="truncate text-sm text-ink-tertiary">· {rail.subtitle}</span>
+      <span className="text-sm text-ink-primary">{entry.railName}</span>
+      {entry.subtitle && (
+        <span className="truncate text-sm text-ink-tertiary">· {entry.subtitle}</span>
       )}
 
       <span className="ml-auto flex items-center gap-1">
-        <ActionChip variant="primary" onClick={() => onAction(rail.id, 'done')}>
+        <ActionChip variant="primary" onClick={() => onAction(entry, 'done')}>
           完成
         </ActionChip>
-        <ActionChip onClick={() => onAction(rail.id, 'defer')}>
+        <ActionChip onClick={() => onAction(entry, 'defer')}>
           以后再说
         </ActionChip>
-        <ActionChip variant="ghost" onClick={() => onAction(rail.id, 'archive')}>
+        <ActionChip variant="ghost" onClick={() => onAction(entry, 'archive')}>
           归档
         </ActionChip>
       </span>

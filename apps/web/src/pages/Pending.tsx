@@ -5,8 +5,7 @@ import { Archive, ArrowRight, CircleDashed, Clock, Inbox } from 'lucide-react';
 import {
   selectPendingQueue,
   useStore,
-  type Rail,
-  type RailInstance,
+  type CarriedTaskRow,
   type Shift,
 } from '@dayrail/core';
 import { RAIL_COLOR_HEX } from '@/components/railColors';
@@ -27,16 +26,19 @@ const STALE_THRESHOLD_DAYS = 7;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 interface PendingRow {
-  instanceId: string;
-  date: string; // YYYY-MM-DD (from plannedStart)
+  taskId: string;
+  railInstanceId?: string;
+  railId: string;
+  date: string; // YYYY-MM-DD
   start: string; // HH:MM
   end: string;
   railName: string;
   railColor: RailColor;
   subtitle?: string;
+  title: string; // task title (hand-built) / habit name (auto-task)
   /** How the row got here:
    *  - `deferred`: user explicitly picked Later.
-   *  - `unmarked`: rail ended without a decision (any age, not just >24h). */
+   *  - `unmarked`: window ended without a decision (any age). */
   source: 'deferred' | 'unmarked';
   tags: string[];
   ageDays: number;
@@ -45,8 +47,9 @@ interface PendingRow {
 export function Pending() {
   const rails = useStore((s) => s.rails);
   const railInstances = useStore((s) => s.railInstances);
+  const tasks = useStore((s) => s.tasks);
   const shifts = useStore((s) => s.shifts);
-  const markRailInstance = useStore((s) => s.markRailInstance);
+  const updateTask = useStore((s) => s.updateTask);
 
   const navigate = useNavigate();
   const { toast, fire, handleAddTag, handleUndo, handleClose } = useReasonToast(
@@ -55,10 +58,10 @@ export function Pending() {
 
   const rows = useMemo<PendingRow[]>(() => {
     const now = new Date();
-    return selectPendingQueue({ railInstances }, now)
-      .map((inst) => adaptRow(inst, rails[inst.railId], shifts, now))
-      .filter((r): r is PendingRow => r !== null);
-  }, [rails, railInstances, shifts]);
+    return selectPendingQueue({ tasks, rails, railInstances }, now).map(
+      (r) => adaptRow(r, shifts, now),
+    );
+  }, [tasks, rails, railInstances, shifts]);
 
   const summary = useMemo(
     () => ({
@@ -74,21 +77,33 @@ export function Pending() {
   const groups = useMemo(() => groupByDate(rows), [rows]);
 
   const handleComplete = useCallback(
-    (id: string) => {
-      fire(id, 'done');
+    (row: PendingRow) => {
+      fire({
+        taskId: row.taskId,
+        ...(row.railInstanceId && { railInstanceId: row.railInstanceId }),
+        railId: row.railId,
+        railName: row.railName,
+        action: 'done',
+      });
     },
     [fire],
   );
 
   const handleArchive = useCallback(
-    (id: string) => {
-      fire(id, 'archive');
+    (row: PendingRow) => {
+      fire({
+        taskId: row.taskId,
+        ...(row.railInstanceId && { railInstanceId: row.railInstanceId }),
+        railId: row.railId,
+        railName: row.railName,
+        action: 'archive',
+      });
     },
     [fire],
   );
 
   const handleReschedule = useCallback(
-    (_id: string) => {
+    (_row: PendingRow) => {
       // Drag-to-re-schedule inside Cycle View is still pending; for now
       // we hop over so the user can at least eyeball the week and pick
       // a day by hand.
@@ -101,12 +116,13 @@ export function Pending() {
     if (summary.eligible === 0) return;
     const msg = `归档超过 ${STALE_THRESHOLD_DAYS} 天仍未决定的 ${summary.eligible} 条事项？\n它们在历史里仍可检索，但不再出现在此队列。`;
     if (!window.confirm(msg)) return;
+    const nowIso = new Date().toISOString();
     for (const row of rows) {
       if (row.ageDays > STALE_THRESHOLD_DAYS) {
-        void markRailInstance(row.instanceId, 'archived');
+        void updateTask(row.taskId, { status: 'archived', archivedAt: nowIso });
       }
     }
-  }, [rows, summary.eligible, markRailInstance]);
+  }, [rows, summary.eligible, updateTask]);
 
   return (
     <div className="flex w-full max-w-[920px] flex-col gap-6 py-10 pl-10 pr-10 lg:pl-14 xl:pl-20">
@@ -153,25 +169,27 @@ export function Pending() {
 // ------------------------------------------------------------------
 
 function adaptRow(
-  inst: RailInstance,
-  rail: Rail | undefined,
+  row: CarriedTaskRow,
   shifts: Record<string, Shift>,
   now: Date,
-): PendingRow | null {
-  if (!rail) return null;
-  const startMs = Date.parse(inst.plannedStart);
-  if (Number.isNaN(startMs)) return null;
-  const ageDays = Math.max(0, Math.floor((now.getTime() - startMs) / MS_PER_DAY));
+): PendingRow {
+  const startMs = Date.parse(row.plannedStart);
+  const ageDays = Number.isNaN(startMs)
+    ? 0
+    : Math.max(0, Math.floor((now.getTime() - startMs) / MS_PER_DAY));
   return {
-    instanceId: inst.id,
-    date: inst.date,
-    start: inst.plannedStart.slice(11, 16) || '00:00',
-    end: inst.plannedEnd.slice(11, 16) || '00:00',
-    railName: rail.name,
-    railColor: rail.color as RailColor,
-    subtitle: rail.subtitle,
-    source: inst.status === 'deferred' ? 'deferred' : 'unmarked',
-    tags: tagsForInstance(inst.id, shifts),
+    taskId: row.task.id,
+    ...(row.railInstance && { railInstanceId: row.railInstance.id }),
+    railId: row.rail.id,
+    date: row.task.slot?.date ?? '',
+    start: row.plannedStart.slice(11, 16) || '00:00',
+    end: row.plannedEnd.slice(11, 16) || '00:00',
+    railName: row.rail.name,
+    railColor: row.rail.color as RailColor,
+    ...(row.rail.subtitle && { subtitle: row.rail.subtitle }),
+    title: row.task.title,
+    source: row.task.status === 'deferred' ? 'deferred' : 'unmarked',
+    tags: row.railInstance ? tagsForInstance(row.railInstance.id, shifts) : [],
     ageDays,
   };
 }
@@ -326,9 +344,9 @@ function DateGroup({
   weekdayShort: string;
   dayLabel: string;
   items: PendingRow[];
-  onComplete: (id: string) => void;
-  onArchive: (id: string) => void;
-  onReschedule: (id: string) => void;
+  onComplete: (row: PendingRow) => void;
+  onArchive: (row: PendingRow) => void;
+  onReschedule: (row: PendingRow) => void;
 }) {
   return (
     <section aria-label={date} className="flex flex-col gap-2">
@@ -344,7 +362,7 @@ function DateGroup({
       </header>
       <ul className="flex flex-col gap-1">
         {items.map((it) => (
-          <li key={it.instanceId}>
+          <li key={it.taskId}>
             <PendingItemRow
               row={it}
               eligible={it.ageDays > STALE_THRESHOLD_DAYS}
@@ -368,9 +386,9 @@ function PendingItemRow({
 }: {
   row: PendingRow;
   eligible: boolean;
-  onComplete: (id: string) => void;
-  onArchive: (id: string) => void;
-  onReschedule: (id: string) => void;
+  onComplete: (row: PendingRow) => void;
+  onArchive: (row: PendingRow) => void;
+  onReschedule: (row: PendingRow) => void;
 }) {
   const strip = RAIL_COLOR_HEX[row.railColor];
   const SourceIcon = row.source === 'deferred' ? Clock : CircleDashed;
@@ -399,12 +417,10 @@ function PendingItemRow({
         <span className="shrink-0 font-mono text-2xs tabular-nums text-ink-tertiary">
           {row.start}–{row.end}
         </span>
-        <span className="truncate text-sm text-ink-primary">
-          {row.railName}
-        </span>
-        {row.subtitle && (
-          <span className="truncate text-sm text-ink-tertiary">
-            · {row.subtitle}
+        <span className="truncate text-sm text-ink-primary">{row.title}</span>
+        {row.title !== row.railName && (
+          <span className="truncate text-xs text-ink-tertiary">
+            · {row.railName}
           </span>
         )}
         {row.tags.length > 0 && (
@@ -422,11 +438,11 @@ function PendingItemRow({
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
-        <ActionChip variant="primary" onClick={() => onComplete(row.instanceId)}>
+        <ActionChip variant="primary" onClick={() => onComplete(row)}>
           完成
         </ActionChip>
-        <ActionChip onClick={() => onArchive(row.instanceId)}>归档</ActionChip>
-        <ActionChip variant="ghost" onClick={() => onReschedule(row.instanceId)}>
+        <ActionChip onClick={() => onArchive(row)}>归档</ActionChip>
+        <ActionChip variant="ghost" onClick={() => onReschedule(row)}>
           <span className="inline-flex items-center gap-1">
             拖到 Cycle
             <ArrowRight className="h-3 w-3" strokeWidth={1.8} />

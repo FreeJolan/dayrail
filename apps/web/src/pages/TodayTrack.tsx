@@ -5,11 +5,16 @@ import {
   selectTodayTimeline,
   toIsoDate,
   useStore,
+  type CarriedTaskRow,
   type Rail,
   type RailInstance,
   type Shift,
 } from '@dayrail/core';
-import { CheckInStrip, type CheckInAction } from '@/components/CheckInStrip';
+import {
+  CheckInStrip,
+  type CheckInAction,
+  type CheckInEntry,
+} from '@/components/CheckInStrip';
 import { RailCard } from '@/components/RailCard';
 import { ReasonToast } from '@/components/ReasonToast';
 import { useReasonToast } from '@/components/useReasonToast';
@@ -33,6 +38,7 @@ export function TodayTrack() {
 
   const rails = useStore((s) => s.rails);
   const railInstances = useStore((s) => s.railInstances);
+  const tasks = useStore((s) => s.tasks);
   const shifts = useStore((s) => s.shifts);
   const markRailInstance = useStore((s) => s.markRailInstance);
 
@@ -41,10 +47,54 @@ export function TodayTrack() {
   );
 
   const handleCheckin = useCallback(
-    (instanceId: string, action: CheckInAction) => {
-      fire(instanceId, action);
+    (entry: CheckInEntry, action: CheckInAction) => {
+      fire({
+        taskId: entry.taskId,
+        ...(entry.railInstanceId && { railInstanceId: entry.railInstanceId }),
+        railId: entry.railId,
+        railName: entry.railName,
+        action,
+      });
     },
     [fire],
+  );
+
+  // Timeline hover action bar: receives the RailInstance id. v0.4 we
+  // look up the carrying Task so the write lands on `Task.status`; if
+  // no Task exists for this (date, railId) we fall back to the legacy
+  // RailInstance-only path (Stage 9 will remove the fallback).
+  const handleTimelineAction = useCallback(
+    (instanceId: string, action: CheckInAction) => {
+      const inst = railInstances[instanceId];
+      if (!inst) return;
+      const rail = rails[inst.railId];
+      if (!rail) return;
+      const task = Object.values(tasks).find(
+        (t) =>
+          t.slot &&
+          t.slot.date === inst.date &&
+          t.slot.railId === inst.railId &&
+          t.status !== 'deleted',
+      );
+      if (task) {
+        fire({
+          taskId: task.id,
+          railInstanceId: instanceId,
+          railId: rail.id,
+          railName: rail.name,
+          action,
+        });
+      } else {
+        const nextStatus =
+          action === 'done'
+            ? 'done'
+            : action === 'defer'
+              ? 'deferred'
+              : 'archived';
+        void markRailInstance(instanceId, nextStatus);
+      }
+    },
+    [tasks, rails, railInstances, fire, markRailInstance],
   );
 
   const timeline = useMemo<SampleRail[]>(
@@ -55,12 +105,12 @@ export function TodayTrack() {
     [railInstances, rails, today, now.asDate],
   );
 
-  const checkinQueue = useMemo<SampleRail[]>(
+  const checkinQueue = useMemo<CheckInEntry[]>(
     () =>
-      selectCheckinQueue({ railInstances }, now.asDate)
-        .map((inst) => adaptToSample(inst, rails[inst.railId], now.asDate))
-        .filter((r): r is SampleRail => r !== null),
-    [railInstances, rails, now.asDate],
+      selectCheckinQueue({ tasks, rails, railInstances }, now.asDate).map(
+        (row) => carriedRowToCheckInEntry(row),
+      ),
+    [tasks, rails, railInstances, now.asDate],
   );
 
   // Timeline hides two states:
@@ -111,7 +161,7 @@ export function TodayTrack() {
       <DeferredSection rails={deferredToday} onUndefer={handleRevert} />
       <Timeline
         rails={timelineVisible}
-        onAction={handleCheckin}
+        onAction={handleTimelineAction}
         onUndo={handleRevert}
       />
       <Footnote />
@@ -177,6 +227,19 @@ function sample(d: Date): LiveNow {
 // around. Encapsulated here so the component layer doesn't need to
 // know about HLC / instance status rules.
 // ------------------------------------------------------------------
+
+function carriedRowToCheckInEntry(row: CarriedTaskRow): CheckInEntry {
+  return {
+    taskId: row.task.id,
+    ...(row.railInstance && { railInstanceId: row.railInstance.id }),
+    railId: row.rail.id,
+    railName: row.rail.name,
+    ...(row.rail.subtitle && { subtitle: row.rail.subtitle }),
+    color: row.rail.color as CheckInEntry['color'],
+    start: row.plannedStart.slice(11, 16) || '00:00',
+    end: row.plannedEnd.slice(11, 16) || '00:00',
+  };
+}
 
 function adaptToSample(
   inst: RailInstance,
