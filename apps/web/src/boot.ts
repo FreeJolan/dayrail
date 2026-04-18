@@ -43,12 +43,31 @@ export async function boot(): Promise<void> {
   //    insist on its presence regardless of the user's Line edits.
   await ensureInbox();
 
-  // 4. Materialise today's rail instances. Idempotent: on subsequent
+  // 4. Seed the two built-in weekday rules (workday M–F / restday Sat-
+  //    Sun) matching the v0.2 hardcoded heuristic. Runs every boot —
+  //    no-op after the first. Users that deleted a weekday rule on
+  //    purpose won't have it re-added; we key on "templateKey-specific
+  //    rule exists" rather than "any weekday rule exists".
+  await ensureBuiltinWeekdayRules();
+
+  // 5. Materialise today's rail instances. Idempotent: on subsequent
   //    boots we skip rails that already have an instance for today.
   const today = toIsoDate();
   const templateKey = selectActiveTemplateKey(useStore.getState());
   if (templateKey) {
     await ensureTodayInstances(today, templateKey);
+  }
+}
+
+async function ensureBuiltinWeekdayRules(): Promise<void> {
+  const store = useStore.getState();
+  const hasRuleFor = (templateKey: string): boolean =>
+    !!store.calendarRules[`cr-weekday-${templateKey}`];
+  if (store.templates['workday'] && !hasRuleFor('workday')) {
+    await store.upsertWeekdayRule('workday', [1, 2, 3, 4, 5]);
+  }
+  if (store.templates['restday'] && !hasRuleFor('restday')) {
+    await store.upsertWeekdayRule('restday', [0, 6]);
   }
 }
 

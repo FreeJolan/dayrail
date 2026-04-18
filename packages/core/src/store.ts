@@ -37,7 +37,10 @@ import {
   INBOX_LINE_ID,
   type AdhocEvent,
   type CalendarRule,
+  type CalendarRuleCycle,
+  type CalendarRuleDateRange,
   type CalendarRuleSingleDate,
+  type CalendarRuleWeekday,
   type Line,
   type Rail,
   type RailColor,
@@ -126,14 +129,36 @@ interface DayRailActions {
    *  if the task is already unscheduled. No Shift / status change —
    *  this is "I hadn't done it yet, take it off my plan". */
   unscheduleTask: (taskId: string) => Promise<void>;
-  // --- calendar rules (§5.4 CalendarRule; v0.2 impl: single-date only) ---
+  // --- calendar rules (§5.4 CalendarRule) ---
   /** Write a `single-date` CalendarRule binding `date` to `templateKey`.
    *  Deduplicated by the deterministic id `cr-single-{date}` — flipping
    *  the same day repeatedly is one row's worth of events, not N. */
   overrideCycleDay: (date: string, templateKey: TemplateKey) => Promise<void>;
-  /** Remove the single-date override for `date`, letting the weekday
-   *  heuristic take over again. No-op if no rule exists for the date. */
+  /** Remove the single-date override for `date`. No-op if absent. */
   clearCycleDayOverride: (date: string) => Promise<void>;
+  /** Upsert a weekday rule (one per template; flipping a template's
+   *  coverage replaces the old row). `weekdays` uses 0 = Sunday. */
+  upsertWeekdayRule: (
+    templateKey: TemplateKey,
+    weekdays: number[],
+  ) => Promise<void>;
+  /** Create a date-range rule. Returns the new rule id so callers can
+   *  reference it (e.g. for delete). */
+  createDateRangeRule: (opts: {
+    from: string;
+    to: string;
+    templateKey: TemplateKey;
+    label?: string;
+  }) => Promise<string>;
+  /** Create a cycle rule. Returns the new rule id. */
+  createCycleRule: (opts: {
+    cycleLength: number;
+    anchor: string;
+    mapping: TemplateKey[];
+  }) => Promise<string>;
+  /** Remove any CalendarRule by id (weekday / date-range / cycle /
+   *  single-date — caller names the rule explicitly). */
+  removeCalendarRule: (id: string) => Promise<void>;
   // --- sessions ---
   openEditSession: (surface: string) => Promise<EditSession>;
   closeEditSession: (sessionId: string) => Promise<void>;
@@ -433,20 +458,105 @@ export function singleDateRuleId(date: string): string {
   return `cr-single-${date}`;
 }
 
-/** Resolve the active Template for `date` by consulting CalendarRules
- *  first (single-date rules win over anything else in v0.2), then
- *  falling back to the caller-provided weekday heuristic. Returns
- *  `null` only if no rule AND no heuristic produces a TemplateKey. */
+/** Default priorities per CalendarRule kind — §5.4 precedence order.
+ *  Higher wins. single-date is the smallest-scope user override, so
+ *  it sits at the top; weekday rules are the broadest, at the bottom. */
+export const CALENDAR_RULE_PRIORITY: Record<CalendarRule['kind'], number> = {
+  'single-date': 100,
+  'date-range': 50,
+  cycle: 30,
+  weekday: 10,
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Return true iff `rule` matches `date`. Precondition-checked
+ *  against the resolver's invariants: `rule.value` is assumed to
+ *  follow the `kind`'s typed shape (events that land in the store
+ *  are only ever written through the typed action surface, so this
+ *  holds at runtime). */
+export function calendarRuleApplies(rule: CalendarRule, date: string): boolean {
+  switch (rule.kind) {
+    case 'single-date': {
+      const v = rule.value as CalendarRuleSingleDate;
+      return v.date === date;
+    }
+    case 'date-range': {
+      const v = rule.value as CalendarRuleDateRange;
+      return date >= v.from && date <= v.to;
+    }
+    case 'weekday': {
+      const v = rule.value as CalendarRuleWeekday;
+      const dow = new Date(`${date}T00:00:00`).getDay();
+      return v.weekdays.includes(dow);
+    }
+    case 'cycle': {
+      const v = rule.value as CalendarRuleCycle;
+      if (v.cycleLength <= 0 || v.mapping.length === 0) return false;
+      const diff = Math.floor(
+        (new Date(`${date}T00:00:00`).getTime() -
+          new Date(`${v.anchor}T00:00:00`).getTime()) /
+          DAY_MS,
+      );
+      if (diff < 0) return false;
+      const idx = diff % v.cycleLength;
+      // A cycle rule always "matches" a date in-range — it maps
+      // every position to a template. But the resolver extracts the
+      // mapped template via `calendarRuleTemplate`, which can return
+      // undefined for out-of-bounds mapping entries; guard there.
+      return v.mapping[idx] != null;
+    }
+  }
+}
+
+/** Extract the `templateKey` a rule resolves to for the given date.
+ *  Returns `undefined` if the rule's typed shape doesn't carry one
+ *  for this date (e.g. cycle mapping missing at the position). */
+export function calendarRuleTemplate(
+  rule: CalendarRule,
+  date: string,
+): TemplateKey | undefined {
+  switch (rule.kind) {
+    case 'single-date':
+      return (rule.value as CalendarRuleSingleDate).templateKey;
+    case 'date-range':
+      return (rule.value as CalendarRuleDateRange).templateKey;
+    case 'weekday':
+      return (rule.value as CalendarRuleWeekday).templateKey;
+    case 'cycle': {
+      const v = rule.value as CalendarRuleCycle;
+      if (v.cycleLength <= 0) return undefined;
+      const diff = Math.floor(
+        (new Date(`${date}T00:00:00`).getTime() -
+          new Date(`${v.anchor}T00:00:00`).getTime()) /
+          DAY_MS,
+      );
+      if (diff < 0) return undefined;
+      return v.mapping[diff % v.cycleLength];
+    }
+  }
+}
+
+/** Resolve the active Template for `date` by walking every
+ *  CalendarRule in priority-desc order; returns the first match.
+ *  Falls back to the caller-provided heuristic only if no rule
+ *  matches. Ties in `priority` are broken by `createdAt` desc
+ *  (newer rule wins) — the typical user mental model. */
 export function resolveTemplateForDate(
   state: Pick<DayRailState, 'calendarRules'>,
   date: string,
   heuristic: (date: string) => TemplateKey | null,
 ): TemplateKey | null {
-  const id = singleDateRuleId(date);
-  const rule = state.calendarRules[id];
-  if (rule && rule.kind === 'single-date') {
-    const value = rule.value as CalendarRuleSingleDate;
-    if (value.templateKey) return value.templateKey;
+  const rules = Object.values(state.calendarRules);
+  if (rules.length > 0) {
+    const sorted = [...rules].sort(
+      (a, b) => b.priority - a.priority || b.createdAt - a.createdAt,
+    );
+    for (const rule of sorted) {
+      if (!calendarRuleApplies(rule, date)) continue;
+      const tpl = calendarRuleTemplate(rule, date);
+      if (tpl) return tpl;
+    }
   }
   return heuristic(date);
 }
@@ -916,7 +1026,7 @@ export const useStore = create<DayRailStore>()(
         const payload: CalendarRule = {
           id,
           kind: 'single-date',
-          priority: 100,
+          priority: CALENDAR_RULE_PRIORITY['single-date'],
           value: { date, templateKey } as CalendarRuleSingleDate,
           createdAt: Date.now(),
         };
@@ -936,6 +1046,76 @@ export const useStore = create<DayRailStore>()(
 
       clearCycleDayOverride: async (date) => {
         const id = singleDateRuleId(date);
+        if (!get().calendarRules[id]) return;
+        const ev = await appendEvent({
+          aggregateId: `calendar-rule:${id}`,
+          type: 'calendar-rule.removed',
+          payload: { id },
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+      },
+
+      upsertWeekdayRule: async (templateKey, weekdays) => {
+        // One rule per template — deterministic id lets subsequent
+        // edits (coverage shrinks / grows) replace the row in place.
+        const id = `cr-weekday-${templateKey}`;
+        const payload: CalendarRule = {
+          id,
+          kind: 'weekday',
+          priority: CALENDAR_RULE_PRIORITY.weekday,
+          value: { templateKey, weekdays: [...weekdays].sort() } as CalendarRuleWeekday,
+          createdAt: Date.now(),
+        };
+        const ev = await appendEvent({
+          aggregateId: `calendar-rule:${id}`,
+          type: 'calendar-rule.upserted',
+          payload: payload as unknown as Record<string, unknown>,
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+      },
+
+      createDateRangeRule: async ({ from, to, templateKey, label }) => {
+        const id = ulidLite('cr-range');
+        const payload: CalendarRule = {
+          id,
+          kind: 'date-range',
+          priority: CALENDAR_RULE_PRIORITY['date-range'],
+          value: { from, to, templateKey, ...(label && { label }) } as
+            CalendarRuleDateRange,
+          createdAt: Date.now(),
+        };
+        const ev = await appendEvent({
+          aggregateId: `calendar-rule:${id}`,
+          type: 'calendar-rule.upserted',
+          payload: payload as unknown as Record<string, unknown>,
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+        return id;
+      },
+
+      createCycleRule: async ({ cycleLength, anchor, mapping }) => {
+        const id = ulidLite('cr-cycle');
+        const payload: CalendarRule = {
+          id,
+          kind: 'cycle',
+          priority: CALENDAR_RULE_PRIORITY.cycle,
+          value: { cycleLength, anchor, mapping: [...mapping] } as CalendarRuleCycle,
+          createdAt: Date.now(),
+        };
+        const ev = await appendEvent({
+          aggregateId: `calendar-rule:${id}`,
+          type: 'calendar-rule.upserted',
+          payload: payload as unknown as Record<string, unknown>,
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+        return id;
+      },
+
+      removeCalendarRule: async (id) => {
         if (!get().calendarRules[id]) return;
         const ev = await appendEvent({
           aggregateId: `calendar-rule:${id}`,

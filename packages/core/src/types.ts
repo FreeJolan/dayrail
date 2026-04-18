@@ -166,10 +166,8 @@ export interface AdhocEvent {
 }
 
 /** ERD §5.4 rule that decides which Template applies to a given date.
- *  v0.2 implements `single-date` only — the "I want Friday to be a
- *  rest day this week" override written from Cycle View. Other kinds
- *  (`weekday`, `cycle`, `date-range`) are reserved shapes that the
- *  resolver + Calendar-view UI will honor in v0.3. */
+ *  All four kinds are live from v0.3: resolver walks rules by
+ *  priority desc and returns the first match. */
 export type CalendarRuleKind = 'weekday' | 'cycle' | 'date-range' | 'single-date';
 
 export interface CalendarRuleSingleDate {
@@ -177,13 +175,45 @@ export interface CalendarRuleSingleDate {
   templateKey: TemplateKey;
 }
 
+/** Weekday rule — one row per template, multiple weekdays covered via
+ *  the `weekdays` array (0 = Sunday, 6 = Saturday). Seeded on first
+ *  boot to match the v0.2 heuristic (workday Mon–Fri / restday Sat-Sun). */
+export interface CalendarRuleWeekday {
+  weekdays: number[];
+  templateKey: TemplateKey;
+}
+
+/** Date-range rule — inclusive on both ends. `label` is optional
+ *  because single-purpose ranges (travel, exam, holiday) don't always
+ *  need a name, but it's useful when they do. */
+export interface CalendarRuleDateRange {
+  from: string; // YYYY-MM-DD
+  to: string; // YYYY-MM-DD (inclusive)
+  templateKey: TemplateKey;
+  label?: string;
+}
+
+/** Cycle rule — mapping of position-in-cycle → template.
+ *  `anchor` is day 0 of the cycle. `mapping.length` must equal
+ *  `cycleLength`. Position for a date is
+ *  `((date - anchor) / 1 day) mod cycleLength`. */
+export interface CalendarRuleCycle {
+  cycleLength: number;
+  anchor: string; // YYYY-MM-DD
+  mapping: TemplateKey[];
+}
+
 export interface CalendarRule {
   id: string;
   kind: CalendarRuleKind;
-  /** Higher wins. single-date written from Cycle View defaults to 100 —
-   *  above the implicit 0 from the weekday heuristic. */
+  /** Higher wins. Defaults by kind (§5.4): single-date 100 ·
+   *  date-range 50 · cycle 30 · weekday 10. */
   priority: number;
-  value: CalendarRuleSingleDate | Record<string, unknown>;
+  value:
+    | CalendarRuleSingleDate
+    | CalendarRuleWeekday
+    | CalendarRuleDateRange
+    | CalendarRuleCycle;
   createdAt: number;
 }
 
