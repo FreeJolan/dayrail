@@ -528,8 +528,12 @@ export function AboutSection() {
         </div>
 
         <div className="hairline-t flex w-full flex-col gap-0.5 py-4">
-          <KeyValue label="版本" value="v0.1-pre · static mock" mono />
-          <KeyValue label="构建" value="2026-04-17 · feat/planner-ux" mono />
+          <KeyValue label="版本" value={`v${__APP_VERSION__}`} mono />
+          <KeyValue
+            label="构建"
+            value={`${__APP_BUILD_DATE__} · ${__APP_GIT_SHA__}`}
+            mono
+          />
           <KeyValue label="许可证" value="MIT" />
           <KeyValue label="维护者" value="FreeJolan" />
         </div>
