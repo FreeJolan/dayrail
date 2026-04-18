@@ -29,8 +29,16 @@ export function useReasonToast(surface: Signal['surface']): {
   toast: ReasonToastState | null;
   fire: (opts: {
     taskId: string;
-    railName: string;
-    railId: string;
+    /** Display label in the toast. Pass the rail name for rail-bound
+     *  tasks; task title for unscheduled / ad-hoc tasks. */
+    displayName: string;
+    /** Optional Rail id, used to compute recommended reason tags
+     *  from past Shifts on the same Rail. Omit for unscheduled tasks. */
+    railId?: string;
+    /** Optional Edit-Session id (§5.3.1). When set, the Task status
+     *  write is tagged so the session-level undo rolls it back with
+     *  the rest of the batch. Cycle View passes its session here. */
+    sessionId?: string;
     action: ToastAction;
   }) => void;
   handleAddTag: (tag: string) => void;
@@ -51,17 +59,23 @@ export function useReasonToast(surface: Signal['surface']): {
   // Pre-action task snapshot so Undo restores precisely.
   const prevTaskStatusRef = useRef<TaskStatus | null>(null);
 
+  // Session id used by Undo — captured per-fire so Cycle View can
+  // pass its own and Today Track / Tasks leave it empty.
+  const sessionIdRef = useRef<string | undefined>(undefined);
+
   const fire = useCallback(
-    ({ taskId, railName, railId, action }: {
+    ({ taskId, displayName, railId, sessionId, action }: {
       taskId: string;
-      railName: string;
-      railId: string;
+      displayName: string;
+      railId?: string;
+      sessionId?: string;
       action: ToastAction;
     }) => {
       const task = tasks[taskId];
       if (!task) return;
 
       prevTaskStatusRef.current = task.status;
+      sessionIdRef.current = sessionId;
 
       const nextTaskStatus: TaskStatus =
         action === 'done'
@@ -74,7 +88,7 @@ export function useReasonToast(surface: Signal['surface']): {
       if (action === 'done') patch.doneAt = nowIso;
       if (action === 'defer') patch.deferredAt = nowIso;
       if (action === 'archive') patch.archivedAt = nowIso;
-      void updateTask(taskId, patch);
+      void updateTask(taskId, patch, sessionId);
 
       // Signal event — pure audit. Anchored on Task.
       void recordSignal(taskId, action, surface);
@@ -85,9 +99,9 @@ export function useReasonToast(surface: Signal['surface']): {
       setToast({
         action,
         instanceId: taskId, // the toast still uses `instanceId` as an opaque key
-        railName,
+        railName: displayName,
         isRecurring: true,
-        recommendedTags: topTagsForRail(railId, tasks, shifts),
+        recommendedTags: railId ? topTagsForRail(railId, tasks, shifts) : [],
       });
     },
     [tasks, shifts, recordSignal, updateTask, surface],
@@ -102,20 +116,27 @@ export function useReasonToast(surface: Signal['surface']): {
   const handleUndo = useCallback(() => {
     const tid = taskIdRef.current;
     const prevTaskStatus = prevTaskStatusRef.current;
+    const sid = sessionIdRef.current;
     if (tid && prevTaskStatus) {
       // Clear the stamp fields we may have just set so the restored
-      // row is a clean revert.
-      void updateTask(tid, {
-        status: prevTaskStatus,
-        doneAt: undefined,
-        deferredAt: undefined,
-        archivedAt: undefined,
-      });
+      // row is a clean revert. Pass the same sessionId so a session-
+      // undo batch stays internally consistent.
+      void updateTask(
+        tid,
+        {
+          status: prevTaskStatus,
+          doneAt: undefined,
+          deferredAt: undefined,
+          archivedAt: undefined,
+        },
+        sid,
+      );
     }
     tagsRef.current = [];
     taskIdRef.current = null;
     actionRef.current = null;
     prevTaskStatusRef.current = null;
+    sessionIdRef.current = undefined;
   }, [updateTask]);
 
   const handleClose = useCallback(() => {
@@ -127,6 +148,7 @@ export function useReasonToast(surface: Signal['surface']): {
     taskIdRef.current = null;
     actionRef.current = null;
     prevTaskStatusRef.current = null;
+    sessionIdRef.current = undefined;
     if (!tid || !action) return;
     if (action === 'done') return; // done isn't a Shift
     if (tags.length === 0) return;

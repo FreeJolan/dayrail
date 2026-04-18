@@ -15,6 +15,8 @@ import {
 } from '@/components/CycleSection';
 import { BacklogDrawer } from '@/components/BacklogDrawer';
 import { EditSessionIndicator } from '@/components/EditSessionIndicator';
+import { ReasonToast } from '@/components/ReasonToast';
+import { useReasonToast } from '@/components/useReasonToast';
 import {
   Popover,
   PopoverContent,
@@ -195,15 +197,24 @@ export function CycleView() {
     [unscheduleTask, sessionId],
   );
 
+  const { toast, fire, handleAddTag, handleUndo, handleClose } = useReasonToast(
+    'pending-queue',
+  );
+
   const handleMarkTaskDone = useCallback(
     (taskId: string) => {
-      void updateTask(
+      const task = tasks[taskId];
+      if (!task) return;
+      const rail = task.slot ? rails[task.slot.railId] : undefined;
+      fire({
         taskId,
-        { status: 'done', doneAt: new Date().toISOString() },
-        sessionId ?? undefined,
-      );
+        ...(rail && { railId: rail.id }),
+        displayName: rail?.name ?? task.title,
+        ...(sessionId && { sessionId }),
+        action: 'done',
+      });
     },
-    [updateTask, sessionId],
+    [tasks, rails, fire, sessionId],
   );
 
   const handleOpenTaskProject = useCallback(
@@ -337,6 +348,13 @@ export function CycleView() {
       <BacklogDrawer
         open={backlogOpen}
         onToggle={() => setBacklogOpen((v) => !v)}
+      />
+
+      <ReasonToast
+        state={toast}
+        onAddTag={handleAddTag}
+        onUndo={handleUndo}
+        onClose={handleClose}
       />
     </div>
   );
