@@ -292,8 +292,30 @@ function ColorDot({ color }: { color?: Line['color'] }) {
 // Main panel: header · new-task input · filter bar · task list.
 // ------------------------------------------------------------------
 
+type ScheduleFilter =
+  | 'any'
+  | 'scheduled'
+  | 'unscheduled'
+  | 'today'
+  | 'thisWeek'
+  | 'overdue';
+
+const SCHEDULE_FILTER_KEYS: ScheduleFilter[] = [
+  'any',
+  'scheduled',
+  'unscheduled',
+  'today',
+  'thisWeek',
+  'overdue',
+];
+
+function isScheduleFilter(v: string | null): v is ScheduleFilter {
+  return !!v && (SCHEDULE_FILTER_KEYS as string[]).includes(v);
+}
+
 interface Filters {
   search: string;
+  schedule: ScheduleFilter;
 }
 
 function MainPanel({
@@ -305,19 +327,24 @@ function MainPanel({
   inbox: Line | undefined;
   projects: Line[];
 }) {
-  // Search query in URL (`?q=foo`) so bookmarking / sharing a
-  // filtered view works. Empty query → param stripped entirely, no
-  // noise in the URL for the common case.
+  // Filters in URL (`?q=...&schedule=...`) so bookmarking /
+  // sharing a filtered view works. Empty / default values are
+  // stripped — clean URL for the common case.
   const [searchParams, setSearchParams] = useSearchParams();
-  const filters: Filters = { search: searchParams.get('q') ?? '' };
+  const scheduleParam = searchParams.get('schedule');
+  const filters: Filters = {
+    search: searchParams.get('q') ?? '',
+    schedule: isScheduleFilter(scheduleParam) ? scheduleParam : 'any',
+  };
   const setFilters = useCallback(
     (next: Filters) => {
       setSearchParams(
         (prev) => {
           const n = new URLSearchParams(prev);
-          const q = next.search;
-          if (q) n.set('q', q);
+          if (next.search) n.set('q', next.search);
           else n.delete('q');
+          if (next.schedule !== 'any') n.set('schedule', next.schedule);
+          else n.delete('schedule');
           return n;
         },
         { replace: true },
@@ -327,6 +354,7 @@ function MainPanel({
   );
 
   const tasksMap = useStore((s) => s.tasks);
+  const adhocEventsMap = useStore((s) => s.adhocEvents);
   const linesMap = useStore((s) => s.lines);
   const createTask = useStore((s) => s.createTask);
   const updateTask = useStore((s) => s.updateTask);
@@ -364,9 +392,54 @@ function MainPanel({
     }
   }, [tasksMap, selection]);
 
+  // Map taskId → active AdhocEvent's date. Used by the schedule
+  // filter to tell "scheduled via free-time mode" apart from "slot-
+  // bound". Only one active adhoc per task in v0.2+ (§5.5.2 mutual-
+  // exclusivity), so the map is safe to build flat.
+  const adhocDateByTaskId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const ev of Object.values(adhocEventsMap)) {
+      if (ev.status !== 'active' || !ev.taskId) continue;
+      m.set(ev.taskId, ev.date);
+    }
+    return m;
+  }, [adhocEventsMap]);
+
+  const today = useMemo(() => {
+    const d = new Date();
+    return toIsoDateStr(d);
+  }, []);
+  const thisWeekRange = useMemo(() => weekRangeOf(new Date()), []);
+
   const filteredTasks = useMemo(() => {
     const q = filters.search.trim().toLowerCase();
     return tasksInScope
+      .filter((t) => {
+        if (filters.schedule === 'any') return true;
+        const scheduledDate = t.slot?.date ?? adhocDateByTaskId.get(t.id);
+        switch (filters.schedule) {
+          case 'scheduled':
+            return scheduledDate != null;
+          case 'unscheduled':
+            return scheduledDate == null;
+          case 'today':
+            return scheduledDate === today;
+          case 'thisWeek':
+            return (
+              scheduledDate != null &&
+              scheduledDate >= thisWeekRange.from &&
+              scheduledDate <= thisWeekRange.to
+            );
+          case 'overdue':
+            return (
+              scheduledDate != null &&
+              scheduledDate < today &&
+              t.status !== 'done'
+            );
+          default:
+            return true;
+        }
+      })
       .filter((t) => {
         if (!q) return true;
         return (
@@ -375,7 +448,7 @@ function MainPanel({
         );
       })
       .sort((a, b) => a.order - b.order);
-  }, [tasksInScope, filters]);
+  }, [tasksInScope, filters, adhocDateByTaskId, today, thisWeekRange]);
 
   // Split into the two collapsible groups for inbox / line views.
   // Archived / trash don't split — they're status-scoped lists already.
@@ -663,6 +736,15 @@ function NewTaskInput({
 // Filter chip bar.
 // ------------------------------------------------------------------
 
+const SCHEDULE_CHIPS: Array<{ key: ScheduleFilter; label: string }> = [
+  { key: 'any', label: '任意排期' },
+  { key: 'today', label: '今日' },
+  { key: 'thisWeek', label: '本周' },
+  { key: 'overdue', label: '过期未做' },
+  { key: 'scheduled', label: '已排期' },
+  { key: 'unscheduled', label: '未排期' },
+];
+
 function FilterBar({
   filters,
   onChange,
@@ -672,6 +754,24 @@ function FilterBar({
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {SCHEDULE_CHIPS.map((c) => {
+        const active = filters.schedule === c.key;
+        return (
+          <button
+            key={c.key}
+            type="button"
+            onClick={() => onChange({ ...filters, schedule: c.key })}
+            className={clsx(
+              'rounded-sm px-2.5 py-1 text-xs font-medium transition',
+              active
+                ? 'bg-ink-primary text-surface-0'
+                : 'bg-surface-1 text-ink-secondary hover:bg-surface-2 hover:text-ink-primary',
+            )}
+          >
+            {c.label}
+          </button>
+        );
+      })}
       <label className="ml-auto flex h-8 items-center gap-2 rounded-md border border-hairline/60 bg-surface-0 px-2.5 transition hover:border-hairline focus-within:border-ink-secondary">
         <Search className="h-3.5 w-3.5 shrink-0 text-ink-tertiary" strokeWidth={1.6} />
         <input
@@ -1208,5 +1308,26 @@ function freshId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random()
     .toString(36)
     .slice(2, 8)}`;
+}
+
+function toIsoDateStr(d: Date): string {
+  const yr = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const dy = String(d.getDate()).padStart(2, '0');
+  return `${yr}-${mo}-${dy}`;
+}
+
+/** Monday-anchored week range for the given date, both endpoints ISO-
+ *  date strings so the schedule filter can do lexical compare. */
+function weekRangeOf(date: Date): { from: string; to: string } {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  const day = d.getDay(); // 0 Sun .. 6 Sat
+  const offset = day === 0 ? -6 : 1 - day;
+  const start = new Date(d);
+  start.setDate(d.getDate() + offset);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return { from: toIsoDateStr(start), to: toIsoDateStr(end) };
 }
 
