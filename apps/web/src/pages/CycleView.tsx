@@ -33,7 +33,7 @@ import {
 
 export function CycleView() {
   const [anchorDate, setAnchorDate] = useState<Date>(() => new Date());
-  const [backlogOpen, setBacklogOpen] = useState(false);
+  const [backlogOpen, setBacklogOpen] = useState(true);
   // Local-only override map until we wire the CalendarRule persistence
   // path in a subsequent chunk.
   const [overrides, setOverrides] = useState<Record<string, TemplateKey>>({});
@@ -41,6 +41,7 @@ export function CycleView() {
   const templates = useStore((s) => s.templates);
   const rails = useStore((s) => s.rails);
   const tasks = useStore((s) => s.tasks);
+  const lines = useStore((s) => s.lines);
   const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
   const unscheduleTask = useStore((s) => s.unscheduleTask);
 
@@ -48,8 +49,8 @@ export function CycleView() {
 
   const { cycle: baseCycle, railsByTemplate } = useMemo(
     () =>
-      deriveCycleFromStore({ templates, rails, tasks }, weekStart),
-    [templates, rails, tasks, weekStart],
+      deriveCycleFromStore({ templates, rails, tasks, lines }, weekStart),
+    [templates, rails, tasks, lines, weekStart],
   );
 
   // Fold local overrides into the derived cycle's days so the header
