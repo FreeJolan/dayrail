@@ -42,6 +42,7 @@ export function CycleView() {
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
   const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
   const createTask = useStore((s) => s.createTask);
+  const updateTask = useStore((s) => s.updateTask);
 
   const weekStart = useMemo(() => startOfWeekMonday(anchorDate), [anchorDate]);
 
@@ -151,6 +152,27 @@ export function CycleView() {
     [unscheduleTask],
   );
 
+  const handleMarkTaskDone = useCallback(
+    (taskId: string) => {
+      void updateTask(taskId, {
+        status: 'done',
+        doneAt: new Date().toISOString(),
+      });
+    },
+    [updateTask],
+  );
+
+  const lineLookup = useCallback(
+    (taskId: string) => {
+      const task = tasks[taskId];
+      if (!task) return undefined;
+      const line = lines[task.lineId];
+      if (!line) return undefined;
+      return { name: line.name, color: line.color };
+    },
+    [tasks, lines],
+  );
+
   const handleQuickCreate = useCallback(
     (date: string, railId: string, title: string) => {
       // Default to the Rail's `defaultLineId` so the new task lands in
@@ -212,7 +234,9 @@ export function CycleView() {
                 onClearOverride={clearOverride}
                 onDropTask={handleDropTask}
                 onClearSlot={handleClearSlot}
+                onMarkTaskDone={handleMarkTaskDone}
                 onQuickCreate={handleQuickCreate}
+                lineLookup={lineLookup}
               />
             );
           })}
