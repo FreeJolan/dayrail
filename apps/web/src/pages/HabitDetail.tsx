@@ -6,9 +6,9 @@ import {
   materializeAutoTasks,
   mondayOf,
   useStore,
+  type HabitBinding,
   type Line,
   type Rail,
-  type Recurrence,
   type Task,
   type Template,
 } from '@dayrail/core';
@@ -40,6 +40,7 @@ export function HabitDetail({ habit }: Props) {
   const rails = useStore((s) => s.rails);
   const templates = useStore((s) => s.templates);
   const tasks = useStore((s) => s.tasks);
+  const habitBindings = useStore((s) => s.habitBindings);
   const updateLine = useStore((s) => s.updateLine);
   const navigate = useNavigate();
 
@@ -68,19 +69,18 @@ export function HabitDetail({ habit }: Props) {
     });
   }, [windowStart, windowEnd]);
 
-  const boundRails = useMemo<Rail[]>(
+  const bindings = useMemo<HabitBinding[]>(
     () =>
-      Object.values(rails)
-        .filter((r) => r.defaultLineId === habit.id)
-        .sort((a, b) => a.startMinutes - b.startMinutes),
-    [rails, habit.id],
+      Object.values(habitBindings)
+        .filter((b) => b.habitId === habit.id)
+        .sort((a, b) => a.createdAt - b.createdAt),
+    [habitBindings, habit.id],
   );
 
   return (
     <div className="flex flex-col gap-8">
       <RhythmStrip
         habitId={habit.id}
-        boundRails={boundRails}
         windowStart={windowStart}
         windowEnd={windowEnd}
         tasks={tasks}
@@ -89,7 +89,8 @@ export function HabitDetail({ habit }: Props) {
 
       <ScheduleList
         habit={habit}
-        boundRails={boundRails}
+        bindings={bindings}
+        rails={rails}
         templates={templates}
         onGoToTemplate={(templateKey) => navigate(`/templates/${templateKey}`)}
       />
@@ -109,14 +110,12 @@ type CellState = 'done' | 'deferred' | 'archived' | 'pending' | 'empty';
 
 function RhythmStrip({
   habitId,
-  boundRails,
   windowStart,
   windowEnd,
   tasks,
   color,
 }: {
   habitId: string;
-  boundRails: Rail[];
   windowStart: string;
   windowEnd: string;
   tasks: Record<string, Task>;
@@ -146,7 +145,7 @@ function RhythmStrip({
     return byDate;
   }, [dates, tasks, habitId, windowStart, windowEnd]);
 
-  const accent: RailColor = (color ?? boundRails[0]?.color ?? 'slate') as RailColor;
+  const accent: RailColor = (color ?? 'slate') as RailColor;
 
   return (
     <section aria-label="Habit rhythm" className="flex flex-col gap-3">
@@ -280,56 +279,75 @@ function LegendSwatch({
 
 function ScheduleList({
   habit,
-  boundRails,
+  bindings,
+  rails,
   templates,
   onGoToTemplate,
 }: {
   habit: Line;
-  boundRails: Rail[];
+  bindings: HabitBinding[];
+  rails: Record<string, Rail>;
   templates: Record<string, Template>;
   onGoToTemplate: (templateKey: string) => void;
 }) {
   const [formOpen, setFormOpen] = useState(false);
-  const createRail = useStore((s) => s.createRail);
-  const updateRail = useStore((s) => s.updateRail);
+  const upsertHabitBinding = useStore((s) => s.upsertHabitBinding);
+  const removeHabitBinding = useStore((s) => s.removeHabitBinding);
 
-  const templateList = useMemo(() => Object.values(templates), [templates]);
+  const availableRails = useMemo(
+    () =>
+      Object.values(rails).sort((a, b) => {
+        if (a.templateKey !== b.templateKey) {
+          return a.templateKey.localeCompare(b.templateKey);
+        }
+        return a.startMinutes - b.startMinutes;
+      }),
+    [rails],
+  );
 
-  const handleCreate = useCallback(
-    async (opts: {
-      templateKey: string;
-      startMinutes: number;
-      durationMinutes: number;
-      recurrence: Recurrence;
-    }) => {
-      const id = `rail-${habit.id}-${Date.now().toString(36)}`;
-      await createRail({
-        id,
-        templateKey: opts.templateKey,
-        name: habit.name,
-        startMinutes: opts.startMinutes,
-        durationMinutes: opts.durationMinutes,
-        color: (habit.color ?? 'slate') as Rail['color'],
-        showInCheckin: true,
-        defaultLineId: habit.id,
-        recurrence: opts.recurrence,
+  const handleAddBinding = useCallback(
+    async (opts: { railId: string; weekdays?: number[] }) => {
+      await upsertHabitBinding({
+        habitId: habit.id,
+        railId: opts.railId,
+        ...(opts.weekdays && opts.weekdays.length > 0
+          ? { weekdays: opts.weekdays }
+          : {}),
       });
       setFormOpen(false);
     },
-    [createRail, habit],
+    [upsertHabitBinding, habit.id],
   );
 
-  const handleUnbind = useCallback(
-    async (rail: Rail) => {
+  const handleUpdateWeekdays = useCallback(
+    async (bindingId: string, weekdays: number[] | undefined) => {
+      const existing = bindings.find((b) => b.id === bindingId);
+      if (!existing) return;
+      await upsertHabitBinding({
+        id: bindingId,
+        habitId: existing.habitId,
+        railId: existing.railId,
+        ...(weekdays && weekdays.length > 0 ? { weekdays } : {}),
+      });
+    },
+    [bindings, upsertHabitBinding],
+  );
+
+  const handleRemoveBinding = useCallback(
+    async (bindingId: string) => {
+      const binding = bindings.find((b) => b.id === bindingId);
+      if (!binding) return;
+      const rail = rails[binding.railId];
       if (
         !window.confirm(
-          `把「${rail.name}」从 habit 解绑?Rail 会留在 Template Editor 里 (不会删),只是不再作为此 habit 的节奏。`,
+          `解除 habit「${habit.name}」与 rail「${rail?.name ?? binding.railId}」的绑定?\n未来的 auto-task 停止生成;过去已有的保留。`,
         )
-      )
+      ) {
         return;
-      await updateRail(rail.id, { defaultLineId: undefined });
+      }
+      await removeHabitBinding(bindingId);
     },
-    [updateRail],
+    [bindings, rails, habit.name, removeHabitBinding],
   );
 
   return (
@@ -339,41 +357,58 @@ function ScheduleList({
           Schedule
         </span>
         <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
-          {boundRails.length} 条节奏
+          {bindings.length} 条节奏
         </span>
       </header>
-      {boundRails.length === 0 && !formOpen && (
+      {bindings.length === 0 && !formOpen && (
         <p className="rounded-md bg-surface-1 px-3 py-2.5 text-xs text-ink-tertiary">
-          还没有绑定任何节奏。点下方「+ 新节奏」为此 habit 创建一条时间带。
+          还没有绑定任何节奏。点下方「+ 新节奏」把此 habit 绑到 Template Editor 里已有的一条 rail。
         </p>
       )}
-      {boundRails.length > 0 && (
+      {bindings.length > 0 && (
         <ul className="flex flex-col gap-1">
-          {boundRails.map((rail) => (
-            <ScheduleRow
-              key={rail.id}
-              rail={rail}
-              templateName={templates[rail.templateKey]?.name ?? rail.templateKey}
-              onGoToTemplate={() => onGoToTemplate(rail.templateKey)}
-              onUnbind={() => void handleUnbind(rail)}
-            />
-          ))}
+          {bindings.map((binding) => {
+            const rail = rails[binding.railId];
+            if (!rail) return null;
+            return (
+              <ScheduleRow
+                key={binding.id}
+                binding={binding}
+                rail={rail}
+                templateName={templates[rail.templateKey]?.name ?? rail.templateKey}
+                onGoToTemplate={() => onGoToTemplate(rail.templateKey)}
+                onUpdateWeekdays={(weekdays) =>
+                  void handleUpdateWeekdays(binding.id, weekdays)
+                }
+                onRemove={() => void handleRemoveBinding(binding.id)}
+              />
+            );
+          })}
         </ul>
       )}
       {formOpen ? (
-        <NewScheduleForm
-          templates={templateList}
-          defaultTemplateKey={
-            boundRails[0]?.templateKey ?? templateList[0]?.key ?? ''
-          }
-          onSubmit={(opts) => void handleCreate(opts)}
+        <NewBindingForm
+          rails={availableRails}
+          templates={templates}
+          onSubmit={(opts) => void handleAddBinding(opts)}
           onCancel={() => setFormOpen(false)}
         />
       ) : (
         <button
           type="button"
           onClick={() => setFormOpen(true)}
-          className="inline-flex items-center gap-1.5 self-start rounded-md border border-dashed border-ink-tertiary/50 px-3 py-1.5 text-xs text-ink-secondary transition hover:border-ink-secondary hover:text-ink-primary"
+          disabled={availableRails.length === 0}
+          className={clsx(
+            'inline-flex items-center gap-1.5 self-start rounded-md border border-dashed px-3 py-1.5 text-xs transition',
+            availableRails.length === 0
+              ? 'cursor-not-allowed border-ink-tertiary/30 text-ink-tertiary/60'
+              : 'border-ink-tertiary/50 text-ink-secondary hover:border-ink-secondary hover:text-ink-primary',
+          )}
+          title={
+            availableRails.length === 0
+              ? '先去 Template Editor 建一条 rail,再回来绑'
+              : undefined
+          }
         >
           <Plus className="h-3 w-3" strokeWidth={1.8} />
           新节奏
@@ -384,45 +419,75 @@ function ScheduleList({
 }
 
 function ScheduleRow({
+  binding,
   rail,
   templateName,
   onGoToTemplate,
-  onUnbind,
+  onUpdateWeekdays,
+  onRemove,
 }: {
+  binding: HabitBinding;
   rail: Rail;
   templateName: string;
   onGoToTemplate: () => void;
-  onUnbind: () => void;
+  onUpdateWeekdays: (weekdays: number[] | undefined) => void;
+  onRemove: () => void;
 }) {
   const start = formatMinutes(rail.startMinutes);
   const end = formatMinutes(rail.startMinutes + rail.durationMinutes);
+  const [editingWeekdays, setEditingWeekdays] = useState(false);
   return (
-    <li className="group flex items-center gap-3 rounded-md bg-surface-1 px-3 py-2.5 transition hover:bg-surface-2">
+    <li className="group flex items-start gap-3 rounded-md bg-surface-1 px-3 py-2.5 transition hover:bg-surface-2">
       <span
         aria-hidden
-        className="h-5 w-[3px] shrink-0 rounded-sm"
+        className="mt-1 h-5 w-[3px] shrink-0 rounded-sm"
         style={{ background: RAIL_COLOR_HEX[rail.color as RailColor] }}
       />
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="text-sm text-ink-primary">{rail.name}</span>
-        <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
-          {start}–{end} · {recurrenceLabel(rail.recurrence)} · {templateName}
-        </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex items-baseline gap-2">
+          <span className="text-sm text-ink-primary">{rail.name}</span>
+          <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+            {start}–{end} · {templateName} · rail 循环 {recurrenceLabel(rail.recurrence)}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            限定星期
+          </span>
+          {editingWeekdays ? (
+            <WeekdayPicker
+              value={binding.weekdays}
+              onCommit={(next) => {
+                onUpdateWeekdays(next);
+                setEditingWeekdays(false);
+              }}
+              onCancel={() => setEditingWeekdays(false)}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setEditingWeekdays(true)}
+              className="rounded-sm px-1.5 py-0.5 text-xs text-ink-secondary transition hover:bg-surface-3"
+            >
+              {weekdaysLabel(binding.weekdays)}
+            </button>
+          )}
+        </div>
       </div>
       <button
         type="button"
         onClick={onGoToTemplate}
-        className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-ink-tertiary transition hover:bg-surface-3 hover:text-ink-primary"
-        title="去 Template Editor 编辑时间 / 重复规则"
+        className="mt-0.5 flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-ink-tertiary transition hover:bg-surface-3 hover:text-ink-primary"
+        title="去 Template Editor 改这条 rail"
       >
-        编辑
+        Rail
         <ArrowUpRight className="h-3 w-3" strokeWidth={1.8} />
       </button>
       <button
         type="button"
-        onClick={onUnbind}
-        className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-ink-tertiary transition hover:bg-surface-3 hover:text-warn"
-        title="解除绑定 (Rail 保留在 Template Editor)"
+        onClick={onRemove}
+        className="mt-0.5 flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-ink-tertiary transition hover:bg-surface-3 hover:text-warn"
+        title="解除绑定"
       >
         <X className="h-3 w-3" strokeWidth={1.8} />
       </button>
@@ -430,140 +495,149 @@ function ScheduleRow({
   );
 }
 
-// Inline rail-create form inside the habit detail. Minimal fields:
-// template, start time, duration, recurrence. Color + name inherit
-// from the habit (name = habit name; color = habit color). Advanced
-// tweaks happen in Template Editor.
-function NewScheduleForm({
+function weekdaysLabel(weekdays?: number[]): string {
+  if (!weekdays || weekdays.length === 0) return '每天(按 rail 循环)';
+  const names = ['日', '一', '二', '三', '四', '五', '六'];
+  return weekdays
+    .slice()
+    .sort((a, b) => a - b)
+    .map((w) => `周${names[w]}`)
+    .join(' / ');
+}
+
+function WeekdayPicker({
+  value,
+  onCommit,
+  onCancel,
+}: {
+  value?: number[];
+  onCommit: (weekdays: number[] | undefined) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState<number[]>(value ?? []);
+  return (
+    <div className="flex items-center gap-1">
+      {['日', '一', '二', '三', '四', '五', '六'].map((name, idx) => {
+        const active = draft.includes(idx);
+        return (
+          <button
+            key={idx}
+            type="button"
+            onClick={() =>
+              setDraft((prev) =>
+                prev.includes(idx)
+                  ? prev.filter((x) => x !== idx)
+                  : [...prev, idx].sort(),
+              )
+            }
+            className={clsx(
+              'h-6 w-6 rounded-sm text-2xs transition',
+              active
+                ? 'bg-ink-primary text-surface-0'
+                : 'bg-surface-2 text-ink-tertiary hover:bg-surface-3',
+            )}
+          >
+            {name}
+          </button>
+        );
+      })}
+      <button
+        type="button"
+        onClick={() => onCommit(draft.length === 0 ? undefined : draft)}
+        className="ml-1 rounded-sm bg-ink-primary px-2 py-0.5 text-2xs text-surface-0 transition hover:bg-ink-primary/90"
+      >
+        保存
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="rounded-sm px-1.5 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-3"
+      >
+        取消
+      </button>
+    </div>
+  );
+}
+
+// Inline "create a new HabitBinding" form. Lets the user pick an
+// existing rail + weekday filter; does NOT create new rails (for that
+// they go to Template Editor).
+function NewBindingForm({
+  rails,
   templates,
-  defaultTemplateKey,
   onSubmit,
   onCancel,
 }: {
-  templates: Template[];
-  defaultTemplateKey: string;
-  onSubmit: (opts: {
-    templateKey: string;
-    startMinutes: number;
-    durationMinutes: number;
-    recurrence: Recurrence;
-  }) => void;
+  rails: Rail[];
+  templates: Record<string, Template>;
+  onSubmit: (opts: { railId: string; weekdays?: number[] }) => void;
   onCancel: () => void;
 }) {
-  const [templateKey, setTemplateKey] = useState(defaultTemplateKey);
-  const [start, setStart] = useState('07:00');
-  const [end, setEnd] = useState('07:30');
-  const [recurrenceKind, setRecurrenceKind] = useState<
-    'daily' | 'weekdays' | 'custom'
-  >('daily');
-  const [customDays, setCustomDays] = useState<number[]>([1, 3, 5]);
+  const [railId, setRailId] = useState(rails[0]?.id ?? '');
+  const [weekdays, setWeekdays] = useState<number[]>([]);
 
   const submit = useCallback(() => {
-    const s = parseHHMM(start);
-    const e = parseHHMM(end);
-    if (s == null || e == null) return;
-    if (e <= s) return;
-    if (!templateKey) return;
-    const recurrence: Recurrence =
-      recurrenceKind === 'custom'
-        ? { kind: 'custom', weekdays: customDays }
-        : { kind: recurrenceKind };
+    if (!railId) return;
     onSubmit({
-      templateKey,
-      startMinutes: s,
-      durationMinutes: e - s,
-      recurrence,
+      railId,
+      ...(weekdays.length > 0 ? { weekdays } : {}),
     });
-  }, [start, end, templateKey, recurrenceKind, customDays, onSubmit]);
+  }, [railId, weekdays, onSubmit]);
 
   return (
     <div className="flex flex-col gap-3 rounded-md bg-surface-1 px-3 py-3">
-      <div className="flex flex-wrap items-center gap-3">
-        <label className="flex items-center gap-2 text-xs text-ink-secondary">
-          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-            模板
-          </span>
-          <select
-            value={templateKey}
-            onChange={(e) => setTemplateKey(e.target.value)}
-            className="h-7 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none focus:border-ink-secondary"
-          >
-            {templates.map((t) => (
-              <option key={t.key} value={t.key}>
-                {t.name}
+      <label className="flex items-center gap-2 text-xs text-ink-secondary">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          选择 Rail
+        </span>
+        <select
+          value={railId}
+          onChange={(e) => setRailId(e.target.value)}
+          className="h-7 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none focus:border-ink-secondary"
+        >
+          {rails.map((r) => {
+            const tpl = templates[r.templateKey]?.name ?? r.templateKey;
+            const start = formatMinutes(r.startMinutes);
+            const end = formatMinutes(r.startMinutes + r.durationMinutes);
+            return (
+              <option key={r.id} value={r.id}>
+                {tpl} · {r.name} · {start}–{end}
               </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex items-center gap-2 text-xs text-ink-secondary">
-          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-            时段
-          </span>
-          <input
-            type="time"
-            value={start}
-            onChange={(e) => setStart(e.target.value)}
-            className="h-7 rounded-sm border border-hairline/60 bg-surface-0 px-1.5 font-mono text-xs tabular-nums text-ink-primary outline-none focus:border-ink-secondary"
-          />
-          <span className="font-mono text-2xs text-ink-tertiary">→</span>
-          <input
-            type="time"
-            value={end}
-            onChange={(e) => setEnd(e.target.value)}
-            className="h-7 rounded-sm border border-hairline/60 bg-surface-0 px-1.5 font-mono text-xs tabular-nums text-ink-primary outline-none focus:border-ink-secondary"
-          />
-        </label>
-      </div>
+            );
+          })}
+        </select>
+      </label>
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          重复
+          限定星期
         </span>
-        <RecurrenceChip
-          active={recurrenceKind === 'daily'}
-          onClick={() => setRecurrenceKind('daily')}
-        >
-          每天
-        </RecurrenceChip>
-        <RecurrenceChip
-          active={recurrenceKind === 'weekdays'}
-          onClick={() => setRecurrenceKind('weekdays')}
-        >
-          工作日
-        </RecurrenceChip>
-        <RecurrenceChip
-          active={recurrenceKind === 'custom'}
-          onClick={() => setRecurrenceKind('custom')}
-        >
-          自定义
-        </RecurrenceChip>
-        {recurrenceKind === 'custom' && (
-          <div className="flex items-center gap-1">
-            {['日', '一', '二', '三', '四', '五', '六'].map((name, idx) => {
-              const active = customDays.includes(idx);
-              return (
-                <button
-                  key={idx}
-                  type="button"
-                  onClick={() =>
-                    setCustomDays((prev) =>
-                      active
-                        ? prev.filter((x) => x !== idx)
-                        : [...prev, idx].sort(),
-                    )
-                  }
-                  className={clsx(
-                    'h-6 w-6 rounded-sm text-2xs transition',
-                    active
-                      ? 'bg-ink-primary text-surface-0'
-                      : 'bg-surface-2 text-ink-tertiary hover:bg-surface-3',
-                  )}
-                >
-                  {name}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        <span className="text-2xs text-ink-tertiary">
+          (不选 = 按 rail 自己的循环)
+        </span>
+        {['日', '一', '二', '三', '四', '五', '六'].map((name, idx) => {
+          const active = weekdays.includes(idx);
+          return (
+            <button
+              key={idx}
+              type="button"
+              onClick={() =>
+                setWeekdays((prev) =>
+                  prev.includes(idx)
+                    ? prev.filter((x) => x !== idx)
+                    : [...prev, idx].sort(),
+                )
+              }
+              className={clsx(
+                'h-6 w-6 rounded-sm text-2xs transition',
+                active
+                  ? 'bg-ink-primary text-surface-0'
+                  : 'bg-surface-2 text-ink-tertiary hover:bg-surface-3',
+              )}
+            >
+              {name}
+            </button>
+          );
+        })}
       </div>
       <div className="flex items-center justify-end gap-2">
         <button
@@ -576,47 +650,14 @@ function NewScheduleForm({
         <button
           type="button"
           onClick={submit}
-          className="rounded-md bg-ink-primary px-3 py-1 text-xs text-surface-0 transition hover:bg-ink-primary/90"
+          disabled={!railId}
+          className="rounded-md bg-ink-primary px-3 py-1 text-xs text-surface-0 transition hover:bg-ink-primary/90 disabled:opacity-50"
         >
-          添加
+          绑定
         </button>
       </div>
     </div>
   );
-}
-
-function RecurrenceChip({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={clsx(
-        'rounded-sm px-2 py-0.5 text-xs transition',
-        active
-          ? 'bg-ink-primary text-surface-0'
-          : 'bg-surface-2 text-ink-tertiary hover:bg-surface-3',
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-function parseHHMM(value: string): number | null {
-  const m = /^(\d{2}):(\d{2})$/.exec(value);
-  if (!m) return null;
-  const h = Number(m[1]);
-  const mi = Number(m[2]);
-  if (h < 0 || h > 23 || mi < 0 || mi > 59) return null;
-  return h * 60 + mi;
 }
 
 function recurrenceLabel(r: Rail['recurrence']): string {

@@ -39,7 +39,6 @@ export interface Rail {
   color: RailColor;
   icon?: string;
   showInCheckin: boolean;
-  defaultLineId?: string;
   recurrence: Recurrence;
 }
 
@@ -135,6 +134,22 @@ export interface Line {
 /** The system-singleton Inbox Line id. All Tasks created without a
  *  user-picked Project default to this Line. */
 export const INBOX_LINE_ID = 'line-inbox';
+
+/** v0.4: habit ↔ rail relationship. Each binding tells the auto-task
+ *  materializer "this habit has an occurrence on this rail". Multiple
+ *  bindings per habit are supported (workday 06:30 + weekend 07:30 =
+ *  two bindings). `weekdays` is an optional filter intersected with
+ *  the rail's own recurrence — `undefined` = no extra filter. */
+export interface HabitBinding {
+  id: string;
+  habitId: string;
+  railId: string;
+  /** 0 = Sunday … 6 = Saturday. Undefined = no extra weekday filter
+   *  (every day the rail fires also materializes an auto-task). */
+  weekdays?: number[];
+  /** epoch ms. */
+  createdAt: number;
+}
 
 /** Marker: "this (habit, cycle) pair has been visited by the auto-task
  *  materializer once already" (§10.2 strategy Ⅱ). Once marked, the

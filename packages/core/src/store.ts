@@ -55,6 +55,7 @@ import {
   type Template,
   type TemplateKey,
   type AutoTaskMarker,
+  type HabitBinding,
 } from './types';
 
 // ------------------------------------------------------------------
@@ -74,6 +75,8 @@ export interface DayRailState {
   calendarRules: Record<string, CalendarRule>;
   cycles: Record<string, Cycle>;
   habitPhases: Record<string, HabitPhase>;
+  /** §5.5.0 v0.4 · habit ↔ rail bindings. Keyed on binding id. */
+  habitBindings: Record<string, HabitBinding>;
   /** §10.2 auto-task materialization markers. Key = `${habitId}|${cycleId}`. */
   autoTaskMarkers: Record<string, AutoTaskMarker>;
   sessions: Record<string, EditSession>;
@@ -204,6 +207,19 @@ interface DayRailActions {
    *  it back to "simple habit" mode — derived from record count,
    *  no Line mutation needed. */
   removeHabitPhase: (id: string) => Promise<void>;
+  // --- habit ↔ rail bindings (§5.5.0 v0.4) ---
+  /** Upsert a HabitBinding. Pass `id` to update in place (preserves
+   *  `createdAt`); omit to create (ULID id). */
+  upsertHabitBinding: (
+    opts: {
+      id?: string;
+      habitId: string;
+      railId: string;
+      weekdays?: number[];
+    },
+    sessionId?: string,
+  ) => Promise<string>;
+  removeHabitBinding: (id: string, sessionId?: string) => Promise<void>;
   // --- auto-task materialization (§10.2; v0.4+) ---
   /** Idempotent upsert of an auto-task. No-op when `state.tasks[id]`
    *  already exists — the caller (autoTask.ts materializer) uses
@@ -253,6 +269,7 @@ type ReducerState = Pick<
   | 'calendarRules'
   | 'cycles'
   | 'habitPhases'
+  | 'habitBindings'
   | 'autoTaskMarkers'
 >;
 
@@ -443,6 +460,16 @@ function applyEventInPlace(
       delete state.habitPhases[id];
       break;
     }
+    case 'habit-binding.upserted': {
+      const p = payload as unknown as HabitBinding;
+      state.habitBindings[p.id] = { ...p };
+      break;
+    }
+    case 'habit-binding.removed': {
+      const id = (payload as { id: string }).id;
+      delete state.habitBindings[id];
+      break;
+    }
     case 'auto-task-marker.set': {
       const p = payload as unknown as AutoTaskMarker;
       state.autoTaskMarkers[`${p.habitId}|${p.cycleId}`] = { ...p };
@@ -472,6 +499,7 @@ type SnapshotPayload = Pick<
   | 'calendarRules'
   | 'cycles'
   | 'habitPhases'
+  | 'habitBindings'
   | 'autoTaskMarkers'
 >;
 
@@ -487,6 +515,7 @@ function emptyReducerState(): ReducerState {
     calendarRules: {},
     cycles: {},
     habitPhases: {},
+    habitBindings: {},
     autoTaskMarkers: {},
   };
 }
@@ -503,6 +532,7 @@ function snapshotFromState(s: DayRailState): SnapshotPayload {
     calendarRules: s.calendarRules,
     cycles: s.cycles,
     habitPhases: s.habitPhases,
+    habitBindings: s.habitBindings,
     autoTaskMarkers: s.autoTaskMarkers,
   };
 }
@@ -664,6 +694,7 @@ export const useStore = create<DayRailStore>()(
       calendarRules: {},
       cycles: {},
       habitPhases: {},
+      habitBindings: {},
       autoTaskMarkers: {},
       sessions: {},
 
@@ -695,6 +726,9 @@ export const useStore = create<DayRailStore>()(
               reducerState.calendarRules = { ...(snap.state.calendarRules ?? {}) };
               reducerState.cycles = { ...(snap.state.cycles ?? {}) };
               reducerState.habitPhases = { ...(snap.state.habitPhases ?? {}) };
+              reducerState.habitBindings = {
+                ...(snap.state.habitBindings ?? {}),
+              };
               reducerState.autoTaskMarkers = {
                 ...(snap.state.autoTaskMarkers ?? {}),
               };
@@ -712,6 +746,7 @@ export const useStore = create<DayRailStore>()(
             draft.calendarRules = reducerState.calendarRules;
             draft.cycles = reducerState.cycles;
             draft.habitPhases = reducerState.habitPhases;
+            draft.habitBindings = reducerState.habitBindings;
             draft.autoTaskMarkers = reducerState.autoTaskMarkers;
             for (const s of recovered) {
               if (!s.closed) draft.sessions[s.id] = s;
@@ -1286,6 +1321,41 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
+      upsertHabitBinding: async (opts, sessionId) => {
+        const id = opts.id ?? ulidLite('binding');
+        const existing = get().habitBindings[id];
+        const binding: HabitBinding = {
+          id,
+          habitId: opts.habitId,
+          railId: opts.railId,
+          ...(opts.weekdays !== undefined && { weekdays: opts.weekdays }),
+          createdAt: existing?.createdAt ?? Date.now(),
+        };
+        const ev = await appendEvent({
+          aggregateId: `habit-binding:${id}`,
+          type: 'habit-binding.upserted',
+          payload: binding as unknown as Record<string, unknown>,
+          sessionId,
+        });
+        if (sessionId) await touchSession(sessionId);
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+        return id;
+      },
+
+      removeHabitBinding: async (id, sessionId) => {
+        if (!get().habitBindings[id]) return;
+        const ev = await appendEvent({
+          aggregateId: `habit-binding:${id}`,
+          type: 'habit-binding.removed',
+          payload: { id },
+          sessionId,
+        });
+        if (sessionId) await touchSession(sessionId);
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+      },
+
       upsertAutoTask: async (task) => {
         // Idempotent: the materializer uses deterministic ids
         // (`task-auto-{habitId}-{date}`). Second call with the same id
@@ -1433,6 +1503,7 @@ export const useStore = create<DayRailStore>()(
           draft.calendarRules = reducerState.calendarRules;
           draft.cycles = reducerState.cycles;
           draft.habitPhases = reducerState.habitPhases;
+          draft.habitBindings = reducerState.habitBindings;
           draft.autoTaskMarkers = reducerState.autoTaskMarkers;
         });
         await closeSession(sessionId);

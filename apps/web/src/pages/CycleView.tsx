@@ -245,11 +245,10 @@ export function CycleView() {
 
   const handleQuickCreate = useCallback(
     (date: string, railId: string, title: string) => {
-      // Default to the Rail's `defaultLineId` so the new task lands in
-      // the Project the Rail's usually bound to (e.g. workday · code
-      // slot → "DayRail 开发"). Falls back to Inbox.
-      const rail = rails[railId];
-      const lineId = rail?.defaultLineId ?? INBOX_LINE_ID;
+      // v0.4: `Rail.defaultLineId` removed. Quick-created tasks land
+      // in Inbox; the user can re-home via the task detail drawer.
+      void rails;
+      const lineId = INBOX_LINE_ID;
       const maxOrder = Object.values(tasks)
         .filter((t) => t.lineId === lineId)
         .reduce((m, t) => Math.max(m, t.order), 0);

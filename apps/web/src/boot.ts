@@ -130,7 +130,6 @@ async function seedFromSamples(): Promise<void> {
         durationMinutes: r.endMin - r.startMin,
         color: r.color as RailColor,
         showInCheckin: r.showInCheckin,
-        defaultLineId: r.defaultLineId ?? undefined,
         recurrence: { kind: 'weekdays' },
       };
       await store.createRail(rail);
