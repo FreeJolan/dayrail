@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Settings2 } from 'lucide-react';
 import {
   pickTemplateForDate,
   toIsoDate,
@@ -16,6 +16,7 @@ import {
   type DayCellAdhoc,
   type DayCellTemplateChoice,
 } from '@/components/CalendarDayCell';
+import { CalendarRulesDrawer } from '@/components/CalendarRulesDrawer';
 import { buildMonthGrid, monthLabel } from '@/data/sampleCalendar';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import type { RailColor } from '@/data/sample';
@@ -37,6 +38,7 @@ export function Calendar() {
     year: now.getFullYear(),
     month: now.getMonth() + 1,
   });
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const todayIso = toIsoDate(now);
 
   const templates = useStore((s) => s.templates);
@@ -141,6 +143,7 @@ export function Calendar() {
         onPrev={gotoPrev}
         onNext={gotoNext}
         onToday={gotoToday}
+        onOpenDrawer={() => setDrawerOpen(true)}
       />
 
       <WeekdayHeader />
@@ -175,6 +178,11 @@ export function Calendar() {
       </div>
 
       <Footer />
+
+      <CalendarRulesDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+      />
     </div>
   );
 }
@@ -203,12 +211,14 @@ function TopBar({
   onPrev,
   onNext,
   onToday,
+  onOpenDrawer,
 }: {
   year: number;
   month: number;
   onPrev: () => void;
   onNext: () => void;
   onToday: () => void;
+  onOpenDrawer: () => void;
 }) {
   return (
     <header className="sticky top-0 z-30 flex h-[56px] items-center justify-between gap-4 bg-surface-0 pt-6">
@@ -246,6 +256,15 @@ function TopBar({
           </button>
         </div>
       </div>
+
+      <button
+        type="button"
+        onClick={onOpenDrawer}
+        className="inline-flex items-center gap-2 rounded-md bg-surface-1 px-3 py-1.5 text-sm text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+      >
+        <Settings2 className="h-3.5 w-3.5" strokeWidth={1.8} />
+        高级日历规则
+      </button>
     </header>
   );
 }
