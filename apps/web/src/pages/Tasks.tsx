@@ -34,6 +34,12 @@ import {
 } from '@dayrail/core';
 import { RAIL_COLOR_HEX } from '@/components/railColors';
 import { Tooltip } from '@/components/primitives/Tooltip';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/primitives/DropdownMenu';
 import { SchedulePopover } from '@/components/SchedulePopover';
 
 // ERD §5.5 Tasks view. Chunk E = list + filters + search + task CRUD.
@@ -639,6 +645,9 @@ function MainPanel({
     [tasksMap],
   );
 
+  const updateLine = useStore((s) => s.updateLine);
+  const navigateRoute = useNavigate();
+
   // When the selected Line is a habit, surface a phase panel above
   // the task flow. Detached so projects don't render it.
   const selectedLine =
@@ -651,12 +660,44 @@ function MainPanel({
       : undefined;
   const isHabitView = selectedHabit?.kind === 'habit';
 
+  // Line actions menu — visible only for user-editable lines (active
+  // projects + active habits). Inbox skipped (isDefault), archived /
+  // trash skipped (those are status buckets, not Lines).
+  const editableLine: Line | undefined =
+    selection.kind === 'line'
+      ? (selectedLine ?? selectedHabit)
+      : undefined;
+  const canEditLine =
+    editableLine != null && !editableLine.isDefault;
+
+  const handleRenameLine = useCallback(() => {
+    if (!editableLine) return;
+    const raw = window.prompt('重命名 · 输入新名称', editableLine.name);
+    if (raw == null) return;
+    const name = raw.trim();
+    if (!name || name === editableLine.name) return;
+    void updateLine(editableLine.id, { name });
+  }, [editableLine, updateLine]);
+
+  const handleArchiveLine = useCallback(() => {
+    if (!editableLine) return;
+    const msg = `归档「${editableLine.name}」？归档后不在主列表显示；随时可从"已归档"恢复。`;
+    if (!window.confirm(msg)) return;
+    void updateLine(editableLine.id, {
+      status: 'archived',
+      archivedAt: Date.now(),
+    });
+    navigateRoute('/tasks/inbox');
+  }, [editableLine, updateLine, navigateRoute]);
+
   return (
     <div className="flex w-full max-w-[960px] flex-col gap-6 px-10 py-10">
       <PageHeader
         overline={isHabitView ? 'Habit' : overline}
         title={title}
         selection={selection}
+        {...(canEditLine && { onRenameLine: handleRenameLine })}
+        {...(canEditLine && { onArchiveLine: handleArchiveLine })}
         rightSlot={
           isTrash && trashCount > 0 ? (
             <button
@@ -758,11 +799,15 @@ function PageHeader({
   title,
   selection,
   rightSlot,
+  onRenameLine,
+  onArchiveLine,
 }: {
   overline: string;
   title: string;
   selection: Selection;
   rightSlot?: React.ReactNode;
+  onRenameLine?: () => void;
+  onArchiveLine?: () => void;
 }) {
   const tasksMap = useStore((s) => s.tasks);
 
@@ -813,6 +858,12 @@ function PageHeader({
               <span className="text-ink-tertiary">/{stats.total}</span> 任务
             </span>
           )}
+          {(onRenameLine || onArchiveLine) && (
+            <LineActionsMenu
+              onRename={onRenameLine}
+              onArchive={onArchiveLine}
+            />
+          )}
           {rightSlot}
         </div>
       </div>
@@ -837,6 +888,36 @@ function PageHeader({
 // ------------------------------------------------------------------
 // New-task input.
 // ------------------------------------------------------------------
+
+function LineActionsMenu({
+  onRename,
+  onArchive,
+}: {
+  onRename?: () => void;
+  onArchive?: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Line actions"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          <MoreHorizontal className="h-4 w-4" strokeWidth={1.8} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={6} className="w-[160px]">
+        {onRename && (
+          <DropdownMenuItem onSelect={onRename}>重命名</DropdownMenuItem>
+        )}
+        {onArchive && (
+          <DropdownMenuItem onSelect={onArchive}>归档</DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 function NewTaskInput({
   onCreate,
