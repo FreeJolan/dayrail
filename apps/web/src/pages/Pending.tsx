@@ -292,7 +292,7 @@ function BulkArchiveButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      title={`归档超过 ${STALE_THRESHOLD_DAYS} 天仍未决定的事项（阈值可在 设置 → 高级 调整）`}
+      title={`归档超过 ${STALE_THRESHOLD_DAYS} 天仍未决定的事项`}
       className={clsx(
         'inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm transition',
         disabled
@@ -481,9 +481,7 @@ function Footnote() {
   return (
     <footer className="mt-4 flex justify-between font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
       <span>ERD §5.7 · 未决定项需由用户主动处理</span>
-      <span>
-        归档阈值：{STALE_THRESHOLD_DAYS} 天 · 设置 → 高级 可调
-      </span>
+      <span>归档阈值：{STALE_THRESHOLD_DAYS} 天</span>
     </footer>
   );
 }
