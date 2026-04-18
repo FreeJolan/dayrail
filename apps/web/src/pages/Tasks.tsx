@@ -425,6 +425,7 @@ function MainPanel({
   // Filters in URL (`?q=...&schedule=...`) so bookmarking /
   // sharing a filtered view works. Empty / default values are
   // stripped — clean URL for the common case.
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const scheduleParam = searchParams.get('schedule');
   const lineIdsParam = searchParams.get('lines');
@@ -703,6 +704,11 @@ function MainPanel({
           onRestore: (task: Task) => void restoreTask(task.id),
           onDelete: (task: Task) => void deleteTask(task.id),
           onPurge: handlePurge,
+          // Only non-trash rows open the detail drawer — trash rows
+          // are effectively read-only until restored.
+          onOpenDetail: isTrash
+            ? undefined
+            : (task: Task) => setDetailTaskId(task.id),
         };
         if (isTrash || isArchived) {
           return filteredTasks.length === 0 ? (
@@ -731,6 +737,14 @@ function MainPanel({
           />
         );
       })()}
+
+      {detailTaskId && tasksMap[detailTaskId] && (
+        <TaskDetailDrawer
+          task={tasksMap[detailTaskId]!}
+          line={linesMap[tasksMap[detailTaskId]!.lineId]}
+          onClose={() => setDetailTaskId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -970,6 +984,195 @@ function FilterBar({
 // Lines. Zero phases → simple-habit prompt. ≥1 phases → vertical
 // timeline with add / rename / reschedule / delete per phase.
 // ------------------------------------------------------------------
+
+// ------------------------------------------------------------------
+// Task detail drawer — click a task row's title / body area to edit
+// title / note / milestone in a right-slide panel. Autosaves on blur
+// so there's no "save" button friction. Esc closes.
+// ------------------------------------------------------------------
+
+function TaskDetailDrawer({
+  task,
+  line,
+  onClose,
+}: {
+  task: Task;
+  line: Line | undefined;
+  onClose: () => void;
+}) {
+  const updateTask = useStore((s) => s.updateTask);
+
+  const [title, setTitle] = useState(task.title);
+  const [note, setNote] = useState(task.note ?? '');
+  const [milestone, setMilestone] = useState<string>(
+    task.milestonePercent != null ? String(task.milestonePercent) : '',
+  );
+
+  // Sync editor state when a different task is opened from the list
+  // without unmounting the drawer (fast successive clicks).
+  useEffect(() => {
+    setTitle(task.title);
+    setNote(task.note ?? '');
+    setMilestone(
+      task.milestonePercent != null ? String(task.milestonePercent) : '',
+    );
+  }, [task.id, task.title, task.note, task.milestonePercent]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const commitTitle = () => {
+    const trimmed = title.trim();
+    if (!trimmed || trimmed === task.title) {
+      setTitle(task.title);
+      return;
+    }
+    void updateTask(task.id, { title: trimmed });
+  };
+
+  const commitNote = () => {
+    const trimmed = note.trim();
+    const current = task.note ?? '';
+    if (trimmed === current) return;
+    void updateTask(
+      task.id,
+      trimmed ? { note: trimmed } : { note: undefined },
+    );
+  };
+
+  const commitMilestone = () => {
+    const raw = milestone.trim();
+    if (raw === '') {
+      if (task.milestonePercent != null) {
+        void updateTask(task.id, { milestonePercent: undefined });
+      }
+      return;
+    }
+    const n = Math.max(0, Math.min(100, Number.parseInt(raw, 10)));
+    if (!Number.isFinite(n)) {
+      setMilestone(
+        task.milestonePercent != null ? String(task.milestonePercent) : '',
+      );
+      return;
+    }
+    if (n === task.milestonePercent) return;
+    void updateTask(task.id, { milestonePercent: n });
+  };
+
+  return (
+    <>
+      <div
+        aria-hidden
+        onClick={onClose}
+        className="fixed inset-0 z-40 bg-ink-primary/10 backdrop-blur-[1px]"
+      />
+      <aside
+        role="dialog"
+        aria-label={`Task detail · ${task.title}`}
+        className="fixed inset-y-0 right-0 z-50 flex w-[420px] flex-col overflow-hidden bg-surface-0 shadow-[0_0_0_0.5px_theme(colors.hairline),-12px_0_32px_-16px_rgba(0,0,0,0.2)] animate-[popoverIn_200ms_cubic-bezier(0.22,0.61,0.36,1)]"
+      >
+        <header className="flex items-center justify-between px-5 pt-5">
+          <div className="flex min-w-0 flex-col gap-1">
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              Task detail
+            </span>
+            {line && (
+              <span className="flex items-center gap-1.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                <ColorDot color={line.color} />
+                {line.name}
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded-md p-1 text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            <X className="h-4 w-4" strokeWidth={1.8} />
+          </button>
+        </header>
+
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-5 py-5">
+          <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              标题
+            </span>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              onBlur={commitTitle}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+              className="h-9 rounded-md border border-hairline/60 bg-surface-0 px-2.5 text-base text-ink-primary outline-none focus:border-ink-secondary"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              备注
+            </span>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              onBlur={commitNote}
+              placeholder="任何需要记下的上下文..."
+              rows={6}
+              className="resize-none rounded-md border border-hairline/60 bg-surface-0 px-2.5 py-2 text-sm text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+            />
+          </label>
+
+          <label className="flex items-center gap-3 text-xs text-ink-secondary">
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              里程碑
+            </span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={milestone}
+              onChange={(e) => setMilestone(e.target.value)}
+              onBlur={commitMilestone}
+              placeholder="可选 · 0-100"
+              className="h-8 w-24 rounded-md border border-hairline/60 bg-surface-0 px-2 font-mono text-sm tabular-nums text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+            />
+            <span className="text-ink-tertiary">%</span>
+            <span className="ml-auto text-2xs text-ink-tertiary">
+              留空 = 非里程碑任务
+            </span>
+          </label>
+
+          <div className="flex flex-col gap-1 pt-2">
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              排期
+            </span>
+            <ScheduleInfo task={task} />
+            <span className="text-2xs text-ink-tertiary">
+              通过任务行的 📅 / 🕒 按钮修改排期；这里只展示。
+            </span>
+          </div>
+        </div>
+
+        <footer className="hairline-t flex items-center justify-between px-5 py-3 text-2xs text-ink-tertiary">
+          <span>ESC 关闭 · 失焦自动保存</span>
+          <span className="font-mono tabular-nums">
+            id · {task.id.slice(0, 12)}
+          </span>
+        </footer>
+      </aside>
+    </>
+  );
+}
 
 function HabitPhasePanel({ lineId }: { lineId: string }) {
   const habitPhasesMap = useStore((s) => s.habitPhases);
@@ -1268,6 +1471,7 @@ function GroupedTaskList({
   onRestore,
   onDelete,
   onPurge,
+  onOpenDetail,
 }: {
   openTasks: Task[];
   doneTasks: Task[];
@@ -1280,6 +1484,7 @@ function GroupedTaskList({
   onRestore: (task: Task) => void;
   onDelete: (task: Task) => void;
   onPurge: (task: Task) => void;
+  onOpenDetail?: (task: Task) => void;
 }) {
   const [openExpanded, setOpenExpanded] = useState(true);
   const [doneExpanded, setDoneExpanded] = useState(false);
@@ -1306,6 +1511,7 @@ function GroupedTaskList({
     onRestore,
     onDelete,
     onPurge,
+    ...(onOpenDetail && { onOpenDetail }),
   };
 
   return (
@@ -1411,6 +1617,7 @@ function TaskList({
   onRestore,
   onDelete,
   onPurge,
+  onOpenDetail,
   isTrash,
   isArchived,
 }: {
@@ -1422,6 +1629,7 @@ function TaskList({
   onRestore: (task: Task) => void;
   onDelete: (task: Task) => void;
   onPurge: (task: Task) => void;
+  onOpenDetail?: (task: Task) => void;
   isTrash: boolean;
   isArchived: boolean;
 }) {
@@ -1437,6 +1645,9 @@ function TaskList({
             onRestore={() => onRestore(task)}
             onDelete={() => onDelete(task)}
             onPurge={() => onPurge(task)}
+            {...(onOpenDetail && {
+              onOpenDetail: () => onOpenDetail(task),
+            })}
             isTrash={isTrash}
             isArchived={isArchived}
           />
@@ -1454,6 +1665,7 @@ function TaskRow({
   onRestore,
   onDelete,
   onPurge,
+  onOpenDetail,
   isTrash,
   isArchived,
 }: {
@@ -1464,6 +1676,7 @@ function TaskRow({
   onRestore: () => void;
   onDelete: () => void;
   onPurge: () => void;
+  onOpenDetail?: () => void;
   isTrash: boolean;
   isArchived: boolean;
 }) {
@@ -1492,7 +1705,15 @@ function TaskRow({
         </button>
       )}
 
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+      <button
+        type="button"
+        onClick={onOpenDetail}
+        disabled={!onOpenDetail}
+        className={clsx(
+          'flex min-w-0 flex-1 flex-col gap-0.5 text-left',
+          onOpenDetail && 'cursor-pointer',
+        )}
+      >
         <span
           className={clsx(
             'truncate text-sm',
@@ -1513,7 +1734,7 @@ function TaskRow({
             </span>
           )}
         </div>
-      </div>
+      </button>
 
       <div className="flex shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100">
         {isTrash ? (
