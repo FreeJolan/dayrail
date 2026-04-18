@@ -172,21 +172,46 @@ function adaptRow(
   shifts: Record<string, Shift>,
   now: Date,
 ): PendingRow {
-  const startMs = Date.parse(row.plannedStart);
+  // Slot-less rows: fall back to the task's deferredAt for grouping /
+  // ageing. No planned window → start/end/railName/railColor get
+  // placeholder display values.
+  const anchorIso =
+    row.plannedStart ??
+    row.task.slot?.date ??
+    row.task.deferredAt ??
+    row.task.archivedAt ??
+    new Date().toISOString();
+  const startMs = Date.parse(anchorIso);
   const ageDays = Number.isNaN(startMs)
     ? 0
     : Math.max(0, Math.floor((now.getTime() - startMs) / MS_PER_DAY));
+  if (row.rail && row.plannedStart && row.plannedEnd) {
+    return {
+      taskId: row.task.id,
+      railId: row.rail.id,
+      date: row.task.slot?.date ?? '',
+      start: row.plannedStart.slice(11, 16) || '00:00',
+      end: row.plannedEnd.slice(11, 16) || '00:00',
+      railName: row.rail.name,
+      railColor: row.rail.color as RailColor,
+      ...(row.rail.subtitle && { subtitle: row.rail.subtitle }),
+      title: row.task.title,
+      source: row.task.status === 'deferred' ? 'deferred' : 'unmarked',
+      tags: latestTagsForTask(row.task.id, shifts),
+      ageDays,
+    };
+  }
+  // Slot-less deferred task (e.g. Inbox item user pushed to later).
   return {
     taskId: row.task.id,
-    railId: row.rail.id,
-    date: row.task.slot?.date ?? '',
-    start: row.plannedStart.slice(11, 16) || '00:00',
-    end: row.plannedEnd.slice(11, 16) || '00:00',
-    railName: row.rail.name,
-    railColor: row.rail.color as RailColor,
-    ...(row.rail.subtitle && { subtitle: row.rail.subtitle }),
+    railId: '',
+    date: (row.task.deferredAt ?? '').slice(0, 10),
+    start: '—',
+    end: '—',
+    railName: '未排期',
+    railColor: 'slate' as RailColor,
     title: row.task.title,
-    source: row.task.status === 'deferred' ? 'deferred' : 'unmarked',
+    source: 'deferred',
     tags: latestTagsForTask(row.task.id, shifts),
     ageDays,
   };

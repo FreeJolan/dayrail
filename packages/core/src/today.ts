@@ -69,14 +69,19 @@ function recurrenceCovers(recurrence: Recurrence, dateIso: string): boolean {
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/** Task + Rail + planned window. v0.4 check-in / Pending queue rows
- *  bundle all three so UI code doesn't have to re-join. Status lives
- *  on `task.status`; planned window is derived from rail + slot.date. */
+/** Task + (optional) Rail + (optional) planned window. v0.4 check-in
+ *  / Pending queue rows bundle all three so UI code doesn't have to
+ *  re-join. Status lives on `task.status`.
+ *
+ *  `rail` / `plannedStart` / `plannedEnd` are undefined for slot-less
+ *  Tasks that surface in Pending (e.g. a deferred Inbox task that
+ *  never got scheduled). The check-in strip only emits rows with all
+ *  three fields filled in. */
 export interface CarriedTaskRow {
   task: Task;
-  rail: Rail;
-  plannedStart: string; // ISO datetime
-  plannedEnd: string; // ISO datetime
+  rail?: Rail;
+  plannedStart?: string; // ISO datetime
+  plannedEnd?: string; // ISO datetime
 }
 
 function plannedWindow(rail: Rail, date: string): { start: string; end: string } {
@@ -87,8 +92,14 @@ function plannedWindow(rail: Rail, date: string): { start: string; end: string }
 }
 
 function byPlannedStartRow(a: CarriedTaskRow, b: CarriedTaskRow): number {
-  return a.plannedStart.localeCompare(b.plannedStart);
+  // Slot-less rows sort after slot-bearing rows (blank plannedStart
+  // sorts last under localeCompare).
+  return (a.plannedStart ?? '').localeCompare(b.plannedStart ?? '');
 }
+
+/** Narrowed variant of CarriedTaskRow where rail + planned window are
+ *  guaranteed present. Check-in strip rows are always rail-bound. */
+export type RailBoundTaskRow = Required<CarriedTaskRow>;
 
 /** §5.6 check-in strip: Rail-carrying Tasks (hand-built or auto-habit)
  *  whose planned window ended within the last 24 h and whose
@@ -98,10 +109,10 @@ function byPlannedStartRow(a: CarriedTaskRow, b: CarriedTaskRow): number {
 export function selectCheckinQueue(
   state: Pick<DayRailState, 'tasks' | 'rails'>,
   now: Date = new Date(),
-): CarriedTaskRow[] {
+): RailBoundTaskRow[] {
   const nowMs = now.getTime();
   const cutoff = nowMs - MS_PER_DAY;
-  const rows: CarriedTaskRow[] = [];
+  const rows: RailBoundTaskRow[] = [];
   for (const task of Object.values(state.tasks)) {
     if (task.status !== 'pending') continue;
     if (!task.slot) continue;
@@ -119,11 +130,12 @@ export function selectCheckinQueue(
 }
 
 /** §5.7 Pending queue — the master list of "awaiting a decision":
- *  1. Tasks with `status = 'deferred'` (user picked "Later").
- *  2. Tasks with `status = 'pending'` whose planned window ended
- *     (any age — the check-in strip shows the last 24 h subset).
- *  Future `pending`, terminal `done / archived / deleted`, and Tasks
- *  without a slot are excluded. */
+ *  1. Every `deferred` Task (any source: rail-bound, adhoc-bound, or
+ *     plain Inbox task the user explicitly set aside).
+ *  2. `pending` Tasks with a slot whose planned window ended (any
+ *     age — the check-in strip shows the last 24 h subset).
+ *  Future-pending slot tasks, terminal `done / archived / deleted`,
+ *  and pending slot-less tasks are excluded. */
 export function selectPendingQueue(
   state: Pick<DayRailState, 'tasks' | 'rails'>,
   now: Date = new Date(),
@@ -132,16 +144,22 @@ export function selectPendingQueue(
   const rows: CarriedTaskRow[] = [];
   for (const task of Object.values(state.tasks)) {
     if (task.status !== 'pending' && task.status !== 'deferred') continue;
-    if (!task.slot) continue;
-    const rail = state.rails[task.slot.railId];
-    if (!rail) continue;
-    const { start, end } = plannedWindow(rail, task.slot.date);
-    if (task.status === 'pending') {
-      const endMs = Date.parse(end);
-      if (Number.isNaN(endMs)) continue;
-      if (endMs > nowMs) continue;
+    if (task.slot) {
+      const rail = state.rails[task.slot.railId];
+      if (!rail) continue;
+      const { start, end } = plannedWindow(rail, task.slot.date);
+      if (task.status === 'pending') {
+        const endMs = Date.parse(end);
+        if (Number.isNaN(endMs)) continue;
+        if (endMs > nowMs) continue;
+      }
+      rows.push({ task, rail, plannedStart: start, plannedEnd: end });
+    } else if (task.status === 'deferred') {
+      // Slot-less deferred task — e.g. an Inbox item the user pushed
+      // to "later" without scheduling. No planned window to check;
+      // include unconditionally so the user can still resolve it.
+      rows.push({ task });
     }
-    rows.push({ task, rail, plannedStart: start, plannedEnd: end });
   }
   return rows.sort(byPlannedStartRow);
 }
@@ -161,37 +179,59 @@ export interface TimelineRow {
   task: Task | undefined;
 }
 
-/** Today's timeline: every rail the active template covers whose
- *  recurrence fires on `date`, in planned-start order. Cell state is
- *  derived by the caller from `row.task?.status`. */
+/** Today's timeline — the union of:
+ *    (a) Rails whose template matches today's active template AND
+ *        whose recurrence covers today (the normal "day structure").
+ *    (b) Rails that have a scheduled Task on today, regardless of
+ *        template / recurrence. This catches "I parked a task on
+ *        a workday rail for Sunday" — the task carries an explicit
+ *        intent and should be visible today even though the rail
+ *        wouldn't fire normally.
+ *  Cell state is derived by the caller from `row.task?.status`. */
 export function selectTodayTimeline(
   state: Pick<DayRailState, 'rails' | 'tasks' | 'templates' | 'calendarRules'>,
   date: string,
 ): TimelineRow[] {
   const activeTemplate = selectActiveTemplateKey(state, date);
-  if (!activeTemplate) return [];
-  const rails = Object.values(state.rails).filter(
-    (r) => r.templateKey === activeTemplate && recurrenceCovers(r.recurrence, date),
-  );
-  // Index tasks by (date, railId) to O(1) the lookup per row.
+
+  // Index tasks by (date, railId) — used both for the task-carrying
+  // rail set (b) and for the per-row task lookup.
   const taskByKey = new Map<string, Task>();
+  const taskRailIds = new Set<string>();
   for (const t of Object.values(state.tasks)) {
     if (!t.slot) continue;
     if (t.status === 'deleted') continue;
     if (t.slot.date !== date) continue;
     taskByKey.set(`${t.slot.railId}|${date}`, t);
+    taskRailIds.add(t.slot.railId);
   }
-  const rows: TimelineRow[] = rails.map((rail) => {
+
+  // Build the set of rail ids to render:
+  const railIds = new Set<string>();
+  for (const rail of Object.values(state.rails)) {
+    if (
+      activeTemplate &&
+      rail.templateKey === activeTemplate &&
+      recurrenceCovers(rail.recurrence, date)
+    ) {
+      railIds.add(rail.id); // (a)
+    }
+  }
+  for (const id of taskRailIds) railIds.add(id); // (b)
+
+  const rows: TimelineRow[] = [];
+  for (const railId of railIds) {
+    const rail = state.rails[railId];
+    if (!rail) continue;
     const { start, end } = plannedWindow(rail, date);
-    const task = taskByKey.get(`${rail.id}|${date}`);
-    return {
+    rows.push({
       key: `${rail.id}|${date}`,
       rail,
       date,
       plannedStart: start,
       plannedEnd: end,
-      task,
-    };
-  });
+      task: taskByKey.get(`${rail.id}|${date}`),
+    });
+  }
   return rows.sort((a, b) => a.plannedStart.localeCompare(b.plannedStart));
 }

@@ -5,8 +5,7 @@ import {
   selectTodayTimeline,
   toIsoDate,
   useStore,
-  type CarriedTaskRow,
-  type Rail,
+  type RailBoundTaskRow,
   type Task,
   type TimelineRow,
 } from '@dayrail/core';
@@ -98,6 +97,19 @@ export function TodayTrack() {
     [timelineRows, now.asDate],
   );
 
+  // Latest Shift tags per rail (keyed on railId since today's timeline
+  // is one date) — consumed by the Timeline RailCard to surface "why"
+  // inline on done / deferred / archived rows.
+  const tagsByRailId = useMemo<Record<string, string[]>>(() => {
+    const out: Record<string, string[]> = {};
+    for (const row of timelineRows) {
+      if (!row.task) continue;
+      const tags = latestTagsForTask(row.task.id, shifts);
+      if (tags.length > 0) out[row.rail.id] = tags;
+    }
+    return out;
+  }, [timelineRows, shifts]);
+
   const checkinQueue = useMemo<CheckInEntry[]>(
     () =>
       selectCheckinQueue({ tasks, rails }, now.asDate).map((row) =>
@@ -184,6 +196,7 @@ export function TodayTrack() {
       <DeferredSection rails={deferredToday} onUndefer={handleRevert} />
       <Timeline
         rails={timelineVisible}
+        tagsByRailId={tagsByRailId}
         onAction={handleTimelineAction}
         onUndo={handleRevert}
       />
@@ -234,7 +247,7 @@ function sample(d: Date): LiveNow {
 // Completion status comes from the carrying Task (ERD §10.1).
 // ------------------------------------------------------------------
 
-function carriedRowToCheckInEntry(row: CarriedTaskRow): CheckInEntry {
+function carriedRowToCheckInEntry(row: RailBoundTaskRow): CheckInEntry {
   return {
     taskId: row.task.id,
     railId: row.rail.id,
@@ -368,10 +381,12 @@ function DayProgressBar({ hh, mm }: { hh: number; mm: number }) {
 
 function Timeline({
   rails,
+  tagsByRailId,
   onAction,
   onUndo,
 }: {
   rails: SampleRail[];
+  tagsByRailId: Record<string, string[]>;
   onAction: (instanceId: string, action: CheckInAction) => void;
   onUndo: (instanceId: string) => void;
 }) {
@@ -386,6 +401,7 @@ function Timeline({
             <li key={r.id}>
               <RailCard
                 rail={r}
+                tags={tagsByRailId[r.id] ?? []}
                 onAction={(a) => onAction(r.id, a)}
                 onUndo={() => onUndo(r.id)}
               />
