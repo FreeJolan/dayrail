@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { MoreHorizontal } from 'lucide-react';
 import {
   selectCheckinQueue,
   selectTodayTimeline,
@@ -12,6 +13,12 @@ import { CheckInStrip, type CheckInAction } from '@/components/CheckInStrip';
 import { RailCard } from '@/components/RailCard';
 import { ReasonToast } from '@/components/ReasonToast';
 import { useReasonToast } from '@/components/useReasonToast';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/primitives/DropdownMenu';
 import type { RailColor, RailState, SampleRail } from '@/data/sample';
 
 // Page layout — ERD A/B/C decisions:
@@ -82,9 +89,24 @@ export function TodayTrack() {
     [markRailInstance],
   );
 
+  const handleResetDay = useCallback(() => {
+    const todayInstances = Object.values(railInstances).filter(
+      (i) => i.date === today && i.status !== 'pending',
+    );
+    if (todayInstances.length === 0) {
+      window.alert('今日暂无需要重置的 Rail —— 所有实例都是 pending 状态。');
+      return;
+    }
+    const msg = `把今日 ${todayInstances.length} 条已操作的 Rail 重置回模板状态（全部设为 pending）？此操作本身可通过再次 check-in 回复。`;
+    if (!window.confirm(msg)) return;
+    for (const inst of todayInstances) {
+      void markRailInstance(inst.id, 'pending');
+    }
+  }, [railInstances, today, markRailInstance]);
+
   return (
     <div className="flex w-full max-w-[780px] flex-col gap-8 py-10 pl-10 pr-10 lg:pl-14 xl:pl-20">
-      <PageHeader now={now} />
+      <PageHeader now={now} onResetDay={handleResetDay} />
       <CheckInStrip queue={checkinQueue} onAction={handleCheckin} />
       <DeferredSection rails={deferredToday} onUndefer={handleRevert} />
       <Timeline
@@ -191,7 +213,13 @@ function adaptToSample(
 // Presentational chrome.
 // ------------------------------------------------------------------
 
-function PageHeader({ now }: { now: LiveNow }) {
+function PageHeader({
+  now,
+  onResetDay,
+}: {
+  now: LiveNow;
+  onResetDay: () => void;
+}) {
   const time = `${pad(now.hh)}:${pad(now.mm)}`;
   const dateStr = now.asDate.toLocaleDateString('en-GB', {
     day: '2-digit',
@@ -214,8 +242,32 @@ function PageHeader({ now }: { now: LiveNow }) {
           </span>
         </div>
       </div>
-      <DayProgressBar hh={now.hh} mm={now.mm} />
+      <div className="flex items-end gap-3">
+        <DayProgressBar hh={now.hh} mm={now.mm} />
+        <TodayMenu onResetDay={onResetDay} />
+      </div>
     </header>
+  );
+}
+
+function TodayMenu({ onResetDay }: { onResetDay: () => void }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Today actions"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          <MoreHorizontal className="h-4 w-4" strokeWidth={1.8} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={6} className="w-[200px]">
+        <DropdownMenuItem onSelect={onResetDay}>
+          重置今日为模板
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
