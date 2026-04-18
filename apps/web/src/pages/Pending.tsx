@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { clsx } from 'clsx';
+import { useNavigate } from 'react-router-dom';
 import { Archive, ArrowRight, CircleDashed, Clock, Inbox } from 'lucide-react';
 import {
   selectPendingQueue,
@@ -47,6 +48,7 @@ export function Pending() {
   const shifts = useStore((s) => s.shifts);
   const markRailInstance = useStore((s) => s.markRailInstance);
 
+  const navigate = useNavigate();
   const { toast, fire, handleAddTag, handleUndo, handleClose } = useReasonToast(
     'pending-queue',
   );
@@ -85,11 +87,15 @@ export function Pending() {
     [fire],
   );
 
-  const handleReschedule = useCallback((_id: string) => {
-    // v0.3 lands drag-to-re-schedule inside Cycle View; v0.2 just tells
-    // the user where to go.
-    window.alert('v0.3 接入 Cycle View 拖拽；v0.2 先用 Today 视图里「以后再说」区的「取消」把它放回今天 pending。');
-  }, []);
+  const handleReschedule = useCallback(
+    (_id: string) => {
+      // Drag-to-re-schedule inside Cycle View is still pending; for now
+      // we hop over so the user can at least eyeball the week and pick
+      // a day by hand.
+      navigate('/cycle');
+    },
+    [navigate],
+  );
 
   const handleBulkArchive = useCallback(() => {
     if (summary.eligible === 0) return;
