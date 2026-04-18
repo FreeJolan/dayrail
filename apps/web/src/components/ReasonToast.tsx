@@ -227,7 +227,9 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
                   placeholder="原因…"
                   onChange={(e) => setCustomInput(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
+                    // IME composition guard — Enter during pinyin
+                    // candidate selection shouldn't submit the tag.
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       submitCustom();
                     } else if (e.key === 'Escape') {

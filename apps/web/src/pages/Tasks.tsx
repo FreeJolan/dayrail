@@ -587,7 +587,10 @@ function NewTaskInput({
         placeholder={placeholder}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') {
+          // Skip Enter while an IME (pinyin / kana) candidate window
+          // is still open — that Enter confirms the candidate, not
+          // the form.
+          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
             e.preventDefault();
             submit();
           }
