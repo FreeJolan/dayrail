@@ -19,11 +19,16 @@ import {
   Toggle,
 } from './SettingsPrimitives';
 import { resetLocalData } from '@/lib/resetLocalData';
+import { applyTheme, getThemePref, type ThemePref } from '@/lib/theme';
 
 // ============ Appearance ============
 
 export function AppearanceSection() {
-  const [theme, setTheme] = useState<'system' | 'light' | 'dark'>('system');
+  const [theme, setThemeState] = useState<ThemePref>(() => getThemePref());
+  const setTheme = (next: ThemePref) => {
+    setThemeState(next);
+    applyTheme(next);
+  };
   const [lang, setLang] = useState<'auto' | 'zh-CN' | 'en'>('zh-CN');
 
   return (
@@ -34,7 +39,7 @@ export function AppearanceSection() {
     >
       <Row
         label="主题"
-        description="跟随系统时，DayRail 会在日出 / 日落之间自动切换（§9.6）。"
+        description="跟随系统时随 OS prefers-color-scheme 实时切换。"
         control={
           <Segmented
             value={theme}

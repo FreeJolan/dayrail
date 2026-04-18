@@ -1,115 +1,71 @@
 import type { Config } from 'tailwindcss';
-import {
-  sand,
-  sage,
-  slate,
-  brown,
-  bronze,
-  amber,
-  teal,
-  pink,
-  grass,
-  indigo,
-  plum,
-} from '@radix-ui/colors';
 
 // ---------- G-group design tokens (ERD §9.6) ----------
+//
+// Tokens route through CSS variables defined by `src/lib/themeTokens.ts`
+// (injected at boot). `rgb(var(--x) / <alpha-value>)` lets Tailwind's
+// alpha modifiers (`bg-surface-0/40`) keep working; the variables
+// themselves swap on `.dark` class toggle for dark mode.
 
-// G3 · Surface tiers — sand-1..4
+const rgbVar = (name: string): string => `rgb(var(--${name}) / <alpha-value>)`;
+
 const surface = {
-  0: sand.sand1,
-  1: sand.sand2,
-  2: sand.sand3,
-  3: sand.sand4,
+  0: rgbVar('surface-0'),
+  1: rgbVar('surface-1'),
+  2: rgbVar('surface-2'),
+  3: rgbVar('surface-3'),
 };
 
-// §9.6 · Ink text — slate 10/11/12
 const ink = {
-  primary: slate.slate12,
-  secondary: slate.slate11,
-  tertiary: slate.slate10,
+  primary: rgbVar('ink-primary'),
+  secondary: rgbVar('ink-secondary'),
+  tertiary: rgbVar('ink-tertiary'),
 };
 
-// G1 · Terracotta CTA — bronze 9/10/11 (the "warm earth" family in Radix;
-// the brightest `orange` scale is too candy for a printed-manual tone).
-// Foreground = ink-primary because step-9's muted lightness doesn't carry
-// white text at WCAG AA small-text sizes; dark text on a warm accent
-// is also closer to how an actual stamped / letterpress highlight reads.
 const cta = {
-  DEFAULT: bronze.bronze9,
-  hover: bronze.bronze10,
-  active: bronze.bronze11,
-  foreground: slate.slate12,
-  soft: bronze.bronze3,
+  DEFAULT: rgbVar('cta'),
+  hover: rgbVar('cta-hover'),
+  active: rgbVar('cta-active'),
+  foreground: rgbVar('cta-foreground'),
+  soft: rgbVar('cta-soft'),
 };
 
-// G2 · Hairline (for sticky / scroll boundary only) — slate-10
-const hairline = slate.slate10;
+const hairline = rgbVar('hairline');
 
-// §9.6 · Warn (amber, never red)
 const warn = {
-  DEFAULT: amber.amber9,
-  soft: amber.amber4,
+  DEFAULT: rgbVar('warn'),
+  soft: rgbVar('warn-soft'),
 };
 
-// Rail 10-color palette. Revised from the original §9.6 proposal after
-// visual testing: dropped olive/mauve/gray (too-close neighbors with
-// sage/slate respectively, or identity-less pure gray); added grass,
-// indigo, plum to cover the previously missing "saturated green /
-// cool blue / creative purple" slots. Balance: 4 natural-muted (sand,
-// sage, slate, brown) + 6 saturated (amber, teal, pink, grass, indigo,
-// plum).
-const railStep9 = {
-  sand: sand.sand9,
-  sage: sage.sage9,
-  slate: slate.slate9,
-  brown: brown.brown9,
-  amber: amber.amber9,
-  teal: teal.teal9,
-  pink: pink.pink9,
-  grass: grass.grass9,
-  indigo: indigo.indigo9,
-  plum: plum.plum9,
-};
+// Rail tokens use plain hex `var(--rail-sand-9)` (no Tailwind alpha
+// needed; Rails render via inline style or one-off utility classes —
+// we don't do `bg-rail-sand-9/40` anywhere). If we ever do, switch
+// to triplet format alongside the core tokens.
+const railVar = (name: string) => `var(--rail-${name})`;
+const RAIL_NAMES = [
+  'sand',
+  'sage',
+  'slate',
+  'brown',
+  'amber',
+  'teal',
+  'pink',
+  'grass',
+  'indigo',
+  'plum',
+] as const;
+type RailName = (typeof RAIL_NAMES)[number];
 
-const railStep4 = {
-  sand: sand.sand4,
-  sage: sage.sage4,
-  slate: slate.slate4,
-  brown: brown.brown4,
-  amber: amber.amber4,
-  teal: teal.teal4,
-  pink: pink.pink4,
-  grass: grass.grass4,
-  indigo: indigo.indigo4,
-  plum: plum.plum4,
-};
+function railStepMap(step: 4 | 6 | 7 | 9): Record<RailName, string> {
+  const m = {} as Record<RailName, string>;
+  for (const n of RAIL_NAMES) m[n] = railVar(`${n}-${step}`);
+  return m;
+}
 
-const railStep6 = {
-  sand: sand.sand6,
-  sage: sage.sage6,
-  slate: slate.slate6,
-  brown: brown.brown6,
-  amber: amber.amber6,
-  teal: teal.teal6,
-  pink: pink.pink6,
-  grass: grass.grass6,
-  indigo: indigo.indigo6,
-  plum: plum.plum6,
-};
-
-const railStep7 = {
-  sand: sand.sand7,
-  sage: sage.sage7,
-  slate: slate.slate7,
-  brown: brown.brown7,
-  amber: amber.amber7,
-  teal: teal.teal7,
-  pink: pink.pink7,
-  grass: grass.grass7,
-  indigo: indigo.indigo7,
-  plum: plum.plum7,
-};
+const railStep9 = railStepMap(9);
+const railStep4 = railStepMap(4);
+const railStep6 = railStepMap(6);
+const railStep7 = railStepMap(7);
 
 const config: Config = {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
