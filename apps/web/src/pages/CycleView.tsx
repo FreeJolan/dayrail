@@ -13,6 +13,8 @@ import type { CycleDay, CycleSlot } from '@/data/sampleCycle';
 import type { RailColor } from '@/data/sample';
 import {
   deriveCycleFromStore,
+  findOrphanTasksForTemplateSwitch,
+  pickTemplateForDate,
   startOfWeekMonday,
   toIsoDate,
 } from './cycleFromStore';
@@ -64,18 +66,55 @@ export function CycleView() {
     [templates],
   );
 
+  // Compute orphans + gate a template switch behind a small confirm.
+  // The switch itself is two steps: unschedule every orphan task, then
+  // write the CalendarRule. If the user cancels we leave state
+  // untouched.
+  const applyTemplateSwitch = useCallback(
+    async (
+      date: string,
+      nextTemplateKey: TemplateKey,
+      apply: () => Promise<void>,
+    ) => {
+      const orphans = findOrphanTasksForTemplateSwitch(
+        { tasks, rails },
+        date,
+        nextTemplateKey,
+      );
+      if (orphans.length > 0) {
+        const templateName =
+          templates[nextTemplateKey]?.name ?? nextTemplateKey;
+        const msg = `切换到"${templateName}"会把这一天的 ${orphans.length} 个已排任务移出，可以随时从 Backlog 拖回来。继续？`;
+        if (!window.confirm(msg)) return;
+        for (const t of orphans) {
+          await unscheduleTask(t.id);
+        }
+      }
+      await apply();
+    },
+    [tasks, rails, templates, unscheduleTask],
+  );
+
   const overrideDay = useCallback(
     (date: string, nextTemplate: TemplateKey) => {
-      void overrideCycleDay(date, nextTemplate);
+      void applyTemplateSwitch(date, nextTemplate, () =>
+        overrideCycleDay(date, nextTemplate),
+      );
     },
-    [overrideCycleDay],
+    [applyTemplateSwitch, overrideCycleDay],
   );
 
   const clearOverride = useCallback(
     (date: string) => {
-      void clearCycleDayOverride(date);
+      // Resolve the heuristic pick (no rules) so orphan detection
+      // runs against the template this day will fall back to.
+      const target =
+        pickTemplateForDate({ templates, calendarRules: {} }, date) ?? '';
+      void applyTemplateSwitch(date, target, () =>
+        clearCycleDayOverride(date),
+      );
     },
-    [clearCycleDayOverride],
+    [applyTemplateSwitch, clearCycleDayOverride, templates],
   );
 
   // Group days by templateKey preserving first-appearance order.
