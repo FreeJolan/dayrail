@@ -720,7 +720,6 @@ function TaskRow({
             <SchedulePopover task={task}>
               <IconActionButton
                 label="排期"
-                title="绑到 Rail / 自由时间排期"
                 icon={
                   <CalendarIcon className="h-3.5 w-3.5" strokeWidth={1.8} />
                 }
@@ -848,7 +847,6 @@ function IconAction({
       <IconActionButton
         onClick={onClick}
         label={label}
-        title={title}
         icon={icon}
         danger={danger}
       />
@@ -858,26 +856,26 @@ function IconAction({
 
 /** Bare button used when the caller composes its own overlay (e.g.,
  *  SchedulePopover wraps this via Radix `asChild`). The standalone
- *  `IconAction` wraps this in a Tooltip. */
+ *  `IconAction` wraps this in a Tooltip. No native `title` attribute
+ *  — the Radix Tooltip (when wrapped) is the single hint source; a
+ *  native title on top would race against it and show ~2s later. */
 const IconActionButton = forwardRef<
   HTMLButtonElement,
   {
     onClick?: () => void;
     label: string;
-    title?: string;
     icon: React.ReactNode;
     danger?: boolean;
   } & Omit<
     React.ButtonHTMLAttributes<HTMLButtonElement>,
-    'onClick' | 'title' | 'aria-label'
+    'onClick' | 'aria-label' | 'title'
   >
->(({ onClick, label, title, icon, danger, ...rest }, ref) => (
+>(({ onClick, label, icon, danger, ...rest }, ref) => (
   <button
     ref={ref}
     type="button"
     onClick={onClick}
     aria-label={label}
-    title={title}
     className={clsx(
       'rounded-sm p-1 transition',
       danger
