@@ -502,7 +502,10 @@ function QuickCreateBody({
         placeholder="任务标题 · Enter"
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') {
+          // `nativeEvent.isComposing` is true while an IME candidate
+          // window is open — Enter in that state confirms the pinyin
+          // pick, not a form submit.
+          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
             e.preventDefault();
             submit();
           }
