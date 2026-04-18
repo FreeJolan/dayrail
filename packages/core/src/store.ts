@@ -83,6 +83,11 @@ interface DayRailActions {
   hydrate: () => Promise<void>;
   // --- templates ---
   upsertTemplate: (tpl: Template, sessionId?: string) => Promise<void>;
+  /** Delete a Template and cascade its Rails. The caller is responsible
+   *  for checking referential integrity (CalendarRule bindings, live
+   *  Tasks scheduled on this template's rails) before calling — we
+   *  don't guess what the right user-facing escape hatch is here. */
+  deleteTemplate: (key: TemplateKey, sessionId?: string) => Promise<void>;
   // --- rails ---
   createRail: (rail: Rail, sessionId?: string) => Promise<void>;
   updateRail: (id: string, patch: Partial<Rail>, sessionId?: string) => Promise<void>;
@@ -781,6 +786,39 @@ export const useStore = create<DayRailStore>()(
           aggregateId: `template:${tpl.key}`,
           type: isCreate ? 'template.created' : 'template.updated',
           payload: { ...tpl },
+          sessionId,
+        });
+        if (sessionId) await touchSession(sessionId);
+        set((draft) => {
+          applyEventInPlace(draft, event.type, event.payload);
+        });
+        afterMutation();
+      },
+
+      deleteTemplate: async (key, sessionId) => {
+        // Delete dependent rails first so replay order matches intent:
+        // when a reader rebuilds state the template disappears only
+        // after its children. Ambient railInstances / signals for those
+        // rails stay in history — the Rail aggregate is gone but its
+        // event log lives on (matches how deleteRail already behaves).
+        const railIds = Object.values(get().rails)
+          .filter((r) => r.templateKey === key)
+          .map((r) => r.id);
+        for (const railId of railIds) {
+          const railEvent = await appendEvent({
+            aggregateId: `rail:${railId}`,
+            type: 'rail.deleted',
+            payload: { id: railId },
+            sessionId,
+          });
+          set((draft) => {
+            applyEventInPlace(draft, railEvent.type, railEvent.payload);
+          });
+        }
+        const event = await appendEvent({
+          aggregateId: `template:${key}`,
+          type: 'template.deleted',
+          payload: { key },
           sessionId,
         });
         if (sessionId) await touchSession(sessionId);
