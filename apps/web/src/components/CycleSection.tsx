@@ -54,6 +54,7 @@ interface Props {
   onClearOverride: (date: string) => void;
   onDropTask?: (taskId: string, date: string, railId: string) => void;
   onClearSlot?: (taskId: string) => void;
+  onQuickCreate?: (date: string, railId: string, title: string) => void;
 }
 
 export function CycleSection({
@@ -68,10 +69,14 @@ export function CycleSection({
   onClearOverride,
   onDropTask,
   onClearSlot,
+  onQuickCreate,
 }: Props) {
   const stripColor = RAIL_COLOR_HEX[templateColor];
   const [hoverKey, setHoverKey] = useState<string | null>(null);
   const [openPopoverKey, setOpenPopoverKey] = useState<string | null>(null);
+  const [openQuickCreateKey, setOpenQuickCreateKey] = useState<string | null>(
+    null,
+  );
 
   return (
     <section
@@ -216,6 +221,39 @@ export function CycleSection({
                             meta={slot.meta}
                           />
                         )
+                      ) : onQuickCreate ? (
+                        <Popover
+                          open={openQuickCreateKey === cellKey}
+                          onOpenChange={(o) =>
+                            setOpenQuickCreateKey(o ? cellKey : null)
+                          }
+                        >
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              className="block w-full text-left"
+                              aria-label={`Add task on ${d.date} to ${rail.name}`}
+                            >
+                              <CycleCell
+                                state="planned-empty"
+                                color={rail.color}
+                              />
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent
+                            align="center"
+                            className="w-[260px]"
+                          >
+                            <QuickCreateBody
+                              railName={rail.name}
+                              date={d.date}
+                              onSubmit={(title) => {
+                                onQuickCreate(d.date, rail.id, title);
+                                setOpenQuickCreateKey(null);
+                              }}
+                            />
+                          </PopoverContent>
+                        </Popover>
                       ) : (
                         <CycleCell state="planned-empty" color={rail.color} />
                       )}
@@ -428,6 +466,49 @@ function RailRowLabel({ rail }: { rail: EditableRail }) {
           {fmtHHMM(rail.startMin)} → {fmtHHMM(rail.endMin)}
         </span>
       </span>
+    </div>
+  );
+}
+
+function QuickCreateBody({
+  railName,
+  date,
+  onSubmit,
+}: {
+  railName: string;
+  date: string;
+  onSubmit: (title: string) => void;
+}) {
+  const [value, setValue] = useState('');
+  const submit = () => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    onSubmit(trimmed);
+  };
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-0.5">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          Add task
+        </span>
+        <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+          {railName} · {formatSlotDate(date)}
+        </span>
+      </div>
+      <input
+        type="text"
+        value={value}
+        autoFocus
+        placeholder="任务标题 · Enter"
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            submit();
+          }
+        }}
+        className="h-8 rounded-md border border-hairline/60 bg-surface-0 px-2 text-sm text-ink-primary outline-none transition focus:border-ink-secondary"
+      />
     </div>
   );
 }

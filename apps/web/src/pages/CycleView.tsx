@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Calendar, ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react';
-import { useStore } from '@dayrail/core';
+import { INBOX_LINE_ID, useStore } from '@dayrail/core';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import { CycleSummaryStrip } from '@/components/CycleSummaryStrip';
 import {
@@ -41,6 +41,7 @@ export function CycleView() {
   const unscheduleTask = useStore((s) => s.unscheduleTask);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
   const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
+  const createTask = useStore((s) => s.createTask);
 
   const weekStart = useMemo(() => startOfWeekMonday(anchorDate), [anchorDate]);
 
@@ -150,6 +151,28 @@ export function CycleView() {
     [unscheduleTask],
   );
 
+  const handleQuickCreate = useCallback(
+    (date: string, railId: string, title: string) => {
+      // Default to the Rail's `defaultLineId` so the new task lands in
+      // the Project the Rail's usually bound to (e.g. workday · code
+      // slot → "DayRail 开发"). Falls back to Inbox.
+      const rail = rails[railId];
+      const lineId = rail?.defaultLineId ?? INBOX_LINE_ID;
+      const maxOrder = Object.values(tasks)
+        .filter((t) => t.lineId === lineId)
+        .reduce((m, t) => Math.max(m, t.order), 0);
+      void createTask({
+        id: `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        lineId,
+        title,
+        order: maxOrder + 1,
+        status: 'pending',
+        slot: { cycleId: `cycle-${date}`, date, railId },
+      });
+    },
+    [createTask, rails, tasks],
+  );
+
   const shiftWeek = useCallback((deltaDays: number) => {
     setAnchorDate((d) => {
       const next = new Date(d);
@@ -189,6 +212,7 @@ export function CycleView() {
                 onClearOverride={clearOverride}
                 onDropTask={handleDropTask}
                 onClearSlot={handleClearSlot}
+                onQuickCreate={handleQuickCreate}
               />
             );
           })}
