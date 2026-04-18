@@ -1315,25 +1315,27 @@ function TaskDetailDrawer({
             />
           </label>
 
-          <label className="flex items-center gap-3 text-xs text-ink-secondary">
-            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-              里程碑
-            </span>
-            <input
-              type="number"
-              min={0}
-              max={100}
-              value={milestone}
-              onChange={(e) => setMilestone(e.target.value)}
-              onBlur={commitMilestone}
-              placeholder="可选 · 0-100"
-              className="h-8 w-24 rounded-md border border-hairline/60 bg-surface-0 px-2 font-mono text-sm tabular-nums text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
-            />
-            <span className="text-ink-tertiary">%</span>
-            <span className="ml-auto text-2xs text-ink-tertiary">
-              留空 = 非里程碑任务
-            </span>
-          </label>
+          {task.lineId !== INBOX_LINE_ID && (
+            <label className="flex items-center gap-3 text-xs text-ink-secondary">
+              <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                里程碑
+              </span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={milestone}
+                onChange={(e) => setMilestone(e.target.value)}
+                onBlur={commitMilestone}
+                placeholder="可选 · 0-100"
+                className="h-8 w-24 rounded-md border border-hairline/60 bg-surface-0 px-2 font-mono text-sm tabular-nums text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+              />
+              <span className="text-ink-tertiary">%</span>
+              <span className="ml-auto text-2xs text-ink-tertiary">
+                留空 = 非里程碑任务
+              </span>
+            </label>
+          )}
 
           <SubItemsSection task={task} />
 

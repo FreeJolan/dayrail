@@ -28,9 +28,13 @@ interface Props {
    *  reverts `status` back to 'pending' (no Reason toast — this is an
    *  explicit "I pressed the wrong thing" gesture). */
   onUndo?: () => void;
+  /** Shift tags from the most recent Shift for this rail's carrying
+   *  Task. Rendered inline on done / deferred / archived rows so the
+   *  user can see why at a glance. */
+  tags?: string[];
 }
 
-export function RailCard({ rail, onAction, onUndo }: Props) {
+export function RailCard({ rail, onAction, onUndo, tags }: Props) {
   const duration = computeDurationMinutes(rail.start, rail.end);
   const isCurrent = rail.state === 'current';
   const isDone = rail.state === 'done';
@@ -156,6 +160,19 @@ export function RailCard({ rail, onAction, onUndo }: Props) {
           >
             {rail.subtitle}
           </p>
+        )}
+
+        {tags && tags.length > 0 && (isDone || isDeferred || isArchived) && (
+          <div className="flex flex-wrap items-center gap-1">
+            {tags.map((tag) => (
+              <span
+                key={tag}
+                className="rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-2xs tabular-nums text-ink-tertiary"
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
         )}
 
         {/* Hover-reveal action row on pending / current only.
