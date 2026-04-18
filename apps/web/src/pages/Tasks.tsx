@@ -30,6 +30,7 @@ import {
   useStore,
   type HabitPhase,
   type Line,
+  type Shift,
   type Task,
 } from '@dayrail/core';
 import type { RailColor } from '@/data/sample';
@@ -43,7 +44,10 @@ import {
 } from '@/components/primitives/DropdownMenu';
 import { SchedulePopover } from '@/components/SchedulePopover';
 import { ReasonToast } from '@/components/ReasonToast';
-import { useReasonToast } from '@/components/useReasonToast';
+import {
+  latestTagsForTask,
+  useReasonToast,
+} from '@/components/useReasonToast';
 
 // ERD §5.5 Tasks view. Chunk E = list + filters + search + task CRUD.
 // Scheduling popover (Chunk F) + Trash hard-delete UX (Chunk G) ship
@@ -470,6 +474,7 @@ function MainPanel({
   const adhocEventsMap = useStore((s) => s.adhocEvents);
   const linesMap = useStore((s) => s.lines);
   const railsMap = useStore((s) => s.rails);
+  const shiftsMap = useStore((s) => s.shifts);
   const createTask = useStore((s) => s.createTask);
   const updateTask = useStore((s) => s.updateTask);
   const restoreTask = useStore((s) => s.restoreTask);
@@ -795,6 +800,7 @@ function MainPanel({
           onOpenDetail: isTrash
             ? undefined
             : (task: Task) => setDetailTaskId(task.id),
+          shiftsMap,
         };
         if (isTrash || isArchived) {
           return filteredTasks.length === 0 ? (
@@ -1853,6 +1859,7 @@ function GroupedTaskList({
   selection,
   hasQuery,
   linesMap,
+  shiftsMap,
   onToggleDone,
   onArchive,
   onRestore,
@@ -1866,6 +1873,7 @@ function GroupedTaskList({
   selection: Selection;
   hasQuery: boolean;
   linesMap: Record<string, Line>;
+  shiftsMap: Record<string, Shift>;
   onToggleDone: (task: Task) => void;
   onArchive: (task: Task) => void;
   onRestore: (task: Task) => void;
@@ -1893,6 +1901,7 @@ function GroupedTaskList({
 
   const listRowProps = {
     linesMap,
+    shiftsMap,
     onToggleDone,
     onArchive,
     onRestore,
@@ -2007,6 +2016,7 @@ function TaskList({
   onOpenDetail,
   isTrash,
   isArchived,
+  shiftsMap,
 }: {
   tasks: Task[];
   linesMap: Record<string, Line>;
@@ -2019,6 +2029,7 @@ function TaskList({
   onOpenDetail?: (task: Task) => void;
   isTrash: boolean;
   isArchived: boolean;
+  shiftsMap: Record<string, Shift>;
 }) {
   return (
     <ul className="flex flex-col gap-1.5">
@@ -2027,6 +2038,7 @@ function TaskList({
           <TaskRow
             task={task}
             line={showProjectPill ? linesMap[task.lineId] : undefined}
+            tags={latestTagsForTask(task.id, shiftsMap)}
             onToggleDone={() => onToggleDone(task)}
             onArchive={() => onArchive(task)}
             onRestore={() => onRestore(task)}
@@ -2047,6 +2059,7 @@ function TaskList({
 function TaskRow({
   task,
   line,
+  tags,
   onToggleDone,
   onArchive,
   onRestore,
@@ -2058,6 +2071,7 @@ function TaskRow({
 }: {
   task: Task;
   line: Line | undefined;
+  tags: string[];
   onToggleDone: () => void;
   onArchive: () => void;
   onRestore: () => void;
@@ -2124,6 +2138,18 @@ function TaskRow({
             <span className="font-mono text-2xs tabular-nums text-ink-secondary">
               · 子任务 {task.subItems.filter((s) => s.done).length}/
               {task.subItems.length}
+            </span>
+          )}
+          {tags.length > 0 && (isDone || isArchived || task.status === 'deferred') && (
+            <span className="flex items-center gap-1">
+              {tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-2xs tabular-nums text-ink-tertiary"
+                >
+                  {tag}
+                </span>
+              ))}
             </span>
           )}
         </div>
