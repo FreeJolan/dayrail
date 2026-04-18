@@ -15,6 +15,10 @@ export interface HeatmapRow {
   railId: string;
   railName: string;
   color: RailColor;
+  /** Template this rail belongs to — used by RhythmHeatmap to group
+   *  rows under a template subheader (workday / restday / etc.). */
+  templateKey: string;
+  templateName: string;
   /** Date (ISO) → status. Dates not present render as `empty`. */
   byDate: Record<string, HeatmapState>;
 }

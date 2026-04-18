@@ -117,20 +117,34 @@ export function deriveReviewData(
     }
 
     if (frequency === 0) continue; // rail never applied in range
+    const tpl = state.templates[rail.templateKey];
     rows.push({
       railId: rail.id,
       railName: rail.name,
       color: rail.color as RailColor,
+      templateKey: rail.templateKey,
+      templateName: tpl?.name ?? rail.templateKey,
       byDate,
     });
   }
 
-  // Stable sort: rails that applied more days first; within a tier,
-  // earlier start time first (matches the Cycle View ordering).
+  // v0.4: group by template first (templates sorted by
+  // total-applied-day-count desc so the most-used template leads),
+  // then within a template by earliest start time. Matches the
+  // Cycle View stacked-template layout.
+  const byTemplate = new Map<string, number>();
+  for (const r of rows) {
+    byTemplate.set(
+      r.templateKey,
+      (byTemplate.get(r.templateKey) ?? 0) + countApplied(r),
+    );
+  }
   rows.sort((a, b) => {
-    const af = countApplied(a);
-    const bf = countApplied(b);
-    if (bf !== af) return bf - af;
+    const ta = byTemplate.get(a.templateKey) ?? 0;
+    const tb = byTemplate.get(b.templateKey) ?? 0;
+    if (tb !== ta) return tb - ta;
+    if (a.templateKey !== b.templateKey)
+      return a.templateKey.localeCompare(b.templateKey);
     const ra = state.rails[a.railId];
     const rb = state.rails[b.railId];
     return (ra?.startMinutes ?? 0) - (rb?.startMinutes ?? 0);

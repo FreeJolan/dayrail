@@ -4,7 +4,7 @@ import { Check, Plus, X } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from './primitives/Popover';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import type { RailColor } from '@/data/sample';
-import { RAIL_COLOR_HEX } from './railColors';
+import { RAIL_COLOR_HEX, RAIL_COLOR_STEP_4 } from './railColors';
 
 // Individual day cell on the Calendar month grid (ERD §5.4 F4).
 //  · Background tinted with the applied Template.color at ~12% opacity
@@ -83,6 +83,7 @@ export function CalendarDayCell({
   const [adhocFormOpen, setAdhocFormOpen] = useState(false);
   const template = templateChoices.find((t) => t.key === templateKey);
   const templateHex = template ? RAIL_COLOR_HEX[template.color] : undefined;
+  const templateTint = template ? RAIL_COLOR_STEP_4[template.color] : undefined;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -90,15 +91,25 @@ export function CalendarDayCell({
         <button
           type="button"
           className={clsx(
-            'relative flex h-[104px] w-full flex-col items-start gap-2 rounded-sm p-2 text-left transition',
+            'relative flex h-[104px] w-full flex-col items-start gap-2 overflow-hidden rounded-sm p-2 pl-3 text-left transition',
             'hover:brightness-95',
             !inMonth && 'opacity-45',
             isToday && 'ring-2 ring-inset ring-ink-primary/70',
           )}
           style={{
-            background: templateHex ? `${templateHex}1A` : undefined,
+            background: templateTint,
           }}
         >
+          {/* Left color strip — 3px, template.color step-9. Gives the
+              cell a per-template vertical cue beyond the tinted fill
+              (step-4 is intentionally subtle). */}
+          {templateHex && (
+            <span
+              aria-hidden
+              className="absolute inset-y-1 left-1 w-[3px] rounded-sm"
+              style={{ background: templateHex }}
+            />
+          )}
           {/* Top row: weekday label + OVR dot / ad-hoc dots */}
           <div className="flex w-full items-start justify-between gap-1">
             <div className="flex flex-col items-start leading-tight">
@@ -162,8 +173,11 @@ export function CalendarDayCell({
             <span
               className={clsx(
                 'font-mono text-2xs uppercase tracking-widest',
-                inMonth ? 'text-ink-tertiary' : 'text-ink-tertiary/60',
+                inMonth ? 'text-ink-secondary' : 'text-ink-tertiary/60',
               )}
+              style={{
+                color: inMonth && templateHex ? templateHex : undefined,
+              }}
             >
               {template?.label ?? templateKey ?? '—'}
             </span>
