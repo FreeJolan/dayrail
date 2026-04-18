@@ -32,6 +32,7 @@ import {
   type Line,
   type Task,
 } from '@dayrail/core';
+import type { RailColor } from '@/data/sample';
 import { RAIL_COLOR_HEX } from '@/components/railColors';
 import { Tooltip } from '@/components/primitives/Tooltip';
 import {
@@ -690,6 +691,15 @@ function MainPanel({
     navigateRoute('/tasks/inbox');
   }, [editableLine, updateLine, navigateRoute]);
 
+  const handleChangeLineColor = useCallback(
+    (next: RailColor) => {
+      if (!editableLine) return;
+      if (editableLine.color === next) return;
+      void updateLine(editableLine.id, { color: next });
+    },
+    [editableLine, updateLine],
+  );
+
   return (
     <div className="flex w-full max-w-[960px] flex-col gap-6 px-10 py-10">
       <PageHeader
@@ -698,6 +708,8 @@ function MainPanel({
         selection={selection}
         {...(canEditLine && { onRenameLine: handleRenameLine })}
         {...(canEditLine && { onArchiveLine: handleArchiveLine })}
+        {...(canEditLine && { onChangeLineColor: handleChangeLineColor })}
+        lineColor={editableLine?.color}
         rightSlot={
           isTrash && trashCount > 0 ? (
             <button
@@ -801,6 +813,8 @@ function PageHeader({
   rightSlot,
   onRenameLine,
   onArchiveLine,
+  onChangeLineColor,
+  lineColor,
 }: {
   overline: string;
   title: string;
@@ -808,6 +822,8 @@ function PageHeader({
   rightSlot?: React.ReactNode;
   onRenameLine?: () => void;
   onArchiveLine?: () => void;
+  onChangeLineColor?: (next: RailColor) => void;
+  lineColor?: RailColor;
 }) {
   const tasksMap = useStore((s) => s.tasks);
 
@@ -858,10 +874,12 @@ function PageHeader({
               <span className="text-ink-tertiary">/{stats.total}</span> 任务
             </span>
           )}
-          {(onRenameLine || onArchiveLine) && (
+          {(onRenameLine || onArchiveLine || onChangeLineColor) && (
             <LineActionsMenu
+              currentColor={lineColor}
               onRename={onRenameLine}
               onArchive={onArchiveLine}
+              onChangeColor={onChangeLineColor}
             />
           )}
           {rightSlot}
@@ -889,12 +907,29 @@ function PageHeader({
 // New-task input.
 // ------------------------------------------------------------------
 
+const LINE_COLOR_PALETTE: RailColor[] = [
+  'sand',
+  'sage',
+  'slate',
+  'brown',
+  'amber',
+  'teal',
+  'pink',
+  'grass',
+  'indigo',
+  'plum',
+];
+
 function LineActionsMenu({
+  currentColor,
   onRename,
   onArchive,
+  onChangeColor,
 }: {
+  currentColor?: RailColor;
   onRename?: () => void;
   onArchive?: () => void;
+  onChangeColor?: (next: RailColor) => void;
 }) {
   return (
     <DropdownMenu>
@@ -907,9 +942,34 @@ function LineActionsMenu({
           <MoreHorizontal className="h-4 w-4" strokeWidth={1.8} />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" sideOffset={6} className="w-[160px]">
+      <DropdownMenuContent align="end" sideOffset={6} className="w-[200px]">
         {onRename && (
           <DropdownMenuItem onSelect={onRename}>重命名</DropdownMenuItem>
+        )}
+        {onChangeColor && (
+          <div className="px-2 py-1.5">
+            <span className="mb-1.5 block font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              改色
+            </span>
+            <div className="grid grid-cols-5 gap-1.5">
+              {LINE_COLOR_PALETTE.map((c) => {
+                const active = c === currentColor;
+                return (
+                  <button
+                    key={c}
+                    type="button"
+                    aria-label={`Set color: ${c}`}
+                    onClick={() => onChangeColor(c)}
+                    className={clsx(
+                      'h-5 w-5 rounded-full transition hover:scale-110',
+                      active && 'ring-2 ring-ink-primary/70 ring-offset-1 ring-offset-surface-1',
+                    )}
+                    style={{ background: RAIL_COLOR_HEX[c] }}
+                  />
+                );
+              })}
+            </div>
+          </div>
         )}
         {onArchive && (
           <DropdownMenuItem onSelect={onArchive}>归档</DropdownMenuItem>
