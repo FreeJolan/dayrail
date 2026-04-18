@@ -2,7 +2,15 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import { boot } from './boot';
+import { injectThemeTokens } from './lib/themeTokens';
+import { initTheme } from './lib/theme';
 import './index.css';
+
+// Theme setup runs before React mounts so the loading veil + first
+// paint already wear the right mode — no flash of light theme when
+// the user has `dark` saved.
+injectThemeTokens();
+initTheme();
 
 // Boot the data layer before React takes over. OPFS init + event-log
 // replay typically finishes in <50 ms on a warm cache; first-ever
