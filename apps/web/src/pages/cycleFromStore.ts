@@ -71,7 +71,7 @@ export interface DerivedCycle {
  *    - (Future work: read RailInstance.status for past-day cells to
  *       light up done / shifted / skipped states — Chunk 3 territory.) */
 export function deriveCycleFromStore(
-  state: Pick<DayRailState, 'templates' | 'rails' | 'tasks'>,
+  state: Pick<DayRailState, 'templates' | 'rails' | 'tasks' | 'lines'>,
   startDate: Date,
 ): DerivedCycle {
   const days: CycleDay[] = [];
@@ -148,7 +148,7 @@ function railToEditable(rail: Rail): EditableRail {
 }
 
 function computeTopLines(
-  state: Pick<DayRailState, 'tasks' | 'templates' | 'rails'>,
+  state: Pick<DayRailState, 'tasks' | 'templates' | 'rails' | 'lines'>,
   slotsInCycle: CycleSlot[],
 ): SampleCycle['topLines'] {
   // Tasks scheduled inside the cycle window, grouped by lineId.
@@ -172,13 +172,16 @@ function computeTopLines(
   return [...byLine.entries()]
     .sort((a, b) => b[1].planned + b[1].done - (a[1].planned + a[1].done))
     .slice(0, 3)
-    .map(([lineId, stats]) => ({
-      id: lineId,
-      name: lineId, // v0.2: Line.name lookup would be nicer; defer to when Cycle View reads lines directly.
-      color: 'slate' as RailColor,
-      done: stats.done,
-      planned: stats.planned + stats.done,
-    }));
+    .map(([lineId, stats]) => {
+      const line = state.lines[lineId];
+      return {
+        id: lineId,
+        name: line?.name ?? lineId,
+        color: (line?.color ?? 'slate') as RailColor,
+        done: stats.done,
+        planned: stats.planned + stats.done,
+      };
+    });
 }
 
 /** Unscheduled tasks that should appear in the Backlog drawer.
