@@ -3,10 +3,8 @@ import {
   type CycleDay,
   type CycleSlot,
   formatDayLabel,
-  railsForDay,
 } from '@/data/sampleCycle';
 import {
-  SAMPLE_TEMPLATES,
   fmtHHMM,
   type EditableRail,
   type TemplateKey,
@@ -27,28 +25,27 @@ import { CycleCell } from './CycleCell';
 
 interface Props {
   templateKey: TemplateKey;
+  templateLabel: string;
+  templateColor: EditableRail['color'];
+  rails: EditableRail[];
   days: CycleDay[];
   slotsByKey: Map<string, CycleSlot>; // key = `${railId}|${date}`
   todayISO: string;
 }
 
 export function CycleSection({
-  templateKey,
+  templateLabel,
+  templateColor,
+  rails,
   days,
   slotsByKey,
   todayISO,
 }: Props) {
-  const template = SAMPLE_TEMPLATES.find((t) => t.key === templateKey)!;
-  // Rails = the Rails registered in this template (sorted by start).
-  // We pick any one of the days' rails — all days that use this template
-  // share the same Rail set (that's the point of a template).
-  const rails: EditableRail[] = railsForDay(days[0]!);
-
-  const stripColor = RAIL_COLOR_HEX[template.color];
+  const stripColor = RAIL_COLOR_HEX[templateColor];
 
   return (
     <section
-      aria-label={`${template.label} section`}
+      aria-label={`${templateLabel} section`}
       className="relative overflow-hidden rounded-md bg-surface-1"
     >
       {/* 8 px left color strip (decorative, G2 whitelist) */}
@@ -60,7 +57,7 @@ export function CycleSection({
 
       <div className="overflow-x-auto pl-5">
         <SectionMiniHeader
-          template={template}
+          templateLabel={templateLabel}
           days={days}
           stripColor={stripColor}
           todayISO={todayISO}
@@ -116,12 +113,12 @@ export function CycleSection({
 }
 
 function SectionMiniHeader({
-  template,
+  templateLabel,
   days,
   stripColor,
   todayISO,
 }: {
-  template: (typeof SAMPLE_TEMPLATES)[number];
+  templateLabel: string;
   days: CycleDay[];
   stripColor: string;
   todayISO: string;
@@ -145,7 +142,7 @@ function SectionMiniHeader({
                   style={{ background: stripColor }}
                 />
                 <span className="font-mono text-2xs uppercase tracking-widest text-ink-primary">
-                  {template.label}
+                  {templateLabel}
                 </span>
                 <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
                   · {days.length} days

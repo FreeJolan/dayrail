@@ -101,6 +101,7 @@ async function seedFromSamples(): Promise<void> {
     SAMPLE_RAILS_BY_TEMPLATE,
   ) as Array<keyof typeof SAMPLE_RAILS_BY_TEMPLATE>) {
     const list = SAMPLE_RAILS_BY_TEMPLATE[templateKey];
+    if (!list) continue;
     for (const r of list) {
       const rail: Rail = {
         id: r.id,

@@ -203,9 +203,8 @@ export const SAMPLE_BACKLOG: BacklogItem[] = [
 
 /** Returns the Rails that apply to a given day (based on its template). */
 export function railsForDay(day: CycleDay): EditableRail[] {
-  return SAMPLE_RAILS_BY_TEMPLATE[day.templateKey]
-    .slice()
-    .sort((a, b) => a.startMin - b.startMin);
+  const list = SAMPLE_RAILS_BY_TEMPLATE[day.templateKey] ?? [];
+  return list.slice().sort((a, b) => a.startMin - b.startMin);
 }
 
 /** Groups cycle days by their effective template. */
