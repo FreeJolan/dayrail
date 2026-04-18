@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   Copy,
   MoreHorizontal,
@@ -43,7 +44,23 @@ import {
 // - Gap chips between adjacent Rails; dashed `+ Add Rail` tail row.
 
 export function TemplateEditor() {
-  const [activeKey, setActiveKey] = useState<TemplateKey>('workday');
+  const { templateKey } = useParams<{ templateKey?: string }>();
+  const navigate = useNavigate();
+  const templatesMap = useStore((s) => s.templates);
+  // Pick the effective tab: URL param if it names a real template,
+  // otherwise the first built-in (usually `workday`), else the first
+  // existing template, else 'workday' as a bare fallback.
+  const activeKey: TemplateKey = useMemo(() => {
+    if (templateKey && templatesMap[templateKey]) return templateKey;
+    const values = Object.values(templatesMap);
+    const fallback =
+      values.find((t) => t.isDefault) ?? values[0];
+    return (fallback?.key ?? 'workday') as TemplateKey;
+  }, [templateKey, templatesMap]);
+  const setActiveKey = useCallback(
+    (next: TemplateKey) => navigate(`/templates/${next}`),
+    [navigate],
+  );
 
   // --- session bookkeeping (ERD §5.3.1) ---
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -71,7 +88,6 @@ export function TemplateEditor() {
   // doesn't create a fresh array reference on every action (which would
   // defeat Zustand's reference-equality short-circuit).
   const railsMap = useStore((s) => s.rails);
-  const templatesMap = useStore((s) => s.templates);
   const rails: Rail[] = useMemo(
     () =>
       Object.values(railsMap)
