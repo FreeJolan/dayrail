@@ -91,14 +91,43 @@ export function RhythmHeatmap({ data, phaseBands = [] }: Props) {
               </td>
             </tr>
           ) : (
-            data.rows.map((r) => (
-              <HeatRow key={r.railId} row={r} dates={data.dates} />
-            ))
+            renderGroupedRows(data.rows, data.dates)
           )}
         </tbody>
       </table>
     </div>
   );
+}
+
+function renderGroupedRows(
+  rows: HeatmapRow[],
+  dates: string[],
+): React.ReactNode {
+  // Walk the (already template-sorted) rows list and emit a subheader
+  // row whenever the templateKey changes. Preserves the assumption
+  // reviewFromStore already sorted: same template rows are contiguous.
+  const nodes: React.ReactNode[] = [];
+  let seenTemplate: string | null = null;
+  for (const r of rows) {
+    if (r.templateKey !== seenTemplate) {
+      nodes.push(
+        <tr key={`header-${r.templateKey}`}>
+          <th
+            colSpan={1 + dates.length}
+            scope="colgroup"
+            className="pt-3 pb-1 text-left"
+          >
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              {r.templateName}
+            </span>
+          </th>
+        </tr>,
+      );
+      seenTemplate = r.templateKey;
+    }
+    nodes.push(<HeatRow key={r.railId} row={r} dates={dates} />);
+  }
+  return nodes;
 }
 
 function PhaseBandRow({
