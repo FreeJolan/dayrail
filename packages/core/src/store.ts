@@ -151,16 +151,19 @@ interface DayRailActions {
     templateKey: TemplateKey,
     weekdays: number[],
   ) => Promise<void>;
-  /** Create a date-range rule. Returns the new rule id so callers can
-   *  reference it (e.g. for delete). */
-  createDateRangeRule: (opts: {
+  /** Create or update a date-range rule. Pass `id` to update an
+   *  existing one in place (keeps row id stable so history / tags
+   *  stay attached); omit `id` to create a new rule (ULID id). */
+  upsertDateRangeRule: (opts: {
+    id?: string;
     from: string;
     to: string;
     templateKey: TemplateKey;
     label?: string;
   }) => Promise<string>;
-  /** Create a cycle rule. Returns the new rule id. */
-  createCycleRule: (opts: {
+  /** Create or update a cycle rule. Pass `id` to update in place. */
+  upsertCycleRule: (opts: {
+    id?: string;
     cycleLength: number;
     anchor: string;
     mapping: TemplateKey[];
@@ -1113,43 +1116,48 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
-      createDateRangeRule: async ({ from, to, templateKey, label }) => {
-        const id = ulidLite('cr-range');
+      upsertDateRangeRule: async ({ id, from, to, templateKey, label }) => {
+        // Reuse the existing id on update so the rule row stays stable
+        // (and a later "revision history" view can key off it); mint
+        // a fresh ULID on create.
+        const ruleId = id ?? ulidLite('cr-range');
+        const existing = id ? get().calendarRules[id] : undefined;
         const payload: CalendarRule = {
-          id,
+          id: ruleId,
           kind: 'date-range',
           priority: CALENDAR_RULE_PRIORITY['date-range'],
           value: { from, to, templateKey, ...(label && { label }) } as
             CalendarRuleDateRange,
-          createdAt: Date.now(),
+          createdAt: existing?.createdAt ?? Date.now(),
         };
         const ev = await appendEvent({
-          aggregateId: `calendar-rule:${id}`,
+          aggregateId: `calendar-rule:${ruleId}`,
           type: 'calendar-rule.upserted',
           payload: payload as unknown as Record<string, unknown>,
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
         afterMutation();
-        return id;
+        return ruleId;
       },
 
-      createCycleRule: async ({ cycleLength, anchor, mapping }) => {
-        const id = ulidLite('cr-cycle');
+      upsertCycleRule: async ({ id, cycleLength, anchor, mapping }) => {
+        const ruleId = id ?? ulidLite('cr-cycle');
+        const existing = id ? get().calendarRules[id] : undefined;
         const payload: CalendarRule = {
-          id,
+          id: ruleId,
           kind: 'cycle',
           priority: CALENDAR_RULE_PRIORITY.cycle,
           value: { cycleLength, anchor, mapping: [...mapping] } as CalendarRuleCycle,
-          createdAt: Date.now(),
+          createdAt: existing?.createdAt ?? Date.now(),
         };
         const ev = await appendEvent({
-          aggregateId: `calendar-rule:${id}`,
+          aggregateId: `calendar-rule:${ruleId}`,
           type: 'calendar-rule.upserted',
           payload: payload as unknown as Record<string, unknown>,
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
         afterMutation();
-        return id;
+        return ruleId;
       },
 
       removeCalendarRule: async (id) => {

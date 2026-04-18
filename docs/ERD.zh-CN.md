@@ -452,8 +452,8 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
   - **循环规则**（默认无；新建表单：`cycleLength` / `anchor 日期` / `mapping[]`）。
   - **日期范围覆盖**（列出已有 range，可编辑 / 删除）。
   - **单日覆盖**（同上，高频场景；从月历单元格拖选也会走这条）。
-  - drawer 关闭即 commit —— 无 Save 按钮（**v0.3 暂不走 §5.3.1 Edit Session**，与 Cycle View 同策略：即时持久化 + 单条删除回退 / 重建；顶栏 `⤺ 撤销本次编辑` 按钮留到 v0.4 再评估）。
-  - **编辑策略**：v0.3 采用"删 + 重建"而不是 in-place edit（form 只在新建时弹）；真 in-place edit 留 v0.3.1。
+  - drawer 关闭即 commit —— 无 Save 按钮（drawer **不**走 §5.3.1 Edit Session；规则改动属于 settings-tier，回退走单条 Remove / Edit 即可）。
+  - **编辑策略**：v0.3.1 起每条规则右侧挂 ✎ 图标 → 原地打开表单、prefill 当前值、保存走 upsert-by-id；date-range / cycle rule 的 id 保持稳定（ULID），weekday rule 的 id 本来就是 `cr-weekday-{templateKey}`；single-date 的 edit 价值最低（直接在 Calendar / CycleDay 点日期重覆盖即可），不在 drawer 里露 ✎。
 - **CalendarRule v0.3 实装细则**（与 §10 的 `type CalendarRule` 对齐）：
   - **Typed `value` variants**：`weekday` → `{ weekdays: number[], templateKey }` | `date-range` → `{ from, to, templateKey, label? }` | `cycle` → `{ cycleLength, anchor, mapping: TemplateKey[] }` | `single-date` → `{ date, templateKey }`
   - **ID 规则**：`weekday` id = `cr-weekday-{templateKey}`（一个模板一条 rule，weekdays 数组内覆盖）；`single-date` id = `cr-single-{date}`（已存在）；`date-range` / `cycle` 用 ULID（用户一次性手动创建）
@@ -1146,7 +1146,7 @@ type CalendarRule = {
   //   - Resolver 按 priority desc 遍历，第一条匹配即返回
   //   - 事件：`calendar-rule.upserted`（payload = 完整 CalendarRule）/ `calendar-rule.removed`（payload = { id }）
   //   - 首次启动 seed：workday 覆盖周一-五 / restday 覆盖周末（仅当模板已存在 + 无 weekday 规则时播种）—— 行为与 v0.2 硬编码启发等价，无 breaking change
-  //   - Calendar drawer 的 v0.3 编辑策略是"删 + 重建"而不是 in-place edit（真 in-place 留 v0.3.1）
+  //   - Calendar drawer 从 v0.3.1 起支持 in-place edit：date-range / cycle 的 upsert action 带 optional `id`，传就是更新（保留 `createdAt`）、不传就是新建（ULID id）；weekday 本来就 upsert-by-templateKey；single-date 在 drawer 里只有删除入口，编辑通过 Calendar / CycleDay popover 重新覆盖即可
 };
 
 type RailInstance = {
