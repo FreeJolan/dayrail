@@ -2,7 +2,6 @@ import { clsx } from 'clsx';
 import { useEffect, useState } from 'react';
 import { Plus } from 'lucide-react';
 import type { EditableRail } from '@/data/sampleTemplate';
-import { SAMPLE_LINES } from '@/data/sampleTemplate';
 import { RAIL_COLOR_HEX } from './railColors';
 import { TimePillPopover } from './TimePillPopover';
 import { RailColorPopover } from './RailColorPopover';
@@ -55,11 +54,6 @@ export function RailEditCard({
     setSubtitleOpen(Boolean(rail.subtitle));
   }, [rail.subtitle]);
 
-  const lineName =
-    rail.defaultLineId == null
-      ? null
-      : (SAMPLE_LINES.find((l) => l.id === rail.defaultLineId)?.name ?? null);
-
   return (
     <article
       aria-label={rail.name}
@@ -99,18 +93,9 @@ export function RailEditCard({
           />
           <RowMenu
             showInCheckin={rail.showInCheckin}
-            defaultLineName={lineName}
             onToggleCheckin={(v) => onChange({ showInCheckin: v })}
             onDelete={onDelete}
             onDuplicate={onDuplicate}
-            onEditLine={() =>
-              onChange({
-                defaultLineId:
-                  rail.defaultLineId == null
-                    ? SAMPLE_LINES[0]!.id
-                    : null,
-              })
-            }
           />
         </div>
 
@@ -140,18 +125,11 @@ export function RailEditCard({
           </button>
         )}
 
-        {(!rail.showInCheckin || rail.defaultLineId) && (
+        {!rail.showInCheckin && (
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-ink-tertiary">
-            {!rail.showInCheckin && (
-              <span className="rounded-sm bg-surface-3 px-1.5 py-0.5">
-                不参与 check-in
-              </span>
-            )}
-            {lineName && (
-              <span className="rounded-sm bg-surface-3 px-1.5 py-0.5">
-                默认 Line · {lineName}
-              </span>
-            )}
+            <span className="rounded-sm bg-surface-3 px-1.5 py-0.5">
+              不参与 check-in
+            </span>
           </div>
         )}
       </div>

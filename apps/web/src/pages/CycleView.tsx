@@ -17,6 +17,7 @@ import { BacklogDrawer } from '@/components/BacklogDrawer';
 import { EditSessionIndicator } from '@/components/EditSessionIndicator';
 import { ReasonToast } from '@/components/ReasonToast';
 import { useReasonToast } from '@/components/useReasonToast';
+import { TaskDetailDrawer } from './Tasks';
 import {
   Popover,
   PopoverContent,
@@ -47,6 +48,7 @@ export function CycleView() {
   const navigate = useNavigate();
   const [anchorDate, setAnchorDate] = useState<Date>(() => new Date());
   const [backlogOpen, setBacklogOpen] = useState(true);
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
 
   const templates = useStore((s) => s.templates);
   const rails = useStore((s) => s.rails);
@@ -327,6 +329,7 @@ export function CycleView() {
                 onDropTask={handleDropTask}
                 onClearSlot={handleClearSlot}
                 onMarkTaskDone={handleMarkTaskDone}
+                onOpenTaskDetail={(taskId) => setDetailTaskId(taskId)}
                 onOpenTaskProject={handleOpenTaskProject}
                 onQuickCreate={handleQuickCreate}
                 lineLookup={lineLookup}
@@ -355,6 +358,14 @@ export function CycleView() {
         onUndo={handleUndo}
         onClose={handleClose}
       />
+
+      {detailTaskId && tasks[detailTaskId] && (
+        <TaskDetailDrawer
+          task={tasks[detailTaskId]!}
+          line={lines[tasks[detailTaskId]!.lineId]}
+          onClose={() => setDetailTaskId(null)}
+        />
+      )}
     </div>
   );
 }

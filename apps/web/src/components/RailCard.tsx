@@ -28,13 +28,16 @@ interface Props {
    *  reverts `status` back to 'pending' (no Reason toast — this is an
    *  explicit "I pressed the wrong thing" gesture). */
   onUndo?: () => void;
+  /** Click the card body to open the Task detail drawer. Only fired
+   *  when a carrying Task exists (the parent enables / disables). */
+  onOpenDetail?: () => void;
   /** Shift tags from the most recent Shift for this rail's carrying
    *  Task. Rendered inline on done / deferred / archived rows so the
    *  user can see why at a glance. */
   tags?: string[];
 }
 
-export function RailCard({ rail, onAction, onUndo, tags }: Props) {
+export function RailCard({ rail, onAction, onUndo, onOpenDetail, tags }: Props) {
   const duration = computeDurationMinutes(rail.start, rail.end);
   const isCurrent = rail.state === 'current';
   const isDone = rail.state === 'done';
@@ -90,6 +93,19 @@ export function RailCard({ rail, onAction, onUndo, tags }: Props) {
       )}
 
       <div
+        onClick={onOpenDetail}
+        role={onOpenDetail ? 'button' : undefined}
+        tabIndex={onOpenDetail ? 0 : undefined}
+        onKeyDown={
+          onOpenDetail
+            ? (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onOpenDetail();
+                }
+              }
+            : undefined
+        }
         className={clsx(
           'relative flex flex-col gap-2 px-5 py-4 pl-6',
           // Settled states get a faded content layer so the strip reads
@@ -98,6 +114,7 @@ export function RailCard({ rail, onAction, onUndo, tags }: Props) {
           // would make it look identical to archived.
           isDone && 'opacity-70',
           isArchived && 'opacity-60',
+          onOpenDetail && 'cursor-pointer',
         )}
       >
         <header className="flex items-baseline justify-between gap-4">
@@ -243,17 +260,26 @@ function ActionRow({
         variant="primary"
         icon={Check}
         label="完成"
-        onClick={() => onAction?.('done')}
+        onClick={(e) => {
+          e.stopPropagation();
+          onAction?.('done');
+        }}
       />
       <ActionButton
         icon={Clock}
         label="以后再说"
-        onClick={() => onAction?.('defer')}
+        onClick={(e) => {
+          e.stopPropagation();
+          onAction?.('defer');
+        }}
       />
       <ActionButton
         icon={Archive}
         label="归档"
-        onClick={() => onAction?.('archive')}
+        onClick={(e) => {
+          e.stopPropagation();
+          onAction?.('archive');
+        }}
       />
     </div>
   );
@@ -264,7 +290,10 @@ function UndoRow({ label, onClick }: { label: string; onClick?: () => void }) {
     <div className="mt-1 flex items-center gap-2 opacity-0 transition group-hover:opacity-100">
       <button
         type="button"
-        onClick={onClick}
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick?.();
+        }}
         className="rounded-sm px-2.5 py-1 text-xs font-medium text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-secondary"
       >
         {label}
@@ -282,7 +311,7 @@ function ActionButton({
   variant?: 'default' | 'primary' | 'terracotta';
   icon: typeof Check;
   label: string;
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent) => void;
 }) {
   // CN-content buttons drop Mono/uppercase/tracking-widest — those are
   // for pure-Latin overlines. CN glyphs under tracking-widest look
