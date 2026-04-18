@@ -316,6 +316,25 @@ function isScheduleFilter(v: string | null): v is ScheduleFilter {
 interface Filters {
   search: string;
   schedule: ScheduleFilter;
+  /** Multi-select line-id narrow. Empty set = "no line filter applied"
+   *  (show everything in scope). Only surfaces in cross-Project views
+   *  (Archived / Trash) where single-line nav-tree picking doesn't
+   *  cover the ask. */
+  lineIds: Set<string>;
+}
+
+function parseLineIds(raw: string | null): Set<string> {
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+}
+
+function stringifyLineIds(ids: Set<string>): string {
+  return [...ids].sort().join(',');
 }
 
 function MainPanel({
@@ -332,10 +351,15 @@ function MainPanel({
   // stripped — clean URL for the common case.
   const [searchParams, setSearchParams] = useSearchParams();
   const scheduleParam = searchParams.get('schedule');
-  const filters: Filters = {
-    search: searchParams.get('q') ?? '',
-    schedule: isScheduleFilter(scheduleParam) ? scheduleParam : 'any',
-  };
+  const lineIdsParam = searchParams.get('lines');
+  const filters: Filters = useMemo(
+    () => ({
+      search: searchParams.get('q') ?? '',
+      schedule: isScheduleFilter(scheduleParam) ? scheduleParam : 'any',
+      lineIds: parseLineIds(lineIdsParam),
+    }),
+    [searchParams, scheduleParam, lineIdsParam],
+  );
   const setFilters = useCallback(
     (next: Filters) => {
       setSearchParams(
@@ -345,6 +369,9 @@ function MainPanel({
           else n.delete('q');
           if (next.schedule !== 'any') n.set('schedule', next.schedule);
           else n.delete('schedule');
+          const joined = stringifyLineIds(next.lineIds);
+          if (joined) n.set('lines', joined);
+          else n.delete('lines');
           return n;
         },
         { replace: true },
@@ -413,7 +440,9 @@ function MainPanel({
 
   const filteredTasks = useMemo(() => {
     const q = filters.search.trim().toLowerCase();
+    const applyLineFilter = filters.lineIds.size > 0;
     return tasksInScope
+      .filter((t) => (applyLineFilter ? filters.lineIds.has(t.lineId) : true))
       .filter((t) => {
         if (filters.schedule === 'any') return true;
         const scheduledDate = t.slot?.date ?? adhocDateByTaskId.get(t.id);
@@ -557,7 +586,15 @@ function MainPanel({
         <NewTaskInput onCreate={handleCreate} placeholder="+ 新任务 · Enter" />
       )}
 
-      <FilterBar filters={filters} onChange={setFilters} />
+      <FilterBar
+        filters={filters}
+        onChange={setFilters}
+        lineChoices={
+          isArchived || isTrash
+            ? distinctLinesForScope(tasksInScope, linesMap)
+            : []
+        }
+      />
 
       {(() => {
         const rowProps = {
@@ -748,42 +785,108 @@ const SCHEDULE_CHIPS: Array<{ key: ScheduleFilter; label: string }> = [
 function FilterBar({
   filters,
   onChange,
+  lineChoices,
 }: {
   filters: Filters;
   onChange: (next: Filters) => void;
+  /** Lines that have at least one task in the current selection scope.
+   *  Only non-empty for Archived / Trash — regular Project / Inbox
+   *  views are already single-line by construction. */
+  lineChoices: Line[];
 }) {
+  const toggleLine = (id: string) => {
+    const next = new Set(filters.lineIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onChange({ ...filters, lineIds: next });
+  };
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      {SCHEDULE_CHIPS.map((c) => {
-        const active = filters.schedule === c.key;
-        return (
-          <button
-            key={c.key}
-            type="button"
-            onClick={() => onChange({ ...filters, schedule: c.key })}
-            className={clsx(
-              'rounded-sm px-2.5 py-1 text-xs font-medium transition',
-              active
-                ? 'bg-ink-primary text-surface-0'
-                : 'bg-surface-1 text-ink-secondary hover:bg-surface-2 hover:text-ink-primary',
-            )}
-          >
-            {c.label}
-          </button>
-        );
-      })}
-      <label className="ml-auto flex h-8 items-center gap-2 rounded-md border border-hairline/60 bg-surface-0 px-2.5 transition hover:border-hairline focus-within:border-ink-secondary">
-        <Search className="h-3.5 w-3.5 shrink-0 text-ink-tertiary" strokeWidth={1.6} />
-        <input
-          type="text"
-          value={filters.search}
-          onChange={(e) => onChange({ ...filters, search: e.target.value })}
-          placeholder="搜索标题 / 备注"
-          className="w-48 bg-transparent text-sm text-ink-primary outline-none placeholder:text-ink-tertiary"
-        />
-      </label>
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {SCHEDULE_CHIPS.map((c) => {
+          const active = filters.schedule === c.key;
+          return (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => onChange({ ...filters, schedule: c.key })}
+              className={clsx(
+                'rounded-sm px-2.5 py-1 text-xs font-medium transition',
+                active
+                  ? 'bg-ink-primary text-surface-0'
+                  : 'bg-surface-1 text-ink-secondary hover:bg-surface-2 hover:text-ink-primary',
+              )}
+            >
+              {c.label}
+            </button>
+          );
+        })}
+        <label className="ml-auto flex h-8 items-center gap-2 rounded-md border border-hairline/60 bg-surface-0 px-2.5 transition hover:border-hairline focus-within:border-ink-secondary">
+          <Search className="h-3.5 w-3.5 shrink-0 text-ink-tertiary" strokeWidth={1.6} />
+          <input
+            type="text"
+            value={filters.search}
+            onChange={(e) => onChange({ ...filters, search: e.target.value })}
+            placeholder="搜索标题 / 备注"
+            className="w-48 bg-transparent text-sm text-ink-primary outline-none placeholder:text-ink-tertiary"
+          />
+        </label>
+      </div>
+      {lineChoices.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            所属
+          </span>
+          {lineChoices.map((line) => {
+            const active = filters.lineIds.has(line.id);
+            return (
+              <button
+                key={line.id}
+                type="button"
+                onClick={() => toggleLine(line.id)}
+                className={clsx(
+                  'inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 text-xs transition',
+                  active
+                    ? 'bg-surface-3 text-ink-primary'
+                    : 'bg-surface-1 text-ink-secondary hover:bg-surface-2 hover:text-ink-primary',
+                )}
+              >
+                <ColorDot color={line.color} />
+                {line.name}
+              </button>
+            );
+          })}
+          {filters.lineIds.size > 0 && (
+            <button
+              type="button"
+              onClick={() =>
+                onChange({ ...filters, lineIds: new Set() })
+              }
+              className="rounded-sm px-2 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+            >
+              清空
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
+}
+
+function distinctLinesForScope(
+  tasks: Task[],
+  linesMap: Record<string, Line>,
+): Line[] {
+  const seen = new Set<string>();
+  const result: Line[] = [];
+  for (const t of tasks) {
+    if (seen.has(t.lineId)) continue;
+    const line = linesMap[t.lineId];
+    if (!line) continue;
+    seen.add(t.lineId);
+    result.push(line);
+  }
+  return result.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // ------------------------------------------------------------------
