@@ -1001,6 +1001,22 @@ function TaskDetailDrawer({
   onClose: () => void;
 }) {
   const updateTask = useStore((s) => s.updateTask);
+  const linesMap = useStore((s) => s.lines);
+  // Candidate destinations for moving the task: every active Line
+  // (Inbox included). Projects + habits share the same picker since
+  // a task is kind-agnostic at the lineId level.
+  const moveTargets = useMemo(
+    () =>
+      Object.values(linesMap)
+        .filter((l) => l.status === 'active')
+        .sort((a, b) => {
+          // Inbox pinned to top; everything else by name.
+          if (a.id === INBOX_LINE_ID) return -1;
+          if (b.id === INBOX_LINE_ID) return 1;
+          return a.name.localeCompare(b.name);
+        }),
+    [linesMap],
+  );
 
   const [title, setTitle] = useState(task.title);
   const [note, setNote] = useState(task.note ?? '');
@@ -1099,6 +1115,32 @@ function TaskDetailDrawer({
         </header>
 
         <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-5 py-5">
+          <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              所属
+            </span>
+            <select
+              value={task.lineId}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (next !== task.lineId) {
+                  void updateTask(task.id, { lineId: next });
+                }
+              }}
+              className="h-9 rounded-md border border-hairline/60 bg-surface-0 px-2.5 text-sm text-ink-primary outline-none focus:border-ink-secondary"
+            >
+              {moveTargets.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.id === INBOX_LINE_ID
+                    ? `📥 ${l.name}`
+                    : l.kind === 'habit'
+                      ? `📈 ${l.name}`
+                      : l.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
           <label className="flex flex-col gap-1 text-xs text-ink-secondary">
             <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
               标题
