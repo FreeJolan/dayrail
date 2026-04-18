@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
-import { Check } from 'lucide-react';
+import { Check, Plus, X } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from './primitives/Popover';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import type { RailColor } from '@/data/sample';
@@ -25,6 +25,10 @@ export interface DayCellAdhoc {
   rangeLabel: string;
   name: string;
   color: RailColor;
+  /** True when this Ad-hoc backs a Task's free-time schedule —
+   *  drawer shows it read-only since deletion must go through
+   *  `unscheduleTask` instead. */
+  isTaskBacked: boolean;
 }
 
 export interface DayCellTemplateChoice {
@@ -51,6 +55,11 @@ interface Props {
   adhocs: DayCellAdhoc[];
   onOverride: (date: string, tpl: TemplateKey) => void;
   onClearOverride: (date: string) => void;
+  onCreateAdhoc: (
+    date: string,
+    opts: { name: string; startMinutes: number; durationMinutes: number },
+  ) => void;
+  onDeleteAdhoc: (id: string) => void;
 }
 
 const WEEKDAY_SHORT_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -67,8 +76,11 @@ export function CalendarDayCell({
   adhocs,
   onOverride,
   onClearOverride,
+  onCreateAdhoc,
+  onDeleteAdhoc,
 }: Props) {
   const [open, setOpen] = useState(false);
+  const [adhocFormOpen, setAdhocFormOpen] = useState(false);
   const template = templateChoices.find((t) => t.key === templateKey);
   const templateHex = template ? RAIL_COLOR_HEX[template.color] : undefined;
 
@@ -199,6 +211,78 @@ export function CalendarDayCell({
           })}
         </ul>
 
+        <div className="mx-3 my-1 h-px bg-surface-3" />
+
+        <div className="px-3 pb-1 pt-1.5">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            Ad-hoc events
+          </span>
+        </div>
+        {adhocs.length === 0 && !adhocFormOpen && (
+          <div className="px-3 py-1 text-xs text-ink-tertiary">暂无</div>
+        )}
+        <ul className="flex flex-col">
+          {adhocs.map((ad) => (
+            <li
+              key={ad.id}
+              className="flex items-center gap-2 rounded-md px-3 py-1 hover:bg-surface-2"
+            >
+              <span
+                aria-hidden
+                className="h-2 w-[2px] shrink-0 rounded-sm"
+                style={{ background: RAIL_COLOR_HEX[ad.color] }}
+              />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-xs text-ink-primary">
+                  {ad.name}
+                </span>
+                <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+                  {ad.rangeLabel}
+                </span>
+              </span>
+              {ad.isTaskBacked ? (
+                <span
+                  title="由 Task 自由时间排期生成 —— 去 Tasks 视图移除"
+                  className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary/70"
+                >
+                  task
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  aria-label="Delete event"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteAdhoc(ad.id);
+                  }}
+                  className="rounded-sm p-0.5 text-ink-tertiary transition hover:bg-surface-3 hover:text-ink-primary"
+                >
+                  <X className="h-3 w-3" strokeWidth={1.8} />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+
+        {adhocFormOpen ? (
+          <AdhocForm
+            onSubmit={(opts) => {
+              onCreateAdhoc(date, opts);
+              setAdhocFormOpen(false);
+            }}
+            onCancel={() => setAdhocFormOpen(false)}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAdhocFormOpen(true)}
+            className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            <Plus className="h-3 w-3" strokeWidth={1.8} />
+            今日添加事件
+          </button>
+        )}
+
         {overridden && (
           <>
             <div className="mx-3 my-1 h-px bg-surface-3" />
@@ -217,4 +301,91 @@ export function CalendarDayCell({
       </PopoverContent>
     </Popover>
   );
+}
+
+function AdhocForm({
+  onSubmit,
+  onCancel,
+}: {
+  onSubmit: (opts: {
+    name: string;
+    startMinutes: number;
+    durationMinutes: number;
+  }) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [start, setStart] = useState('14:00');
+  const [end, setEnd] = useState('15:00');
+  const submit = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const s = parseHHMM(start);
+    const e = parseHHMM(end);
+    if (s == null || e == null) return;
+    if (e <= s) return;
+    onSubmit({
+      name: trimmed,
+      startMinutes: s,
+      durationMinutes: e - s,
+    });
+  };
+  return (
+    <div className="flex flex-col gap-1.5 px-3 py-2">
+      <input
+        type="text"
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="事件名称"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            submit();
+          }
+        }}
+        className="h-7 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+      />
+      <div className="flex items-center gap-1.5">
+        <input
+          type="time"
+          value={start}
+          onChange={(e) => setStart(e.target.value)}
+          className="h-7 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-1.5 font-mono text-xs tabular-nums text-ink-primary outline-none focus:border-ink-secondary"
+        />
+        <span className="font-mono text-2xs text-ink-tertiary">→</span>
+        <input
+          type="time"
+          value={end}
+          onChange={(e) => setEnd(e.target.value)}
+          className="h-7 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-1.5 font-mono text-xs tabular-nums text-ink-primary outline-none focus:border-ink-secondary"
+        />
+      </div>
+      <div className="flex items-center justify-end gap-1.5 pt-0.5">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-sm px-2 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          onClick={submit}
+          className="rounded-sm bg-ink-primary px-2 py-0.5 text-2xs text-surface-0 transition hover:bg-ink-primary/90"
+        >
+          保存
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function parseHHMM(value: string): number | null {
+  const m = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+  return h * 60 + min;
 }

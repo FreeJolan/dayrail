@@ -49,6 +49,8 @@ export function Calendar() {
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
   const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
   const unscheduleTask = useStore((s) => s.unscheduleTask);
+  const createAdhocEvent = useStore((s) => s.createAdhocEvent);
+  const deleteAdhocEvent = useStore((s) => s.deleteAdhocEvent);
 
   const cells = useMemo(() => buildMonthGrid(year, month), [year, month]);
 
@@ -135,6 +137,30 @@ export function Calendar() {
     [applyTemplateSwitch, clearCycleDayOverride, templates],
   );
 
+  const handleCreateAdhoc = useCallback(
+    (
+      date: string,
+      opts: { name: string; startMinutes: number; durationMinutes: number },
+    ) => {
+      void createAdhocEvent({
+        date,
+        name: opts.name,
+        startMinutes: opts.startMinutes,
+        durationMinutes: opts.durationMinutes,
+      });
+    },
+    [createAdhocEvent],
+  );
+
+  const handleDeleteAdhoc = useCallback(
+    (id: string) => {
+      void deleteAdhocEvent(id).catch((err: unknown) => {
+        window.alert(err instanceof Error ? err.message : String(err));
+      });
+    },
+    [deleteAdhocEvent],
+  );
+
   return (
     <div className="flex w-full flex-col pl-10 pr-10 xl:pl-14">
       <TopBar
@@ -172,6 +198,8 @@ export function Calendar() {
               adhocs={adhocByDate.get(cell.date) ?? []}
               onOverride={handleOverride}
               onClearOverride={handleClearOverride}
+              onCreateAdhoc={handleCreateAdhoc}
+              onDeleteAdhoc={handleDeleteAdhoc}
             />
           );
         })}
@@ -196,6 +224,7 @@ function adhocToCell(ev: AdhocEvent): DayCellAdhoc {
     rangeLabel: `${start}–${end}`,
     name: ev.name,
     color: (ev.color ?? 'slate') as RailColor,
+    isTaskBacked: ev.taskId != null,
   };
 }
 
