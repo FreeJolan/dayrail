@@ -115,11 +115,21 @@ export const rails = sqliteTable(
   (t) => ({ templateIdx: index('rails_template_idx').on(t.templateKey) }),
 );
 
-export const cycles = sqliteTable('cycles', {
-  id: text('id').primaryKey(),
-  startDate: text('start_date').notNull(), // ISO YYYY-MM-DD
-  endDate: text('end_date').notNull(),
-});
+// Persistent Cycle records (§5.3 / §9.7). v0.3.2 scope: label-only,
+// 7-day Monday-anchored — event log + reducer is authoritative, this
+// table kept around for Drizzle typing consistency. v0.4 extends to
+// custom lengths via endDate.
+export const cycles = sqliteTable(
+  'cycles',
+  {
+    id: text('id').primaryKey(),
+    startDate: text('start_date').notNull(), // ISO YYYY-MM-DD, Monday-anchored
+    endDate: text('end_date').notNull(),
+    label: text('label'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => ({ startIdx: index('cycles_start_idx').on(t.startDate) }),
+);
 
 export const cycleDays = sqliteTable(
   'cycle_days',
@@ -249,6 +259,7 @@ export const calendarRules = sqliteTable('calendar_rules', {
   createdAt: integer('created_at').notNull(),
 });
 
+
 export const adhocEvents = sqliteTable(
   'adhoc_events',
   {
@@ -342,8 +353,11 @@ CREATE INDEX IF NOT EXISTS rails_template_idx ON rails(template_key);
 CREATE TABLE IF NOT EXISTS cycles (
   id TEXT PRIMARY KEY,
   start_date TEXT NOT NULL,
-  end_date TEXT NOT NULL
+  end_date TEXT NOT NULL,
+  label TEXT,
+  created_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS cycles_start_idx ON cycles(start_date);
 
 CREATE TABLE IF NOT EXISTS cycle_days (
   cycle_id TEXT NOT NULL REFERENCES cycles(id) ON DELETE CASCADE,
@@ -443,6 +457,7 @@ CREATE TABLE IF NOT EXISTS calendar_rules (
   priority INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
+
 
 CREATE TABLE IF NOT EXISTS adhoc_events (
   id TEXT PRIMARY KEY,

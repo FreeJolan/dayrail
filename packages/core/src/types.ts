@@ -165,6 +165,21 @@ export interface AdhocEvent {
   deletedAt?: string;
 }
 
+/** Persistent Cycle record (ERD §5.3 / §9.7). v0.3.2 scope: a custom
+ *  label attached to a specific 7-day Monday-anchored Cycle so users
+ *  can name stretches like "考研冲刺周" / "DayRail v0.3 scope". The
+ *  `endDate` field is reserved for v0.4 custom-length Cycles; for now
+ *  it's always `startDate + 6 days`. */
+export interface Cycle {
+  id: string;
+  /** Monday-anchored ISO date (YYYY-MM-DD). */
+  startDate: string;
+  /** Inclusive end date. v0.3.2 always startDate+6; v0.4 custom. */
+  endDate: string;
+  label?: string;
+  createdAt: number;
+}
+
 /** ERD §5.4 rule that decides which Template applies to a given date.
  *  All four kinds are live from v0.3: resolver walks rules by
  *  priority desc and returns the first match. */
