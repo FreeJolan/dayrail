@@ -123,11 +123,30 @@ export async function getDb(): Promise<Database> {
 }
 
 export async function resetDb(): Promise<void> {
+  // Graceful close first so the worker releases OPFS SAH handles in an
+  // orderly fashion. If the worker is wedged (e.g. corrupt DB → openDb
+  // rejected → every subsequent message rejects), fall through to a
+  // hard terminate so the handles still get freed on the host side.
   if (dbInstance) {
     try {
       await dbInstance.close();
     } catch {
-      /* ignore */
+      /* fall through to hard-terminate */
     }
   }
+  if (worker) {
+    try {
+      worker.terminate();
+    } catch {
+      /* ignore */
+    }
+    worker = null;
+    dbInstance = null;
+  }
+  // Reject anything left dangling so callers get a clean error instead
+  // of a hung promise.
+  for (const p of pending.values()) {
+    p.reject(new Error('DB reset: worker terminated'));
+  }
+  pending.clear();
 }
