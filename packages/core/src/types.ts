@@ -145,6 +145,18 @@ export interface Line {
  *  user-picked Project default to this Line. */
 export const INBOX_LINE_ID = 'line-inbox';
 
+/** Marker: "this (habit, cycle) pair has been visited by the auto-task
+ *  materializer once already" (§10.2 strategy Ⅱ). Once marked, the
+ *  materializer skips that pair forever — which prevents later
+ *  recurrence / config changes from back-populating historical cycles
+ *  with auto-tasks. Composite key is `${habitId}|${cycleId}`. */
+export interface AutoTaskMarker {
+  habitId: string;
+  cycleId: string;
+  /** epoch ms. Audit field; reducers don't care. */
+  at: number;
+}
+
 /** A time-segment label on a `kind='habit'` Line. v0.3.3 scope:
  *  entirely user-managed — no preset enum, no auto-advance, no
  *  streak / completion-rate derivation. "Enabled" state for the

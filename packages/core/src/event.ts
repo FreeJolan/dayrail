@@ -63,7 +63,9 @@ export type EventType =
   | 'adhoc.restored'
   // Habit-phase tracking (§5.5.0; v0.3.3+)
   | 'habit-phase.upserted'
-  | 'habit-phase.removed';
+  | 'habit-phase.removed'
+  // Auto-task materialization markers (§10.2; v0.4+)
+  | 'auto-task-marker.set';
 
 export interface AppEvent<T extends EventType = EventType> {
   id: string;
