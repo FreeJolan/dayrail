@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
 import {
+  Archive,
   Cloud,
   CloudOff,
   ExternalLink,
@@ -19,6 +20,7 @@ import {
   Toggle,
 } from './SettingsPrimitives';
 import { resetLocalData } from '@/lib/resetLocalData';
+import { exportLocalData } from '@/lib/exportData';
 import { applyTheme, getThemePref, type ThemePref } from '@/lib/theme';
 
 // ============ Appearance ============
@@ -465,8 +467,39 @@ export function AdvancedSection() {
         <KeyValue label="Review period" value="C1 · Apr 13 – Apr 19" mono />
         <KeyValue label="Pending 日期组" value="04.16 · THU · 1 天前" mono />
       </div>
+      <BackupSection />
       <DangerZone />
     </SettingsSectionShell>
+  );
+}
+
+function BackupSection() {
+  return (
+    <div className="hairline-t mt-1 pt-6">
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-1">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            Backup
+          </span>
+          <h3 className="text-sm text-ink-primary">导出全部数据</h3>
+          <p className="text-xs text-ink-tertiary">
+            把当前内存状态（templates / rails / lines / tasks / rail 实例 /
+            shifts / adhoc / CalendarRule / Cycle / HabitPhase）打成一份
+            可读 JSON 下载到本地。不是事件日志逐条 dump —— 目的是"我能
+            拿到我的数据"而不是"字节级可回灌"。导入 / 跨设备恢复走同步
+            通道（§7，v0.8+）。
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => exportLocalData()}
+          className="inline-flex items-center gap-1.5 self-start rounded-md border border-hairline/60 px-3 py-1.5 text-xs text-ink-secondary transition hover:border-ink-secondary hover:bg-surface-2 hover:text-ink-primary"
+        >
+          <Archive className="h-3.5 w-3.5" strokeWidth={1.6} />
+          下载 JSON
+        </button>
+      </div>
+    </div>
   );
 }
 
