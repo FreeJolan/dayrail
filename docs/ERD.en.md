@@ -452,8 +452,8 @@ Net effect: the user-facing vocabulary stays Template / Track / Rail / Shift / L
   - **Cycle rules** (empty by default; new form: `cycleLength` / `anchor date` / `mapping[]`).
   - **Date-range overrides** (lists existing ranges; new form + delete).
   - **Single-date overrides** (same; the high-frequency path; dragging on the month grid also flows here).
-  - Closing the drawer commits immediately — no Save button (**v0.3 deliberately does not use the §5.3.1 Edit Session** for this drawer; same immediate-apply + single-entry rollback stance as Cycle View. A `⤺ Undo this edit` button is held back for v0.4 re-evaluation).
-  - **Edit strategy**: v0.3 is "delete + re-create" rather than in-place edit (the form only appears on create); real in-place editing lands in v0.3.1.
+  - Closing the drawer commits immediately — no Save button (drawer **does not** enter the §5.3.1 Edit Session; rules changes are considered settings-tier and walk back per-row via Remove / re-Edit).
+  - **Edit strategy**: each row carries a ✎ icon from v0.3.1 onward; clicking opens the form in-place with current values pre-filled, Save dispatches the kind's `upsert*` action with the row's own id (so the row stays stable). `single-date` rules don't get a ✎ in the drawer — the Calendar / Cycle-Day popovers already offer "tap the day and pick a new template" as a more natural in-place edit; the drawer only offers Remove for single-date.
 - **CalendarRule v0.3 implementation notes** (aligned with §10 `type CalendarRule`):
   - **Typed `value` variants**: `weekday` → `{ weekdays: number[], templateKey }` | `date-range` → `{ from, to, templateKey, label? }` | `cycle` → `{ cycleLength, anchor, mapping: TemplateKey[] }` | `single-date` → `{ date, templateKey }` (already live since v0.2).
   - **ID convention**: `weekday` id = `cr-weekday-{templateKey}` (one rule per template, multiple weekdays in the `weekdays` array); `single-date` id = `cr-single-{date}` (one rule per day); `date-range` / `cycle` use ULIDs.
@@ -1151,7 +1151,7 @@ type CalendarRule = {
   //   - Resolver iterates rules by priority desc, returning the first match.
   //   - Events: `calendar-rule.upserted` (payload = full CalendarRule) / `calendar-rule.removed` (payload = { id }).
   //   - First-boot seed: workday covers Mon–Fri / restday covers weekends, only when templates exist and no weekday rules are present. Behavior matches the v0.2 hardcoded heuristic — no breaking change.
-  //   - Calendar drawer edit model in v0.3 is "delete + re-create" (no in-place edit; that lands in v0.3.1).
+  //   - Calendar drawer supports in-place edit from v0.3.1: `upsertDateRangeRule` / `upsertCycleRule` accept an optional `id` (update when provided — `createdAt` preserved — else ULID mint); weekday is already upsert-by-templateKey; single-date stays remove-only in the drawer (edit via Calendar / Cycle-Day popover instead).
 };
 
 type RailInstance = {

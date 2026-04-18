@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { clsx } from 'clsx';
-import { Plus, X } from 'lucide-react';
+import { Pencil, Plus, X } from 'lucide-react';
 import {
   useStore,
   type CalendarRule,
@@ -14,10 +14,11 @@ import type { RailColor } from '@/data/sample';
 import { RAIL_COLOR_HEX } from './railColors';
 
 // ERD §5.4 Advanced Calendar Rules drawer (v0.3 live).
-// Four sections, each with list + create form + delete. Edit strategy
-// is "delete + re-create" for v0.3; real in-place edit lands in v0.3.1.
+// Four sections, each with list + create form + in-place edit + delete.
 // Drawer does NOT use the §5.3.1 Edit Session — every action is
-// immediate-apply, matching Cycle View's stance.
+// immediate-apply, matching Cycle View's stance (but Cycle View has
+// session-undo as a separate mechanism; rules changes are considered
+// settings-tier and walk back per-row via Remove / re-Edit).
 
 interface Props {
   open: boolean;
@@ -93,7 +94,7 @@ export function CalendarRulesDrawer({ open, onClose }: Props) {
         </header>
 
         <div className="px-5 pt-3 text-xs text-ink-tertiary">
-          优先级：<span className="text-ink-secondary">单日 → 范围 → 循环 → 星期几 → 内置启发</span>。改动即时落库；v0.3 编辑 = 删 + 重建。
+          优先级：<span className="text-ink-secondary">单日 → 范围 → 循环 → 星期几 → 内置启发</span>。改动即时落库；点规则右侧 ✎ 可原地编辑。
         </div>
 
         <div className="mt-4 flex flex-1 flex-col gap-6 overflow-y-auto px-5 pb-6">
@@ -203,6 +204,19 @@ function RemoveButton({ id }: { id: string }) {
   );
 }
 
+function EditButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label="Edit"
+      onClick={onClick}
+      className="rounded-sm p-0.5 text-ink-tertiary transition hover:bg-surface-3 hover:text-ink-primary"
+    >
+      <Pencil className="h-3 w-3" strokeWidth={1.8} />
+    </button>
+  );
+}
+
 // ------- Single-date section -------
 
 function SingleDateSection({
@@ -306,30 +320,53 @@ function DateRangeSection({
   rules: CalendarRule[];
   templates: Template[];
 }) {
-  const [formOpen, setFormOpen] = useState(false);
-  const createDateRangeRule = useStore((s) => s.createDateRangeRule);
+  // `null` = closed; `'new'` = create form; `ruleId` = edit form for
+  // that specific row. Single-slot state keeps the drawer from
+  // sprouting multiple open forms at once.
+  const [formMode, setFormMode] = useState<null | 'new' | string>(null);
+  const upsertDateRangeRule = useStore((s) => s.upsertDateRangeRule);
+  const editingRule = rules.find((r) => r.id === formMode);
   return (
     <SectionShell
       title="日期范围覆盖"
       subtitle="例：考研冲刺周、出差段、长假"
       addCTA="新建范围"
-      onAdd={() => setFormOpen((v) => !v)}
+      onAdd={() => setFormMode((v) => (v === 'new' ? null : 'new'))}
     >
-      {formOpen && (
+      {formMode === 'new' && (
         <DateRangeForm
           templates={templates}
           onSubmit={async (opts) => {
-            await createDateRangeRule(opts);
-            setFormOpen(false);
+            await upsertDateRangeRule(opts);
+            setFormMode(null);
           }}
-          onCancel={() => setFormOpen(false)}
+          onCancel={() => setFormMode(null)}
         />
       )}
-      {rules.length === 0 && !formOpen ? (
+      {rules.length === 0 && formMode !== 'new' ? (
         <EmptyHint text="暂无范围覆盖" />
       ) : (
         rules.map((r) => {
           const v = r.value as CalendarRuleDateRange;
+          if (editingRule?.id === r.id) {
+            return (
+              <DateRangeForm
+                key={r.id}
+                templates={templates}
+                initial={{
+                  from: v.from,
+                  to: v.to,
+                  templateKey: v.templateKey,
+                  label: v.label,
+                }}
+                onSubmit={async (opts) => {
+                  await upsertDateRangeRule({ ...opts, id: r.id });
+                  setFormMode(null);
+                }}
+                onCancel={() => setFormMode(null)}
+              />
+            );
+          }
           return (
             <div
               key={r.id}
@@ -347,6 +384,7 @@ function DateRangeSection({
               </div>
               <div className="flex items-center gap-2">
                 <TemplateTag templates={templates} templateKey={v.templateKey} />
+                <EditButton onClick={() => setFormMode(r.id)} />
                 <RemoveButton id={r.id} />
               </div>
             </div>
@@ -359,10 +397,17 @@ function DateRangeSection({
 
 function DateRangeForm({
   templates,
+  initial,
   onSubmit,
   onCancel,
 }: {
   templates: Template[];
+  initial?: {
+    from: string;
+    to: string;
+    templateKey: string;
+    label?: string;
+  };
   onSubmit: (opts: {
     from: string;
     to: string;
@@ -372,12 +417,12 @@ function DateRangeForm({
   onCancel: () => void;
 }) {
   const today = new Date().toISOString().slice(0, 10);
-  const [from, setFrom] = useState(today);
-  const [to, setTo] = useState(today);
+  const [from, setFrom] = useState(initial?.from ?? today);
+  const [to, setTo] = useState(initial?.to ?? today);
   const [templateKey, setTemplateKey] = useState<string>(
-    templates[0]?.key ?? '',
+    initial?.templateKey ?? templates[0]?.key ?? '',
   );
-  const [label, setLabel] = useState('');
+  const [label, setLabel] = useState(initial?.label ?? '');
   const submit = () => {
     if (!from || !to || !templateKey) return;
     if (from > to) return;
@@ -446,30 +491,48 @@ function CycleSection({
   rules: CalendarRule[];
   templates: Template[];
 }) {
-  const [formOpen, setFormOpen] = useState(false);
-  const createCycleRule = useStore((s) => s.createCycleRule);
+  const [formMode, setFormMode] = useState<null | 'new' | string>(null);
+  const upsertCycleRule = useStore((s) => s.upsertCycleRule);
   return (
     <SectionShell
       title="循环规则"
       subtitle="非 7 天节奏（倒班、自定义周期）"
       addCTA="新建循环"
-      onAdd={() => setFormOpen((v) => !v)}
+      onAdd={() => setFormMode((v) => (v === 'new' ? null : 'new'))}
     >
-      {formOpen && (
+      {formMode === 'new' && (
         <CycleForm
           templates={templates}
           onSubmit={async (opts) => {
-            await createCycleRule(opts);
-            setFormOpen(false);
+            await upsertCycleRule(opts);
+            setFormMode(null);
           }}
-          onCancel={() => setFormOpen(false)}
+          onCancel={() => setFormMode(null)}
         />
       )}
-      {rules.length === 0 && !formOpen ? (
+      {rules.length === 0 && formMode !== 'new' ? (
         <EmptyHint text="暂无循环规则" />
       ) : (
         rules.map((r) => {
           const v = r.value as CalendarRuleCycle;
+          if (formMode === r.id) {
+            return (
+              <CycleForm
+                key={r.id}
+                templates={templates}
+                initial={{
+                  cycleLength: v.cycleLength,
+                  anchor: v.anchor,
+                  mapping: v.mapping,
+                }}
+                onSubmit={async (opts) => {
+                  await upsertCycleRule({ ...opts, id: r.id });
+                  setFormMode(null);
+                }}
+                onCancel={() => setFormMode(null)}
+              />
+            );
+          }
           return (
             <div
               key={r.id}
@@ -479,7 +542,10 @@ function CycleSection({
                 <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
                   {v.cycleLength} 天循环 · anchor {v.anchor}
                 </span>
-                <RemoveButton id={r.id} />
+                <div className="flex items-center gap-1">
+                  <EditButton onClick={() => setFormMode(r.id)} />
+                  <RemoveButton id={r.id} />
+                </div>
               </div>
               <div className="flex flex-wrap gap-1">
                 {v.mapping.map((tk, i) => (
@@ -504,10 +570,16 @@ function CycleSection({
 
 function CycleForm({
   templates,
+  initial,
   onSubmit,
   onCancel,
 }: {
   templates: Template[];
+  initial?: {
+    cycleLength: number;
+    anchor: string;
+    mapping: string[];
+  };
   onSubmit: (opts: {
     cycleLength: number;
     anchor: string;
@@ -516,12 +588,17 @@ function CycleForm({
   onCancel: () => void;
 }) {
   const defaultTpl = templates[0]?.key ?? '';
-  const [cycleLength, setCycleLength] = useState(7);
-  const [anchor, setAnchor] = useState(() =>
-    new Date().toISOString().slice(0, 10),
+  const [cycleLength, setCycleLength] = useState(
+    initial?.cycleLength ?? 7,
   );
-  const [mapping, setMapping] = useState<string[]>(() =>
-    Array.from({ length: 7 }, () => defaultTpl),
+  const [anchor, setAnchor] = useState(
+    () => initial?.anchor ?? new Date().toISOString().slice(0, 10),
+  );
+  const [mapping, setMapping] = useState<string[]>(
+    () =>
+      initial?.mapping
+        ? [...initial.mapping]
+        : Array.from({ length: 7 }, () => defaultTpl),
   );
 
   const updateLength = (raw: string) => {
@@ -605,7 +682,7 @@ function WeekdaySection({
   rules: CalendarRule[];
   templates: Template[];
 }) {
-  const [formOpen, setFormOpen] = useState(false);
+  const [formMode, setFormMode] = useState<null | 'new' | string>(null);
   const upsertWeekdayRule = useStore((s) => s.upsertWeekdayRule);
   const usedTemplateKeys = useMemo(
     () =>
@@ -624,24 +701,46 @@ function WeekdaySection({
       subtitle="按周几兜底（没有更高优先级的规则时用）"
       addCTA={available.length > 0 ? '新建星期规则' : undefined}
       onAdd={
-        available.length > 0 ? () => setFormOpen((v) => !v) : undefined
+        available.length > 0
+          ? () => setFormMode((v) => (v === 'new' ? null : 'new'))
+          : undefined
       }
     >
-      {formOpen && available.length > 0 && (
+      {formMode === 'new' && available.length > 0 && (
         <WeekdayForm
           templates={available}
           onSubmit={async (tk, weekdays) => {
             await upsertWeekdayRule(tk, weekdays);
-            setFormOpen(false);
+            setFormMode(null);
           }}
-          onCancel={() => setFormOpen(false)}
+          onCancel={() => setFormMode(null)}
         />
       )}
-      {rules.length === 0 && !formOpen ? (
+      {rules.length === 0 && formMode !== 'new' ? (
         <EmptyHint text="暂无星期规则 · 解析会回退到内置启发" />
       ) : (
         rules.map((r) => {
           const v = r.value as CalendarRuleWeekday;
+          if (formMode === r.id) {
+            // Edit: template is fixed (id is keyed on templateKey), so
+            // the form only offers its own template in the select.
+            const ownTemplate = templates.filter((t) => t.key === v.templateKey);
+            return (
+              <WeekdayForm
+                key={r.id}
+                templates={ownTemplate}
+                initial={{
+                  templateKey: v.templateKey,
+                  weekdays: v.weekdays,
+                }}
+                onSubmit={async (tk, weekdays) => {
+                  await upsertWeekdayRule(tk, weekdays);
+                  setFormMode(null);
+                }}
+                onCancel={() => setFormMode(null)}
+              />
+            );
+          }
           return (
             <div
               key={r.id}
@@ -656,7 +755,10 @@ function WeekdaySection({
                     .join(' · ')}
                 </span>
               </div>
-              <RemoveButton id={r.id} />
+              <div className="flex items-center gap-1">
+                <EditButton onClick={() => setFormMode(r.id)} />
+                <RemoveButton id={r.id} />
+              </div>
             </div>
           );
         })
@@ -667,15 +769,24 @@ function WeekdaySection({
 
 function WeekdayForm({
   templates,
+  initial,
   onSubmit,
   onCancel,
 }: {
   templates: Template[];
+  initial?: {
+    templateKey: string;
+    weekdays: number[];
+  };
   onSubmit: (templateKey: string, weekdays: number[]) => Promise<void>;
   onCancel: () => void;
 }) {
-  const [templateKey, setTemplateKey] = useState<string>(templates[0]?.key ?? '');
-  const [weekdays, setWeekdays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [templateKey, setTemplateKey] = useState<string>(
+    initial?.templateKey ?? templates[0]?.key ?? '',
+  );
+  const [weekdays, setWeekdays] = useState<number[]>(
+    initial?.weekdays ? [...initial.weekdays] : [1, 2, 3, 4, 5],
+  );
   const toggle = (d: number) =>
     setWeekdays((prev) =>
       prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort(),
