@@ -131,6 +131,21 @@ export const cycles = sqliteTable(
   (t) => ({ startIdx: index('cycles_start_idx').on(t.startDate) }),
 );
 
+// HabitPhase records (§5.5.0; v0.3.3). Opt-in time-segment labels
+// attached to `kind='habit'` Lines. Event log authoritative.
+export const habitPhases = sqliteTable(
+  'habit_phases',
+  {
+    id: text('id').primaryKey(),
+    lineId: text('line_id').notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    startDate: text('start_date').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => ({ lineIdx: index('habit_phases_line_idx').on(t.lineId) }),
+);
+
 export const cycleDays = sqliteTable(
   'cycle_days',
   {
@@ -358,6 +373,16 @@ CREATE TABLE IF NOT EXISTS cycles (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS cycles_start_idx ON cycles(start_date);
+
+CREATE TABLE IF NOT EXISTS habit_phases (
+  id TEXT PRIMARY KEY,
+  line_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  start_date TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS habit_phases_line_idx ON habit_phases(line_id);
 
 CREATE TABLE IF NOT EXISTS cycle_days (
   cycle_id TEXT NOT NULL REFERENCES cycles(id) ON DELETE CASCADE,

@@ -16,14 +16,19 @@ import {
   CircleDot,
   Inbox,
   MoreHorizontal,
+  Pencil,
   Plus,
   Search,
   Trash2,
   Undo2,
+  X,
 } from 'lucide-react';
 import {
   INBOX_LINE_ID,
+  selectCurrentHabitPhase,
+  selectHabitPhasesByLine,
   useStore,
+  type HabitPhase,
   type Line,
   type Task,
 } from '@dayrail/core';
@@ -85,6 +90,7 @@ export function Tasks() {
   // shallow-compares output, and `Object.values(...).sort()` returns a
   // fresh array every render → infinite loop.
   const linesMap = useStore((s) => s.lines);
+  const habitPhasesMap = useStore((s) => s.habitPhases);
   const createLine = useStore((s) => s.createLine);
   const inbox = linesMap[INBOX_LINE_ID];
   const projects = useMemo(
@@ -98,6 +104,21 @@ export function Tasks() {
     () => projects.filter((l) => l.id !== INBOX_LINE_ID),
     [projects],
   );
+  const habits = useMemo(
+    () =>
+      Object.values(linesMap)
+        .filter((l) => l.kind === 'habit' && l.status === 'active')
+        .sort((a, b) => b.createdAt - a.createdAt),
+    [linesMap],
+  );
+  const currentPhaseByHabitId = useMemo(() => {
+    const m: Record<string, string | undefined> = {};
+    for (const h of habits) {
+      const p = selectCurrentHabitPhase({ habitPhases: habitPhasesMap }, h.id);
+      m[h.id] = p?.name;
+    }
+    return m;
+  }, [habits, habitPhasesMap]);
 
   const handleCreateProject = useCallback(() => {
     // Minimal creation UX for chunk E — a full popover with color /
@@ -118,6 +139,22 @@ export function Tasks() {
     setSelection({ kind: 'line', lineId: id });
   }, [createLine, setSelection]);
 
+  const handleCreateHabit = useCallback(() => {
+    const raw = window.prompt('新建 Habit · 输入名称');
+    if (raw == null) return;
+    const name = raw.trim();
+    if (!name) return;
+    const id = freshId('line');
+    void createLine({
+      id,
+      name,
+      kind: 'habit',
+      status: 'active',
+      createdAt: Date.now(),
+    });
+    setSelection({ kind: 'line', lineId: id });
+  }, [createLine, setSelection]);
+
   return (
     <div className="flex min-h-screen w-full">
       <NavTree
@@ -125,7 +162,10 @@ export function Tasks() {
         onSelect={setSelection}
         inbox={inbox}
         projects={otherProjects}
+        habits={habits}
+        currentPhaseByHabitId={currentPhaseByHabitId}
         onCreateProject={handleCreateProject}
+        onCreateHabit={handleCreateHabit}
       />
       <section className="flex min-w-0 flex-1 flex-col">
         <MainPanel selection={selection} inbox={inbox} projects={projects} />
@@ -143,13 +183,19 @@ function NavTree({
   onSelect,
   inbox,
   projects,
+  habits,
+  currentPhaseByHabitId,
   onCreateProject,
+  onCreateHabit,
 }: {
   selection: Selection;
   onSelect: (s: Selection) => void;
   inbox: Line | undefined;
   projects: Line[];
+  habits: Line[];
+  currentPhaseByHabitId: Record<string, string | undefined>;
   onCreateProject: () => void;
+  onCreateHabit: () => void;
 }) {
   return (
     <aside className="sticky top-0 flex h-screen w-[256px] shrink-0 flex-col border-r border-hairline/40 bg-surface-0 px-3 py-6">
@@ -187,8 +233,25 @@ function NavTree({
         )}
       </NavGroup>
 
-      <NavGroup label="Habits">
-        <p className="px-3 py-1.5 text-xs text-ink-tertiary">v0.4</p>
+      <NavGroup label="Habits" actionLabel="+ 新建" onAction={onCreateHabit}>
+        {habits.length === 0 ? (
+          <p className="px-3 py-1.5 text-xs text-ink-tertiary">
+            还没有 Habit
+          </p>
+        ) : (
+          habits.map((line) => (
+            <NavRow
+              key={line.id}
+              icon={<ColorDot color={line.color} />}
+              label={line.name}
+              subtitle={currentPhaseByHabitId[line.id]}
+              active={
+                selection.kind === 'line' && selection.lineId === line.id
+              }
+              onClick={() => onSelect({ kind: 'line', lineId: line.id })}
+            />
+          ))
+        )}
       </NavGroup>
 
       <div className="mt-auto flex flex-col gap-0.5">
@@ -247,22 +310,28 @@ function NavGroup({
 function NavRow({
   icon,
   label,
+  subtitle,
   active,
   onClick,
   dim = false,
 }: {
   icon: React.ReactNode;
   label: string;
+  /** Optional second line (muted, Mono overline-style). Habit rows
+   *  use this to surface the current phase name. */
+  subtitle?: string;
   active: boolean;
   onClick: () => void;
   dim?: boolean;
 }) {
+  const h = subtitle ? 'h-10' : 'h-8';
   return (
     <button
       type="button"
       onClick={onClick}
       className={clsx(
-        'flex h-8 w-full items-center gap-2 rounded-md px-3 text-left text-sm transition',
+        'flex w-full items-center gap-2 rounded-md px-3 text-left text-sm transition',
+        h,
         active
           ? 'bg-surface-2 text-ink-primary'
           : dim
@@ -271,7 +340,14 @@ function NavRow({
       )}
     >
       <span className="shrink-0 text-ink-tertiary">{icon}</span>
-      <span className="flex-1 truncate">{label}</span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate">{label}</span>
+        {subtitle && (
+          <span className="truncate font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            {subtitle}
+          </span>
+        )}
+      </span>
     </button>
   );
 }
@@ -562,10 +638,22 @@ function MainPanel({
     [tasksMap],
   );
 
+  // When the selected Line is a habit, surface a phase panel above
+  // the task flow. Detached so projects don't render it.
+  const selectedLine =
+    selection.kind === 'line' ? projects.find((p) => p.id === selection.lineId) : undefined;
+  // `projects` excludes habit lines — pull habits directly from the
+  // lines map to detect kind='habit' selection.
+  const selectedHabit =
+    selection.kind === 'line' && !selectedLine
+      ? linesMap[selection.lineId]
+      : undefined;
+  const isHabitView = selectedHabit?.kind === 'habit';
+
   return (
     <div className="flex w-full max-w-[960px] flex-col gap-6 px-10 py-10">
       <PageHeader
-        overline={overline}
+        overline={isHabitView ? 'Habit' : overline}
         title={title}
         selection={selection}
         rightSlot={
@@ -581,6 +669,10 @@ function MainPanel({
           ) : null
         }
       />
+
+      {isHabitView && selectedHabit && (
+        <HabitPhasePanel lineId={selectedHabit.id} />
+      )}
 
       {canCreate && (
         <NewTaskInput onCreate={handleCreate} placeholder="+ 新任务 · Enter" />
@@ -869,6 +961,277 @@ function FilterBar({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------
+// Habit Phase panel — §5.5.0. Opt-in phase timeline for habit-kind
+// Lines. Zero phases → simple-habit prompt. ≥1 phases → vertical
+// timeline with add / rename / reschedule / delete per phase.
+// ------------------------------------------------------------------
+
+function HabitPhasePanel({ lineId }: { lineId: string }) {
+  const habitPhasesMap = useStore((s) => s.habitPhases);
+  const upsertHabitPhase = useStore((s) => s.upsertHabitPhase);
+  const removeHabitPhase = useStore((s) => s.removeHabitPhase);
+  const phases = useMemo(
+    () => selectHabitPhasesByLine({ habitPhases: habitPhasesMap }, lineId),
+    [habitPhasesMap, lineId],
+  );
+  const todayIso = useMemo(() => toIsoDateStr(new Date()), []);
+  const currentPhaseId = useMemo(
+    () =>
+      selectCurrentHabitPhase({ habitPhases: habitPhasesMap }, lineId, todayIso)
+        ?.id,
+    [habitPhasesMap, lineId, todayIso],
+  );
+
+  const [formMode, setFormMode] = useState<null | 'new' | string>(null);
+  const editingPhase = phases.find((p) => p.id === formMode);
+
+  if (phases.length === 0) {
+    return (
+      <section className="flex flex-col gap-3 rounded-md bg-surface-1 px-5 py-4">
+        <div className="flex flex-col gap-1">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            Phase tracking
+          </span>
+          <p className="text-sm text-ink-secondary">
+            这条 habit 目前按固定节奏运行。如果你有阶段性目标（比如训练比赛、
+            分期提量），可以启用 phase 追踪，按时间段记录不同阶段的目标。
+          </p>
+        </div>
+        {formMode === 'new' ? (
+          <PhaseForm
+            lineId={lineId}
+            onSubmit={async (opts) => {
+              await upsertHabitPhase(opts);
+              setFormMode(null);
+            }}
+            onCancel={() => setFormMode(null)}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setFormMode('new')}
+            className="inline-flex items-center gap-1.5 self-start rounded-md border border-dashed border-ink-tertiary/50 px-3 py-1.5 text-xs text-ink-secondary transition hover:border-ink-secondary hover:text-ink-primary"
+          >
+            <Plus className="h-3 w-3" strokeWidth={1.8} />
+            启用 phase 追踪
+          </button>
+        )}
+      </section>
+    );
+  }
+
+  return (
+    <section className="flex flex-col gap-3 rounded-md bg-surface-1 px-5 py-4">
+      <div className="flex items-baseline justify-between">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          Phases
+        </span>
+        {formMode !== 'new' && (
+          <button
+            type="button"
+            onClick={() => setFormMode('new')}
+            className="inline-flex items-center gap-1 rounded-md border border-dashed border-ink-tertiary/40 px-2 py-0.5 text-xs text-ink-tertiary transition hover:border-ink-secondary hover:text-ink-secondary"
+          >
+            <Plus className="h-3 w-3" strokeWidth={1.8} />
+            新 phase
+          </button>
+        )}
+      </div>
+
+      {formMode === 'new' && (
+        <PhaseForm
+          lineId={lineId}
+          onSubmit={async (opts) => {
+            await upsertHabitPhase(opts);
+            setFormMode(null);
+          }}
+          onCancel={() => setFormMode(null)}
+        />
+      )}
+
+      <ul className="flex flex-col gap-1.5">
+        {phases.map((p) => {
+          const isCurrent = p.id === currentPhaseId;
+          const isFuture = p.startDate > todayIso;
+          if (editingPhase?.id === p.id) {
+            return (
+              <li key={p.id}>
+                <PhaseForm
+                  lineId={lineId}
+                  initial={{
+                    id: p.id,
+                    name: p.name,
+                    description: p.description,
+                    startDate: p.startDate,
+                  }}
+                  onSubmit={async (opts) => {
+                    await upsertHabitPhase(opts);
+                    setFormMode(null);
+                  }}
+                  onCancel={() => setFormMode(null)}
+                />
+              </li>
+            );
+          }
+          return (
+            <li
+              key={p.id}
+              className={clsx(
+                'flex items-start justify-between gap-2 rounded-md bg-surface-0 px-3 py-2',
+                isCurrent && 'ring-1 ring-inset ring-ink-primary/20',
+                isFuture && 'opacity-70',
+              )}
+            >
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <span className="truncate text-sm text-ink-primary">
+                    {p.name}
+                  </span>
+                  {isCurrent && (
+                    <span className="rounded-sm bg-ink-primary px-1 font-mono text-[9px] uppercase tracking-widest text-surface-0">
+                      当前
+                    </span>
+                  )}
+                  {isFuture && (
+                    <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                      计划于 {p.startDate}
+                    </span>
+                  )}
+                  {!isFuture && !isCurrent && (
+                    <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                      起 {p.startDate}
+                    </span>
+                  )}
+                </div>
+                {p.description && (
+                  <p className="text-xs text-ink-secondary">
+                    {p.description}
+                  </p>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  aria-label="Edit phase"
+                  onClick={() => setFormMode(p.id)}
+                  className="rounded-sm p-0.5 text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+                >
+                  <Pencil className="h-3 w-3" strokeWidth={1.8} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Delete phase"
+                  onClick={() => void removeHabitPhase(p.id)}
+                  className="rounded-sm p-0.5 text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+                >
+                  <X className="h-3 w-3" strokeWidth={1.8} />
+                </button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function PhaseForm({
+  lineId,
+  initial,
+  onSubmit,
+  onCancel,
+}: {
+  lineId: string;
+  initial?: {
+    id: string;
+    name: string;
+    description?: string;
+    startDate: string;
+  };
+  onSubmit: (opts: {
+    id?: string;
+    lineId: string;
+    name: string;
+    description?: string;
+    startDate: string;
+  }) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(initial?.name ?? '');
+  const [description, setDescription] = useState(initial?.description ?? '');
+  const [startDate, setStartDate] = useState(
+    initial?.startDate ?? new Date().toISOString().slice(0, 10),
+  );
+  const submit = () => {
+    const trimmed = name.trim();
+    if (!trimmed || !startDate) return;
+    void onSubmit({
+      ...(initial?.id && { id: initial.id }),
+      lineId,
+      name: trimmed,
+      startDate,
+      ...(description.trim() && { description: description.trim() }),
+    });
+  };
+  return (
+    <div className="flex flex-col gap-2 rounded-md bg-surface-0 p-3">
+      <label className="flex items-center gap-2 text-xs text-ink-secondary">
+        <span className="w-20">名称</span>
+        <input
+          type="text"
+          value={name}
+          autoFocus
+          placeholder="例：基础期"
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          className="h-7 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+        />
+      </label>
+      <label className="flex items-start gap-2 text-xs text-ink-secondary">
+        <span className="w-20 pt-1">目标</span>
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="可选：例：每周 3 次 30 分钟慢跑"
+          rows={2}
+          className="flex-1 resize-none rounded-sm border border-hairline/60 bg-surface-0 px-2 py-1 text-xs text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+        />
+      </label>
+      <label className="flex items-center gap-2 text-xs text-ink-secondary">
+        <span className="w-20">开始日期</span>
+        <input
+          type="date"
+          value={startDate}
+          onChange={(e) => setStartDate(e.target.value)}
+          className="h-7 rounded-sm border border-hairline/60 bg-surface-0 px-2 font-mono text-xs text-ink-primary outline-none focus:border-ink-secondary"
+        />
+      </label>
+      <div className="flex items-center justify-end gap-1.5 pt-1">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-sm px-2 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          onClick={submit}
+          className="rounded-sm bg-ink-primary px-2 py-0.5 text-2xs text-surface-0 transition hover:bg-ink-primary/90"
+        >
+          保存
+        </button>
+      </div>
     </div>
   );
 }

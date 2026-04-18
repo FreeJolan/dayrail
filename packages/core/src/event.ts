@@ -60,7 +60,10 @@ export type EventType =
   | 'adhoc.created'
   | 'adhoc.updated'
   | 'adhoc.deleted'
-  | 'adhoc.restored';
+  | 'adhoc.restored'
+  // Habit-phase tracking (§5.5.0; v0.3.3+)
+  | 'habit-phase.upserted'
+  | 'habit-phase.removed';
 
 export interface AppEvent<T extends EventType = EventType> {
   id: string;

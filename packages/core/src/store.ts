@@ -42,6 +42,7 @@ import {
   type CalendarRuleSingleDate,
   type CalendarRuleWeekday,
   type Cycle,
+  type HabitPhase,
   type Line,
   type Rail,
   type RailColor,
@@ -74,6 +75,7 @@ export interface DayRailState {
   adhocEvents: Record<string, AdhocEvent>;
   calendarRules: Record<string, CalendarRule>;
   cycles: Record<string, Cycle>;
+  habitPhases: Record<string, HabitPhase>;
   sessions: Record<string, EditSession>;
 }
 
@@ -182,6 +184,20 @@ interface DayRailActions {
   /** Remove a Cycle record (strips the custom label / any future
    *  custom length; falls back to the derived default). */
   removeCycle: (id: string) => Promise<void>;
+  // --- habit phases (§5.5.0; v0.3.3 scope: user-managed labels) ---
+  /** Upsert a HabitPhase. Pass `id` to update in place (preserves
+   *  `createdAt`); omit to create (ULID id). */
+  upsertHabitPhase: (opts: {
+    id?: string;
+    lineId: string;
+    name: string;
+    description?: string;
+    startDate: string;
+  }) => Promise<string>;
+  /** Remove a HabitPhase. Deleting the last phase for a Line flips
+   *  it back to "simple habit" mode — derived from record count,
+   *  no Line mutation needed. */
+  removeHabitPhase: (id: string) => Promise<void>;
   // --- ad-hoc events (standalone; task-backed adhocs live under
   //     scheduleTaskFreeTime + unscheduleTask) ---
   /** Create a standalone AdhocEvent on a given date. Returns the id. */
@@ -223,6 +239,7 @@ type ReducerState = Pick<
   | 'adhocEvents'
   | 'calendarRules'
   | 'cycles'
+  | 'habitPhases'
 >;
 
 // Narrowed local types matching exactly the event payloads the Template
@@ -443,6 +460,16 @@ function applyEventInPlace(
       delete state.cycles[id];
       break;
     }
+    case 'habit-phase.upserted': {
+      const p = payload as unknown as HabitPhase;
+      state.habitPhases[p.id] = { ...p };
+      break;
+    }
+    case 'habit-phase.removed': {
+      const id = (payload as { id: string }).id;
+      delete state.habitPhases[id];
+      break;
+    }
     default:
       // Unknown event types are no-ops in this store slice.
       break;
@@ -467,6 +494,7 @@ type SnapshotPayload = Pick<
   | 'adhocEvents'
   | 'calendarRules'
   | 'cycles'
+  | 'habitPhases'
 >;
 
 function emptyReducerState(): ReducerState {
@@ -481,6 +509,7 @@ function emptyReducerState(): ReducerState {
     adhocEvents: {},
     calendarRules: {},
     cycles: {},
+    habitPhases: {},
   };
 }
 
@@ -496,6 +525,7 @@ function snapshotFromState(s: DayRailState): SnapshotPayload {
     adhocEvents: s.adhocEvents,
     calendarRules: s.calendarRules,
     cycles: s.cycles,
+    habitPhases: s.habitPhases,
   };
 }
 
@@ -656,6 +686,7 @@ export const useStore = create<DayRailStore>()(
       adhocEvents: {},
       calendarRules: {},
       cycles: {},
+      habitPhases: {},
       sessions: {},
 
       hydrate: async () => {
@@ -686,6 +717,7 @@ export const useStore = create<DayRailStore>()(
               reducerState.adhocEvents = { ...(snap.state.adhocEvents ?? {}) };
               reducerState.calendarRules = { ...(snap.state.calendarRules ?? {}) };
               reducerState.cycles = { ...(snap.state.cycles ?? {}) };
+              reducerState.habitPhases = { ...(snap.state.habitPhases ?? {}) };
             }
             for (const ev of events) {
               applyEventInPlace(reducerState, ev.type, ev.payload);
@@ -700,6 +732,7 @@ export const useStore = create<DayRailStore>()(
             draft.adhocEvents = reducerState.adhocEvents;
             draft.calendarRules = reducerState.calendarRules;
             draft.cycles = reducerState.cycles;
+            draft.habitPhases = reducerState.habitPhases;
             for (const s of recovered) {
               if (!s.closed) draft.sessions[s.id] = s;
             }
@@ -1245,6 +1278,38 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
+      upsertHabitPhase: async ({ id, lineId, name, description, startDate }) => {
+        const phaseId = id ?? ulidLite('hp');
+        const existing = id ? get().habitPhases[id] : undefined;
+        const payload: HabitPhase = {
+          id: phaseId,
+          lineId,
+          name,
+          startDate,
+          createdAt: existing?.createdAt ?? Date.now(),
+          ...(description && { description }),
+        };
+        const ev = await appendEvent({
+          aggregateId: `habit-phase:${phaseId}`,
+          type: 'habit-phase.upserted',
+          payload: payload as unknown as Record<string, unknown>,
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+        return phaseId;
+      },
+
+      removeHabitPhase: async (id) => {
+        if (!get().habitPhases[id]) return;
+        const ev = await appendEvent({
+          aggregateId: `habit-phase:${id}`,
+          type: 'habit-phase.removed',
+          payload: { id },
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+      },
+
       createAdhocEvent: async (opts) => {
         const id = ulidLite('adhoc');
         const payload: AdhocEvent = {
@@ -1364,6 +1429,7 @@ export const useStore = create<DayRailStore>()(
           draft.adhocEvents = reducerState.adhocEvents;
           draft.calendarRules = reducerState.calendarRules;
           draft.cycles = reducerState.cycles;
+          draft.habitPhases = reducerState.habitPhases;
         });
         await closeSession(sessionId);
         set((draft) => {
@@ -1419,6 +1485,35 @@ export function selectTasksByLine(
     .filter((t) => includeDeleted || t.status !== 'deleted')
     .filter((t) => includeArchived || t.status !== 'archived')
     .sort((a, b) => a.order - b.order);
+}
+
+/** Phases attached to a habit Line, ordered by startDate asc.
+ *  Returns empty array when the habit has phase tracking disabled. */
+export function selectHabitPhasesByLine(
+  state: Pick<DayRailState, 'habitPhases'>,
+  lineId: string,
+): HabitPhase[] {
+  return Object.values(state.habitPhases)
+    .filter((p) => p.lineId === lineId)
+    .sort((a, b) => a.startDate.localeCompare(b.startDate));
+}
+
+/** Current phase of a habit = the phase with `startDate <= today`
+ *  and the largest startDate. Returns undefined when the habit has
+ *  no phases or all phases start in the future. */
+export function selectCurrentHabitPhase(
+  state: Pick<DayRailState, 'habitPhases'>,
+  lineId: string,
+  todayIso?: string,
+): HabitPhase | undefined {
+  const today = todayIso ?? new Date().toISOString().slice(0, 10);
+  let best: HabitPhase | undefined;
+  for (const p of Object.values(state.habitPhases)) {
+    if (p.lineId !== lineId) continue;
+    if (p.startDate > today) continue;
+    if (!best || p.startDate > best.startDate) best = p;
+  }
+  return best;
 }
 
 /** Has-milestone check — drives the §5.5 Project header's conditional
