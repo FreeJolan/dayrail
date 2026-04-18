@@ -722,8 +722,10 @@ function MainPanel({
         overline={isHabitView ? 'Habit' : overline}
         title={title}
         selection={selection}
+        hideTaskCount={isHabitView}
         {...(canEditLine && { onRenameLine: handleRenameLine })}
-        {...(canEditLine && { onArchiveLine: handleArchiveLine })}
+        {...(canEditLine &&
+          !isHabitView && { onArchiveLine: handleArchiveLine })}
         {...(canEditLine && { onChangeLineColor: handleChangeLineColor })}
         lineColor={editableLine?.color}
         rightSlot={
@@ -867,6 +869,7 @@ function PageHeader({
   onArchiveLine,
   onChangeLineColor,
   lineColor,
+  hideTaskCount,
 }: {
   overline: string;
   title: string;
@@ -876,6 +879,9 @@ function PageHeader({
   onArchiveLine?: () => void;
   onChangeLineColor?: (next: RailColor) => void;
   lineColor?: RailColor;
+  /** Habits don't have user-facing tasks (auto-tasks materialize
+   *  behind the scenes), so the `N/total 任务` count is misleading. */
+  hideTaskCount?: boolean;
 }) {
   const tasksMap = useStore((s) => s.tasks);
 
@@ -920,7 +926,7 @@ function PageHeader({
           </h2>
         </div>
         <div className="flex items-center gap-4">
-          {stats && stats.total > 0 && (
+          {!hideTaskCount && stats && stats.total > 0 && (
             <span className="font-mono text-sm tabular-nums text-ink-secondary">
               {stats.done}
               <span className="text-ink-tertiary">/{stats.total}</span> 任务
