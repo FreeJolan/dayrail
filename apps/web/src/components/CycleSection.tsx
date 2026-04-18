@@ -1,6 +1,6 @@
 import { clsx } from 'clsx';
 import { useState } from 'react';
-import { X } from 'lucide-react';
+import { Check, ChevronDown, X } from 'lucide-react';
 import {
   type CycleDay,
   type CycleSlot,
@@ -11,6 +11,7 @@ import {
   type EditableRail,
   type TemplateKey,
 } from '@/data/sampleTemplate';
+import type { RailColor } from '@/data/sample';
 import { RAIL_COLOR_HEX } from './railColors';
 import { CycleCell } from './CycleCell';
 import { TASK_DRAG_MIME } from './BacklogDrawer';
@@ -26,10 +27,19 @@ import {
 //   ┌─── 8 px Template.color strip ───────────────────────────────┐
 //   │  ┌─ 24 px section mini-header ───────────────────────────┐  │
 //   │  │ TEMPLATE · N days  | Mon 13 | Tue 14 | ... | Thu 16   │  │
+//   │  │                      ↑ each date cell is the sole     │  │
+//   │  │                        CycleDay template-switch entry │  │
 //   │  └────────────────────────────────────────────────────── ┘  │
 //   │  Rail row: [name · time]  | cell | cell | cell | cell       │
 //   │  ...                                                         │
 //   └──────────────────────────────────────────────────────────────┘
+
+/** Minimal template shape a section's day-header popover needs. */
+export interface TemplateChoice {
+  key: TemplateKey;
+  label: string;
+  color: RailColor;
+}
 
 interface Props {
   templateKey: TemplateKey;
@@ -39,6 +49,9 @@ interface Props {
   days: CycleDay[];
   slotsByKey: Map<string, CycleSlot>; // key = `${railId}|${date}`
   todayISO: string;
+  templateChoices: TemplateChoice[];
+  onOverride: (date: string, nextTemplate: TemplateKey) => void;
+  onClearOverride: (date: string) => void;
   onDropTask?: (taskId: string, date: string, railId: string) => void;
   onClearSlot?: (taskId: string) => void;
 }
@@ -50,6 +63,9 @@ export function CycleSection({
   days,
   slotsByKey,
   todayISO,
+  templateChoices,
+  onOverride,
+  onClearOverride,
   onDropTask,
   onClearSlot,
 }: Props) {
@@ -75,6 +91,9 @@ export function CycleSection({
           days={days}
           stripColor={stripColor}
           todayISO={todayISO}
+          templateChoices={templateChoices}
+          onOverride={onOverride}
+          onClearOverride={onClearOverride}
         />
 
         <table className="table-fixed border-separate border-spacing-0">
@@ -221,11 +240,17 @@ function SectionMiniHeader({
   days,
   stripColor,
   todayISO,
+  templateChoices,
+  onOverride,
+  onClearOverride,
 }: {
   templateLabel: string;
   days: CycleDay[];
   stripColor: string;
   todayISO: string;
+  templateChoices: TemplateChoice[];
+  onOverride: (date: string, nextTemplate: TemplateKey) => void;
+  onClearOverride: (date: string) => void;
 }) {
   return (
     <div className="flex min-h-[48px] items-center gap-0 border-b border-transparent py-2">
@@ -253,48 +278,137 @@ function SectionMiniHeader({
                 </span>
               </div>
             </th>
-            {days.map((d) => {
-              const { weekday, dayNum } = formatDayLabel(d);
-              const isToday = d.date === todayISO;
-              return (
-                <th
-                  key={d.date}
-                  className="px-1 text-left align-middle"
-                >
-                  <div className="flex items-baseline gap-1">
-                    <span
-                      className={clsx(
-                        'font-mono text-2xs uppercase tracking-widest',
-                        isToday ? 'text-ink-primary' : 'text-ink-tertiary',
-                      )}
-                    >
-                      {weekday}
-                    </span>
-                    <span
-                      className={clsx(
-                        'font-mono text-sm tabular-nums',
-                        isToday
-                          ? 'text-ink-primary font-medium'
-                          : 'text-ink-secondary',
-                      )}
-                    >
-                      {dayNum}
-                    </span>
-                    {d.overridden && (
-                      <span
-                        aria-hidden
-                        title="覆盖"
-                        className="h-1 w-1 rounded-full bg-cta"
-                      />
-                    )}
-                  </div>
-                </th>
-              );
-            })}
+            {days.map((d) => (
+              <th key={d.date} className="px-1 text-left align-middle">
+                <DayCellButton
+                  day={d}
+                  isToday={d.date === todayISO}
+                  templateChoices={templateChoices}
+                  onOverride={(tpl) => onOverride(d.date, tpl)}
+                  onClearOverride={() => onClearOverride(d.date)}
+                />
+              </th>
+            ))}
           </tr>
         </thead>
       </table>
     </div>
+  );
+}
+
+function DayCellButton({
+  day,
+  isToday,
+  templateChoices,
+  onOverride,
+  onClearOverride,
+}: {
+  day: CycleDay;
+  isToday: boolean;
+  templateChoices: TemplateChoice[];
+  onOverride: (tpl: TemplateKey) => void;
+  onClearOverride: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const { weekday, dayNum } = formatDayLabel(day);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={clsx(
+            'group flex w-full items-baseline gap-1 rounded-sm px-1 py-0.5 text-left transition',
+            isToday ? 'bg-surface-2/60' : 'hover:bg-surface-2/50',
+          )}
+        >
+          <span
+            className={clsx(
+              'font-mono text-2xs uppercase tracking-widest',
+              isToday ? 'text-ink-primary' : 'text-ink-tertiary',
+            )}
+          >
+            {weekday}
+          </span>
+          <span
+            className={clsx(
+              'font-mono text-sm tabular-nums',
+              isToday
+                ? 'text-ink-primary font-medium'
+                : 'text-ink-secondary',
+            )}
+          >
+            {dayNum}
+          </span>
+          {day.overridden && (
+            <span
+              aria-hidden
+              title="overridden from the weekday default"
+              className="h-1 w-1 rounded-full bg-cta"
+            />
+          )}
+          <ChevronDown
+            aria-hidden
+            className="ml-auto h-3 w-3 text-ink-tertiary opacity-0 transition group-hover:opacity-100"
+            strokeWidth={1.8}
+          />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" sideOffset={6} className="w-[200px] p-1">
+        <div className="px-3 pb-1 pt-1.5">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            Day template
+          </span>
+        </div>
+        <ul className="flex flex-col">
+          {templateChoices.map((t) => {
+            const active = t.key === day.templateKey;
+            return (
+              <li key={t.key}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onOverride(t.key);
+                    setOpen(false);
+                  }}
+                  className={clsx(
+                    'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition',
+                    active ? 'bg-surface-2' : 'hover:bg-surface-2',
+                  )}
+                >
+                  <span
+                    aria-hidden
+                    className="h-3 w-[3px] rounded-sm"
+                    style={{ background: RAIL_COLOR_HEX[t.color] }}
+                  />
+                  <span className="flex-1">{t.label}</span>
+                  {active && (
+                    <Check
+                      className="h-3.5 w-3.5 text-ink-tertiary"
+                      strokeWidth={2}
+                    />
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        {day.overridden && (
+          <>
+            <div className="mx-3 my-1 h-px bg-surface-3" />
+            <button
+              type="button"
+              onClick={() => {
+                onClearOverride();
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+            >
+              恢复默认
+            </button>
+          </>
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }
 
