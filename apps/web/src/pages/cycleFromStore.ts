@@ -112,6 +112,7 @@ export function deriveCycleFromStore(
       date,
       state: task.status === 'done' ? 'done' : 'planned-task',
       taskName: task.title,
+      taskId: task.id,
     });
   }
 

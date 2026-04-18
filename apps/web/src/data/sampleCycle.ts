@@ -29,6 +29,10 @@ export interface CycleSlot {
   taskName?: string;
   /** For shifted/done states that carry a Mono meta (e.g. `→ 20:00`). */
   meta?: string;
+  /** Populated when the slot is backed by a live Task (planned-task
+   *  cells from the live-data path); enables slot-level actions like
+   *  "移除排期". Sample-data paths can leave this undefined. */
+  taskId?: string;
 }
 
 export interface SampleCycle {
