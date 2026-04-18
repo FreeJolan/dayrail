@@ -41,6 +41,7 @@ import {
   type CalendarRuleDateRange,
   type CalendarRuleSingleDate,
   type CalendarRuleWeekday,
+  type Cycle,
   type Line,
   type Rail,
   type RailColor,
@@ -72,6 +73,7 @@ export interface DayRailState {
   tasks: Record<string, Task>;
   adhocEvents: Record<string, AdhocEvent>;
   calendarRules: Record<string, CalendarRule>;
+  cycles: Record<string, Cycle>;
   sessions: Record<string, EditSession>;
 }
 
@@ -171,6 +173,15 @@ interface DayRailActions {
   /** Remove any CalendarRule by id (weekday / date-range / cycle /
    *  single-date — caller names the rule explicitly). */
   removeCalendarRule: (id: string) => Promise<void>;
+  // --- custom Cycle records (§5.3 / §9.7; v0.3.2 label-only scope) ---
+  /** Upsert a Cycle record by deterministic id `cycle-{startDate}`.
+   *  In v0.3.2 every Cycle is 7-day Monday-anchored, so id stability
+   *  keyed by Monday is safe. `endDate` is enforced to `startDate +
+   *  6 days` for now; v0.4 custom-length Cycles relax this. */
+  upsertCycle: (opts: { startDate: string; label?: string }) => Promise<string>;
+  /** Remove a Cycle record (strips the custom label / any future
+   *  custom length; falls back to the derived default). */
+  removeCycle: (id: string) => Promise<void>;
   // --- ad-hoc events (standalone; task-backed adhocs live under
   //     scheduleTaskFreeTime + unscheduleTask) ---
   /** Create a standalone AdhocEvent on a given date. Returns the id. */
@@ -211,6 +222,7 @@ type ReducerState = Pick<
   | 'tasks'
   | 'adhocEvents'
   | 'calendarRules'
+  | 'cycles'
 >;
 
 // Narrowed local types matching exactly the event payloads the Template
@@ -421,6 +433,16 @@ function applyEventInPlace(
       delete state.calendarRules[id];
       break;
     }
+    case 'cycle.upserted': {
+      const p = payload as unknown as Cycle;
+      state.cycles[p.id] = { ...p };
+      break;
+    }
+    case 'cycle.removed': {
+      const id = (payload as { id: string }).id;
+      delete state.cycles[id];
+      break;
+    }
     default:
       // Unknown event types are no-ops in this store slice.
       break;
@@ -444,6 +466,7 @@ type SnapshotPayload = Pick<
   | 'tasks'
   | 'adhocEvents'
   | 'calendarRules'
+  | 'cycles'
 >;
 
 function emptyReducerState(): ReducerState {
@@ -457,6 +480,7 @@ function emptyReducerState(): ReducerState {
     tasks: {},
     adhocEvents: {},
     calendarRules: {},
+    cycles: {},
   };
 }
 
@@ -471,6 +495,7 @@ function snapshotFromState(s: DayRailState): SnapshotPayload {
     tasks: s.tasks,
     adhocEvents: s.adhocEvents,
     calendarRules: s.calendarRules,
+    cycles: s.cycles,
   };
 }
 
@@ -483,6 +508,17 @@ function ulidLite(prefix: string): string {
  *  growing pile of same-day rules. */
 export function singleDateRuleId(date: string): string {
   return `cr-single-${date}`;
+}
+
+/** Add `n` days to an ISO date string; returns a new ISO date string.
+ *  Used by the Cycle-record path to derive endDate from startDate+6. */
+function addDaysIso(iso: string, n: number): string {
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() + n);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 /** Default priorities per CalendarRule kind — §5.4 precedence order.
@@ -619,6 +655,7 @@ export const useStore = create<DayRailStore>()(
       tasks: {},
       adhocEvents: {},
       calendarRules: {},
+      cycles: {},
       sessions: {},
 
       hydrate: async () => {
@@ -648,6 +685,7 @@ export const useStore = create<DayRailStore>()(
               reducerState.tasks = { ...(snap.state.tasks ?? {}) };
               reducerState.adhocEvents = { ...(snap.state.adhocEvents ?? {}) };
               reducerState.calendarRules = { ...(snap.state.calendarRules ?? {}) };
+              reducerState.cycles = { ...(snap.state.cycles ?? {}) };
             }
             for (const ev of events) {
               applyEventInPlace(reducerState, ev.type, ev.payload);
@@ -661,6 +699,7 @@ export const useStore = create<DayRailStore>()(
             draft.tasks = reducerState.tasks;
             draft.adhocEvents = reducerState.adhocEvents;
             draft.calendarRules = reducerState.calendarRules;
+            draft.cycles = reducerState.cycles;
             for (const s of recovered) {
               if (!s.closed) draft.sessions[s.id] = s;
             }
@@ -1171,6 +1210,41 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
+      upsertCycle: async ({ startDate, label }) => {
+        // Deterministic id keyed on startDate — every Monday maps to
+        // at most one Cycle record, so edits (relabel, future length
+        // change) replace in place.
+        const id = `cycle-${startDate}`;
+        const endDate = addDaysIso(startDate, 6);
+        const existing = get().cycles[id];
+        const payload: Cycle = {
+          id,
+          startDate,
+          endDate,
+          ...(label && { label }),
+          createdAt: existing?.createdAt ?? Date.now(),
+        };
+        const ev = await appendEvent({
+          aggregateId: `cycle:${id}`,
+          type: 'cycle.upserted',
+          payload: payload as unknown as Record<string, unknown>,
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+        return id;
+      },
+
+      removeCycle: async (id) => {
+        if (!get().cycles[id]) return;
+        const ev = await appendEvent({
+          aggregateId: `cycle:${id}`,
+          type: 'cycle.removed',
+          payload: { id },
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+      },
+
       createAdhocEvent: async (opts) => {
         const id = ulidLite('adhoc');
         const payload: AdhocEvent = {
@@ -1289,6 +1363,7 @@ export const useStore = create<DayRailStore>()(
           draft.tasks = reducerState.tasks;
           draft.adhocEvents = reducerState.adhocEvents;
           draft.calendarRules = reducerState.calendarRules;
+          draft.cycles = reducerState.cycles;
         });
         await closeSession(sessionId);
         set((draft) => {

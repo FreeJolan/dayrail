@@ -33,6 +33,8 @@ export type EventType =
   | 'signal.acted'
   // Cycle planning (Cycle View session)
   | 'cycle.created'
+  | 'cycle.upserted'
+  | 'cycle.removed'
   | 'cycleday.template-changed'
   | 'slot.assigned'
   | 'slot.cleared'

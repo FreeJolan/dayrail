@@ -61,6 +61,9 @@ export function CycleView() {
   const openEditSession = useStore((s) => s.openEditSession);
   const closeEditSession = useStore((s) => s.closeEditSession);
   const undoEditSessionAction = useStore((s) => s.undoEditSession);
+  const storedCycles = useStore((s) => s.cycles);
+  const upsertCycle = useStore((s) => s.upsertCycle);
+  const removeCycle = useStore((s) => s.removeCycle);
 
   // --- session bookkeeping (ERD §5.3.1) ---
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -284,6 +287,13 @@ export function CycleView() {
           onPickCycle={(monday) => setAnchorDate(monday)}
           changeCount={changeCount}
           onUndoSession={handleUndoSession}
+          cycles={storedCycles}
+          onUpsertCycle={async (startDate, label) => {
+            await upsertCycle({ startDate, label });
+          }}
+          onRemoveCycle={async (id) => {
+            await removeCycle(id);
+          }}
         />
 
         <CycleSummaryStrip cycle={cycle} />
@@ -341,6 +351,9 @@ function TopBar({
   onPickCycle,
   changeCount,
   onUndoSession,
+  cycles,
+  onUpsertCycle,
+  onRemoveCycle,
 }: {
   anchorDate: Date;
   onPrev: () => void;
@@ -349,12 +362,17 @@ function TopBar({
   onPickCycle: (monday: Date) => void;
   changeCount: number;
   onUndoSession: () => void;
+  cycles: Record<string, import('@dayrail/core').Cycle>;
+  onUpsertCycle: (startDate: string, label: string) => Promise<void>;
+  onRemoveCycle: (id: string) => Promise<void>;
 }) {
   const monday = startOfWeekMonday(anchorDate);
   const labelText = cycleLabel(monday);
   const rangeText = cycleRangeLabel(monday);
   const todayMondayIso = toIsoDate(startOfWeekMonday(new Date()));
   const isCurrentCycle = toIsoDate(monday) === todayMondayIso;
+  const anchorIso = toIsoDate(monday);
+  const storedForAnchor = cycles[`cycle-${anchorIso}`];
   return (
     <header className="sticky top-0 z-40 -mx-10 flex h-[52px] items-center justify-between gap-4 bg-surface-0 px-10">
       <div className="flex items-center gap-2">
@@ -372,11 +390,16 @@ function TopBar({
           </button>
           <CyclePickerTrigger
             anchorDate={anchorDate}
-            labelText={labelText}
+            labelText={storedForAnchor?.label ?? labelText}
             rangeText={rangeText}
             isCurrentCycle={isCurrentCycle}
+            storedLabel={storedForAnchor?.label}
             onPick={onPickCycle}
             onToday={onToday}
+            onUpsertCycle={onUpsertCycle}
+            onRemoveCycle={onRemoveCycle}
+            storedCycleIdForAnchor={storedForAnchor?.id}
+            cycles={cycles}
           />
           <button
             type="button"
@@ -418,18 +441,53 @@ function CyclePickerTrigger({
   labelText,
   rangeText,
   isCurrentCycle,
+  storedLabel,
+  storedCycleIdForAnchor,
+  cycles,
   onPick,
   onToday,
+  onUpsertCycle,
+  onRemoveCycle,
 }: {
   anchorDate: Date;
   labelText: string;
   rangeText: string;
   isCurrentCycle: boolean;
+  storedLabel?: string;
+  storedCycleIdForAnchor?: string;
+  cycles: Record<string, import('@dayrail/core').Cycle>;
   onPick: (monday: Date) => void;
   onToday: () => void;
+  onUpsertCycle: (startDate: string, label: string) => Promise<void>;
+  onRemoveCycle: (id: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
-  const groups = useMemo(() => enumerateCycles(anchorDate), [anchorDate]);
+  const [labelEditOpen, setLabelEditOpen] = useState(false);
+  const [labelDraft, setLabelDraft] = useState('');
+  const groups = useMemo(
+    () => enumerateCycles(anchorDate, { cycles }),
+    [anchorDate, cycles],
+  );
+
+  const anchorMondayIso = toIsoDate(startOfWeekMonday(anchorDate));
+
+  const openLabelEdit = () => {
+    setLabelDraft(storedLabel ?? '');
+    setLabelEditOpen(true);
+  };
+  const submitLabel = async () => {
+    const trimmed = labelDraft.trim();
+    if (!trimmed) return;
+    await onUpsertCycle(anchorMondayIso, trimmed);
+    setLabelEditOpen(false);
+  };
+  const clearLabel = async () => {
+    if (storedCycleIdForAnchor) {
+      await onRemoveCycle(storedCycleIdForAnchor);
+    }
+    setLabelEditOpen(false);
+  };
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -457,7 +515,7 @@ function CyclePickerTrigger({
       <PopoverContent
         align="start"
         sideOffset={6}
-        className="max-h-[420px] w-[260px] overflow-y-auto p-1"
+        className="max-h-[460px] w-[300px] overflow-y-auto p-1"
       >
         <div className="flex items-center justify-between px-3 pb-1 pt-1.5">
           <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
@@ -474,13 +532,73 @@ function CyclePickerTrigger({
             回到当前
           </button>
         </div>
+
+        {labelEditOpen ? (
+          <div className="flex flex-col gap-1.5 px-3 py-2">
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              {storedLabel ? '重命名' : '标记此周期'} · {anchorMondayIso}
+            </span>
+            <input
+              type="text"
+              autoFocus
+              value={labelDraft}
+              onChange={(e) => setLabelDraft(e.target.value)}
+              placeholder="例：考研冲刺周"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  void submitLabel();
+                } else if (e.key === 'Escape') {
+                  setLabelEditOpen(false);
+                }
+              }}
+              className="h-7 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+            />
+            <div className="flex items-center justify-end gap-1.5">
+              {storedCycleIdForAnchor && (
+                <button
+                  type="button"
+                  onClick={() => void clearLabel()}
+                  className="mr-auto rounded-sm px-2 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-red-500"
+                >
+                  删除标记
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setLabelEditOpen(false)}
+                className="rounded-sm px-2 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitLabel()}
+                className="rounded-sm bg-ink-primary px-2 py-0.5 text-2xs text-surface-0 transition hover:bg-ink-primary/90"
+              >
+                保存
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={openLabelEdit}
+            className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            {storedLabel ? `✎ 重命名「${storedLabel}」` : '+ 标记此周期'}
+          </button>
+        )}
+
+        <div className="mx-3 my-1 h-px bg-surface-3" />
+
         {groups.map((g) => (
           <div key={`${g.year}-${g.month}`} className="flex flex-col">
             <span className="px-3 pb-0.5 pt-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary/80">
               {g.label}
             </span>
             {g.entries.map((entry) => {
-              const active = toIsoDate(entry.monday) === toIsoDate(anchorDate);
+              const active = toIsoDate(entry.monday) === anchorMondayIso;
               return (
                 <button
                   key={entry.startIso}
@@ -494,11 +612,26 @@ function CyclePickerTrigger({
                     active ? 'bg-surface-2' : 'hover:bg-surface-2',
                   )}
                 >
-                  <span className="font-mono text-xs text-ink-primary">
-                    {entry.cycleLabel}
-                  </span>
-                  <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
-                    {entry.rangeLabel}
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="flex items-center gap-2">
+                      {entry.customLabel ? (
+                        <>
+                          <span className="truncate text-xs text-ink-primary">
+                            {entry.customLabel}
+                          </span>
+                          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary/80">
+                            {entry.cycleLabel}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="font-mono text-xs text-ink-primary">
+                          {entry.cycleLabel}
+                        </span>
+                      )}
+                    </span>
+                    <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+                      {entry.rangeLabel}
+                    </span>
                   </span>
                   {entry.isCurrent && (
                     <span className="ml-auto rounded-sm bg-ink-primary px-1 font-mono text-[9px] uppercase tracking-widest text-surface-0">

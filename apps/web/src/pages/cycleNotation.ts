@@ -1,8 +1,10 @@
-// Cycle notation (ERD §9.7 "C1 scheme"). Pure derivation — no stored
-// Cycle records. Every Cycle is a 7-day Monday-anchored window; the
-// `C{n}` label is the ordinal of this Monday within its own month
-// (startDate's month wins for cross-month weeks).
+// Cycle notation (ERD §9.7 "C1 scheme"). Derivation by default —
+// every Cycle is a 7-day Monday-anchored window with a `C{n}` label
+// (ordinal within its startDate's month). Stored Cycle records (see
+// core's `state.cycles`) overlay custom labels onto specific Mondays;
+// the enumeration folds them in when passed.
 
+import type { Cycle } from '@dayrail/core';
 import { startOfWeekMonday, toIsoDate } from './cycleFromStore';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -49,6 +51,12 @@ export interface CycleEntry {
   cycleLabel: string; // "4月 C2"
   rangeLabel: string; // "Apr 13 – Apr 19"
   isCurrent: boolean;
+  /** User-set label if the week has a stored Cycle record, else
+   *  undefined. Surfaces in the picker as primary text. */
+  customLabel?: string;
+  /** Stored Cycle id — lets the picker dispatch remove / edit
+   *  without rebuilding it. Undefined for default (unlabeled) weeks. */
+  storedCycleId?: string;
 }
 
 export interface CycleMonthGroup {
@@ -60,7 +68,17 @@ export interface CycleMonthGroup {
 
 export function enumerateCycles(
   anchor: Date,
-  { past = 8, future = 8 }: { past?: number; future?: number } = {},
+  {
+    past = 8,
+    future = 8,
+    cycles,
+  }: {
+    past?: number;
+    future?: number;
+    /** Store's `cycles` map. When supplied, any Monday that has a
+     *  stored record gets its label + id threaded into the entry. */
+    cycles?: Record<string, Cycle>;
+  } = {},
 ): CycleMonthGroup[] {
   const anchorMonday = startOfWeekMonday(anchor);
   const todayMonday = startOfWeekMonday(new Date());
@@ -71,6 +89,7 @@ export function enumerateCycles(
     const m = new Date(anchorMonday.getTime() + i * 7 * DAY_MS);
     const startIso = toIsoDate(m);
     const endIso = toIsoDate(new Date(m.getTime() + 6 * DAY_MS));
+    const stored = cycles?.[`cycle-${startIso}`];
     entries.push({
       monday: m,
       startIso,
@@ -78,6 +97,8 @@ export function enumerateCycles(
       cycleLabel: cycleLabel(m),
       rangeLabel: cycleRangeLabel(m),
       isCurrent: startIso === todayMondayIso,
+      ...(stored?.label && { customLabel: stored.label }),
+      ...(stored && { storedCycleId: stored.id }),
     });
   }
 
