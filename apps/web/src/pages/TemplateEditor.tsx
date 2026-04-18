@@ -148,6 +148,7 @@ export function TemplateEditor() {
   const updateRailAction = useStore((s) => s.updateRail);
   const createRailAction = useStore((s) => s.createRail);
   const deleteRailAction = useStore((s) => s.deleteRail);
+  const upsertTemplateAction = useStore((s) => s.upsertTemplate);
   const undoEditSessionAction = useStore((s) => s.undoEditSession);
 
   const mutate = (id: string, patch: Partial<EditableRail>) => {
@@ -186,15 +187,44 @@ export function TemplateEditor() {
     window.alert('重置到默认 —— v0.3 衔接。当前走 ⤺ 撤销本次编辑 回到 session baseline。');
   };
 
-  const duplicateTemplate = () => {
-    window.alert(`复制「${currentTemplate.label}」—— v0.3 衔接。`);
+  const duplicateTemplate = async () => {
+    const proposedName = window.prompt(
+      `复制「${currentTemplate.label}」到新模板，名字？`,
+      `${currentTemplate.label} · 副本`,
+    );
+    if (!proposedName) return;
+    const name = proposedName.trim();
+    if (!name) return;
+    const existingKeys = new Set(templates.map((t) => t.key));
+    const newKey = uniqueTemplateKey(name, existingKeys);
+    // Templates + rails under the same sessionId, so 撤销本次编辑 drops
+    // both together if the user changes their mind.
+    await upsertTemplateAction(
+      {
+        key: newKey,
+        name,
+        color: currentTemplate.color,
+        isDefault: false,
+      },
+      sessionId ?? undefined,
+    );
+    const stamp = Date.now();
+    let i = 0;
+    for (const source of rails) {
+      const dup: Rail = {
+        ...source,
+        id: `${source.id}-copy-${stamp}-${i}`,
+        templateKey: newKey,
+      };
+      await createRailAction(dup, sessionId ?? undefined);
+      i++;
+    }
+    navigate(`/templates/${newKey}`);
   };
 
   const deleteTemplate = () => {
     if (currentTemplate.builtIn) return;
-    if (window.confirm(`删除「${currentTemplate.label}」？`)) {
-      window.alert('删除模板 —— v0.3 衔接。');
-    }
+    window.alert('删除模板 —— store 尚未暴露 deleteTemplate，稍后拆单独一刀上。');
   };
 
   const fillGap = (startMin: number, endMin: number) => {
@@ -416,6 +446,24 @@ function AddRailRow({ onAdd }: { onAdd: () => void }) {
       添加 Rail
     </button>
   );
+}
+
+// Derive a URL-safe template key from a user-entered name; append a
+// numeric suffix if it collides with an existing key.
+function uniqueTemplateKey(name: string, existing: Set<string>): string {
+  const slug =
+    name
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[^\p{Letter}\p{Number}]+/gu, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40) || 'template';
+  if (!existing.has(slug)) return slug;
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${slug}-${n}`;
+    if (!existing.has(candidate)) return candidate;
+  }
+  return `${slug}-${Date.now()}`;
 }
 
 // Picks a color different from both neighbors; fallback to least-used.
