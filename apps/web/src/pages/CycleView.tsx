@@ -41,6 +41,7 @@ export function CycleView() {
   const templates = useStore((s) => s.templates);
   const rails = useStore((s) => s.rails);
   const tasks = useStore((s) => s.tasks);
+  const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
 
   const weekStart = useMemo(() => startOfWeekMonday(anchorDate), [anchorDate]);
 
@@ -112,6 +113,17 @@ export function CycleView() {
   // reads session.changeCount instead.
   const changeCount = Object.keys(overrides).length;
 
+  const handleDropTask = useCallback(
+    (taskId: string, date: string, railId: string) => {
+      void scheduleTaskToRail(taskId, {
+        cycleId: `cycle-${date}`,
+        date,
+        railId,
+      });
+    },
+    [scheduleTaskToRail],
+  );
+
   const shiftWeek = useCallback((deltaDays: number) => {
     setAnchorDate((d) => {
       const next = new Date(d);
@@ -160,6 +172,7 @@ export function CycleView() {
                 days={days}
                 slotsByKey={slotMap}
                 todayISO={todayISO}
+                onDropTask={handleDropTask}
               />
             );
           })}

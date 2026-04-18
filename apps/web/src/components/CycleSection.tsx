@@ -1,4 +1,5 @@
 import { clsx } from 'clsx';
+import { useState } from 'react';
 import {
   type CycleDay,
   type CycleSlot,
@@ -11,6 +12,7 @@ import {
 } from '@/data/sampleTemplate';
 import { RAIL_COLOR_HEX } from './railColors';
 import { CycleCell } from './CycleCell';
+import { TASK_DRAG_MIME } from './BacklogDrawer';
 
 // ERD §5.3 D1-1B — per-template stacked section. Each section is a
 // self-contained mini-grid. Structure:
@@ -31,6 +33,7 @@ interface Props {
   days: CycleDay[];
   slotsByKey: Map<string, CycleSlot>; // key = `${railId}|${date}`
   todayISO: string;
+  onDropTask?: (taskId: string, date: string, railId: string) => void;
 }
 
 export function CycleSection({
@@ -40,8 +43,10 @@ export function CycleSection({
   days,
   slotsByKey,
   todayISO,
+  onDropTask,
 }: Props) {
   const stripColor = RAIL_COLOR_HEX[templateColor];
+  const [hoverKey, setHoverKey] = useState<string | null>(null);
 
   return (
     <section
@@ -82,12 +87,56 @@ export function CycleSection({
                 </th>
                 {days.map((d) => {
                   const slot = slotsByKey.get(`${rail.id}|${d.date}`);
+                  const cellKey = `${rail.id}|${d.date}`;
+                  const canDrop = onDropTask != null;
+                  const isHover = hoverKey === cellKey;
                   return (
                     <td
                       key={d.date}
+                      onDragEnter={
+                        canDrop
+                          ? (e) => {
+                              if (!hasTaskPayload(e)) return;
+                              e.preventDefault();
+                              setHoverKey(cellKey);
+                            }
+                          : undefined
+                      }
+                      onDragOver={
+                        canDrop
+                          ? (e) => {
+                              if (!hasTaskPayload(e)) return;
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = 'move';
+                            }
+                          : undefined
+                      }
+                      onDragLeave={
+                        canDrop
+                          ? () => {
+                              setHoverKey((k) =>
+                                k === cellKey ? null : k,
+                              );
+                            }
+                          : undefined
+                      }
+                      onDrop={
+                        canDrop
+                          ? (e) => {
+                              const taskId = e.dataTransfer.getData(
+                                TASK_DRAG_MIME,
+                              );
+                              setHoverKey(null);
+                              if (!taskId) return;
+                              e.preventDefault();
+                              onDropTask(taskId, d.date, rail.id);
+                            }
+                          : undefined
+                      }
                       className={clsx(
-                        'p-1 align-top',
+                        'p-1 align-top transition',
                         d.date === todayISO && 'bg-surface-2/40',
+                        isHover && 'bg-cta-soft/30 ring-1 ring-inset ring-cta/60',
                       )}
                     >
                       {slot ? (
@@ -110,6 +159,10 @@ export function CycleSection({
       </div>
     </section>
   );
+}
+
+function hasTaskPayload(e: React.DragEvent<HTMLTableCellElement>): boolean {
+  return Array.from(e.dataTransfer.types).includes(TASK_DRAG_MIME);
 }
 
 function SectionMiniHeader({
