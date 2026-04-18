@@ -11,6 +11,7 @@
 import {
   INBOX_LINE_ID,
   ensureTodayInstances,
+  materializeAutoTasksForToday,
   selectActiveTemplateKey,
   toIsoDate,
   useStore,
@@ -57,6 +58,13 @@ export async function boot(): Promise<void> {
   if (templateKey) {
     await ensureTodayInstances(today, templateKey);
   }
+
+  // 6. Materialise today's habit auto-tasks (§10.2 strategy Ⅱ).
+  //    Idempotent — deterministic ids + (habit, cycle) markers make
+  //    this a no-op after the first call within the same cycle. The
+  //    Cycle-View / rhythm-strip / Calendar triggers will later close
+  //    the week-wide window when the user opens those surfaces.
+  await materializeAutoTasksForToday(today);
 }
 
 async function ensureBuiltinWeekdayRules(): Promise<void> {
