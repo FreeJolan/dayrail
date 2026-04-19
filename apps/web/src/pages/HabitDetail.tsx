@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import { useNavigate } from 'react-router-dom';
-import { Archive, ArrowUpRight, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Archive, ArrowUpRight, Check, Clock, Pencil, Plus, Trash2, X } from 'lucide-react';
 import {
   findAffectedFutureAutoTasks,
   materializeAutoTasks,
@@ -16,6 +16,11 @@ import {
 } from '@dayrail/core';
 import { RAIL_COLOR_HEX, RAIL_COLOR_STEP_4, RAIL_COLOR_STEP_6, RAIL_COLOR_STEP_7 } from '@/components/railColors';
 import { RailPicker } from '@/components/RailPicker';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/primitives/Popover';
 import type { RailColor } from '@/data/sample';
 
 // ERD §5.5.0 v0.4 habit detail page.
@@ -80,6 +85,60 @@ export function HabitDetail({ habit }: Props) {
     [habitBindings, habit.id],
   );
 
+  const updateTask = useStore((s) => s.updateTask);
+
+  // ERD §5.5.0 B rhythm-strip click-to-backfill: one click retroactively
+  // writes a terminal status to every auto-task on that date for this
+  // habit. "clear" reverts to pending + wipes stamp fields. Multi-rail
+  // habits: the action applies to all (rhythm cells reduce per-day to
+  // one summary already, so a single interaction maps to "fix this
+  // day").
+  const handleRhythmBackfill = useCallback(
+    (date: string, action: BackfillAction) => {
+      const affected = Object.values(tasks).filter(
+        (t) =>
+          t.lineId === habit.id &&
+          t.source === 'auto-habit' &&
+          t.slot?.date === date &&
+          t.status !== 'deleted',
+      );
+      if (affected.length === 0) return;
+      const nowIso = new Date().toISOString();
+      for (const t of affected) {
+        if (action === 'clear') {
+          void updateTask(t.id, {
+            status: 'pending',
+            doneAt: undefined,
+            deferredAt: undefined,
+            archivedAt: undefined,
+          });
+        } else if (action === 'done') {
+          void updateTask(t.id, {
+            status: 'done',
+            doneAt: nowIso,
+            deferredAt: undefined,
+            archivedAt: undefined,
+          });
+        } else if (action === 'deferred') {
+          void updateTask(t.id, {
+            status: 'deferred',
+            deferredAt: nowIso,
+            doneAt: undefined,
+            archivedAt: undefined,
+          });
+        } else {
+          void updateTask(t.id, {
+            status: 'archived',
+            archivedAt: nowIso,
+            doneAt: undefined,
+            deferredAt: undefined,
+          });
+        }
+      }
+    },
+    [tasks, habit.id, updateTask],
+  );
+
   return (
     <div className="flex flex-col gap-8">
       <RhythmStrip
@@ -88,6 +147,7 @@ export function HabitDetail({ habit }: Props) {
         windowEnd={windowEnd}
         tasks={tasks}
         color={habit.color}
+        onBackfill={handleRhythmBackfill}
       />
 
       <ScheduleList
@@ -111,18 +171,24 @@ export function HabitDetail({ habit }: Props) {
 
 type CellState = 'done' | 'deferred' | 'archived' | 'pending' | 'empty';
 
+type BackfillAction = 'done' | 'deferred' | 'archived' | 'clear';
+
 function RhythmStrip({
   habitId,
   windowStart,
   windowEnd,
   tasks,
   color,
+  onBackfill,
 }: {
   habitId: string;
   windowStart: string;
   windowEnd: string;
   tasks: Record<string, Task>;
   color?: RailColor;
+  /** Retroactively write a status to every auto-task on `date` for
+   *  this habit. Disabled / omitted → cells stay read-only. */
+  onBackfill?: (date: string, action: BackfillAction) => void;
 }) {
   const dates = useMemo(() => {
     const out: string[] = [];
@@ -157,37 +223,184 @@ function RhythmStrip({
           Rhythm
         </span>
         <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
-          最近 {WINDOW_DAYS} 天
+          最近 {WINDOW_DAYS} 天 · 点击回填
         </span>
       </header>
       <div className="flex items-end gap-1">
         {dates.map((d) => (
-          <div
+          <RhythmCell
             key={d}
-            className="flex flex-1 flex-col items-center gap-1"
-            title={`${d} · ${STATE_LABEL[cellByDate[d]!]}`}
-          >
-            <span
-              aria-hidden
-              className={clsx(
-                'h-8 w-full rounded-sm transition',
-                cellByDate[d] === 'empty' && 'bg-surface-2',
-              )}
-              style={styleFor(cellByDate[d]!, accent)}
-            />
-            <span
-              className={clsx(
-                'font-mono text-2xs tabular-nums',
-                d === windowEnd ? 'text-ink-primary' : 'text-ink-tertiary',
-              )}
-            >
-              {d.slice(5)}
-            </span>
-          </div>
+            date={d}
+            state={cellByDate[d]!}
+            accent={accent}
+            isLast={d === windowEnd}
+            {...(onBackfill && { onBackfill })}
+          />
         ))}
       </div>
       <Legend />
     </section>
+  );
+}
+
+function RhythmCell({
+  date,
+  state,
+  accent,
+  isLast,
+  onBackfill,
+}: {
+  date: string;
+  state: CellState;
+  accent: RailColor;
+  isLast: boolean;
+  onBackfill?: (date: string, action: BackfillAction) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const canBackfill = state !== 'empty' && !!onBackfill;
+
+  const swatch = (
+    <span
+      aria-hidden
+      className={clsx(
+        'h-8 w-full rounded-sm transition',
+        state === 'empty' && 'bg-surface-2',
+        canBackfill && 'hover:ring-1 hover:ring-ink-tertiary/30',
+      )}
+      style={styleFor(state, accent)}
+    />
+  );
+
+  const label = (
+    <span
+      className={clsx(
+        'font-mono text-2xs tabular-nums',
+        isLast ? 'text-ink-primary' : 'text-ink-tertiary',
+      )}
+    >
+      {date.slice(5)}
+    </span>
+  );
+
+  if (!canBackfill) {
+    return (
+      <div
+        className="flex flex-1 flex-col items-center gap-1"
+        title={`${date} · ${STATE_LABEL[state]}`}
+      >
+        {swatch}
+        {label}
+      </div>
+    );
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="flex flex-1 flex-col items-center gap-1 rounded-sm text-left"
+          title={`${date} · ${STATE_LABEL[state]} · 点击回填`}
+          aria-label={`${date} · ${STATE_LABEL[state]}`}
+        >
+          {swatch}
+          {label}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="center" sideOffset={6} className="w-[200px] p-1">
+        <div className="flex flex-col gap-0.5 px-3 py-1.5">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            Backfill · {date}
+          </span>
+          <span className="text-xs text-ink-tertiary">
+            当前 · {STATE_LABEL[state]}
+          </span>
+        </div>
+        <ul className="flex flex-col">
+          <BackfillOption
+            current={state}
+            target="done"
+            label="完成"
+            icon={Check}
+            onSelect={() => {
+              onBackfill(date, 'done');
+              setOpen(false);
+            }}
+          />
+          <BackfillOption
+            current={state}
+            target="deferred"
+            label="以后再说"
+            icon={Clock}
+            onSelect={() => {
+              onBackfill(date, 'deferred');
+              setOpen(false);
+            }}
+          />
+          <BackfillOption
+            current={state}
+            target="archived"
+            label="跳过"
+            icon={Archive}
+            onSelect={() => {
+              onBackfill(date, 'archived');
+              setOpen(false);
+            }}
+          />
+          <div className="mx-3 my-1 h-px bg-surface-3" />
+          <BackfillOption
+            current={state}
+            target="pending"
+            label="清除标记"
+            icon={X}
+            onSelect={() => {
+              onBackfill(date, 'clear');
+              setOpen(false);
+            }}
+          />
+        </ul>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function BackfillOption({
+  current,
+  target,
+  label,
+  icon: Icon,
+  onSelect,
+}: {
+  current: CellState;
+  target: CellState;
+  label: string;
+  icon: typeof Check;
+  onSelect: () => void;
+}) {
+  const active = current === target;
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onSelect}
+        className={clsx(
+          'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition',
+          active ? 'bg-surface-2 text-ink-primary' : 'text-ink-secondary hover:bg-surface-2 hover:text-ink-primary',
+        )}
+      >
+        <Icon
+          className="h-3.5 w-3.5 text-ink-tertiary"
+          strokeWidth={1.8}
+        />
+        <span className="flex-1">{label}</span>
+        {active && (
+          <Check
+            className="h-3.5 w-3.5 text-ink-tertiary"
+            strokeWidth={2}
+          />
+        )}
+      </button>
+    </li>
   );
 }
 
