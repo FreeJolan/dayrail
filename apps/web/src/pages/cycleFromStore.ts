@@ -253,9 +253,18 @@ export function findOrphanTasksForTemplateSwitch(
   });
 }
 
-/** Unscheduled tasks that should appear in the Backlog drawer.
- *  Open-ended filter — includes anything not in a terminal state, not
- *  Rail-bound, and not backed by an active Ad-hoc. */
+/** Tasks that should surface in the Cycle View's Backlog drawer as
+ *  drag sources. Covers two populations:
+ *  - Pending / in-progress tasks with no slot and no active Ad-hoc
+ *    (classic "to schedule" pile).
+ *  - Deferred tasks (regardless of whether they still carry an old
+ *    slot) — the user's "not now" pile, ready to be committed to a
+ *    new day. When dropped on a Cycle cell, scheduleTaskToRail
+ *    flips deferred → pending automatically.
+ *
+ *  Terminal states (done / archived / deleted) are excluded. Pending
+ *  tasks already bound to a slot are also excluded — they're visible
+ *  in the Cycle grid itself, including them here would duplicate. */
 export function selectBacklogTasks(
   state: Pick<DayRailState, 'tasks' | 'adhocEvents'>,
 ): Task[] {
@@ -264,8 +273,17 @@ export function selectBacklogTasks(
     if (a.status === 'active' && a.taskId) adhocTaskIds.add(a.taskId);
   }
   return Object.values(state.tasks)
-    .filter((t) => t.status === 'pending' || t.status === 'in-progress')
-    .filter((t) => !t.slot)
-    .filter((t) => !adhocTaskIds.has(t.id))
-    .sort((a, b) => a.order - b.order);
+    .filter((t) => {
+      if (t.status === 'deferred') return true;
+      if (t.status !== 'pending' && t.status !== 'in-progress') return false;
+      return !t.slot && !adhocTaskIds.has(t.id);
+    })
+    .sort((a, b) => {
+      // Deferred first (they're waiting longer for a decision), then
+      // the rest by user-set order.
+      const aPri = a.status === 'deferred' ? 0 : 1;
+      const bPri = b.status === 'deferred' ? 0 : 1;
+      if (aPri !== bPri) return aPri - bPri;
+      return a.order - b.order;
+    });
 }
