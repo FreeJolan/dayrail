@@ -2,6 +2,8 @@ import { clsx } from 'clsx';
 import {
   ArrowRight,
   ArrowUpRight,
+  Check,
+  ChevronDown,
   PanelRightClose,
   PanelRightOpen,
   Plus,
@@ -9,8 +11,13 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { INBOX_LINE_ID, useStore, type Task } from '@dayrail/core';
+import { INBOX_LINE_ID, useStore, type Line, type Task } from '@dayrail/core';
 import { selectBacklogTasks } from '@/pages/cycleFromStore';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from './primitives/Popover';
 import { RAIL_COLOR_HEX } from './railColors';
 
 // ERD §5.3 D8 — split drawer docked on the right. Items are un-
@@ -36,15 +43,16 @@ export function BacklogDrawer({ open, onToggle }: Props) {
   const navigate = useNavigate();
   const onCyclePage = location.pathname === '/cycle';
 
-  const handleQuickCreate = async (title: string) => {
-    // Quick-create lands in Inbox, unscheduled. User can drag it onto
-    // Cycle or open the detail drawer to reassign line / add notes.
+  const handleQuickCreate = async (title: string, lineId: string) => {
+    // Writes a pending task with no slot. Line defaults to Inbox but
+    // the picker lets the user route to any active Project. Habits
+    // are excluded — they don't accept hand-built tasks (§5.5.0).
     const maxOrder = Object.values(tasksMap)
-      .filter((t) => t.lineId === INBOX_LINE_ID)
+      .filter((t) => t.lineId === lineId)
       .reduce((m, t) => Math.max(m, t.order), 0);
     await createTask({
       id: `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      lineId: INBOX_LINE_ID,
+      lineId,
       title,
       order: maxOrder + 1,
       status: 'pending',
@@ -127,6 +135,7 @@ export function BacklogDrawer({ open, onToggle }: Props) {
           {adding && (
             <div className="px-4 pb-3">
               <QuickCreateInput
+                linesMap={linesMap}
                 onSubmit={handleQuickCreate}
                 onCancel={() => setAdding(false)}
               />
@@ -210,38 +219,121 @@ export function BacklogDrawer({ open, onToggle }: Props) {
 export const TASK_DRAG_MIME = 'application/x-dayrail-task';
 
 function QuickCreateInput({
+  linesMap,
   onSubmit,
   onCancel,
 }: {
-  onSubmit: (title: string) => void;
+  linesMap: Record<string, Line>;
+  onSubmit: (title: string, lineId: string) => void;
   onCancel: () => void;
 }) {
   const [value, setValue] = useState('');
+  const [lineId, setLineId] = useState<string>(INBOX_LINE_ID);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const targets = useMemo(
+    () =>
+      Object.values(linesMap)
+        .filter((l) => l.status === 'active')
+        // Habits reject hand-built tasks (§5.5.0). Inbox always first
+        // so default case reads at the top of the list.
+        .filter((l) => l.isDefault || l.kind === 'project')
+        .sort((a, b) => {
+          if (a.isDefault && !b.isDefault) return -1;
+          if (!a.isDefault && b.isDefault) return 1;
+          return a.name.localeCompare(b.name);
+        }),
+    [linesMap],
+  );
+  const currentLine = linesMap[lineId];
   const submit = () => {
     const trimmed = value.trim();
     if (!trimmed) return;
-    onSubmit(trimmed);
+    onSubmit(trimmed, lineId);
   };
   return (
-    <input
-      type="text"
-      value={value}
-      autoFocus
-      placeholder="新任务 · Enter 添加"
-      onChange={(e) => setValue(e.target.value)}
-      onKeyDown={(e) => {
-        // nativeEvent.isComposing = IME candidate window open; Enter
-        // there picks the pinyin, doesn't submit.
-        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-          e.preventDefault();
-          submit();
-        } else if (e.key === 'Escape') {
-          e.preventDefault();
-          onCancel();
-        }
-      }}
-      className="h-8 w-full rounded-md border border-hairline/60 bg-surface-0 px-2 text-sm text-ink-primary outline-none transition focus:border-ink-secondary"
-    />
+    <div className="flex flex-col gap-1.5">
+      <input
+        type="text"
+        value={value}
+        autoFocus
+        placeholder="新任务 · Enter 添加"
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          // nativeEvent.isComposing = IME candidate window open; Enter
+          // there picks the pinyin, doesn't submit.
+          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            submit();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        className="h-8 w-full rounded-md border border-hairline/60 bg-surface-0 px-2 text-sm text-ink-primary outline-none transition focus:border-ink-secondary"
+      />
+      <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 self-start rounded-sm px-1.5 py-0.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            → {currentLine?.name ?? 'Inbox'}
+            <ChevronDown className="h-3 w-3" strokeWidth={1.8} />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="start"
+          sideOffset={4}
+          className="max-h-[240px] w-[220px] overflow-y-auto p-1"
+        >
+          <ul className="flex flex-col">
+            {targets.map((line) => {
+              const active = line.id === lineId;
+              return (
+                <li key={line.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLineId(line.id);
+                      setPickerOpen(false);
+                    }}
+                    className={clsx(
+                      'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition',
+                      active ? 'bg-surface-2' : 'hover:bg-surface-2',
+                    )}
+                  >
+                    {line.color && (
+                      <span
+                        aria-hidden
+                        className="h-3 w-[3px] shrink-0 rounded-sm"
+                        style={{
+                          background:
+                            RAIL_COLOR_HEX[
+                              line.color as keyof typeof RAIL_COLOR_HEX
+                            ] ?? RAIL_COLOR_HEX.slate,
+                        }}
+                      />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{line.name}</span>
+                    {line.isDefault && (
+                      <span className="shrink-0 font-mono text-[9px] uppercase tracking-widest text-ink-tertiary">
+                        inbox
+                      </span>
+                    )}
+                    {active && (
+                      <Check
+                        className="h-3.5 w-3.5 text-ink-tertiary"
+                        strokeWidth={2}
+                      />
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </PopoverContent>
+      </Popover>
+    </div>
   );
 }
 
