@@ -601,35 +601,122 @@ function DangerZone() {
 
 // ============ About ============
 
-/** Shows the user whether OPFS is persistent (browser promises not to
- *  evict under storage pressure). Boot already calls
- *  `navigator.storage.persist()`; this just reads the result back. */
-function useStorageStatus(): { label: string } {
-  const [label, setLabel] = useState<string>('检测中…');
+interface StorageStatus {
+  label: string;
+  persisted: boolean | null; // null = unsupported / unknown
+  usage?: string; // human-readable "12.3 MB / 2.1 GB"
+  refresh: () => Promise<void>;
+  request: () => Promise<void>;
+}
+
+/** Reads back whether OPFS is persistent. Boot already calls
+ *  `navigator.storage.persist()` once, but localhost + fresh installs
+ *  are often denied — Chrome uses a "site engagement" heuristic. The
+ *  `request()` call below re-tries on a user gesture, which carries
+ *  more weight than the boot-time auto-call. */
+function useStorageStatus(): StorageStatus {
+  const [persisted, setPersisted] = useState<boolean | null>(null);
+  const [usage, setUsage] = useState<string | undefined>(undefined);
+
+  const refresh = async () => {
+    if (typeof navigator === 'undefined' || !('storage' in navigator)) {
+      setPersisted(null);
+      return;
+    }
+    const s = navigator.storage;
+    try {
+      const ok = typeof s.persisted === 'function' ? await s.persisted() : null;
+      setPersisted(ok);
+    } catch {
+      setPersisted(null);
+    }
+    try {
+      if (typeof s.estimate === 'function') {
+        const est = await s.estimate();
+        if (est.usage != null && est.quota != null) {
+          setUsage(`${formatBytes(est.usage)} / ${formatBytes(est.quota)}`);
+        }
+      }
+    } catch {
+      // no-op — estimate() is a nice-to-have
+    }
+  };
+
+  const request = async () => {
+    if (typeof navigator === 'undefined' || !('storage' in navigator)) return;
+    const s = navigator.storage;
+    if (typeof s.persist !== 'function') return;
+    try {
+      await s.persist();
+    } catch {
+      // swallow — we'll just re-check below
+    }
+    await refresh();
+  };
+
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (typeof navigator === 'undefined' || !('storage' in navigator)) {
-        if (!cancelled) setLabel('不支持');
-        return;
-      }
-      const s = navigator.storage;
-      if (typeof s.persisted !== 'function') {
-        if (!cancelled) setLabel('不支持');
-        return;
-      }
-      try {
-        const ok = await s.persisted();
-        if (!cancelled) setLabel(ok ? '已启用（OPFS 受保护）' : '未启用（可能被回收）');
-      } catch {
-        if (!cancelled) setLabel('未知');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    void refresh();
   }, []);
-  return { label };
+
+  const label =
+    persisted === true
+      ? '已启用（OPFS 受保护）'
+      : persisted === false
+        ? '未启用（可能被回收）'
+        : persisted === null
+          ? '不支持'
+          : '未知';
+
+  return { label, persisted, usage, refresh, request };
+}
+
+function StorageStatusRow({ storage }: { storage: StorageStatus }) {
+  const [requesting, setRequesting] = useState(false);
+  const handleRequest = async () => {
+    setRequesting(true);
+    try {
+      await storage.request();
+    } finally {
+      setRequesting(false);
+    }
+  };
+  return (
+    <div className="flex items-center justify-between gap-3 py-0.5">
+      <span className="text-sm text-ink-tertiary">存储持久化</span>
+      <div className="flex items-center gap-2">
+        <span
+          className={clsx(
+            'text-sm',
+            storage.persisted === true
+              ? 'text-ink-primary'
+              : storage.persisted === false
+                ? 'text-warn'
+                : 'text-ink-secondary',
+          )}
+        >
+          {storage.label}
+        </span>
+        {storage.persisted === false && (
+          <button
+            type="button"
+            onClick={() => void handleRequest()}
+            disabled={requesting}
+            title="显式请求浏览器持久化 · 用户手势下成功率更高"
+            className="rounded-sm border border-hairline/60 px-2 py-0.5 text-xs text-ink-secondary transition hover:border-ink-secondary hover:bg-surface-2 hover:text-ink-primary disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {requesting ? '申请中…' : '申请'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 export function AboutSection() {
@@ -656,7 +743,10 @@ export function AboutSection() {
           />
           <KeyValue label="许可证" value="MIT" />
           <KeyValue label="维护者" value="FreeJolan" />
-          <KeyValue label="存储持久化" value={storage.label} />
+          <StorageStatusRow storage={storage} />
+          {storage.usage && (
+            <KeyValue label="存储用量" value={storage.usage} mono />
+          )}
         </div>
 
         <div className="flex flex-col gap-1">
