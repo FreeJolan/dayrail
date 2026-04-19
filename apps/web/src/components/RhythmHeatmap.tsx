@@ -62,7 +62,12 @@ export function RhythmHeatmap({ data, phaseBands = [], prev }: Props) {
 
         <thead>
           {phaseBands.length > 0 && (
-            <PhaseBandRow bands={phaseBands} totalCols={data.dates.length} />
+            <PhaseBandRow
+              bands={phaseBands}
+              totalCols={data.dates.length}
+              dates={data.dates}
+              rows={data.rows}
+            />
           )}
           <tr>
             <th className="pb-2 text-left align-bottom">
@@ -146,14 +151,20 @@ function renderGroupedRows(
 function PhaseBandRow({
   bands,
   totalCols,
+  dates,
+  rows,
 }: {
   bands: PhaseBand[];
   totalCols: number;
+  dates: string[];
+  rows: HeatmapRow[];
 }) {
   // Layout: one <th> spanning the row-label column (empty), then
   // colSpan-merged <th>s for each band + any uncovered columns.
   // Walk left→right, filling gaps between bands with empty cells so
-  // the layout aligns with the weekday header row below.
+  // the layout aligns with the weekday header row below. Per-band
+  // match% computed across every heatmap row for the band's column
+  // range.
   const sorted = [...bands].sort((a, b) => a.startCol - b.startCol);
   const cells: React.ReactNode[] = [];
   let cursor = 0;
@@ -168,6 +179,7 @@ function PhaseBandRow({
       );
     }
     const span = band.endCol - band.startCol + 1;
+    const stats = bandStatsAcrossRows(band, dates, rows);
     cells.push(
       <th
         key={`band-${band.phaseId}`}
@@ -175,12 +187,21 @@ function PhaseBandRow({
         className="pb-1 align-bottom"
       >
         <div
-          title={band.label}
-          className="rounded-sm bg-surface-3 px-1.5 py-0.5"
+          title={
+            stats.applied > 0
+              ? `${band.label} · ${stats.done}/${stats.applied} · ${stats.matchPct}% match`
+              : band.label
+          }
+          className="flex items-center justify-between gap-1.5 rounded-sm bg-surface-3 px-1.5 py-0.5"
         >
-          <span className="truncate font-mono text-2xs uppercase tracking-widest text-ink-secondary">
+          <span className="min-w-0 truncate font-mono text-2xs uppercase tracking-widest text-ink-secondary">
             {band.label}
           </span>
+          {stats.applied > 0 && (
+            <span className="shrink-0 font-mono text-2xs tabular-nums text-ink-tertiary">
+              {stats.matchPct}%
+            </span>
+          )}
         </div>
       </th>,
     );
@@ -197,6 +218,34 @@ function PhaseBandRow({
       {cells}
     </tr>
   );
+}
+
+/** done / applied across every heatmap row for a band's column range.
+ *  `empty` cells (the rail didn't apply that day) are excluded from
+ *  the denominator. Same rule as HeatRow's rowStats — consistent
+ *  "applied" semantics everywhere. */
+function bandStatsAcrossRows(
+  band: PhaseBand,
+  dates: string[],
+  rows: HeatmapRow[],
+): { done: number; applied: number; matchPct: number } {
+  let done = 0;
+  let applied = 0;
+  for (let col = band.startCol; col <= band.endCol; col++) {
+    const date = dates[col];
+    if (!date) continue;
+    for (const r of rows) {
+      const state = r.byDate[date];
+      if (!state || state === 'empty') continue;
+      applied++;
+      if (state === 'done') done++;
+    }
+  }
+  return {
+    done,
+    applied,
+    matchPct: applied === 0 ? 0 : Math.round((done / applied) * 100),
+  };
 }
 
 function Header({
