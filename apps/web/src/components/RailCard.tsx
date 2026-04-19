@@ -35,9 +35,27 @@ interface Props {
    *  Task. Rendered inline on done / deferred / archived rows so the
    *  user can see why at a glance. */
   tags?: string[];
+  /** Carrying-Task info rendered inline on the card so the user can
+   *  scan title / notes / sub-items / milestone without opening the
+   *  detail drawer. `undefined` = bare rail (no task on this slot). */
+  taskInfo?: {
+    title: string;
+    hasNote: boolean;
+    subItemsDone: number;
+    subItemsTotal: number;
+    milestonePercent?: number;
+    isAutoTask: boolean;
+  };
 }
 
-export function RailCard({ rail, onAction, onUndo, onOpenDetail, tags }: Props) {
+export function RailCard({
+  rail,
+  onAction,
+  onUndo,
+  onOpenDetail,
+  tags,
+  taskInfo,
+}: Props) {
   const duration = computeDurationMinutes(rail.start, rail.end);
   const isCurrent = rail.state === 'current';
   const isDone = rail.state === 'done';
@@ -177,6 +195,39 @@ export function RailCard({ rail, onAction, onUndo, onOpenDetail, tags }: Props) 
           >
             {rail.subtitle}
           </p>
+        )}
+
+        {taskInfo && (
+          <div
+            className={clsx(
+              'flex flex-wrap items-center gap-2 text-sm',
+              isDone && 'text-ink-tertiary line-through decoration-ink-tertiary/40',
+              (isDeferred || isArchived || isUnmarked) && 'text-ink-tertiary',
+              (rail.state === 'pending' || isCurrent) && 'text-ink-primary',
+            )}
+          >
+            <span className="truncate">{taskInfo.title}</span>
+            {taskInfo.isAutoTask && (
+              <span className="rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                habit
+              </span>
+            )}
+            {taskInfo.subItemsTotal > 0 && (
+              <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+                子项 {taskInfo.subItemsDone}/{taskInfo.subItemsTotal}
+              </span>
+            )}
+            {taskInfo.hasNote && (
+              <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                · 备注
+              </span>
+            )}
+            {taskInfo.milestonePercent != null && (
+              <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+                · {taskInfo.milestonePercent}%
+              </span>
+            )}
+          </div>
         )}
 
         {tags && tags.length > 0 && (isDone || isDeferred || isArchived) && (
