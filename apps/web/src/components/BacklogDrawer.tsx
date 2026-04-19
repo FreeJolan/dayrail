@@ -1,5 +1,6 @@
 import { clsx } from 'clsx';
 import {
+  ArrowRight,
   ArrowUpRight,
   PanelRightClose,
   PanelRightOpen,
@@ -7,6 +8,7 @@ import {
   Search,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useStore, type Task } from '@dayrail/core';
 import { selectBacklogTasks } from '@/pages/cycleFromStore';
 import { RAIL_COLOR_HEX } from './railColors';
@@ -28,6 +30,9 @@ export function BacklogDrawer({ open, onToggle }: Props) {
   const linesMap = useStore((s) => s.lines);
   const adhocEventsMap = useStore((s) => s.adhocEvents);
   const [query, setQuery] = useState('');
+  const location = useLocation();
+  const navigate = useNavigate();
+  const onCyclePage = location.pathname === '/cycle';
 
   const tasks = useMemo(
     () => selectBacklogTasks({ tasks: tasksMap, adhocEvents: adhocEventsMap }),
@@ -131,12 +136,33 @@ export function BacklogDrawer({ open, onToggle }: Props) {
           )}
 
           <div className="hairline-t px-4 py-3">
-            <p className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-              Drag → day cell
-            </p>
-            <p className="mt-1 text-xs text-ink-tertiary">
-              把任务拖到右侧某天某条 Rail 的格子上即可排期。
-            </p>
+            {onCyclePage ? (
+              <>
+                <p className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                  Drag → day cell
+                </p>
+                <p className="mt-1 text-xs text-ink-tertiary">
+                  把任务拖到左侧某天某条 Rail 的格子上即可排期。
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                  Drag only on Cycle
+                </p>
+                <p className="mt-1 text-xs text-ink-tertiary">
+                  当前页面没有 drop 目标 —— 切到 Cycle 视图才能拖动排期。
+                </p>
+                <button
+                  type="button"
+                  onClick={() => navigate('/cycle')}
+                  className="mt-2 inline-flex items-center gap-1 rounded-sm px-1 py-0.5 font-mono text-2xs uppercase tracking-widest text-ink-secondary transition hover:text-ink-primary"
+                >
+                  去 Cycle
+                  <ArrowRight className="h-3 w-3" strokeWidth={1.8} />
+                </button>
+              </>
+            )}
           </div>
         </>
       )}

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { TodayTrack } from './pages/TodayTrack';
 import { TemplateEditor } from './pages/TemplateEditor';
@@ -7,6 +8,7 @@ import { Tasks } from './pages/Tasks';
 import { Pending } from './pages/Pending';
 import { Settings } from './pages/Settings';
 import { Calendar } from './pages/Calendar';
+import { BacklogDrawer } from './components/BacklogDrawer';
 import { SideNav } from './components/SideNav';
 import { ShortcutCheatsheet } from './components/ShortcutCheatsheet';
 import { TooltipProvider } from './components/primitives/Tooltip';
@@ -50,10 +52,11 @@ export default function App() {
 function Shell() {
   const cheatsheet = useCheatsheetToggle();
   useGlobalShortcuts(cheatsheet.show);
+  const backlog = useBacklogDrawerState();
   return (
     <div className="flex min-h-screen w-full bg-surface-0">
       <SideNav />
-      <main className="flex-1">
+      <main className="min-w-0 flex-1">
         <Routes>
           <Route path="/" element={<TodayTrack />} />
           <Route path="/cycle" element={<CycleView />} />
@@ -74,7 +77,24 @@ function Shell() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+      <BacklogDrawer open={backlog.open} onToggle={backlog.toggle} />
       <ShortcutCheatsheet open={cheatsheet.open} onClose={cheatsheet.hide} />
     </div>
   );
+}
+
+const BACKLOG_OPEN_KEY = 'dayrail.backlog.open';
+
+function useBacklogDrawerState(): { open: boolean; toggle: () => void } {
+  const [open, setOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    // Default CLOSED — the drawer is right-docked and takes 320px when
+    // open; collapsed edge is always visible for discoverability.
+    return window.localStorage.getItem(BACKLOG_OPEN_KEY) === '1';
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(BACKLOG_OPEN_KEY, open ? '1' : '0');
+  }, [open]);
+  return { open, toggle: () => setOpen((v) => !v) };
 }

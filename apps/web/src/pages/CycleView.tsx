@@ -18,7 +18,6 @@ import {
   CycleSection,
   type TemplateChoice,
 } from '@/components/CycleSection';
-import { BacklogDrawer } from '@/components/BacklogDrawer';
 import { EditSessionIndicator } from '@/components/EditSessionIndicator';
 import { ReasonToast } from '@/components/ReasonToast';
 import { useReasonToast } from '@/components/useReasonToast';
@@ -52,7 +51,6 @@ import {
 export function CycleView() {
   const navigate = useNavigate();
   const [anchorDate, setAnchorDate] = useState<Date>(() => new Date());
-  const [backlogOpen, setBacklogOpen] = useState(true);
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
 
   const templates = useStore((s) => s.templates);
@@ -301,9 +299,8 @@ export function CycleView() {
   }, [sessionId, undoEditSessionAction, openEditSession]);
 
   return (
-    <div className="flex min-h-screen w-full">
-      <div className="flex min-w-0 flex-1 flex-col pl-10 pr-6 xl:pl-14">
-        <TopBar
+    <div className="flex min-h-screen w-full flex-col pl-10 pr-6 xl:pl-14">
+      <TopBar
           anchorDate={anchorDate}
           onPrev={() => shiftWeek(-7)}
           onNext={() => shiftWeek(7)}
@@ -356,14 +353,8 @@ export function CycleView() {
             </section>
           )}
 
-          <CycleFooter cycle={cycle} groupCount={groups.length} />
-        </div>
+        <CycleFooter cycle={cycle} groupCount={groups.length} />
       </div>
-
-      <BacklogDrawer
-        open={backlogOpen}
-        onToggle={() => setBacklogOpen((v) => !v)}
-      />
 
       <ReasonToast
         state={toast}
