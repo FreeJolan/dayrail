@@ -1,19 +1,21 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
-import { useNavigate } from 'react-router-dom';
-import { Archive, ArrowRight, CircleDashed, Clock, Inbox } from 'lucide-react';
+import { Archive, CalendarClock, CircleDashed, Clock, Inbox } from 'lucide-react';
 import {
   selectPendingQueue,
   useStore,
   type CarriedTaskRow,
   type Shift,
+  type Task,
 } from '@dayrail/core';
 import { RAIL_COLOR_HEX } from '@/components/railColors';
 import { ReasonToast } from '@/components/ReasonToast';
+import { SchedulePopover } from '@/components/SchedulePopover';
 import {
   latestTagsForTask,
   useReasonToast,
 } from '@/components/useReasonToast';
+import { TaskDetailDrawer } from './Tasks';
 import type { RailColor } from '@/data/sample';
 
 // ERD §5.7 — Pending queue. Master list of "awaiting a decision":
@@ -38,6 +40,9 @@ interface PendingRow {
   railColor: RailColor;
   subtitle?: string;
   title: string; // task title (hand-built) / habit name (auto-task)
+  /** Full Task reference — lets the row wire SchedulePopover + detail
+   *  drawer without re-looking up the task each render. */
+  task: Task;
   /** How the row got here:
    *  - `deferred`: user explicitly picked Later.
    *  - `unmarked`: window ended without a decision (any age). */
@@ -49,10 +54,11 @@ interface PendingRow {
 export function Pending() {
   const rails = useStore((s) => s.rails);
   const tasks = useStore((s) => s.tasks);
+  const lines = useStore((s) => s.lines);
   const shifts = useStore((s) => s.shifts);
   const updateTask = useStore((s) => s.updateTask);
 
-  const navigate = useNavigate();
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   const { toast, fire, handleAddTag, handleUndo, handleClose } = useReasonToast(
     'pending-queue',
   );
@@ -101,15 +107,9 @@ export function Pending() {
     [fire],
   );
 
-  const handleReschedule = useCallback(
-    (_row: PendingRow) => {
-      // Drag-to-re-schedule inside Cycle View is still pending; for now
-      // we hop over so the user can at least eyeball the week and pick
-      // a day by hand.
-      navigate('/cycle');
-    },
-    [navigate],
-  );
+  const handleOpenDetail = useCallback((row: PendingRow) => {
+    setDetailTaskId(row.taskId);
+  }, []);
 
   const handleBulkArchive = useCallback(() => {
     if (summary.eligible === 0) return;
@@ -146,7 +146,7 @@ export function Pending() {
               items={g.items}
               onComplete={handleComplete}
               onArchive={handleArchive}
-              onReschedule={handleReschedule}
+              onOpenDetail={handleOpenDetail}
             />
           ))}
         </section>
@@ -159,6 +159,14 @@ export function Pending() {
         onUndo={handleUndo}
         onClose={handleClose}
       />
+
+      {detailTaskId && tasks[detailTaskId] && (
+        <TaskDetailDrawer
+          task={tasks[detailTaskId]!}
+          line={lines[tasks[detailTaskId]!.lineId]}
+          onClose={() => setDetailTaskId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -196,6 +204,7 @@ function adaptRow(
       railColor: row.rail.color as RailColor,
       ...(row.rail.subtitle && { subtitle: row.rail.subtitle }),
       title: row.task.title,
+      task: row.task,
       source: row.task.status === 'deferred' ? 'deferred' : 'unmarked',
       tags: latestTagsForTask(row.task.id, shifts),
       ageDays,
@@ -211,6 +220,7 @@ function adaptRow(
     railName: '未排期',
     railColor: 'slate' as RailColor,
     title: row.task.title,
+    task: row.task,
     source: 'deferred',
     tags: latestTagsForTask(row.task.id, shifts),
     ageDays,
@@ -348,7 +358,7 @@ function DateGroup({
   items,
   onComplete,
   onArchive,
-  onReschedule,
+  onOpenDetail,
 }: {
   date: string;
   relative: string;
@@ -357,7 +367,7 @@ function DateGroup({
   items: PendingRow[];
   onComplete: (row: PendingRow) => void;
   onArchive: (row: PendingRow) => void;
-  onReschedule: (row: PendingRow) => void;
+  onOpenDetail: (row: PendingRow) => void;
 }) {
   return (
     <section aria-label={date} className="flex flex-col gap-2">
@@ -379,7 +389,7 @@ function DateGroup({
               eligible={it.ageDays > STALE_THRESHOLD_DAYS}
               onComplete={onComplete}
               onArchive={onArchive}
-              onReschedule={onReschedule}
+              onOpenDetail={onOpenDetail}
             />
           </li>
         ))}
@@ -393,13 +403,13 @@ function PendingItemRow({
   eligible,
   onComplete,
   onArchive,
-  onReschedule,
+  onOpenDetail,
 }: {
   row: PendingRow;
   eligible: boolean;
   onComplete: (row: PendingRow) => void;
   onArchive: (row: PendingRow) => void;
-  onReschedule: (row: PendingRow) => void;
+  onOpenDetail: (row: PendingRow) => void;
 }) {
   const strip = RAIL_COLOR_HEX[row.railColor];
   const SourceIcon = row.source === 'deferred' ? Clock : CircleDashed;
@@ -407,8 +417,17 @@ function PendingItemRow({
     row.source === 'deferred' ? '显式「以后再说」' : '结束时未标记';
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpenDetail(row)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpenDetail(row);
+        }
+      }}
       className={clsx(
-        'group flex items-center gap-3 rounded-md bg-surface-1 px-3 py-2.5 transition hover:bg-surface-2',
+        'group flex cursor-pointer items-center gap-3 rounded-md bg-surface-1 px-3 py-2.5 transition hover:bg-surface-2',
         eligible && 'opacity-85',
       )}
     >
@@ -448,17 +467,43 @@ function PendingItemRow({
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-1">
-        <ActionChip variant="primary" onClick={() => onComplete(row)}>
+      <div
+        className="flex shrink-0 items-center gap-1"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <ActionChip
+          variant="primary"
+          onClick={(e) => {
+            e.stopPropagation();
+            onComplete(row);
+          }}
+        >
           完成
         </ActionChip>
-        <ActionChip onClick={() => onArchive(row)}>归档</ActionChip>
-        <ActionChip variant="ghost" onClick={() => onReschedule(row)}>
-          <span className="inline-flex items-center gap-1">
-            拖到 Cycle
-            <ArrowRight className="h-3 w-3" strokeWidth={1.8} />
-          </span>
+        <ActionChip
+          onClick={(e) => {
+            e.stopPropagation();
+            onArchive(row);
+          }}
+        >
+          归档
         </ActionChip>
+        <SchedulePopover task={row.task}>
+          <ActionChip
+            variant="ghost"
+            onClick={(e) => {
+              // SchedulePopover's PopoverTrigger consumes click; stop
+              // propagation so the row's detail-drawer handler doesn't
+              // also fire.
+              e.stopPropagation();
+            }}
+          >
+            <span className="inline-flex items-center gap-1">
+              <CalendarClock className="h-3 w-3" strokeWidth={1.8} />
+              改期
+            </span>
+          </ActionChip>
+        </SchedulePopover>
       </div>
     </div>
   );
@@ -471,7 +516,7 @@ function ActionChip({
 }: {
   children: React.ReactNode;
   variant?: 'default' | 'primary' | 'ghost';
-  onClick: () => void;
+  onClick?: (e: React.MouseEvent) => void;
 }) {
   return (
     <button

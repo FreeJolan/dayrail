@@ -1059,6 +1059,25 @@ export const useStore = create<DayRailStore>()(
           sessionId,
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        // Rescheduling a deferred task = reversing the defer. User's
+        // intent when they re-schedule is "I'm committing to do this
+        // on the new day", so flip the status back to pending. Other
+        // terminal states (done / archived / deleted) stay put — the
+        // caller should unwind those explicitly first.
+        const taskAfter = get().tasks[taskId];
+        if (taskAfter?.status === 'deferred') {
+          const flip = await appendEvent({
+            aggregateId: `task:${taskId}`,
+            type: 'task.updated',
+            payload: {
+              id: taskId,
+              status: 'pending',
+              deferredAt: undefined,
+            },
+            sessionId,
+          });
+          set((draft) => applyEventInPlace(draft, flip.type, flip.payload));
+        }
         if (sessionId) await touchSession(sessionId);
         afterMutation();
       },
@@ -1112,6 +1131,22 @@ export const useStore = create<DayRailStore>()(
             },
           });
           set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        }
+        // Same deferred → pending flip as scheduleTaskToRail. Any
+        // re-schedule — rail slot or free-time — reverses an earlier
+        // defer.
+        const taskAfter = get().tasks[taskId];
+        if (taskAfter?.status === 'deferred') {
+          const flip = await appendEvent({
+            aggregateId: `task:${taskId}`,
+            type: 'task.updated',
+            payload: {
+              id: taskId,
+              status: 'pending',
+              deferredAt: undefined,
+            },
+          });
+          set((draft) => applyEventInPlace(draft, flip.type, flip.payload));
         }
         afterMutation();
       },
