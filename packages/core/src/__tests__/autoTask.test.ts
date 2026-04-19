@@ -16,7 +16,6 @@ const NOW = new Date('2026-04-19T12:00:00');
 // Helper builders — keep tests readable.
 function rail(overrides: Partial<Rail> & { id: string }): Rail {
   return {
-    id: overrides.id,
     templateKey: 'workday',
     name: overrides.name ?? overrides.id,
     startMinutes: 9 * 60,
