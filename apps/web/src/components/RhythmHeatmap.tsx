@@ -1,5 +1,5 @@
 import { clsx } from 'clsx';
-import { ArrowUpRight } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight } from 'lucide-react';
 import { formatDayLabel } from '@/data/sampleCycle';
 import type { HeatmapRow, HeatmapState, ReviewScopeData } from '@/data/sampleReview';
 import {
@@ -30,12 +30,25 @@ interface Props {
    *  renders above the weekday header showing which phase was
    *  active across each column. */
   phaseBands?: PhaseBand[];
+  /** Previous period (prev cycle / prev month / prev day) — used for
+   *  period-over-period delta on the aggregate match%. Omit when no
+   *  meaningful prior exists (e.g. first-ever period). */
+  prev?: ReviewScopeData;
 }
 
-export function RhythmHeatmap({ data, phaseBands = [] }: Props) {
+export function RhythmHeatmap({ data, phaseBands = [], prev }: Props) {
   return (
     <div className="flex flex-col gap-3">
-      <Header label={data.label} match={data.rhythmMatchPct} done={data.totalDone} total={data.totalSlots} />
+      <Header
+        label={data.label}
+        match={data.rhythmMatchPct}
+        done={data.totalDone}
+        total={data.totalSlots}
+        {...(prev && {
+          prevMatch: prev.rhythmMatchPct,
+          prevTotal: prev.totalSlots,
+        })}
+      />
 
       <HeatmapLegend />
 
@@ -191,12 +204,22 @@ function Header({
   match,
   done,
   total,
+  prevMatch,
+  prevTotal,
 }: {
   label: string;
   match: number;
   done: number;
   total: number;
+  prevMatch?: number;
+  prevTotal?: number;
 }) {
+  // Delta only meaningful when BOTH periods had applied days. Prev
+  // with zero slots (user hadn't started tracking) should not rend
+  // as "vs 0%" — that's misleading.
+  const hasDelta =
+    prevMatch != null && prevTotal != null && prevTotal > 0 && total > 0;
+  const delta = hasDelta ? match - prevMatch! : 0;
   return (
     <div className="flex items-baseline justify-between">
       <div className="flex items-baseline gap-3">
@@ -213,11 +236,51 @@ function Header({
           <span className="text-ink-tertiary">/{total}</span> done
         </span>
         <span className="text-ink-tertiary">·</span>
-        <span>
-          <span className="text-ink-primary">{match}%</span> match
+        <span className="flex items-baseline gap-1.5">
+          <span className="text-ink-primary">{match}%</span>
+          <span className="text-ink-tertiary">match</span>
+          {hasDelta && <DeltaChip delta={delta} prevMatch={prevMatch!} />}
         </span>
       </div>
     </div>
+  );
+}
+
+function DeltaChip({
+  delta,
+  prevMatch,
+}: {
+  delta: number;
+  prevMatch: number;
+}) {
+  if (delta === 0) {
+    return (
+      <span
+        title={`与上一周期持平 · 上周期 ${prevMatch}%`}
+        className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary"
+      >
+        · flat
+      </span>
+    );
+  }
+  const positive = delta > 0;
+  const abs = Math.abs(delta);
+  const Icon = positive ? ArrowUpRight : ArrowDownRight;
+  return (
+    <span
+      title={`与上一周期相比 · 上周期 ${prevMatch}%`}
+      className={clsx(
+        'inline-flex items-baseline gap-0.5 font-mono text-2xs tabular-nums',
+        // Stay on the design palette: `rail-grass` (step 9) is the
+        // project's green token; `warn` is the amber anything-alarming
+        // semantic slot — both theme-aware via token swap in dark mode.
+        positive ? 'text-rail-grass' : 'text-warn',
+      )}
+    >
+      <Icon className="h-2.5 w-2.5 translate-y-0.5" strokeWidth={2} />
+      {positive ? '+' : '-'}
+      {abs}pt
+    </span>
   );
 }
 
