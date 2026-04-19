@@ -9,6 +9,7 @@ import {
   Layers,
   LineChart,
   ListChecks,
+  PanelRightOpen,
   Settings,
   Sparkles,
 } from 'lucide-react';
@@ -40,6 +41,13 @@ interface Item {
   prefix?: string;
 }
 
+interface SideNavProps {
+  /** Toggle the global Backlog drawer — rendered as a nav entry next
+   *  to the page-nav items since it's a top-level UI surface. */
+  onToggleBacklog: () => void;
+  backlogOpen: boolean;
+}
+
 // Two groups, separated by a 16px margin. Top group = daily / planning
 // consumption (the Rails you ride). Bottom group = meta / config
 // (the Rails' editor + app settings).
@@ -65,7 +73,7 @@ function isActive(pathname: string, item: Item): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
-export function SideNav() {
+export function SideNav({ onToggleBacklog, backlogOpen }: SideNavProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -113,6 +121,11 @@ export function SideNav() {
             }
           />
         ))}
+        <BacklogNavItem
+          active={backlogOpen}
+          collapsed={collapsed}
+          onClick={onToggleBacklog}
+        />
         <div aria-hidden className="mt-4" />
         {SECONDARY_ITEMS.map((it) => (
           <NavItem
@@ -286,6 +299,63 @@ function NavItem({
       {collapsed && (
         <span className="pointer-events-none absolute left-full z-20 ml-3 hidden whitespace-nowrap rounded-md bg-ink-primary px-2 py-1 font-mono text-2xs uppercase tracking-widest text-surface-0 group-hover:block">
           {item.label}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** Separate component so Backlog's "active = drawer is open" semantic
+ *  doesn't get confused with NavItem's "active = route matches". Same
+ *  visual vocabulary, different trigger source. Shows `g b` hint in
+ *  the collapsed tooltip to teach the bigraph. */
+function BacklogNavItem({
+  active,
+  collapsed,
+  onClick,
+}: {
+  active: boolean;
+  collapsed: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={collapsed ? `Backlog · g b` : undefined}
+      className={clsx(
+        'group relative flex h-10 w-full items-center rounded-md transition',
+        collapsed ? 'justify-center' : 'justify-start gap-3 px-3',
+        active
+          ? 'bg-surface-2 text-ink-primary'
+          : 'text-ink-tertiary hover:bg-surface-1 hover:text-ink-primary',
+      )}
+    >
+      <PanelRightOpen className="h-[18px] w-[18px]" strokeWidth={1.6} />
+      {!collapsed && (
+        <span
+          className={clsx(
+            'flex-1 text-left text-sm',
+            active ? 'font-medium' : 'font-normal',
+          )}
+        >
+          Backlog
+        </span>
+      )}
+      {!collapsed && (
+        <kbd className="rounded-sm bg-surface-2/70 px-1 py-0.5 font-mono text-[9px] uppercase tracking-widest text-ink-tertiary">
+          g b
+        </kbd>
+      )}
+      {active && (
+        <span
+          aria-hidden
+          className="absolute left-[-12px] h-5 w-[3px] rounded-r bg-ink-primary"
+        />
+      )}
+      {collapsed && (
+        <span className="pointer-events-none absolute left-full z-20 ml-3 hidden whitespace-nowrap rounded-md bg-ink-primary px-2 py-1 font-mono text-2xs uppercase tracking-widest text-surface-0 group-hover:block">
+          Backlog
         </span>
       )}
     </button>
