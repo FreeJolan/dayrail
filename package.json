@@ -6,7 +6,8 @@
     "dev": "pnpm --filter @dayrail/web dev",
     "build": "pnpm --filter @dayrail/web build",
     "preview": "pnpm --filter @dayrail/web preview",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r --if-present test"
   },
   "engines": {
     "node": ">=18",
