@@ -22,8 +22,8 @@ export interface DeriveReviewInput {
   scope: ReviewScopeData['scope'];
   label: string;
   dates: string[]; // ISO YYYY-MM-DD
-  /** Optional habit-line filter. When set, only rails bound to this
-   *  habit (`rail.defaultLineId === habitLineId`) contribute rows. */
+  /** Optional habit-line filter. When set, only rails referenced by
+   *  a HabitBinding for this habit contribute rows. */
   habitLineId?: string;
 }
 

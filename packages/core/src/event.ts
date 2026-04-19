@@ -62,9 +62,7 @@ export type EventType =
   | 'habit-phase.removed'
   // Habit bindings — habit ↔ rail relationship (§5.5.0; v0.4+)
   | 'habit-binding.upserted'
-  | 'habit-binding.removed'
-  // Auto-task materialization markers (§10.2; v0.4+)
-  | 'auto-task-marker.set';
+  | 'habit-binding.removed';
 
 export interface AppEvent<T extends EventType = EventType> {
   id: string;

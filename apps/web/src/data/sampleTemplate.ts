@@ -26,8 +26,6 @@ export interface EditableRail {
   color: RailColor;
   /** ERD §5.6 — does this Rail surface on the check-in strip? */
   showInCheckin: boolean;
-  /** ERD §5.5 — soft default Line binding (optional, nullable). */
-  defaultLineId: string | null;
 }
 
 // Default template palette. Chosen for hue contrast: slate / sage
@@ -53,7 +51,6 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(7),
       color: 'sage',
       showInCheckin: true,
-      defaultLineId: 'line-running',
     },
     {
       id: 'er-408',
@@ -63,7 +60,6 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(9),
       color: 'sand',
       showInCheckin: true,
-      defaultLineId: 'line-grad-prep',
     },
     {
       id: 'er-deep-am',
@@ -72,7 +68,6 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(12),
       color: 'teal',
       showInCheckin: true,
-      defaultLineId: null,
     },
     {
       id: 'er-lunch',
@@ -81,7 +76,6 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(13),
       color: 'slate',
       showInCheckin: false,
-      defaultLineId: null,
     },
     // gap 13:00 → 14:00
     {
@@ -91,7 +85,6 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(16),
       color: 'teal',
       showInCheckin: true,
-      defaultLineId: null,
     },
     {
       id: 'er-oss',
@@ -101,7 +94,6 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(18),
       color: 'plum',
       showInCheckin: true,
-      defaultLineId: 'line-dayrail',
     },
     // gap 18:00 → 19:00
     {
@@ -111,7 +103,6 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(20, 30),
       color: 'amber',
       showInCheckin: true,
-      defaultLineId: 'line-english',
     },
     {
       id: 'er-algo',
@@ -121,7 +112,6 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(21, 30),
       color: 'pink',
       showInCheckin: true,
-      defaultLineId: null,
     },
   ],
   restday: [
@@ -132,7 +122,6 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(9),
       color: 'sage',
       showInCheckin: true,
-      defaultLineId: 'line-running',
     },
     {
       id: 'er-read-rd',
@@ -141,7 +130,6 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(12),
       color: 'sand',
       showInCheckin: true,
-      defaultLineId: null,
     },
     {
       id: 'er-lunch-rd',
@@ -150,7 +138,6 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(13),
       color: 'slate',
       showInCheckin: false,
-      defaultLineId: null,
     },
     {
       id: 'er-oss-rd',
@@ -159,7 +146,6 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(17),
       color: 'plum',
       showInCheckin: true,
-      defaultLineId: 'line-dayrail',
     },
     {
       id: 'er-dinner-rd',
@@ -168,7 +154,6 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(20),
       color: 'brown',
       showInCheckin: false,
-      defaultLineId: null,
     },
     {
       id: 'er-idle-rd',
@@ -177,20 +162,11 @@ export const SAMPLE_RAILS_BY_TEMPLATE: Record<TemplateKey, EditableRail[]> = {
       endMin: hm(21, 30),
       color: 'slate',
       showInCheckin: false,
-      defaultLineId: null,
     },
   ],
   deep: [],
   travel: [],
 };
-
-export const SAMPLE_LINES = [
-  { id: 'line-running', name: '跑步', color: 'sage' as const },
-  { id: 'line-grad-prep', name: '考研 408', color: 'sand' as const },
-  { id: 'line-dayrail', name: 'DayRail 开发', color: 'plum' as const },
-  { id: 'line-english', name: '英语', color: 'amber' as const },
-  { id: 'line-reading', name: '阅读清单', color: 'sand' as const },
-];
 
 // --- derived summary (the strip under the tab bar consumes this) ---
 
