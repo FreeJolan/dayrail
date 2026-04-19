@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { clsx } from 'clsx';
 import {
   Archive,
@@ -601,7 +601,39 @@ function DangerZone() {
 
 // ============ About ============
 
+/** Shows the user whether OPFS is persistent (browser promises not to
+ *  evict under storage pressure). Boot already calls
+ *  `navigator.storage.persist()`; this just reads the result back. */
+function useStorageStatus(): { label: string } {
+  const [label, setLabel] = useState<string>('检测中…');
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (typeof navigator === 'undefined' || !('storage' in navigator)) {
+        if (!cancelled) setLabel('不支持');
+        return;
+      }
+      const s = navigator.storage;
+      if (typeof s.persisted !== 'function') {
+        if (!cancelled) setLabel('不支持');
+        return;
+      }
+      try {
+        const ok = await s.persisted();
+        if (!cancelled) setLabel(ok ? '已启用（OPFS 受保护）' : '未启用（可能被回收）');
+      } catch {
+        if (!cancelled) setLabel('未知');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return { label };
+}
+
 export function AboutSection() {
+  const storage = useStorageStatus();
   return (
     <SettingsSectionShell overline="About" title="关于 DayRail">
       <div className="flex flex-col items-start gap-6 pt-2">
@@ -624,6 +656,7 @@ export function AboutSection() {
           />
           <KeyValue label="许可证" value="MIT" />
           <KeyValue label="维护者" value="FreeJolan" />
+          <KeyValue label="存储持久化" value={storage.label} />
         </div>
 
         <div className="flex flex-col gap-1">
