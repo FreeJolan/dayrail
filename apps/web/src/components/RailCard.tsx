@@ -262,10 +262,16 @@ function TaskRow({
         </div>
       )}
 
-      {isPending && (
-        <ActionRow alwaysVisible={isCurrent} onAction={onAction} />
+      {/* Unmarked = pending + past time. Same decision ("what happened
+          to this task?") as pending, just retroactive; reuse the full
+          action bar. Unmarked rows keep the bar always-visible so the
+          user doesn't miss it. */}
+      {(isPending || isUnmarked) && (
+        <ActionRow
+          alwaysVisible={isCurrent || isUnmarked}
+          onAction={onAction}
+        />
       )}
-      {isUnmarked && <UndoRow label="补录" onClick={onUndo} />}
       {isDeferred && <UndoRow label="取消以后再说" onClick={onUndo} />}
       {isArchived && <UndoRow label="取消归档" onClick={onUndo} />}
       {isDone && <UndoRow label="撤回完成" onClick={onUndo} />}
