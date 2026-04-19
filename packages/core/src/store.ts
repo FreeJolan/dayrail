@@ -120,7 +120,7 @@ interface DayRailActions {
   archiveTask: (id: string) => Promise<void>;
   restoreTask: (id: string) => Promise<void>;
   deleteTask: (id: string) => Promise<void>;
-  purgeTask: (id: string) => Promise<void>;
+  purgeTask: (id: string, sessionId?: string) => Promise<void>;
   // --- task scheduling (§5.5.2) ---
   /** Mode A: bind the task to a Rail on the given date. Also clears any
    *  existing free-time Ad-hoc backing this task, if one was set. */
@@ -1021,12 +1021,14 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
-      purgeTask: async (id) => {
+      purgeTask: async (id, sessionId) => {
         const event = await appendEvent({
           aggregateId: `task:${id}`,
           type: 'task.purged',
           payload: { id },
+          sessionId,
         });
+        if (sessionId) await touchSession(sessionId);
         set((draft) => applyEventInPlace(draft, event.type, event.payload));
         afterMutation();
       },

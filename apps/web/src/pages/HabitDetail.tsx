@@ -3,8 +3,10 @@ import { clsx } from 'clsx';
 import { useNavigate } from 'react-router-dom';
 import { Archive, ArrowUpRight, Pencil, Plus, Trash2, X } from 'lucide-react';
 import {
+  findAffectedFutureAutoTasks,
   materializeAutoTasks,
   mondayOf,
+  purgeFutureAutoTasks,
   useStore,
   type HabitBinding,
   type Line,
@@ -294,6 +296,9 @@ function ScheduleList({
   const [formOpen, setFormOpen] = useState(false);
   const upsertHabitBinding = useStore((s) => s.upsertHabitBinding);
   const removeHabitBinding = useStore((s) => s.removeHabitBinding);
+  const openEditSession = useStore((s) => s.openEditSession);
+  const closeEditSession = useStore((s) => s.closeEditSession);
+  const storeState = useStore.getState;
 
   const availableRails = useMemo(
     () =>
@@ -320,18 +325,64 @@ function ScheduleList({
     [upsertHabitBinding, habit.id],
   );
 
+  // ERD §10.3 — config-change purge. A habit schedule edit can
+  // invalidate future pending auto-tasks. We (1) count how many would
+  // be affected, (2) confirm with the user, (3) open an Edit Session
+  // so save + purge + re-materialize are one undoable batch.
   const handleUpdateWeekdays = useCallback(
     async (bindingId: string, weekdays: number[] | undefined) => {
       const existing = bindings.find((b) => b.id === bindingId);
       if (!existing) return;
-      await upsertHabitBinding({
-        id: bindingId,
+      const sameWeekdays = weekdaysEqual(existing.weekdays, weekdays);
+      if (sameWeekdays) return; // no-op — skip confirm and purge
+
+      const affected = findAffectedFutureAutoTasks(storeState(), {
         habitId: existing.habitId,
         railId: existing.railId,
-        ...(weekdays && weekdays.length > 0 ? { weekdays } : {}),
       });
+
+      if (affected.length > 0) {
+        const ok = window.confirm(
+          `更新「${habit.name}」在「${
+            rails[existing.railId]?.name ?? existing.railId
+          }」上的星期过滤\n` +
+            `· ${affected.length} 个未开始的 auto-task 会在新配置下重新生成\n` +
+            `· 已完成/跳过/归档的保留\n继续?`,
+        );
+        if (!ok) return;
+      }
+
+      const session = await openEditSession('habit-binding-edit');
+      try {
+        await upsertHabitBinding({
+          id: bindingId,
+          habitId: existing.habitId,
+          railId: existing.railId,
+          ...(weekdays && weekdays.length > 0 ? { weekdays } : {}),
+        }, session.id);
+        await purgeFutureAutoTasks(
+          { habitId: existing.habitId, railId: existing.railId },
+          session.id,
+        );
+        // Re-materialize the local rhythm-strip window so the change
+        // is visible immediately.
+        await materializeAutoTasks({
+          startDate: todayIso(),
+          endDate: isoDatePlus(todayIso(), 27),
+        });
+      } finally {
+        await closeEditSession(session.id);
+      }
     },
-    [bindings, upsertHabitBinding],
+    [
+      bindings,
+      habit.name,
+      rails,
+      storeState,
+      upsertHabitBinding,
+      openEditSession,
+      closeEditSession,
+    ],
   );
 
   const handleRemoveBinding = useCallback(
@@ -339,16 +390,43 @@ function ScheduleList({
       const binding = bindings.find((b) => b.id === bindingId);
       if (!binding) return;
       const rail = rails[binding.railId];
-      if (
-        !window.confirm(
-          `解除 habit「${habit.name}」与 rail「${rail?.name ?? binding.railId}」的绑定?\n未来的 auto-task 停止生成;过去已有的保留。`,
-        )
-      ) {
-        return;
+      const affected = findAffectedFutureAutoTasks(storeState(), {
+        habitId: binding.habitId,
+        railId: binding.railId,
+      });
+      const lines = [
+        `解除 habit「${habit.name}」与 rail「${rail?.name ?? binding.railId}」的绑定?`,
+      ];
+      if (affected.length > 0) {
+        lines.push(
+          `· ${affected.length} 个未开始的 auto-task 会被清理`,
+          `· 已完成/跳过/归档的保留`,
+        );
+      } else {
+        lines.push('未来不再生成 auto-task;过去已有的保留。');
       }
-      await removeHabitBinding(bindingId);
+      if (!window.confirm(`${lines.join('\n')}\n继续?`)) return;
+
+      const session = await openEditSession('habit-binding-remove');
+      try {
+        await removeHabitBinding(bindingId, session.id);
+        await purgeFutureAutoTasks(
+          { habitId: binding.habitId, railId: binding.railId },
+          session.id,
+        );
+      } finally {
+        await closeEditSession(session.id);
+      }
     },
-    [bindings, rails, habit.name, removeHabitBinding],
+    [
+      bindings,
+      rails,
+      habit.name,
+      storeState,
+      removeHabitBinding,
+      openEditSession,
+      closeEditSession,
+    ],
   );
 
   return (
@@ -521,6 +599,13 @@ function ScheduleRow({
       </button>
     </li>
   );
+}
+
+function weekdaysEqual(a?: number[], b?: number[]): boolean {
+  const normA = a && a.length > 0 ? [...a].sort((x, y) => x - y) : [];
+  const normB = b && b.length > 0 ? [...b].sort((x, y) => x - y) : [];
+  if (normA.length !== normB.length) return false;
+  return normA.every((v, i) => v === normB[i]);
 }
 
 function weekdaysLabel(weekdays?: number[]): string {

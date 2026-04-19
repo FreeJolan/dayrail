@@ -233,6 +233,112 @@ export async function materializeAutoTasksForToday(todayIso: string): Promise<vo
   return materializeAutoTasks({ startDate: todayIso, endDate: todayIso });
 }
 
+// ------------------------------------------------------------------
+// ERD §10.3 · habit configuration-change purge.
+//
+// When the user edits something that changes which (habit, date) pairs
+// should have an auto-task — rail time / rail recurrence / rail
+// templateKey, or a HabitBinding's weekdays / presence — the set of
+// future auto-tasks is stale. §10.3 prescribes: hard-delete every
+// future pending auto-task in scope, then let the idempotent
+// materializer top up under the new config on the next view open.
+//
+// Scope narrows the purge:
+//   { habitId }           — everything this habit materialized
+//   { habitId, railId }   — only tasks carrying the named rail
+// ------------------------------------------------------------------
+
+export interface PurgeScope {
+  habitId: string;
+  /** Narrow further by rail — used when a single binding/rail edit
+   *  should only touch auto-tasks from that specific rail. */
+  railId?: string;
+}
+
+/** Future pending auto-tasks that §10.3 wants regenerated. `plannedStart
+ *  > now` guarantees we never rewrite something the user might already
+ *  have acted on (past or currently-firing slot). */
+export function findAffectedFutureAutoTasks(
+  state: Pick<DayRailState, 'tasks' | 'rails'>,
+  scope: PurgeScope,
+  now: Date = new Date(),
+): Task[] {
+  const nowMs = now.getTime();
+  const out: Task[] = [];
+  for (const t of Object.values(state.tasks)) {
+    if (!isAutoTask(t)) continue;
+    if (t.status !== 'pending') continue;
+    if (t.lineId !== scope.habitId) continue;
+    if (!t.slot) continue;
+    if (scope.railId && t.slot.railId !== scope.railId) continue;
+    const window = autoTaskPlannedWindow(state, t);
+    if (!window) continue;
+    const startMs = Date.parse(window.plannedStart);
+    if (Number.isNaN(startMs)) continue;
+    if (startMs <= nowMs) continue;
+    out.push(t);
+  }
+  return out;
+}
+
+/** Same as findAffectedFutureAutoTasks but aggregated across every
+ *  habit bound to `railId`. Used by Template Editor when a rail's
+ *  recurrence / time / templateKey is about to change — it needs a
+ *  single total to show in the confirm dialog. */
+export function findAffectedFutureAutoTasksForRail(
+  state: Pick<DayRailState, 'tasks' | 'rails' | 'habitBindings'>,
+  railId: string,
+  now: Date = new Date(),
+): Task[] {
+  const habitIds = new Set(
+    Object.values(state.habitBindings)
+      .filter((b) => b.railId === railId)
+      .map((b) => b.habitId),
+  );
+  const out: Task[] = [];
+  for (const habitId of habitIds) {
+    out.push(
+      ...findAffectedFutureAutoTasks(state, { habitId, railId }, now),
+    );
+  }
+  return out;
+}
+
+/** §10.3 step 1 — purge affected future pending auto-tasks. Caller is
+ *  expected to (a) save the new config before calling this so the
+ *  "new config" is already in store, and (b) re-run the materializer
+ *  for whatever window they care about to top up. Both (a) and the
+ *  purge events share a sessionId so one undo reverts the lot.
+ *
+ *  Returns the count so the caller can report it (e.g. "已更新调度，清
+ *  理了 N 条待生成的 auto-task"). */
+export async function purgeFutureAutoTasks(
+  scope: PurgeScope,
+  sessionId?: string,
+  now: Date = new Date(),
+): Promise<number> {
+  const state = useStore.getState();
+  const affected = findAffectedFutureAutoTasks(state, scope, now);
+  for (const t of affected) {
+    await state.purgeTask(t.id, sessionId);
+  }
+  return affected.length;
+}
+
+/** Rail-scoped counterpart of purgeFutureAutoTasks. */
+export async function purgeFutureAutoTasksForRail(
+  railId: string,
+  sessionId?: string,
+  now: Date = new Date(),
+): Promise<number> {
+  const state = useStore.getState();
+  const affected = findAffectedFutureAutoTasksForRail(state, railId, now);
+  for (const t of affected) {
+    await state.purgeTask(t.id, sessionId);
+  }
+  return affected.length;
+}
+
 /** Cycle View: materialize a Monday-anchored 7-day window. After this
  *  runs, every touched cycle for every habit with rails is marked. */
 export async function materializeAutoTasksForCycle(mondayIso: string): Promise<void> {
