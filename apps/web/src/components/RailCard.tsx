@@ -38,9 +38,9 @@ interface Props {
   /** Carrying-Task info rendered inline on the card so the user can
    *  scan title / notes / sub-items / milestone without opening the
    *  detail drawer. `undefined` = bare rail (no task on this slot).
-   *  v0.4: when `extraCount > 0`, a small "+N" chip surfaces the rare
-   *  case where multiple tasks share the same (rail, date). Users open
-   *  Cycle View to disambiguate. */
+   *  v0.4 multi-task: the primary task (pending preferred) goes in
+   *  `title` + its badges; any additional task titles go in
+   *  `extraTitles`, rendered as compact secondary rows underneath. */
   taskInfo?: {
     title: string;
     hasNote: boolean;
@@ -48,7 +48,7 @@ interface Props {
     subItemsTotal: number;
     milestonePercent?: number;
     isAutoTask: boolean;
-    extraCount?: number;
+    extraTitles?: string[];
   };
 }
 
@@ -204,40 +204,43 @@ export function RailCard({
         {taskInfo && (
           <div
             className={clsx(
-              'flex flex-wrap items-center gap-2 text-sm',
+              'flex flex-col gap-0.5',
               isDone && 'text-ink-tertiary line-through decoration-ink-tertiary/40',
               (isDeferred || isArchived || isUnmarked) && 'text-ink-tertiary',
               (rail.state === 'pending' || isCurrent) && 'text-ink-primary',
             )}
           >
-            <span className="truncate">{taskInfo.title}</span>
-            {taskInfo.isAutoTask && (
-              <span className="rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-                habit
-              </span>
-            )}
-            {taskInfo.extraCount != null && taskInfo.extraCount > 0 && (
-              <span
-                title={`该 rail 今日还有 ${taskInfo.extraCount} 个任务`}
-                className="rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-2xs tabular-nums text-ink-tertiary"
-              >
-                +{taskInfo.extraCount}
-              </span>
-            )}
-            {taskInfo.subItemsTotal > 0 && (
-              <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
-                子项 {taskInfo.subItemsDone}/{taskInfo.subItemsTotal}
-              </span>
-            )}
-            {taskInfo.hasNote && (
-              <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-                · 备注
-              </span>
-            )}
-            {taskInfo.milestonePercent != null && (
-              <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
-                · {taskInfo.milestonePercent}%
-              </span>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="truncate">{taskInfo.title}</span>
+              {taskInfo.isAutoTask && (
+                <span className="rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                  habit
+                </span>
+              )}
+              {taskInfo.subItemsTotal > 0 && (
+                <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+                  子项 {taskInfo.subItemsDone}/{taskInfo.subItemsTotal}
+                </span>
+              )}
+              {taskInfo.hasNote && (
+                <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                  · 备注
+                </span>
+              )}
+              {taskInfo.milestonePercent != null && (
+                <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+                  · {taskInfo.milestonePercent}%
+                </span>
+              )}
+            </div>
+            {taskInfo.extraTitles && taskInfo.extraTitles.length > 0 && (
+              <ul className="flex flex-col gap-0.5 pl-0.5 text-xs text-ink-tertiary">
+                {taskInfo.extraTitles.map((t, i) => (
+                  <li key={i} className="truncate">
+                    · {t}
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         )}

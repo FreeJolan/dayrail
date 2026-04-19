@@ -138,9 +138,10 @@ export function TodayTrack() {
     return out;
   }, [timelineRows, primaryTaskByRailId, shifts]);
 
-  // Inline task-info chips per rail. Rendered on the RailCard so users
-  // can scan title / sub-items / note / milestone without drilling into
-  // the detail drawer. `extraCount` surfaces the rare multi-task case.
+  // Inline task-info chips per rail. Primary task (pending preferred)
+  // takes the top line with badges; any additional tasks surface as
+  // secondary title rows so the user can scan everything scheduled on
+  // that rail without drilling into Cycle View.
   const taskInfoByRailId = useMemo<
     Record<string, NonNullable<Parameters<typeof RailCard>[0]['taskInfo']>>
   >(() => {
@@ -152,6 +153,9 @@ export function TodayTrack() {
       const t = primaryTaskByRailId[row.rail.id];
       if (!t) continue;
       const subItems = t.subItems ?? [];
+      const extraTitles = row.tasks
+        .filter((x) => x.id !== t.id)
+        .map((x) => x.title);
       out[row.rail.id] = {
         title: t.title,
         hasNote: Boolean(t.note && t.note.trim().length > 0),
@@ -161,7 +165,7 @@ export function TodayTrack() {
           milestonePercent: t.milestonePercent,
         }),
         isAutoTask: t.source === 'auto-habit',
-        extraCount: Math.max(0, row.tasks.length - 1),
+        ...(extraTitles.length > 0 && { extraTitles }),
       };
     }
     return out;
@@ -347,6 +351,7 @@ function carriedRowToCheckInEntry(row: RailBoundTaskRow): CheckInEntry {
     taskId: row.task.id,
     railId: row.rail.id,
     railName: row.rail.name,
+    taskTitle: row.task.title,
     ...(row.rail.subtitle && { subtitle: row.rail.subtitle }),
     color: row.rail.color as CheckInEntry['color'],
     start: row.plannedStart.slice(11, 16) || '00:00',
