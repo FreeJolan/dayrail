@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useStore, type Task } from '@dayrail/core';
+import { INBOX_LINE_ID, useStore, type Task } from '@dayrail/core';
 import { selectBacklogTasks } from '@/pages/cycleFromStore';
 import { RAIL_COLOR_HEX } from './railColors';
 
@@ -29,10 +29,28 @@ export function BacklogDrawer({ open, onToggle }: Props) {
   const tasksMap = useStore((s) => s.tasks);
   const linesMap = useStore((s) => s.lines);
   const adhocEventsMap = useStore((s) => s.adhocEvents);
+  const createTask = useStore((s) => s.createTask);
   const [query, setQuery] = useState('');
+  const [adding, setAdding] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
   const onCyclePage = location.pathname === '/cycle';
+
+  const handleQuickCreate = async (title: string) => {
+    // Quick-create lands in Inbox, unscheduled. User can drag it onto
+    // Cycle or open the detail drawer to reassign line / add notes.
+    const maxOrder = Object.values(tasksMap)
+      .filter((t) => t.lineId === INBOX_LINE_ID)
+      .reduce((m, t) => Math.max(m, t.order), 0);
+    await createTask({
+      id: `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      lineId: INBOX_LINE_ID,
+      title,
+      order: maxOrder + 1,
+      status: 'pending',
+    });
+    setAdding(false);
+  };
 
   const tasks = useMemo(
     () => selectBacklogTasks({ tasks: tasksMap, adhocEvents: adhocEventsMap }),
@@ -88,8 +106,15 @@ export function BacklogDrawer({ open, onToggle }: Props) {
             <span className="ml-auto" />
             <button
               type="button"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+              onClick={() => setAdding((v) => !v)}
               aria-label="新建任务"
+              title="新建任务到 Inbox"
+              className={clsx(
+                'inline-flex h-7 w-7 items-center justify-center rounded-md transition',
+                adding
+                  ? 'bg-surface-2 text-ink-primary'
+                  : 'text-ink-tertiary hover:bg-surface-2 hover:text-ink-primary',
+              )}
             >
               <Plus className="h-3.5 w-3.5" strokeWidth={1.8} />
             </button>
@@ -99,6 +124,15 @@ export function BacklogDrawer({ open, onToggle }: Props) {
 
       {open && (
         <>
+          {adding && (
+            <div className="px-4 pb-3">
+              <QuickCreateInput
+                onSubmit={handleQuickCreate}
+                onCancel={() => setAdding(false)}
+              />
+            </div>
+          )}
+
           <div className="px-4 pb-3">
             <label className="flex items-center gap-2 rounded-md bg-surface-2 px-2.5 py-1.5">
               <Search
@@ -174,6 +208,42 @@ export function BacklogDrawer({ open, onToggle }: Props) {
  *  drawer and Cycle-section drop targets. Keeping it exported here
  *  so the drop side can reference the same string. */
 export const TASK_DRAG_MIME = 'application/x-dayrail-task';
+
+function QuickCreateInput({
+  onSubmit,
+  onCancel,
+}: {
+  onSubmit: (title: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState('');
+  const submit = () => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    onSubmit(trimmed);
+  };
+  return (
+    <input
+      type="text"
+      value={value}
+      autoFocus
+      placeholder="新任务 · Enter 添加"
+      onChange={(e) => setValue(e.target.value)}
+      onKeyDown={(e) => {
+        // nativeEvent.isComposing = IME candidate window open; Enter
+        // there picks the pinyin, doesn't submit.
+        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+          e.preventDefault();
+          submit();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          onCancel();
+        }
+      }}
+      className="h-8 w-full rounded-md border border-hairline/60 bg-surface-0 px-2 text-sm text-ink-primary outline-none transition focus:border-ink-secondary"
+    />
+  );
+}
 
 function BacklogCard({
   task,
