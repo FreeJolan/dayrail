@@ -32,6 +32,15 @@ export async function boot(): Promise<void> {
   //    sqlite-wasm and report a surprising error message.
   await preflight();
 
+  // 0.25. Request persistent storage so the browser doesn't evict OPFS
+  //       under disk pressure. Chrome/Edge auto-grant for installed
+  //       PWAs, silently refuse for one-off visits — either way we
+  //       never throw. Safari supports the API but its 7-day rule for
+  //       non-persisted origins is the bigger risk there (see docs/
+  //       ROADMAP.md "数据安全"). Fire-and-forget; no data path
+  //       depends on the outcome.
+  void requestPersistentStorage();
+
   // 0.5. Pending import from the previous page (user just clicked
   //      "Import" in Settings → Advanced). We wrote a snapshot to the
   //      freshly-wiped DB BEFORE hydrate so the normal load path picks
@@ -96,6 +105,26 @@ async function ensureInbox(): Promise<void> {
     createdAt: Date.now(),
   };
   await store.createLine(inbox);
+}
+
+/** Ask the browser to mark this origin's storage as persistent. A
+ *  granted request means the browser promises not to evict OPFS under
+ *  disk pressure — the main defense against silent data loss on a
+ *  self-use install. Never throws: API-missing / denied / already-
+ *  granted all flow through without user-visible effect. */
+async function requestPersistentStorage(): Promise<void> {
+  if (typeof navigator === 'undefined' || !('storage' in navigator)) return;
+  const storage = navigator.storage;
+  if (typeof storage.persist !== 'function') return;
+  try {
+    const already =
+      typeof storage.persisted === 'function' ? await storage.persisted() : false;
+    if (already) return;
+    await storage.persist();
+  } catch {
+    // Older Firefox / unusual environments — swallow. Persistence is
+    // a best-effort hint, not a correctness requirement.
+  }
 }
 
 async function preflight(): Promise<void> {
