@@ -14,7 +14,7 @@ import {
   type CheckInAction,
   type CheckInEntry,
 } from '@/components/CheckInStrip';
-import { RailCard } from '@/components/RailCard';
+import { RailCard, type TimelineTask } from '@/components/RailCard';
 import { ReasonToast } from '@/components/ReasonToast';
 import { TaskDetailDrawer } from './Tasks';
 import {
@@ -27,13 +27,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/primitives/DropdownMenu';
-import type { RailColor, RailState, SampleRail } from '@/data/sample';
+import type { RailColor } from '@/data/sample';
 
 // Page layout — ERD A/B/C decisions:
 //   • left sidebar nav (provided by App.tsx)
 //   • simple `NOW` header, Mono date subtitle
 //   • §5.6 check-in strip at top when queue is non-empty
-//   • single vertical timeline of Rail cards (no bento, no side visualizer)
+//   • single vertical timeline of Rail cards — each card shows its
+//     own per-task rows with independent actions (v0.4 multi-task)
 
 export function TodayTrack() {
   const now = useLiveNow();
@@ -65,130 +66,70 @@ export function TodayTrack() {
     [fire],
   );
 
-  // Timeline hover action bar. The `railId` identifies the row on
-  // today's timeline. If the row has a carrying Task we fire on it;
-  // bare rails (no Task) are no-op per ERD §5.6.
-  // v0.4 multi-task: acts on the first pending task (or first task if
-  // none pending) — fine since the hover action is only exposed when
-  // the row's RailCard state is pending/current, which implies ≥ 1
-  // actionable task. Rare 2+ task case is the exception.
-  const handleTimelineAction = useCallback(
-    (railId: string, action: CheckInAction) => {
-      const rail = rails[railId];
-      if (!rail) return;
-      const candidates = Object.values(tasks).filter(
-        (t) =>
-          t.slot &&
-          t.slot.date === today &&
-          t.slot.railId === railId &&
-          t.status !== 'deleted',
-      );
-      if (candidates.length === 0) return;
-      const target =
-        candidates.find(
-          (t) => t.status === 'pending' || t.status === 'in-progress',
-        ) ?? candidates[0]!;
-      fire({
-        taskId: target.id,
-        railId: rail.id,
-        displayName: rail.name,
-        action,
-      });
-    },
-    [tasks, rails, today, fire],
-  );
-
   const timelineRows = useMemo<TimelineRow[]>(
     () =>
       selectTodayTimeline({ rails, tasks, templates, calendarRules }, today),
     [rails, tasks, templates, calendarRules, today],
   );
 
-  const timeline = useMemo<SampleRail[]>(
-    () => timelineRows.map((r) => adaptToSample(r, now.asDate)),
-    [timelineRows, now.asDate],
+  // Per-task UI state. Every task on every rail gets its own row — no
+  // "primary task" shortcut. `state` is derived from Task.status plus
+  // the rail's time window (past-ended pending → unmarked).
+  const timelineCards = useMemo(
+    () =>
+      timelineRows.map((row) => ({
+        rail: row.rail,
+        isCurrent: isCurrentWindow(
+          row.plannedStart,
+          row.plannedEnd,
+          now.asDate,
+        ),
+        start: row.plannedStart.slice(11, 16) || '00:00',
+        end: row.plannedEnd.slice(11, 16) || '00:00',
+        tasks: row.tasks.map<TimelineTask>((t) =>
+          taskToTimelineTask(t, row, now.asDate, shifts),
+        ),
+      })),
+    [timelineRows, now.asDate, shifts],
   );
 
-  // Representative task per rail — the one whose state / title the
-  // RailCard renders. Prefer pending/in-progress, else first.
-  const primaryTaskByRailId = useMemo<Record<string, Task>>(() => {
-    const out: Record<string, Task> = {};
-    for (const row of timelineRows) {
-      if (row.tasks.length === 0) continue;
-      const primary =
-        row.tasks.find(
-          (t) => t.status === 'pending' || t.status === 'in-progress',
-        ) ?? row.tasks[0]!;
-      out[row.rail.id] = primary;
-    }
-    return out;
-  }, [timelineRows]);
-
-  // Latest Shift tags per rail (keyed on railId since today's timeline
-  // is one date) — consumed by the Timeline RailCard to surface "why"
-  // inline on done / deferred / archived rows.
-  const tagsByRailId = useMemo<Record<string, string[]>>(() => {
-    const out: Record<string, string[]> = {};
-    for (const row of timelineRows) {
-      const primary = primaryTaskByRailId[row.rail.id];
-      if (!primary) continue;
-      const tags = latestTagsForTask(primary.id, shifts);
-      if (tags.length > 0) out[row.rail.id] = tags;
-    }
-    return out;
-  }, [timelineRows, primaryTaskByRailId, shifts]);
-
-  // Inline task-info chips per rail. Primary task (pending preferred)
-  // takes the top line with badges; any additional tasks surface as
-  // secondary title rows so the user can scan everything scheduled on
-  // that rail without drilling into Cycle View.
-  const taskInfoByRailId = useMemo<
-    Record<string, NonNullable<Parameters<typeof RailCard>[0]['taskInfo']>>
-  >(() => {
-    const out: Record<
-      string,
-      NonNullable<Parameters<typeof RailCard>[0]['taskInfo']>
-    > = {};
-    for (const row of timelineRows) {
-      const t = primaryTaskByRailId[row.rail.id];
-      if (!t) continue;
-      const subItems = t.subItems ?? [];
-      const extraTitles = row.tasks
-        .filter((x) => x.id !== t.id)
-        .map((x) => x.title);
-      out[row.rail.id] = {
-        title: t.title,
-        hasNote: Boolean(t.note && t.note.trim().length > 0),
-        subItemsDone: subItems.filter((s) => s.done).length,
-        subItemsTotal: subItems.length,
-        ...(t.milestonePercent != null && {
-          milestonePercent: t.milestonePercent,
-        }),
-        isAutoTask: t.source === 'auto-habit',
-        ...(extraTitles.length > 0 && { extraTitles }),
-      };
-    }
-    return out;
-  }, [timelineRows, primaryTaskByRailId]);
-
-  // railId → taskId for click-to-open-detail on Timeline RailCards.
-  // Opens the primary task's detail drawer; user can see other tasks
-  // in Cycle View.
-  const taskIdByRailId = useMemo<Record<string, string>>(() => {
-    const out: Record<string, string> = {};
-    for (const row of timelineRows) {
-      const primary = primaryTaskByRailId[row.rail.id];
-      if (primary) out[row.rail.id] = primary.id;
-    }
-    return out;
-  }, [timelineRows, primaryTaskByRailId]);
-
-  const handleOpenDetail = useCallback(
-    (railId: string) => {
-      const id = taskIdByRailId[railId];
-      if (id) setDetailTaskId(id);
+  const handleTaskAction = useCallback(
+    (taskId: string, action: CheckInAction) => {
+      const task = tasks[taskId];
+      if (!task) return;
+      const rail = task.slot ? rails[task.slot.railId] : undefined;
+      fire({
+        taskId,
+        ...(rail && { railId: rail.id }),
+        displayName: rail?.name ?? task.title,
+        action,
+      });
     },
-    [taskIdByRailId],
+    [tasks, rails, fire],
+  );
+
+  // Settled task → pending. No Reason toast — this is the "undo, I
+  // pressed the wrong thing" escape hatch.
+  const handleTaskUndo = useCallback(
+    (taskId: string) => {
+      const task = tasks[taskId];
+      if (!task) return;
+      if (
+        task.status !== 'done' &&
+        task.status !== 'deferred' &&
+        task.status !== 'archived' &&
+        task.status !== 'pending' // unmarked lives as pending + past time
+      ) {
+        return;
+      }
+      void updateTask(taskId, {
+        status: 'pending',
+        doneAt: undefined,
+        deferredAt: undefined,
+        archivedAt: undefined,
+      });
+    },
+    [tasks, updateTask],
   );
 
   const checkinQueue = useMemo<CheckInEntry[]>(
@@ -197,59 +138,6 @@ export function TodayTrack() {
         carriedRowToCheckInEntry(row),
       ),
     [tasks, rails, now.asDate],
-  );
-
-  // Timeline hides two states:
-  //   - 'unmarked' (past-ended pending) — lives in the check-in strip.
-  //   - 'deferred' — "move me somewhere else" is explicit; keeping it
-  //     on today's timeline would confuse "this is today" with "this
-  //     needs re-scheduling". Deferred rails get their own section
-  //     below check-in but above today's main list.
-  //   'done' / 'archived' stay on the timeline so the user can see the
-  //   full shape of today (including dropped items).
-  const timelineVisible = timeline.filter(
-    (r) => r.state !== 'unmarked' && r.state !== 'deferred',
-  );
-  const deferredToday = useMemo<DeferredRow[]>(
-    () =>
-      timelineRows
-        .filter((r) => r.tasks.some((t) => t.status === 'deferred'))
-        .map((r) => {
-          const deferredTask = r.tasks.find((t) => t.status === 'deferred');
-          return {
-            ...adaptToSample(r, now.asDate),
-            tags: deferredTask
-              ? latestTagsForTask(deferredTask.id, shifts)
-              : [],
-          };
-        }),
-    [timelineRows, shifts, now.asDate],
-  );
-
-  // Undefer / "put it back on today". DeferredSection keys rows on
-  // railId (we're always today). Picks a non-pending task to revert —
-  // the one the undo arrow is actually addressing. Multi-task case:
-  // restores the first settled task.
-  const handleRevert = useCallback(
-    (railId: string) => {
-      const target = Object.values(tasks).find(
-        (t) =>
-          t.slot &&
-          t.slot.date === today &&
-          t.slot.railId === railId &&
-          (t.status === 'done' ||
-            t.status === 'deferred' ||
-            t.status === 'archived'),
-      );
-      if (!target) return;
-      void updateTask(target.id, {
-        status: 'pending',
-        doneAt: undefined,
-        deferredAt: undefined,
-        archivedAt: undefined,
-      });
-    },
-    [tasks, today, updateTask],
   );
 
   // Reset today: sweep every Task carrying a today-slot and push it
@@ -282,14 +170,11 @@ export function TodayTrack() {
     <div className="flex w-full max-w-[780px] flex-col gap-8 py-10 pl-10 pr-10 lg:pl-14 xl:pl-20">
       <PageHeader now={now} onResetDay={handleResetDay} />
       <CheckInStrip queue={checkinQueue} onAction={handleCheckin} />
-      <DeferredSection rails={deferredToday} onUndefer={handleRevert} />
       <Timeline
-        rails={timelineVisible}
-        tagsByRailId={tagsByRailId}
-        taskInfoByRailId={taskInfoByRailId}
-        onAction={handleTimelineAction}
-        onUndo={handleRevert}
-        onOpenDetail={handleOpenDetail}
+        cards={timelineCards}
+        onTaskAction={handleTaskAction}
+        onTaskUndo={handleTaskUndo}
+        onTaskOpenDetail={(taskId) => setDetailTaskId(taskId)}
       />
       <Footnote />
       <ReasonToast
@@ -310,13 +195,8 @@ export function TodayTrack() {
   );
 }
 
-interface DeferredRow extends SampleRail {
-  tags: string[];
-}
-
 // ------------------------------------------------------------------
-// Live-now tick — updates every 30 s so "current rail" detection
-// and the check-in strip refresh without the user touching anything.
+// Live-now tick.
 // ------------------------------------------------------------------
 
 interface LiveNow {
@@ -341,9 +221,7 @@ function sample(d: Date): LiveNow {
 }
 
 // ------------------------------------------------------------------
-// Domain → display adapter. v0.4: TimelineRow (rail + optional task +
-// planned window) maps to the 5-state SampleRail the RailCard renders.
-// Completion status comes from the carrying Task (ERD §10.1).
+// Domain → display adapters.
 // ------------------------------------------------------------------
 
 function carriedRowToCheckInEntry(row: RailBoundTaskRow): CheckInEntry {
@@ -359,39 +237,48 @@ function carriedRowToCheckInEntry(row: RailBoundTaskRow): CheckInEntry {
   };
 }
 
-function adaptToSample(row: TimelineRow, now: Date): SampleRail {
-  const { rail, tasks } = row;
-  const startMs = Date.parse(row.plannedStart);
-  const endMs = Date.parse(row.plannedEnd);
+function isCurrentWindow(
+  plannedStart: string,
+  plannedEnd: string,
+  now: Date,
+): boolean {
+  const startMs = Date.parse(plannedStart);
+  const endMs = Date.parse(plannedEnd);
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) return false;
   const nowMs = now.getTime();
+  return startMs <= nowMs && nowMs <= endMs;
+}
 
-  // Representative task for the card's 5-state display. Pending/
-  // in-progress wins — they're actionable. Else fall through to the
-  // first task (done / deferred / archived share the "settled" row).
-  const primary =
-    tasks.find((t) => t.status === 'pending' || t.status === 'in-progress') ??
-    tasks[0];
-
-  let state: RailState;
-  if (primary?.status === 'done') state = 'done';
-  else if (primary?.status === 'deferred') state = 'deferred';
-  else if (primary?.status === 'archived') state = 'archived';
-  else if (!Number.isNaN(startMs) && startMs <= nowMs && nowMs <= endMs)
-    state = 'current';
-  else if (!Number.isNaN(endMs) && endMs < nowMs) state = 'unmarked';
-  else state = 'pending';
-
+function taskToTimelineTask(
+  task: Task,
+  row: TimelineRow,
+  now: Date,
+  shifts: ReturnType<typeof useStore.getState>['shifts'],
+): TimelineTask {
+  const subItems = task.subItems ?? [];
+  let state: TimelineTask['state'];
+  if (task.status === 'done') state = 'done';
+  else if (task.status === 'deferred') state = 'deferred';
+  else if (task.status === 'archived') state = 'archived';
+  else {
+    // pending / in-progress. Past-ended → unmarked, else pending.
+    const endMs = Date.parse(row.plannedEnd);
+    if (!Number.isNaN(endMs) && endMs < now.getTime()) state = 'unmarked';
+    else state = 'pending';
+  }
+  const tags = latestTagsForTask(task.id, shifts);
   return {
-    // v0.4: SampleRail.id carries the rail id (was RailInstance.id in v0.3).
-    // Timeline is always one date so this is collision-free.
-    id: rail.id,
-    name: rail.name,
-    subtitle: rail.subtitle,
-    start: row.plannedStart.slice(11, 16) || '00:00',
-    end: row.plannedEnd.slice(11, 16) || '00:00',
-    color: rail.color as RailColor,
+    id: task.id,
+    title: task.title,
     state,
-    showInCheckin: rail.showInCheckin,
+    hasNote: Boolean(task.note && task.note.trim().length > 0),
+    subItemsDone: subItems.filter((s) => s.done).length,
+    subItemsTotal: subItems.length,
+    ...(task.milestonePercent != null && {
+      milestonePercent: task.milestonePercent,
+    }),
+    isAutoTask: task.source === 'auto-habit',
+    ...(tags.length > 0 && { tags }),
   };
 }
 
@@ -486,112 +373,53 @@ function DayProgressBar({ hh, mm }: { hh: number; mm: number }) {
   );
 }
 
+interface TimelineCard {
+  rail: TimelineRow['rail'];
+  isCurrent: boolean;
+  start: string;
+  end: string;
+  tasks: TimelineTask[];
+}
+
 function Timeline({
-  rails,
-  tagsByRailId,
-  taskInfoByRailId,
-  onAction,
-  onUndo,
-  onOpenDetail,
+  cards,
+  onTaskAction,
+  onTaskUndo,
+  onTaskOpenDetail,
 }: {
-  rails: SampleRail[];
-  tagsByRailId: Record<string, string[]>;
-  taskInfoByRailId: Record<
-    string,
-    NonNullable<Parameters<typeof RailCard>[0]['taskInfo']>
-  >;
-  onAction: (instanceId: string, action: CheckInAction) => void;
-  onUndo: (instanceId: string) => void;
-  onOpenDetail: (railId: string) => void;
+  cards: TimelineCard[];
+  onTaskAction: (taskId: string, action: CheckInAction) => void;
+  onTaskUndo: (taskId: string) => void;
+  onTaskOpenDetail: (taskId: string) => void;
 }) {
   return (
     <section className="flex flex-col gap-2.5">
-      <SectionLabel text="Today" right={`${rails.length} rails`} />
-      {rails.length === 0 ? (
+      <SectionLabel text="Today" right={`${cards.length} rails`} />
+      {cards.length === 0 ? (
         <p className="text-sm text-ink-tertiary">今日没有需要显示的 Rail。</p>
       ) : (
         <ul className="flex flex-col gap-2.5">
-          {rails.map((r) => (
-            <li key={r.id}>
+          {cards.map((c) => (
+            <li key={c.rail.id}>
               <RailCard
-                rail={r}
-                tags={tagsByRailId[r.id] ?? []}
-                {...(taskInfoByRailId[r.id] && {
-                  taskInfo: taskInfoByRailId[r.id]!,
-                })}
-                onAction={(a) => onAction(r.id, a)}
-                onUndo={() => onUndo(r.id)}
-                onOpenDetail={() => onOpenDetail(r.id)}
+                rail={{
+                  id: c.rail.id,
+                  name: c.rail.name,
+                  ...(c.rail.subtitle && { subtitle: c.rail.subtitle }),
+                  color: c.rail.color as RailColor,
+                  start: c.start,
+                  end: c.end,
+                }}
+                isCurrent={c.isCurrent}
+                tasks={c.tasks}
+                onTaskAction={onTaskAction}
+                onTaskUndo={onTaskUndo}
+                onTaskOpenDetail={onTaskOpenDetail}
               />
             </li>
           ))}
         </ul>
       )}
-    </section>
-  );
-}
-
-// "Later" strip — today's deferred rails. Separate from the main
-// timeline because they no longer belong to *today* (the user has
-// said "I want to do this, but not now"). Grouped here so the user
-// sees the pile they've accumulated + can undo in one click.
-//
-// v0.3 will add a "re-schedule" affordance that opens Cycle View
-// pre-targeted at this rail; for v0.2 the only explicit re-schedule
-// path is Undefer → rail goes back to `pending` on today's timeline.
-function DeferredSection({
-  rails,
-  onUndefer,
-}: {
-  rails: DeferredRow[];
-  onUndefer: (instanceId: string) => void;
-}) {
-  if (rails.length === 0) return null;
-  return (
-    <section
-      aria-label="今日以后再说的 Rail"
-      className="flex flex-col gap-2.5 rounded-md border border-hairline/40 bg-surface-1 p-4"
-    >
-      <SectionLabel text="以后再说" right={`${rails.length}`} />
-      <ul className="flex flex-col divide-y divide-hairline/40">
-        {rails.map((r) => (
-          <li
-            key={r.id}
-            className="flex items-center gap-3 py-2 first:pt-0 last:pb-0"
-          >
-            <span className="font-mono text-xs tabular-nums text-ink-tertiary">
-              {r.start}–{r.end}
-            </span>
-            <span className="flex min-w-0 flex-1 items-baseline gap-2">
-              <span className="truncate text-sm text-ink-secondary">
-                {r.name}
-                {r.subtitle && (
-                  <span className="ml-1 text-ink-tertiary">· {r.subtitle}</span>
-                )}
-              </span>
-              {r.tags.length > 0 && (
-                <span className="flex shrink-0 items-center gap-1">
-                  {r.tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-2xs tabular-nums text-ink-tertiary"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </span>
-              )}
-            </span>
-            <button
-              type="button"
-              onClick={() => onUndefer(r.id)}
-              className="rounded-sm px-2 py-0.5 text-xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
-            >
-              取消
-            </button>
-          </li>
-        ))}
-      </ul>
     </section>
   );
 }
