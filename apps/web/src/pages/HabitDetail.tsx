@@ -13,6 +13,7 @@ import {
   type Template,
 } from '@dayrail/core';
 import { RAIL_COLOR_HEX, RAIL_COLOR_STEP_4, RAIL_COLOR_STEP_6, RAIL_COLOR_STEP_7 } from '@/components/railColors';
+import { RailPicker } from '@/components/RailPicker';
 import type { RailColor } from '@/data/sample';
 
 // ERD §5.5.0 v0.4 habit detail page.
@@ -613,27 +614,18 @@ function NewBindingForm({
 
   return (
     <div className="flex flex-col gap-3 rounded-md bg-surface-1 px-3 py-3">
-      <label className="flex items-center gap-2 text-xs text-ink-secondary">
+      <div className="flex items-center gap-2 text-xs text-ink-secondary">
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
           选择 Rail
         </span>
-        <select
+        <RailPicker
+          rails={rails}
+          templates={templates}
           value={railId}
-          onChange={(e) => setRailId(e.target.value)}
-          className="h-7 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none focus:border-ink-secondary"
-        >
-          {rails.map((r) => {
-            const tpl = templates[r.templateKey]?.name ?? r.templateKey;
-            const start = formatMinutes(r.startMinutes);
-            const end = formatMinutes(r.startMinutes + r.durationMinutes);
-            return (
-              <option key={r.id} value={r.id}>
-                {tpl} · {r.name} · {start}–{end} · 循环 {recurrenceLabel(r.recurrence)}
-              </option>
-            );
-          })}
-        </select>
-      </label>
+          onChange={setRailId}
+          className="flex-1"
+        />
+      </div>
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
           限定星期
