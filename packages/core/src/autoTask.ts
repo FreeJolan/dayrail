@@ -69,22 +69,18 @@ export interface MaterializeRange {
   endDate: string;
 }
 
-/** Materialize habit auto-tasks for every date in [startDate, endDate].
- *
- * For each habit Line and each HabitBinding, walks the range and
- * upserts a Task when: (1) the date's resolved template matches the
- * bound rail's templateKey; (2) the binding's optional weekdays filter
- * is satisfied; (3) the date is on/after the binding's createdAt date
- * (no retroactive back-populate).
- *
- * Safe to call repeatedly: deterministic ids (`task-auto-{habitId}-
- * {date}`) + `upsertAutoTask` idempotency make this a no-op on an
- * already-materialized range.
- */
-export async function materializeAutoTasks(
+/** Pure materializer core. Same logic as `materializeAutoTasks` but
+ *  takes the state slice + upsert dispatcher as parameters so unit
+ *  tests can drive it without a real store / DB. Runtime callers go
+ *  through `materializeAutoTasks` below. */
+export async function materializeAutoTasksImpl(
+  state: Pick<
+    DayRailState,
+    'habitBindings' | 'rails' | 'lines' | 'templates' | 'calendarRules'
+  >,
+  upsert: (task: Task) => Promise<void>,
   range: MaterializeRange,
 ): Promise<void> {
-  const state = useStore.getState();
   const bindings = Object.values(state.habitBindings);
   if (bindings.length === 0) return;
 
@@ -119,10 +115,29 @@ export async function materializeAutoTasks(
         if (date < createdDate) continue;
 
         const task: Task = buildAutoTask(habit.id, habit.name, rail, date);
-        await state.upsertAutoTask(task);
+        await upsert(task);
       }
     }
   }
+}
+
+/** Materialize habit auto-tasks for every date in [startDate, endDate].
+ *
+ * For each habit Line and each HabitBinding, walks the range and
+ * upserts a Task when: (1) the date's resolved template matches the
+ * bound rail's templateKey; (2) the binding's optional weekdays filter
+ * is satisfied; (3) the date is on/after the binding's createdAt date
+ * (no retroactive back-populate).
+ *
+ * Safe to call repeatedly: deterministic ids (`task-auto-{habitId}-
+ * {date}`) + `upsertAutoTask` idempotency make this a no-op on an
+ * already-materialized range.
+ */
+export async function materializeAutoTasks(
+  range: MaterializeRange,
+): Promise<void> {
+  const state = useStore.getState();
+  await materializeAutoTasksImpl(state, state.upsertAutoTask, range);
 }
 
 function addDays(dateIso: string, n: number): string {
