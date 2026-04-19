@@ -1,5 +1,6 @@
 import { clsx } from 'clsx';
 import { ArrowUpRight, Check, X } from 'lucide-react';
+import { TASK_DRAG_MIME } from './BacklogDrawer';
 import {
   RAIL_COLOR_HEX,
   RAIL_COLOR_STEP_4,
@@ -92,6 +93,24 @@ function ClearButton({
   );
 }
 
+function dragProps(taskId: string): {
+  draggable: true;
+  onDragStart: (e: React.DragEvent) => void;
+} {
+  return {
+    draggable: true,
+    onDragStart: (e) => {
+      // Matches Backlog drag source so the same drop handler on
+      // CycleSection cells fires for both "from backlog" and
+      // "between cells". Stop propagation so the PopoverTrigger
+      // button's drag layer doesn't also get one.
+      e.dataTransfer.setData(TASK_DRAG_MIME, taskId);
+      e.dataTransfer.effectAllowed = 'move';
+      e.stopPropagation();
+    },
+  };
+}
+
 function PendingPill({
   task,
   color,
@@ -102,7 +121,10 @@ function PendingPill({
   onClear?: () => void;
 }) {
   return (
-    <div className="group/pill relative flex flex-col gap-0.5 rounded-sm px-1 py-0.5 pr-5">
+    <div
+      {...dragProps(task.taskId)}
+      className="group/pill relative flex cursor-grab flex-col gap-0.5 rounded-sm px-1 py-0.5 pr-5 active:cursor-grabbing"
+    >
       <div className="flex items-center gap-1.5">
         <span
           aria-hidden
@@ -132,7 +154,8 @@ function DonePill({
   const text = RAIL_TEXT_ON_SOLID[color];
   return (
     <div
-      className="group/pill relative flex flex-col gap-0.5 rounded-sm px-1.5 py-1 pr-5"
+      {...dragProps(task.taskId)}
+      className="group/pill relative flex cursor-grab flex-col gap-0.5 rounded-sm px-1.5 py-1 pr-5 active:cursor-grabbing"
       style={{ background: bg, color: text }}
     >
       <div className="flex items-start gap-1.5">
@@ -163,7 +186,8 @@ function DeferredPill({
 }) {
   return (
     <div
-      className="group/pill relative flex flex-col gap-0.5 rounded-sm px-1.5 py-1 pr-5"
+      {...dragProps(task.taskId)}
+      className="group/pill relative flex cursor-grab flex-col gap-0.5 rounded-sm px-1.5 py-1 pr-5 active:cursor-grabbing"
       style={{ background: RAIL_COLOR_STEP_7[color] }}
     >
       <div className="flex items-start gap-1.5">
@@ -189,7 +213,8 @@ function ArchivedPill({
 }) {
   return (
     <div
-      className="group/pill relative flex flex-col gap-0.5 rounded-sm px-1.5 py-1 pr-5 hatch-skipped opacity-80"
+      {...dragProps(task.taskId)}
+      className="group/pill relative flex cursor-grab flex-col gap-0.5 rounded-sm px-1.5 py-1 pr-5 hatch-skipped opacity-80 active:cursor-grabbing"
       style={{ ['--hatch' as string]: RAIL_COLOR_STEP_6[color] }}
     >
       <span className="line-clamp-2 text-xs text-ink-tertiary line-through decoration-ink-tertiary/40">
