@@ -1,17 +1,16 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-// Vim-style bigraph shortcuts for page nav: press `g`, then a second
-// key within 1.2s. Chosen over Cmd/Ctrl+digit because (a) zero browser
-// conflicts, (b) doesn't steal keys from text inputs (we ignore when
-// focus is on a control), (c) future page-local shortcuts can use bare
-// keys without colliding.
+// Vim-style bigraph shortcuts: press `g`, then a second key within
+// 1.2s. Chosen over Cmd/Ctrl+digit because (a) zero browser conflicts,
+// (b) doesn't steal keys from text inputs (we ignore when focus is
+// on a control), (c) future page-local shortcuts can use bare keys
+// without colliding. Most shortcuts navigate to a page; some toggle
+// global UI (Backlog drawer).
 
-export interface Shortcut {
-  keys: string; // bigraph, e.g. "g t"
-  label: string; // Chinese label for the cheatsheet
-  path: string;
-}
+export type Shortcut =
+  | { keys: string; label: string; path: string }
+  | { keys: string; label: string; action: 'toggle-backlog' };
 
 export const SHORTCUTS: Shortcut[] = [
   { keys: 'g t', label: 'Today Track', path: '/' },
@@ -22,6 +21,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: 'g r', label: 'Review', path: '/review' },
   { keys: 'g e', label: 'Template Editor', path: '/templates' },
   { keys: 'g s', label: 'Settings', path: '/settings' },
+  { keys: 'g b', label: 'Toggle Backlog', action: 'toggle-backlog' },
 ];
 
 const LEADER_TIMEOUT_MS = 1200;
@@ -34,7 +34,10 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return false;
 }
 
-export function useGlobalShortcuts(onOpenCheatsheet: () => void): void {
+export function useGlobalShortcuts(
+  onOpenCheatsheet: () => void,
+  onToggleBacklog: () => void,
+): void {
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -66,7 +69,8 @@ export function useGlobalShortcuts(onOpenCheatsheet: () => void): void {
         clearLeader();
         if (match) {
           e.preventDefault();
-          navigate(match.path);
+          if ('path' in match) navigate(match.path);
+          else if (match.action === 'toggle-backlog') onToggleBacklog();
         }
         return;
       }
@@ -82,7 +86,7 @@ export function useGlobalShortcuts(onOpenCheatsheet: () => void): void {
       window.removeEventListener('keydown', onKey);
       clearLeader();
     };
-  }, [navigate, onOpenCheatsheet]);
+  }, [navigate, onOpenCheatsheet, onToggleBacklog]);
 }
 
 export function useCheatsheetToggle(): {
