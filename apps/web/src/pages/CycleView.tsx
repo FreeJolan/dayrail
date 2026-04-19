@@ -6,7 +6,12 @@ import {
   ChevronRight,
   MoreHorizontal,
 } from 'lucide-react';
-import { INBOX_LINE_ID, useStore, type EditSession } from '@dayrail/core';
+import {
+  INBOX_LINE_ID,
+  materializeAutoTasksForCycle,
+  useStore,
+  type EditSession,
+} from '@dayrail/core';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import { CycleSummaryStrip } from '@/components/CycleSummaryStrip';
 import {
@@ -92,6 +97,14 @@ export function CycleView() {
   const changeCount = session?.changeCount ?? 0;
 
   const weekStart = useMemo(() => startOfWeekMonday(anchorDate), [anchorDate]);
+
+  // §10.2 trigger point "Cycle View 打开 / 切换 cycle". Materialize the
+  // visible Monday-anchored 7-day window so habit auto-tasks appear
+  // in the grid. Idempotent — safe to run on every anchor change.
+  useEffect(() => {
+    const mondayIso = toIsoDate(weekStart);
+    void materializeAutoTasksForCycle(mondayIso);
+  }, [weekStart]);
 
   const { cycle, railsByTemplate } = useMemo(
     () =>

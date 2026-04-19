@@ -114,6 +114,34 @@ export function TodayTrack() {
     return out;
   }, [timelineRows, shifts]);
 
+  // Inline task-info chips per rail. Rendered on the RailCard so users
+  // can scan title / sub-items / note / milestone without drilling into
+  // the detail drawer.
+  const taskInfoByRailId = useMemo<
+    Record<string, NonNullable<Parameters<typeof RailCard>[0]['taskInfo']>>
+  >(() => {
+    const out: Record<
+      string,
+      NonNullable<Parameters<typeof RailCard>[0]['taskInfo']>
+    > = {};
+    for (const row of timelineRows) {
+      if (!row.task) continue;
+      const t = row.task;
+      const subItems = t.subItems ?? [];
+      out[row.rail.id] = {
+        title: t.title,
+        hasNote: Boolean(t.note && t.note.trim().length > 0),
+        subItemsDone: subItems.filter((s) => s.done).length,
+        subItemsTotal: subItems.length,
+        ...(t.milestonePercent != null && {
+          milestonePercent: t.milestonePercent,
+        }),
+        isAutoTask: t.source === 'auto-habit',
+      };
+    }
+    return out;
+  }, [timelineRows]);
+
   // railId → taskId for click-to-open-detail on Timeline RailCards.
   const taskIdByRailId = useMemo<Record<string, string>>(() => {
     const out: Record<string, string> = {};
@@ -218,6 +246,7 @@ export function TodayTrack() {
       <Timeline
         rails={timelineVisible}
         tagsByRailId={tagsByRailId}
+        taskInfoByRailId={taskInfoByRailId}
         onAction={handleTimelineAction}
         onUndo={handleRevert}
         onOpenDetail={handleOpenDetail}
@@ -412,12 +441,17 @@ function DayProgressBar({ hh, mm }: { hh: number; mm: number }) {
 function Timeline({
   rails,
   tagsByRailId,
+  taskInfoByRailId,
   onAction,
   onUndo,
   onOpenDetail,
 }: {
   rails: SampleRail[];
   tagsByRailId: Record<string, string[]>;
+  taskInfoByRailId: Record<
+    string,
+    NonNullable<Parameters<typeof RailCard>[0]['taskInfo']>
+  >;
   onAction: (instanceId: string, action: CheckInAction) => void;
   onUndo: (instanceId: string) => void;
   onOpenDetail: (railId: string) => void;
@@ -434,6 +468,9 @@ function Timeline({
               <RailCard
                 rail={r}
                 tags={tagsByRailId[r.id] ?? []}
+                {...(taskInfoByRailId[r.id] && {
+                  taskInfo: taskInfoByRailId[r.id]!,
+                })}
                 onAction={(a) => onAction(r.id, a)}
                 onUndo={() => onUndo(r.id)}
                 onOpenDetail={() => onOpenDetail(r.id)}
