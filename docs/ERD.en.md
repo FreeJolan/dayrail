@@ -1405,10 +1405,9 @@ for binding in habitBindings:
   if !habit or habit.status != 'active' or !rail: continue
 
   for date in [startDate .. endDate]:
-    if (habit.id, cycleIdOf(date)) is already marked: continue
     if activeTemplate(date) !== rail.templateKey: continue
-    if !rail.recurrence covers date: continue
     if binding.weekdays && !binding.weekdays.includes(dayOfWeek(date)): continue
+    if date < dateOf(binding.createdAt): continue  // no retroactive back-populate
 
     upsert Task {
       id: `task-auto-${habit.id}-${date}`,
@@ -1438,8 +1437,8 @@ what actually happened lives in the Signal event log.
 Two classes of edits can shift which `(habit, date)` pairs should
 have an auto-task:
 
-- **Rail-level**: `recurrence` / `startMinutes` / `durationMinutes` /
-  `templateKey`.
+- **Rail-level**: `startMinutes` / `durationMinutes` / `templateKey`.
+  (`recurrence` removed in v0.4 — no longer a trigger.)
 - **HabitBinding-level**: adding / removing a binding, changing its
   `weekdays` filter.
 
@@ -1503,12 +1502,18 @@ type Rail = {
   durationMinutes: number;
   color: string;            // Radix scale step-9 token (see §9.6)
   icon?: string;
-  recurrence: Recurrence;   // daily | weekdays | custom(weekdays[])
   showInCheckin: boolean;     // true = surfaces on the check-in strip when the app opens (§5.6); false = runs silently, never hitting the strip or the pending queue
   templateKey: TemplateKey; // which template this Rail belongs to
   // v0.4: `defaultLineId` removed. It used to carry two jobs — habit
   // binding (now HabitBinding) and Project quick-schedule default
   // (never wired with a real picker, so we drop it outright).
+  // v0.4 second pass: `recurrence` removed. Template + CalendarRule
+  // decide which dates the rail belongs to; HabitBinding.weekdays
+  // narrows per-habit. Rail-level weekday filter was a third
+  // redundant layer that only produced traps (weekdays default into
+  // a Restday template → ∅ intersection → no tasks ever). Narrower
+  // per-rail schedules can live in a dedicated template + binding
+  // weekdays if ever needed.
 };
 
 // v0.4 new: habit ↔ rail relationship entity (see §5.5.0 / §10.2).
@@ -1516,10 +1521,10 @@ type HabitBinding = {
   id: string;
   habitId: string;   // references Line.id where kind='habit'
   railId: string;    // references Rail.id
-  // Optional weekday filter (0=Sun, 6=Sat). AND-combined with the
-  // rail's own recurrence: the rail must fire, AND the date's
-  // dayOfWeek must be in this list, before an auto-task materializes.
-  // undefined = no extra filter (every day the rail fires).
+  // Optional weekday filter (0=Sun, 6=Sat). Intersected with the
+  // rail's template-active days: a date materializes an auto-task iff
+  // the template fires that date AND (weekdays is undefined OR the
+  // date's dayOfWeek is in weekdays).
   weekdays?: number[];
   createdAt: number; // epoch ms
 };

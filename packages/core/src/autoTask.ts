@@ -15,7 +15,7 @@
 
 import { useStore, resolveTemplateForDate, type DayRailState } from './store';
 import { toIsoDate, toIsoDateTime } from './today';
-import type { Rail, Recurrence, Task } from './types';
+import type { Rail, Task } from './types';
 
 // ------------------------------------------------------------------
 // Date helpers. Monday-anchored cycle id matches the §9.7 Cycle C1
@@ -59,22 +59,6 @@ function* iterDates(startIso: string, endIso: string): Generator<string> {
 }
 
 // ------------------------------------------------------------------
-// Recurrence check — does `rail.recurrence` fire on `dateIso`?
-// ------------------------------------------------------------------
-
-export function recurrenceCovers(recurrence: Recurrence, dateIso: string): boolean {
-  const dow = parseIso(dateIso).getDay(); // 0 = Sun, 6 = Sat
-  switch (recurrence.kind) {
-    case 'daily':
-      return true;
-    case 'weekdays':
-      return dow >= 1 && dow <= 5;
-    case 'custom':
-      return recurrence.weekdays.includes(dow);
-  }
-}
-
-// ------------------------------------------------------------------
 // Materializer.
 // ------------------------------------------------------------------
 
@@ -87,17 +71,15 @@ export interface MaterializeRange {
 
 /** Materialize habit auto-tasks for every date in [startDate, endDate].
  *
- * For each habit Line and each Rail it's bound to, walks the range
- * and upserts a Task when: (1) the (habit, cycle) pair isn't yet
- * marked; (2) the date's resolved template matches the Rail's
- * templateKey; (3) the Rail's recurrence covers the date.
+ * For each habit Line and each HabitBinding, walks the range and
+ * upserts a Task when: (1) the date's resolved template matches the
+ * bound rail's templateKey; (2) the binding's optional weekdays filter
+ * is satisfied; (3) the date is on/after the binding's createdAt date
+ * (no retroactive back-populate).
  *
- * Once every day in a given cycle has been visited, that cycle gets
- * marked so future materialize calls skip it (ERD §10.2 — prevents
- * config changes from back-populating historical cycles).
- *
- * Safe to call repeatedly: deterministic ids + markers make this a
- * no-op when called on an already-materialized range.
+ * Safe to call repeatedly: deterministic ids (`task-auto-{habitId}-
+ * {date}`) + `upsertAutoTask` idempotency make this a no-op on an
+ * already-materialized range.
  */
 export async function materializeAutoTasks(
   range: MaterializeRange,
@@ -127,7 +109,6 @@ export async function materializeAutoTasks(
         const rail = state.rails[binding.railId];
         if (!rail) continue;
         if (rail.templateKey !== tplKey) continue;
-        if (!recurrenceCovers(rail.recurrence, date)) continue;
         if (binding.weekdays && !binding.weekdays.includes(dow)) continue;
 
         // ERD §10.3 "未物化的过去 cycle 不因配置变更而补": don't
@@ -231,9 +212,9 @@ export async function materializeAutoTasksForToday(todayIso: string): Promise<vo
 // ERD §10.3 · habit configuration-change purge.
 //
 // When the user edits something that changes which (habit, date) pairs
-// should have an auto-task — rail time / rail recurrence / rail
-// templateKey, or a HabitBinding's weekdays / presence — the set of
-// future auto-tasks is stale. §10.3 prescribes: hard-delete every
+// should have an auto-task — rail time / rail templateKey, or a
+// HabitBinding's weekdays / presence — the set of future auto-tasks
+// is stale. §10.3 prescribes: hard-delete every
 // future pending auto-task in scope, then let the idempotent
 // materializer top up under the new config on the next view open.
 //
@@ -277,8 +258,8 @@ export function findAffectedFutureAutoTasks(
 
 /** Same as findAffectedFutureAutoTasks but aggregated across every
  *  habit bound to `railId`. Used by Template Editor when a rail's
- *  recurrence / time / templateKey is about to change — it needs a
- *  single total to show in the confirm dialog. */
+ *  time / templateKey is about to change — it needs a single total
+ *  to show in the confirm dialog. */
 export function findAffectedFutureAutoTasksForRail(
   state: Pick<DayRailState, 'tasks' | 'rails' | 'habitBindings'>,
   railId: string,

@@ -46,7 +46,6 @@ import {
   type Line,
   type Rail,
   type RailColor,
-  type Recurrence,
   type Shift,
   type ShiftType,
   type Signal,
@@ -271,9 +270,7 @@ type ReducerState = Pick<
 interface TemplatePayload extends Omit<Template, 'isDefault'> {
   isDefault?: boolean;
 }
-interface RailPayload extends Omit<Rail, 'recurrence'> {
-  recurrence?: Recurrence;
-}
+type RailPayload = Rail;
 interface ShiftPayload {
   id: string;
   taskId: string;
@@ -315,10 +312,7 @@ function applyEventInPlace(
     }
     case 'rail.created': {
       const rail = payload as unknown as RailPayload;
-      state.rails[rail.id] = {
-        ...rail,
-        recurrence: rail.recurrence ?? { kind: 'weekdays' },
-      } as Rail;
+      state.rails[rail.id] = { ...rail };
       break;
     }
     case 'rail.updated': {

@@ -113,8 +113,10 @@ export const rails = sqliteTable(
     showInCheckin: integer('show_in_checkin', { mode: 'boolean' })
       .notNull()
       .default(true),
-    /** Serialised Recurrence (see §10). Mostly 'weekdays' in MVP. */
-    recurrence: text('recurrence').notNull().default('{"kind":"weekdays"}'),
+    // v0.4 dropped `recurrence`. Template+CalendarRule decide which
+    // dates belong to a rail; HabitBinding.weekdays narrows per-habit.
+    // Existing OPFS stores keep the column physically but nothing
+    // reads / writes it — Drizzle only emits SQL for declared fields.
   },
   (t) => ({ templateIdx: index('rails_template_idx').on(t.templateKey) }),
 );
@@ -333,8 +335,7 @@ CREATE TABLE IF NOT EXISTS rails (
   duration_minutes INTEGER NOT NULL,
   color TEXT NOT NULL,
   icon TEXT,
-  show_in_checkin INTEGER NOT NULL DEFAULT 1,
-  recurrence TEXT NOT NULL DEFAULT '{"kind":"weekdays"}'
+  show_in_checkin INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS rails_template_idx ON rails(template_key);
 

@@ -1287,10 +1287,9 @@ for binding in habitBindings:
   if !habit or habit.status != 'active' or !rail: continue
 
   for date in [startDate .. endDate]:
-    if (habit.id, cycleIdOf(date)) is already marked: continue
     if activeTemplate(date) !== rail.templateKey: continue
-    if !rail.recurrence covers date: continue
     if binding.weekdays && !binding.weekdays.includes(dayOfWeek(date)): continue
+    if date < dateOf(binding.createdAt): continue  // 不回填 binding 创建前的历史日期
 
     upsert Task {
       id: `task-auto-${habit.id}-${date}`,
@@ -1311,7 +1310,8 @@ for binding in habitBindings:
 
 可能改变 "哪些 (habit, date) 该有 auto-task" 的变更面有两类：
 
-- **Rail 级**：改 `recurrence` / `startMinutes` / `durationMinutes` / `templateKey`
+- **Rail 级**：改 `startMinutes` / `durationMinutes` / `templateKey`
+  （`recurrence` 字段已在 v0.4 移除，不再是 trigger）
 - **HabitBinding 级**：新增 / 删除 binding、改 `weekdays` 过滤器
 
 两类都走同一条规则处理。
@@ -1362,10 +1362,14 @@ type Rail = {
   durationMinutes: number;
   color: string;        // Radix scale step 9 的 token 名（见 §9.6）
   icon?: string;
-  recurrence: Recurrence; // daily | weekdays | custom(weekdays[])
   showInCheckin: boolean;      // true = 打开 App 时浮出 check-in 条（§5.6）；false = 静默走完，不进 check-in 条、也不进Pending 队列
   templateKey: TemplateKey; // 所属模板
   // v0.4: `defaultLineId` 字段移除。原本承担"habit 绑定 + Project 默认 Line"两职责,前者由 HabitBinding 承担,后者在没有真 Line picker 的前提下从未工作,一并删干净。
+  // v0.4 二次清理: `recurrence` 字段也移除。Template + CalendarRule
+  // 决定 rail 属于哪些日期,HabitBinding.weekdays 做 per-habit 窄化。
+  // rail 级 weekday 过滤是第三层冗余过滤,只制造 trap(weekdays 默认
+  // 扔进 Restday 模板 → 交集为空 → 永不生成 task)。如需某条 rail
+  // 只在部分天生效,新建一个专用模板 + binding.weekdays 即可。
 };
 
 // v0.4 新增: habit 与 rail 的关系实体(见 §5.5.0 / §10.2)
@@ -1373,9 +1377,9 @@ type HabitBinding = {
   id: string;
   habitId: string;   // 指向 Line.id (kind='habit')
   railId: string;    // 指向 Rail.id
-  // 可选的 weekdays 过滤器(0=日 ... 6=六)。和 rail.recurrence 做 AND:
-  // rail 要先 fire,然后 date 的 dayOfWeek 还得在这个列表里才物化 auto-task。
-  // undefined = 不额外过滤(rail 哪天 fire 就哪天物化)。
+  // 可选的 weekdays 过滤器(0=日 ... 6=六)。与 rail 所在模板的生效
+  // 日期求交集: 当天物化一条 auto-task iff 模板当天生效 AND
+  // (weekdays 未设 OR 当天 dayOfWeek ∈ weekdays)。
   weekdays?: number[];
   createdAt: number; // epoch ms
 };

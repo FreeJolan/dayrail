@@ -8,12 +8,12 @@
 //     is what we want for "ended before now?" comparisons.
 //
 // v0.4: `RailInstance` is removed. Today's timeline is now synthesised
-// directly from `(rails × active template × recurrence)` with an
-// optional Task overlay for cell state. Check-in / Pending queues
-// iterate Tasks and join Rail for the planned window.
+// directly from `(rails × active template)` with an optional Task
+// overlay for cell state. Check-in / Pending queues iterate Tasks
+// and join Rail for the planned window.
 
 import { type DayRailState, resolveTemplateForDate } from './store';
-import type { Rail, Recurrence, Task } from './types';
+import type { Rail, Task } from './types';
 
 export function toIsoDate(d: Date = new Date()): string {
   const yr = d.getFullYear();
@@ -44,23 +44,6 @@ export function selectActiveTemplateKey(
     return (templates.find((t) => t.isDefault) ?? templates[0]!).key;
   };
   return resolveTemplateForDate(state, date, fallback);
-}
-
-// ------------------------------------------------------------------
-// Recurrence helper (mirrors autoTask.recurrenceCovers so callers in
-// this file don't need a circular import).
-// ------------------------------------------------------------------
-
-function recurrenceCovers(recurrence: Recurrence, dateIso: string): boolean {
-  const dow = new Date(`${dateIso}T00:00:00`).getDay();
-  switch (recurrence.kind) {
-    case 'daily':
-      return true;
-    case 'weekdays':
-      return dow >= 1 && dow <= 5;
-    case 'custom':
-      return recurrence.weekdays.includes(dow);
-  }
 }
 
 // ------------------------------------------------------------------
@@ -182,13 +165,12 @@ export interface TimelineRow {
 }
 
 /** Today's timeline — the union of:
- *    (a) Rails whose template matches today's active template AND
- *        whose recurrence covers today (the normal "day structure").
+ *    (a) Rails whose template matches today's active template
+ *        (the normal "day structure").
  *    (b) Rails that have a scheduled Task on today, regardless of
- *        template / recurrence. This catches "I parked a task on
- *        a workday rail for Sunday" — the task carries an explicit
- *        intent and should be visible today even though the rail
- *        wouldn't fire normally.
+ *        template. This catches "I parked a task on a workday rail
+ *        for Sunday" — the task carries an explicit intent and should
+ *        be visible today even though the rail wouldn't fire normally.
  *  Cell state is derived by the caller from `row.task?.status`. */
 export function selectTodayTimeline(
   state: Pick<DayRailState, 'rails' | 'tasks' | 'templates' | 'calendarRules'>,
@@ -215,11 +197,7 @@ export function selectTodayTimeline(
   // Build the set of rail ids to render:
   const railIds = new Set<string>();
   for (const rail of Object.values(state.rails)) {
-    if (
-      activeTemplate &&
-      rail.templateKey === activeTemplate &&
-      recurrenceCovers(rail.recurrence, date)
-    ) {
+    if (activeTemplate && rail.templateKey === activeTemplate) {
       railIds.add(rail.id); // (a)
     }
   }

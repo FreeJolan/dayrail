@@ -125,12 +125,11 @@ async function seedFromSamples(): Promise<void> {
         id: r.id,
         templateKey,
         name: r.name,
-        subtitle: r.subtitle,
+        ...(r.subtitle && { subtitle: r.subtitle }),
         startMinutes: r.startMin,
         durationMinutes: r.endMin - r.startMin,
         color: r.color as RailColor,
         showInCheckin: r.showInCheckin,
-        recurrence: { kind: 'weekdays' },
       };
       await store.createRail(rail);
     }
