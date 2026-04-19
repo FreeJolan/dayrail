@@ -736,13 +736,6 @@ function ScheduleRow({
   const end = formatMinutes(rail.startMinutes + rail.durationMinutes);
   const [editingWeekdays, setEditingWeekdays] = useState(false);
   const calendarRules = useStore((s) => s.calendarRules);
-  // Weekdays the rail *could* fire on, per its own recurrence.
-  const railCoveredDays = useMemo(() => {
-    const r = rail.recurrence;
-    if (r.kind === 'daily') return new Set([0, 1, 2, 3, 4, 5, 6]);
-    if (r.kind === 'weekdays') return new Set([1, 2, 3, 4, 5]);
-    return new Set(r.weekdays);
-  }, [rail.recurrence]);
   // Weekdays the rail's template is actually active on — derived from
   // the template's weekday-kind CalendarRule. Other rule kinds (single
   // date / cycle / date-range) are time-specific and not summarised
@@ -755,22 +748,15 @@ function ScheduleRow({
     if (!raw || raw.length === 0) return new Set([0, 1, 2, 3, 4, 5, 6]);
     return new Set(raw);
   }, [calendarRules, rail.templateKey]);
-  // rail.recurrence × template days. Empty = rail is unreachable — no
-  // date ever satisfies both filters and the materializer produces
-  // zero tasks. Classic trap: weekdays-default rail dropped into a
-  // restday template.
-  const railTemplateIntersects = useMemo(() => {
-    for (const d of railCoveredDays) {
-      if (templateActiveDays.has(d)) return true;
-    }
-    return false;
-  }, [railCoveredDays, templateActiveDays]);
-  // binding.weekdays × rail.recurrence — the "user set weekdays that
-  // the rail itself doesn't fire on" pitfall from the earlier pass.
+  // binding.weekdays ∩ template-active-days. Empty = the binding
+  // filters out every day the template fires on — no task ever
+  // materializes. Classic pitfall: user picks weekdays=[Mon] for a
+  // habit bound to a Restday rail.
   const uncoveredWeekdays = useMemo(() => {
     if (!binding.weekdays) return [];
-    return binding.weekdays.filter((d) => !railCoveredDays.has(d));
-  }, [binding.weekdays, railCoveredDays]);
+    return binding.weekdays.filter((d) => !templateActiveDays.has(d));
+  }, [binding.weekdays, templateActiveDays]);
+  const bindingWouldFire = !binding.weekdays || uncoveredWeekdays.length < binding.weekdays.length;
   return (
     <li className="group flex items-start gap-3 rounded-md bg-surface-1 px-3 py-2.5 transition hover:bg-surface-2">
       <span
@@ -782,7 +768,7 @@ function ScheduleRow({
         <div className="flex items-baseline gap-2">
           <span className="text-sm text-ink-primary">{rail.name}</span>
           <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
-            {start}–{end} · {templateName} · rail 循环 {recurrenceLabel(rail.recurrence)}
+            {start}–{end} · {templateName}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -810,22 +796,21 @@ function ScheduleRow({
             </button>
           )}
         </div>
-        {!railTemplateIntersects && (
+        {!bindingWouldFire && (
           <p className="rounded-sm bg-warn/20 px-1.5 py-0.5 text-2xs text-warn">
-            ⚠ Rail 循环（{recurrenceLabel(rail.recurrence)}）与模板「
-            {templateName}」实际生效的日期没有交集,这条 rail 永远不会生成 task。
-            去 Template Editor 删掉这条 rail 重建（新 rail 默认每天）,或把它换到匹配的模板。
+            ⚠ 限定星期与模板「{templateName}」实际生效的日期没有交集,这条
+            binding 永远不会生成 task。去掉这些 weekday,或换到一条不同模板的 rail。
           </p>
         )}
-        {railTemplateIntersects && uncoveredWeekdays.length > 0 && (
+        {bindingWouldFire && uncoveredWeekdays.length > 0 && (
           <p className="rounded-sm bg-warn/10 px-1.5 py-0.5 text-2xs text-warn">
-            ⚠ Rail 循环不覆盖{' '}
+            ⚠ 模板「{templateName}」不生效于{' '}
             {uncoveredWeekdays
               .sort((a, b) => a - b)
               .map((d) => ['日', '一', '二', '三', '四', '五', '六'][d])
               .map((n) => `周${n}`)
               .join(' / ')}
-            ,这些日子不会物化任务。去 Rail 改 recurrence 或去掉这些 weekday。
+            ,这些日子不会物化任务。
           </p>
         )}
       </div>
@@ -1011,19 +996,6 @@ function NewBindingForm({
       </div>
     </div>
   );
-}
-
-function recurrenceLabel(r: Rail['recurrence']): string {
-  switch (r.kind) {
-    case 'daily':
-      return '每天';
-    case 'weekdays':
-      return '工作日';
-    case 'custom': {
-      const names = ['日', '一', '二', '三', '四', '五', '六'];
-      return r.weekdays.map((w) => `周${names[w]}`).join(' / ') || '—';
-    }
-  }
 }
 
 // ------------------------------------------------------------------
