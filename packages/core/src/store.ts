@@ -54,7 +54,6 @@ import {
   type Task,
   type Template,
   type TemplateKey,
-  type AutoTaskMarker,
   type HabitBinding,
 } from './types';
 
@@ -77,8 +76,6 @@ export interface DayRailState {
   habitPhases: Record<string, HabitPhase>;
   /** §5.5.0 v0.4 · habit ↔ rail bindings. Keyed on binding id. */
   habitBindings: Record<string, HabitBinding>;
-  /** §10.2 auto-task materialization markers. Key = `${habitId}|${cycleId}`. */
-  autoTaskMarkers: Record<string, AutoTaskMarker>;
   sessions: Record<string, EditSession>;
 }
 
@@ -225,9 +222,6 @@ interface DayRailActions {
    *  already exists — the caller (autoTask.ts materializer) uses
    *  deterministic ids, so this is the safe re-entry guard. */
   upsertAutoTask: (task: Task) => Promise<void>;
-  /** Mark a (habit, cycle) pair as materialized. Subsequent
-   *  materialize calls will skip this pair (see ERD §10.2). */
-  upsertAutoTaskMarker: (habitId: string, cycleId: string) => Promise<void>;
   // --- ad-hoc events (standalone; task-backed adhocs live under
   //     scheduleTaskFreeTime + unscheduleTask) ---
   /** Create a standalone AdhocEvent on a given date. Returns the id. */
@@ -270,7 +264,6 @@ type ReducerState = Pick<
   | 'cycles'
   | 'habitPhases'
   | 'habitBindings'
-  | 'autoTaskMarkers'
 >;
 
 // Narrowed local types matching exactly the event payloads the Template
@@ -470,11 +463,6 @@ function applyEventInPlace(
       delete state.habitBindings[id];
       break;
     }
-    case 'auto-task-marker.set': {
-      const p = payload as unknown as AutoTaskMarker;
-      state.autoTaskMarkers[`${p.habitId}|${p.cycleId}`] = { ...p };
-      break;
-    }
     default:
       // Unknown event types are no-ops in this store slice.
       break;
@@ -500,7 +488,6 @@ type SnapshotPayload = Pick<
   | 'cycles'
   | 'habitPhases'
   | 'habitBindings'
-  | 'autoTaskMarkers'
 >;
 
 function emptyReducerState(): ReducerState {
@@ -516,7 +503,6 @@ function emptyReducerState(): ReducerState {
     cycles: {},
     habitPhases: {},
     habitBindings: {},
-    autoTaskMarkers: {},
   };
 }
 
@@ -533,7 +519,6 @@ function snapshotFromState(s: DayRailState): SnapshotPayload {
     cycles: s.cycles,
     habitPhases: s.habitPhases,
     habitBindings: s.habitBindings,
-    autoTaskMarkers: s.autoTaskMarkers,
   };
 }
 
@@ -695,7 +680,6 @@ export const useStore = create<DayRailStore>()(
       cycles: {},
       habitPhases: {},
       habitBindings: {},
-      autoTaskMarkers: {},
       sessions: {},
 
       hydrate: async () => {
@@ -729,9 +713,6 @@ export const useStore = create<DayRailStore>()(
               reducerState.habitBindings = {
                 ...(snap.state.habitBindings ?? {}),
               };
-              reducerState.autoTaskMarkers = {
-                ...(snap.state.autoTaskMarkers ?? {}),
-              };
             }
             for (const ev of events) {
               applyEventInPlace(reducerState, ev.type, ev.payload);
@@ -747,7 +728,6 @@ export const useStore = create<DayRailStore>()(
             draft.cycles = reducerState.cycles;
             draft.habitPhases = reducerState.habitPhases;
             draft.habitBindings = reducerState.habitBindings;
-            draft.autoTaskMarkers = reducerState.autoTaskMarkers;
             for (const s of recovered) {
               if (!s.closed) draft.sessions[s.id] = s;
             }
@@ -1371,19 +1351,6 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
-      upsertAutoTaskMarker: async (habitId, cycleId) => {
-        const key = `${habitId}|${cycleId}`;
-        if (get().autoTaskMarkers[key]) return;
-        const marker: AutoTaskMarker = { habitId, cycleId, at: Date.now() };
-        const ev = await appendEvent({
-          aggregateId: `auto-task-marker:${key}`,
-          type: 'auto-task-marker.set',
-          payload: marker as unknown as Record<string, unknown>,
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        afterMutation();
-      },
-
       createAdhocEvent: async (opts) => {
         const id = ulidLite('adhoc');
         const payload: AdhocEvent = {
@@ -1504,7 +1471,6 @@ export const useStore = create<DayRailStore>()(
           draft.cycles = reducerState.cycles;
           draft.habitPhases = reducerState.habitPhases;
           draft.habitBindings = reducerState.habitBindings;
-          draft.autoTaskMarkers = reducerState.autoTaskMarkers;
         });
         await closeSession(sessionId);
         set((draft) => {

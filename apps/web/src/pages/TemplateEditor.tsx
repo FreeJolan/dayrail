@@ -579,7 +579,6 @@ function railToEditable(r: Rail): EditableRail {
     endMin: r.startMinutes + r.durationMinutes,
     color: r.color,
     showInCheckin: r.showInCheckin,
-    defaultLineId: null,
   };
 }
 
@@ -589,8 +588,6 @@ function editablePatchToRail(patch: Partial<EditableRail>): Partial<Rail> {
   if (patch.subtitle !== undefined) next.subtitle = patch.subtitle;
   if (patch.color !== undefined) next.color = patch.color;
   if (patch.showInCheckin !== undefined) next.showInCheckin = patch.showInCheckin;
-  // defaultLineId field removed in v0.4; sample-data shape keeps it
-  // as a typed dead field for now.
   if (patch.startMin !== undefined) next.startMinutes = patch.startMin;
   if (patch.endMin !== undefined && patch.startMin !== undefined) {
     next.durationMinutes = patch.endMin - patch.startMin;
