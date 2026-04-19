@@ -1,5 +1,6 @@
 import { clsx } from 'clsx';
 import {
+  ArrowUpRight,
   PanelRightClose,
   PanelRightOpen,
   Plus,
@@ -160,6 +161,7 @@ function BacklogCard({
   const accent = projectColor
     ? RAIL_COLOR_HEX[projectColor as keyof typeof RAIL_COLOR_HEX]
     : undefined;
+  const isDeferred = task.status === 'deferred';
   return (
     <div
       draggable
@@ -168,6 +170,11 @@ function BacklogCard({
         e.dataTransfer.setData('text/plain', task.title);
         e.dataTransfer.effectAllowed = 'move';
       }}
+      title={
+        isDeferred
+          ? '之前标记为「以后再说」· 拖到格子即重新排期'
+          : '拖到格子即排期'
+      }
       className="group flex cursor-grab items-start gap-2 rounded-md bg-surface-1 px-2 py-2 transition hover:bg-surface-2 active:cursor-grabbing"
     >
       {accent && (
@@ -178,14 +185,30 @@ function BacklogCard({
         />
       )}
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="text-sm leading-snug text-ink-primary">
-          {task.title}
-        </span>
-        {projectName && (
-          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-            {projectName}
+        <div className="flex items-center gap-1.5">
+          {isDeferred && (
+            <ArrowUpRight
+              aria-hidden
+              className="h-3 w-3 shrink-0 text-ink-tertiary"
+              strokeWidth={1.8}
+            />
+          )}
+          <span className="text-sm leading-snug text-ink-primary">
+            {task.title}
           </span>
-        )}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {projectName && (
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              {projectName}
+            </span>
+          )}
+          {isDeferred && (
+            <span className="rounded-sm bg-surface-2 px-1 py-0.5 font-mono text-[10px] uppercase tracking-widest text-ink-tertiary">
+              以后
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );
