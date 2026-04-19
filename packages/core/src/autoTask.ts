@@ -14,7 +14,7 @@
 // auto-tasks in it (preventing undo-like side effects).
 
 import { useStore, resolveTemplateForDate, type DayRailState } from './store';
-import { toIsoDateTime } from './today';
+import { toIsoDate, toIsoDateTime } from './today';
 import type { Rail, Recurrence, Task } from './types';
 
 // ------------------------------------------------------------------
@@ -130,18 +130,12 @@ export async function materializeAutoTasks(
         if (!recurrenceCovers(rail.recurrence, date)) continue;
         if (binding.weekdays && !binding.weekdays.includes(dow)) continue;
 
-        // ERD §10.3 "未物化的过去 cycle 不因配置变更而补": skip any
-        // occurrence whose plannedStart precedes the binding's
-        // createdAt. New bindings don't retroactively populate past
-        // days; those are reserved for A+B click-to-backfill.
-        const plannedStartIso = toIsoDateTime(date, rail.startMinutes);
-        const plannedStartMs = Date.parse(plannedStartIso);
-        if (
-          !Number.isNaN(plannedStartMs) &&
-          plannedStartMs < binding.createdAt
-        ) {
-          continue;
-        }
+        // ERD §10.3 "未物化的过去 cycle 不因配置变更而补": don't
+        // retroactively populate dates before the binding existed.
+        // Compare at DATE level, not ms — a binding created at 15:00
+        // should still cover today's 09:00 rail.
+        const createdDate = toIsoDate(new Date(binding.createdAt));
+        if (date < createdDate) continue;
 
         const task: Task = buildAutoTask(habit.id, habit.name, rail, date);
         await state.upsertAutoTask(task);
