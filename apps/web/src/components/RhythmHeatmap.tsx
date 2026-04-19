@@ -222,6 +222,7 @@ function Header({
 }
 
 function HeatRow({ row, dates }: { row: HeatmapRow; dates: string[] }) {
+  const stats = rowStats(row);
   return (
     <tr>
       <th scope="row" className="pr-3 py-0.5 text-left align-middle">
@@ -231,9 +232,20 @@ function HeatRow({ row, dates }: { row: HeatmapRow; dates: string[] }) {
             className="h-3 w-[3px] shrink-0 rounded-sm"
             style={{ background: RAIL_COLOR_HEX[row.color] }}
           />
-          <span className="truncate text-sm text-ink-secondary">
+          <span className="min-w-0 flex-1 truncate text-sm text-ink-secondary">
             {row.railName}
           </span>
+          {stats.total > 0 && (
+            <span
+              title={`${stats.done}/${stats.total} · ${stats.matchPct}% match`}
+              className="shrink-0 font-mono text-2xs tabular-nums text-ink-tertiary"
+            >
+              {stats.done}/{stats.total}
+              <span className="ml-1 text-ink-tertiary/70">
+                · {stats.matchPct}%
+              </span>
+            </span>
+          )}
         </div>
       </th>
       {dates.map((d) => {
@@ -246,6 +258,28 @@ function HeatRow({ row, dates }: { row: HeatmapRow; dates: string[] }) {
       })}
     </tr>
   );
+}
+
+/** Done count / applied-day count for a row. `empty` cells represent
+ *  days the rail didn't apply (template mismatch / binding filter), so
+ *  they don't count toward the denominator. */
+function rowStats(row: HeatmapRow): {
+  done: number;
+  total: number;
+  matchPct: number;
+} {
+  let done = 0;
+  let total = 0;
+  for (const state of Object.values(row.byDate)) {
+    if (state === 'empty') continue;
+    total++;
+    if (state === 'done') done++;
+  }
+  return {
+    done,
+    total,
+    matchPct: total === 0 ? 0 : Math.round((done / total) * 100),
+  };
 }
 
 function HeatCell({
