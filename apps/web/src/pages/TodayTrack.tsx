@@ -68,20 +68,28 @@ export function TodayTrack() {
   // Timeline hover action bar. The `railId` identifies the row on
   // today's timeline. If the row has a carrying Task we fire on it;
   // bare rails (no Task) are no-op per ERD §5.6.
+  // v0.4 multi-task: acts on the first pending task (or first task if
+  // none pending) — fine since the hover action is only exposed when
+  // the row's RailCard state is pending/current, which implies ≥ 1
+  // actionable task. Rare 2+ task case is the exception.
   const handleTimelineAction = useCallback(
     (railId: string, action: CheckInAction) => {
       const rail = rails[railId];
       if (!rail) return;
-      const task = Object.values(tasks).find(
+      const candidates = Object.values(tasks).filter(
         (t) =>
           t.slot &&
           t.slot.date === today &&
           t.slot.railId === railId &&
           t.status !== 'deleted',
       );
-      if (!task) return;
+      if (candidates.length === 0) return;
+      const target =
+        candidates.find(
+          (t) => t.status === 'pending' || t.status === 'in-progress',
+        ) ?? candidates[0]!;
       fire({
-        taskId: task.id,
+        taskId: target.id,
         railId: rail.id,
         displayName: rail.name,
         action,
@@ -101,22 +109,38 @@ export function TodayTrack() {
     [timelineRows, now.asDate],
   );
 
+  // Representative task per rail — the one whose state / title the
+  // RailCard renders. Prefer pending/in-progress, else first.
+  const primaryTaskByRailId = useMemo<Record<string, Task>>(() => {
+    const out: Record<string, Task> = {};
+    for (const row of timelineRows) {
+      if (row.tasks.length === 0) continue;
+      const primary =
+        row.tasks.find(
+          (t) => t.status === 'pending' || t.status === 'in-progress',
+        ) ?? row.tasks[0]!;
+      out[row.rail.id] = primary;
+    }
+    return out;
+  }, [timelineRows]);
+
   // Latest Shift tags per rail (keyed on railId since today's timeline
   // is one date) — consumed by the Timeline RailCard to surface "why"
   // inline on done / deferred / archived rows.
   const tagsByRailId = useMemo<Record<string, string[]>>(() => {
     const out: Record<string, string[]> = {};
     for (const row of timelineRows) {
-      if (!row.task) continue;
-      const tags = latestTagsForTask(row.task.id, shifts);
+      const primary = primaryTaskByRailId[row.rail.id];
+      if (!primary) continue;
+      const tags = latestTagsForTask(primary.id, shifts);
       if (tags.length > 0) out[row.rail.id] = tags;
     }
     return out;
-  }, [timelineRows, shifts]);
+  }, [timelineRows, primaryTaskByRailId, shifts]);
 
   // Inline task-info chips per rail. Rendered on the RailCard so users
   // can scan title / sub-items / note / milestone without drilling into
-  // the detail drawer.
+  // the detail drawer. `extraCount` surfaces the rare multi-task case.
   const taskInfoByRailId = useMemo<
     Record<string, NonNullable<Parameters<typeof RailCard>[0]['taskInfo']>>
   >(() => {
@@ -125,8 +149,8 @@ export function TodayTrack() {
       NonNullable<Parameters<typeof RailCard>[0]['taskInfo']>
     > = {};
     for (const row of timelineRows) {
-      if (!row.task) continue;
-      const t = row.task;
+      const t = primaryTaskByRailId[row.rail.id];
+      if (!t) continue;
       const subItems = t.subItems ?? [];
       out[row.rail.id] = {
         title: t.title,
@@ -137,19 +161,23 @@ export function TodayTrack() {
           milestonePercent: t.milestonePercent,
         }),
         isAutoTask: t.source === 'auto-habit',
+        extraCount: Math.max(0, row.tasks.length - 1),
       };
     }
     return out;
-  }, [timelineRows]);
+  }, [timelineRows, primaryTaskByRailId]);
 
   // railId → taskId for click-to-open-detail on Timeline RailCards.
+  // Opens the primary task's detail drawer; user can see other tasks
+  // in Cycle View.
   const taskIdByRailId = useMemo<Record<string, string>>(() => {
     const out: Record<string, string> = {};
     for (const row of timelineRows) {
-      if (row.task) out[row.rail.id] = row.task.id;
+      const primary = primaryTaskByRailId[row.rail.id];
+      if (primary) out[row.rail.id] = primary.id;
     }
     return out;
-  }, [timelineRows]);
+  }, [timelineRows, primaryTaskByRailId]);
 
   const handleOpenDetail = useCallback(
     (railId: string) => {
@@ -181,28 +209,36 @@ export function TodayTrack() {
   const deferredToday = useMemo<DeferredRow[]>(
     () =>
       timelineRows
-        .filter((r) => r.task?.status === 'deferred')
-        .map((r) => ({
-          ...adaptToSample(r, now.asDate),
-          tags: r.task ? latestTagsForTask(r.task.id, shifts) : [],
-        })),
+        .filter((r) => r.tasks.some((t) => t.status === 'deferred'))
+        .map((r) => {
+          const deferredTask = r.tasks.find((t) => t.status === 'deferred');
+          return {
+            ...adaptToSample(r, now.asDate),
+            tags: deferredTask
+              ? latestTagsForTask(deferredTask.id, shifts)
+              : [],
+          };
+        }),
     [timelineRows, shifts, now.asDate],
   );
 
   // Undefer / "put it back on today". DeferredSection keys rows on
-  // railId (we're always today). Finds the carrying Task and resets
-  // its status back to `pending`.
+  // railId (we're always today). Picks a non-pending task to revert —
+  // the one the undo arrow is actually addressing. Multi-task case:
+  // restores the first settled task.
   const handleRevert = useCallback(
     (railId: string) => {
-      const task = Object.values(tasks).find(
+      const target = Object.values(tasks).find(
         (t) =>
           t.slot &&
           t.slot.date === today &&
           t.slot.railId === railId &&
-          t.status !== 'deleted',
+          (t.status === 'done' ||
+            t.status === 'deferred' ||
+            t.status === 'archived'),
       );
-      if (!task) return;
-      void updateTask(task.id, {
+      if (!target) return;
+      void updateTask(target.id, {
         status: 'pending',
         doneAt: undefined,
         deferredAt: undefined,
@@ -319,15 +355,22 @@ function carriedRowToCheckInEntry(row: RailBoundTaskRow): CheckInEntry {
 }
 
 function adaptToSample(row: TimelineRow, now: Date): SampleRail {
-  const { rail, task } = row;
+  const { rail, tasks } = row;
   const startMs = Date.parse(row.plannedStart);
   const endMs = Date.parse(row.plannedEnd);
   const nowMs = now.getTime();
 
+  // Representative task for the card's 5-state display. Pending/
+  // in-progress wins — they're actionable. Else fall through to the
+  // first task (done / deferred / archived share the "settled" row).
+  const primary =
+    tasks.find((t) => t.status === 'pending' || t.status === 'in-progress') ??
+    tasks[0];
+
   let state: RailState;
-  if (task?.status === 'done') state = 'done';
-  else if (task?.status === 'deferred') state = 'deferred';
-  else if (task?.status === 'archived') state = 'archived';
+  if (primary?.status === 'done') state = 'done';
+  else if (primary?.status === 'deferred') state = 'deferred';
+  else if (primary?.status === 'archived') state = 'archived';
   else if (!Number.isNaN(startMs) && startMs <= nowMs && nowMs <= endMs)
     state = 'current';
   else if (!Number.isNaN(endMs) && endMs < nowMs) state = 'unmarked';

@@ -16,6 +16,8 @@ import type {
   CycleDay,
   CycleSlot,
   SampleCycle,
+  SlotTaskState,
+  SlotTaskSummary,
 } from '@/data/sampleCycle';
 import type { EditableRail, TemplateKey } from '@/data/sampleTemplate';
 import type { RailColor } from '@/data/sample';
@@ -114,12 +116,9 @@ export function deriveCycleFromStore(
     railsByTemplate[key]!.sort((a, b) => a.startMin - b.startMin);
   }
 
-  // v0.4: slot cell states come entirely from Task.status (ERD §10.1).
-  //  `done`       → task.status = 'done'
-  //  `skipped`    → task.status = 'deferred' (user pushed the slot out)
-  //  `na`         → task.status = 'archived' (dropped this occurrence)
-  //  `planned-task` → any other non-deleted task on the slot
-  //  (empty cell = no task on that (date, railId))
+  // v0.4: a slot can hold multiple tasks (ERD §4.1 "Slot ↔ Task
+  // one-to-many"). Build a per-key task array; each task carries its
+  // own status so CycleCell can render multi-pill stacks.
   const slotsByKey = new Map<string, CycleSlot>();
   for (const task of Object.values(state.tasks)) {
     if (task.status === 'deleted') continue;
@@ -127,26 +126,44 @@ export function deriveCycleFromStore(
     const { date, railId } = task.slot;
     if (date < startIso || date > endIso) continue;
     const key = `${railId}|${date}`;
-    let cellState: CycleSlot['state'];
-    if (task.status === 'done') cellState = 'done';
-    else if (task.status === 'deferred') cellState = 'skipped';
-    else if (task.status === 'archived') cellState = 'na';
-    else cellState = 'planned-task';
     const subItems = task.subItems ?? [];
-    slotsByKey.set(key, {
-      railId,
-      date,
-      state: cellState,
-      taskName: task.title,
+    // Task.status ∈ pending / in-progress / done / deferred / archived / deleted.
+    // Map anything pre-terminal into `pending` for slot-pill rendering.
+    let state: SlotTaskState;
+    if (task.status === 'done') state = 'done';
+    else if (task.status === 'deferred') state = 'deferred';
+    else if (task.status === 'archived') state = 'archived';
+    else state = 'pending';
+    const summary: SlotTaskSummary = {
       taskId: task.id,
+      title: task.title,
+      state,
+      isAutoTask: task.source === 'auto-habit',
+      hasNote: Boolean(task.note && task.note.trim().length > 0),
       subItemsDone: subItems.filter((s) => s.done).length,
       subItemsTotal: subItems.length,
-      hasNote: Boolean(task.note && task.note.trim().length > 0),
       ...(task.milestonePercent != null && {
         milestonePercent: task.milestonePercent,
       }),
-      isAutoTask: task.source === 'auto-habit',
-    });
+    };
+    const existing = slotsByKey.get(key);
+    if (existing) {
+      existing.tasks.push(summary);
+    } else {
+      slotsByKey.set(key, { railId, date, tasks: [summary] });
+    }
+  }
+  // Sort each slot's tasks: pending first (top priority to act on),
+  // then in-progress-ish, then done, then deferred, then archived.
+  // Within a state group, keep insertion order (iteration-stable).
+  const STATE_RANK: Record<SlotTaskState, number> = {
+    pending: 0,
+    done: 1,
+    deferred: 2,
+    archived: 3,
+  };
+  for (const slot of slotsByKey.values()) {
+    slot.tasks.sort((a, b) => STATE_RANK[a.state] - STATE_RANK[b.state]);
   }
 
   const slots: CycleSlot[] = [...slotsByKey.values()];
@@ -154,7 +171,7 @@ export function deriveCycleFromStore(
   // topLines: cheapest bar for the summary strip — pick three Projects
   // (kind='project') by task count in the current cycle window. Good
   // enough for v0.2; v0.3 tightens.
-  const topLines = computeTopLines(state, slots);
+  const topLines = computeTopLines(state, startIso, endIso);
 
   const cycle: SampleCycle = {
     id: `cycle-${startIso}`,
@@ -183,25 +200,19 @@ function railToEditable(rail: Rail): EditableRail {
 
 function computeTopLines(
   state: Pick<DayRailState, 'tasks' | 'templates' | 'rails' | 'lines'>,
-  slotsInCycle: CycleSlot[],
+  startIso: string,
+  endIso: string,
 ): SampleCycle['topLines'] {
   // Tasks scheduled inside the cycle window, grouped by lineId.
   const byLine = new Map<string, { done: number; planned: number }>();
-  for (const s of slotsInCycle) {
-    // Find the Task that owns this slot by (date, railId). The Task
-    // type carries lineId + status directly.
-    const matching = Object.values(state.tasks).find(
-      (t) =>
-        t.slot?.date === s.date &&
-        t.slot?.railId === s.railId &&
-        t.status !== 'archived' &&
-        t.status !== 'deleted',
-    );
-    if (!matching) continue;
-    const b = byLine.get(matching.lineId) ?? { done: 0, planned: 0 };
-    if (matching.status === 'done') b.done++;
+  for (const t of Object.values(state.tasks)) {
+    if (t.status === 'archived' || t.status === 'deleted') continue;
+    if (!t.slot) continue;
+    if (t.slot.date < startIso || t.slot.date > endIso) continue;
+    const b = byLine.get(t.lineId) ?? { done: 0, planned: 0 };
+    if (t.status === 'done') b.done++;
     else b.planned++;
-    byLine.set(matching.lineId, b);
+    byLine.set(t.lineId, b);
   }
   return [...byLine.entries()]
     .sort((a, b) => b[1].planned + b[1].done - (a[1].planned + a[1].done))
