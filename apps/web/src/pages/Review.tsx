@@ -121,8 +121,8 @@ export function Review() {
     [lines],
   );
 
-  const data = useMemo<ReviewScopeData>(() => {
-    const stateSlice = {
+  const stateSlice = useMemo(
+    () => ({
       rails,
       tasks,
       templates,
@@ -130,44 +130,22 @@ export function Review() {
       shifts,
       adhocEvents,
       habitBindings,
-    };
-    if (scope === 'day') {
-      const date = toIsoDate(anchor);
-      return deriveReviewData(stateSlice, {
-        scope,
-        label: formatDayLabel(anchor),
-        dates: [date],
-        ...(habitLineId && { habitLineId }),
-      });
-    }
-    if (scope === 'cycle') {
-      const dates = cycleDatesFor(anchor);
-      return deriveReviewData(stateSlice, {
-        scope,
-        label: formatCycleLabel(dates[0]!, dates[6]!),
-        dates,
-        ...(habitLineId && { habitLineId }),
-      });
-    }
-    const dates = monthDatesFor(anchor.getFullYear(), anchor.getMonth() + 1);
-    return deriveReviewData(stateSlice, {
-      scope,
-      label: formatMonthLabel(anchor),
-      dates,
-      ...(habitLineId && { habitLineId }),
-    });
-  }, [
-    scope,
-    anchor,
-    rails,
-    tasks,
-    templates,
-    calendarRules,
-    shifts,
-    adhocEvents,
-    habitBindings,
-    habitLineId,
-  ]);
+    }),
+    [rails, tasks, templates, calendarRules, shifts, adhocEvents, habitBindings],
+  );
+
+  const data = useMemo<ReviewScopeData>(
+    () => computeReviewData(stateSlice, scope, anchor, habitLineId),
+    [stateSlice, scope, anchor, habitLineId],
+  );
+
+  // Previous period — lets the header show "62% this cycle · +5pt vs
+  // last". Only the match / done / total numbers are read, so we drop
+  // the rest of the deriveReviewData output on the floor.
+  const prevData = useMemo<ReviewScopeData>(() => {
+    const prevAnchor = shiftAnchorDate(anchor, scope, -1);
+    return computeReviewData(stateSlice, scope, prevAnchor, habitLineId);
+  }, [stateSlice, scope, anchor, habitLineId]);
 
   const phaseBands = useMemo<PhaseBand[]>(() => {
     if (!habitLineId) return [];
@@ -176,11 +154,7 @@ export function Review() {
   }, [habitLineId, habitPhases, data.dates]);
 
   const shiftAnchor = (direction: -1 | 1) => {
-    const next = new Date(anchor);
-    if (scope === 'day') next.setDate(next.getDate() + direction);
-    else if (scope === 'cycle') next.setDate(next.getDate() + direction * 7);
-    else next.setMonth(next.getMonth() + direction);
-    setAnchor(next);
+    setAnchor(shiftAnchorDate(anchor, scope, direction));
   };
 
   return (
@@ -204,7 +178,7 @@ export function Review() {
 
       <div className="flex flex-col gap-10 pb-16 pt-8">
         {/* Per-scope waterfall */}
-        <RhythmHeatmap data={data} phaseBands={phaseBands} />
+        <RhythmHeatmap data={data} prev={prevData} phaseBands={phaseBands} />
         <ShiftTagBars tags={data.shiftTags} />
         {data.adhocHint && <AdhocHintCard hint={data.adhocHint} />}
         <AISection enabled={aiEnabled} onToggle={() => setAiEnabled((v) => !v)} />
@@ -213,6 +187,47 @@ export function Review() {
       </div>
     </div>
   );
+}
+
+function computeReviewData(
+  stateSlice: Parameters<typeof deriveReviewData>[0],
+  scope: Scope,
+  anchor: Date,
+  habitLineId: string | undefined,
+): ReviewScopeData {
+  if (scope === 'day') {
+    const date = toIsoDate(anchor);
+    return deriveReviewData(stateSlice, {
+      scope,
+      label: formatDayLabel(anchor),
+      dates: [date],
+      ...(habitLineId && { habitLineId }),
+    });
+  }
+  if (scope === 'cycle') {
+    const dates = cycleDatesFor(anchor);
+    return deriveReviewData(stateSlice, {
+      scope,
+      label: formatCycleLabel(dates[0]!, dates[6]!),
+      dates,
+      ...(habitLineId && { habitLineId }),
+    });
+  }
+  const dates = monthDatesFor(anchor.getFullYear(), anchor.getMonth() + 1);
+  return deriveReviewData(stateSlice, {
+    scope,
+    label: formatMonthLabel(anchor),
+    dates,
+    ...(habitLineId && { habitLineId }),
+  });
+}
+
+function shiftAnchorDate(anchor: Date, scope: Scope, delta: number): Date {
+  const next = new Date(anchor);
+  if (scope === 'day') next.setDate(next.getDate() + delta);
+  else if (scope === 'cycle') next.setDate(next.getDate() + delta * 7);
+  else next.setMonth(next.getMonth() + delta);
+  return next;
 }
 
 function formatDayLabel(d: Date): string {
