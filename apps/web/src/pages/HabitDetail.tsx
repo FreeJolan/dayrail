@@ -436,6 +436,20 @@ function ScheduleRow({
   const start = formatMinutes(rail.startMinutes);
   const end = formatMinutes(rail.startMinutes + rail.durationMinutes);
   const [editingWeekdays, setEditingWeekdays] = useState(false);
+  // Warn when the binding's weekday filter lists days the rail itself
+  // doesn't fire on — those dates never materialize (rail recurrence
+  // AND binding filter). Common pitfall when the rail was originally
+  // created with a narrow custom[n] recurrence.
+  const railCoveredDays = useMemo(() => {
+    const r = rail.recurrence;
+    if (r.kind === 'daily') return new Set([0, 1, 2, 3, 4, 5, 6]);
+    if (r.kind === 'weekdays') return new Set([1, 2, 3, 4, 5]);
+    return new Set(r.weekdays);
+  }, [rail.recurrence]);
+  const uncoveredWeekdays = useMemo(() => {
+    if (!binding.weekdays) return [];
+    return binding.weekdays.filter((d) => !railCoveredDays.has(d));
+  }, [binding.weekdays, railCoveredDays]);
   return (
     <li className="group flex items-start gap-3 rounded-md bg-surface-1 px-3 py-2.5 transition hover:bg-surface-2">
       <span
@@ -475,6 +489,17 @@ function ScheduleRow({
             </button>
           )}
         </div>
+        {uncoveredWeekdays.length > 0 && (
+          <p className="rounded-sm bg-warn/10 px-1.5 py-0.5 text-2xs text-warn">
+            ⚠ Rail 循环不覆盖{' '}
+            {uncoveredWeekdays
+              .sort((a, b) => a - b)
+              .map((d) => ['日', '一', '二', '三', '四', '五', '六'][d])
+              .map((n) => `周${n}`)
+              .join(' / ')}
+            ,这些日子不会物化任务。去 Rail 改 recurrence 或去掉这些 weekday。
+          </p>
+        )}
       </div>
       <button
         type="button"
@@ -603,7 +628,7 @@ function NewBindingForm({
             const end = formatMinutes(r.startMinutes + r.durationMinutes);
             return (
               <option key={r.id} value={r.id}>
-                {tpl} · {r.name} · {start}–{end}
+                {tpl} · {r.name} · {start}–{end} · 循环 {recurrenceLabel(r.recurrence)}
               </option>
             );
           })}
