@@ -9,10 +9,12 @@
 // a user performing those same edits by hand.
 
 import {
+  currentClock,
   INBOX_LINE_ID,
   materializeAutoTasksForToday,
   toIsoDate,
   useStore,
+  writeSnapshot,
   type Line,
   type Rail,
   type RailColor,
@@ -21,6 +23,8 @@ import {
   SAMPLE_RAILS_BY_TEMPLATE,
   SAMPLE_TEMPLATES,
 } from './data/sampleTemplate';
+import type { ExportBundle } from './lib/exportData';
+import { popPendingImport } from './lib/importData';
 
 export async function boot(): Promise<void> {
   // 0. Pre-flight capability probe. Catches common environment issues
@@ -28,12 +32,22 @@ export async function boot(): Promise<void> {
   //    sqlite-wasm and report a surprising error message.
   await preflight();
 
+  // 0.5. Pending import from the previous page (user just clicked
+  //      "Import" in Settings → Advanced). We wrote a snapshot to the
+  //      freshly-wiped DB BEFORE hydrate so the normal load path picks
+  //      it up without touching the reducer.
+  const pending = popPendingImport();
+  if (pending) {
+    await writeImportedSnapshot(pending);
+  }
+
   // 1. Hydrate from DB
   await useStore.getState().hydrate();
 
-  // 2. First-run seeding
+  // 2. First-run seeding — skip when we just imported; the bundle's
+  //    state already populated everything.
   const s = useStore.getState();
-  if (Object.keys(s.templates).length === 0) {
+  if (Object.keys(s.templates).length === 0 && !pending) {
     await seedFromSamples();
   }
 
@@ -101,6 +115,31 @@ async function preflight(): Promise<void> {
   } catch (err) {
     throw new Error(`OPFS 根目录无法访问：${(err as Error).message}`);
   }
+}
+
+/** Write the imported bundle's state as a snapshot in the (fresh,
+ *  empty) DB. Hydrate below will then read the snapshot as if it were
+ *  a legitimate saved-state — no event replay needed. Bundle shape
+ *  matches SnapshotPayload one-to-one. */
+async function writeImportedSnapshot(bundle: ExportBundle): Promise<void> {
+  const state = bundle.state as Record<string, Record<string, unknown>>;
+  await writeSnapshot(
+    {
+      templates: state.templates ?? {},
+      rails: state.rails ?? {},
+      signals: state.signals ?? {},
+      shifts: state.shifts ?? {},
+      lines: state.lines ?? {},
+      tasks: state.tasks ?? {},
+      adhocEvents: state.adhocEvents ?? {},
+      calendarRules: state.calendarRules ?? {},
+      cycles: state.cycles ?? {},
+      habitPhases: state.habitPhases ?? {},
+      habitBindings: state.habitBindings ?? {},
+    },
+    currentClock(),
+    /* eventCount */ 0,
+  );
 }
 
 async function seedFromSamples(): Promise<void> {

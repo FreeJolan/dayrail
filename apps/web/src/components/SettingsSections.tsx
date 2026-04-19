@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { clsx } from 'clsx';
 import {
   Archive,
@@ -9,6 +9,7 @@ import {
   Plus,
   Sparkles,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react';
 import {
@@ -21,6 +22,7 @@ import {
 } from './SettingsPrimitives';
 import { resetLocalData } from '@/lib/resetLocalData';
 import { exportLocalData } from '@/lib/exportData';
+import { importLocalData } from '@/lib/importData';
 import { applyTheme, getThemePref, type ThemePref } from '@/lib/theme';
 
 // ============ Appearance ============
@@ -474,6 +476,37 @@ export function AdvancedSection() {
 }
 
 function BackupSection() {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [importing, setImporting] = useState(false);
+
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChosen = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = e.target.files?.[0];
+    // Reset the input so the same file can be picked twice in a row.
+    e.target.value = '';
+    if (!file) return;
+    const ok = window.confirm(
+      `导入会覆盖当前本地数据（不可撤销）。\n\n文件：${file.name}\n\n继续?`,
+    );
+    if (!ok) return;
+    setImporting(true);
+    try {
+      await importLocalData(file);
+      // importLocalData triggers a page reload; control won't return
+      // here in the happy path. If it does, something failed silently.
+    } catch (err) {
+      setImporting(false);
+      window.alert(
+        `导入失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
   return (
     <div className="hairline-t mt-1 pt-6">
       <div className="flex flex-col gap-3">
@@ -481,23 +514,40 @@ function BackupSection() {
           <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
             Backup
           </span>
-          <h3 className="text-sm text-ink-primary">导出全部数据</h3>
+          <h3 className="text-sm text-ink-primary">导出 / 导入全部数据</h3>
           <p className="text-xs text-ink-tertiary">
-            把当前内存状态（templates / rails / lines / tasks / rail 实例 /
-            shifts / adhoc / CalendarRule / Cycle / HabitPhase）打成一份
-            可读 JSON 下载到本地。不是事件日志逐条 dump —— 目的是"我能
-            拿到我的数据"而不是"字节级可回灌"。导入 / 跨设备恢复走同步
-            通道（§7，v0.8+）。
+            数据只在本地浏览器的 OPFS 里 —— 清缓存、换设备、浏览器崩溃都会
+            丢失。定期导出 JSON 到本地文件是唯一保险。导入会整体覆盖当前
+            数据（不是合并），适合"从备份恢复"或"把数据从一个浏览器搬到
+            另一个"。
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => exportLocalData()}
-          className="inline-flex items-center gap-1.5 self-start rounded-md border border-hairline/60 px-3 py-1.5 text-xs text-ink-secondary transition hover:border-ink-secondary hover:bg-surface-2 hover:text-ink-primary"
-        >
-          <Archive className="h-3.5 w-3.5" strokeWidth={1.6} />
-          下载 JSON
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => exportLocalData()}
+            className="inline-flex items-center gap-1.5 rounded-md border border-hairline/60 px-3 py-1.5 text-xs text-ink-secondary transition hover:border-ink-secondary hover:bg-surface-2 hover:text-ink-primary"
+          >
+            <Archive className="h-3.5 w-3.5" strokeWidth={1.6} />
+            下载 JSON
+          </button>
+          <button
+            type="button"
+            onClick={handleImportClick}
+            disabled={importing}
+            className="inline-flex items-center gap-1.5 rounded-md border border-hairline/60 px-3 py-1.5 text-xs text-ink-secondary transition hover:border-ink-secondary hover:bg-surface-2 hover:text-ink-primary disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Upload className="h-3.5 w-3.5" strokeWidth={1.6} />
+            {importing ? '导入中…' : '导入 JSON'}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => void handleFileChosen(e)}
+          />
+        </div>
       </div>
     </div>
   );

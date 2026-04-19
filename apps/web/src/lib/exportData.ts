@@ -1,16 +1,19 @@
 // Backup export. Pulls the in-memory Zustand snapshot (authoritative
 // for the UI) into a JSON blob and triggers a download. Not an
-// event-log dump — the point is "I can eyeball my data" more than
-// "I can do a byte-exact round-trip restore". Import / re-hydrate is
-// a separate v0.4 concern.
+// event-log dump — the point is "I can eyeball my data" AND the
+// matching `importLocalData` can re-hydrate from this bundle
+// (snapshot-based restore, not event replay).
 
 import { useStore } from '@dayrail/core';
 
-interface ExportBundle {
+export interface ExportBundle {
   app: 'dayrail';
   version: string;
   gitSha: string;
   exportedAt: string; // ISO
+  /** Schema version of the state payload itself. Bump when the shape
+   *  of any map changes so old bundles can be rejected / migrated. */
+  schemaVersion: 1;
   state: {
     templates: unknown;
     rails: unknown;
@@ -22,6 +25,7 @@ interface ExportBundle {
     calendarRules: unknown;
     cycles: unknown;
     habitPhases: unknown;
+    habitBindings: unknown;
   };
 }
 
@@ -32,6 +36,7 @@ export function exportLocalData(): void {
     version: __APP_VERSION__,
     gitSha: __APP_GIT_SHA__,
     exportedAt: new Date().toISOString(),
+    schemaVersion: 1,
     state: {
       templates: s.templates,
       rails: s.rails,
@@ -43,6 +48,7 @@ export function exportLocalData(): void {
       calendarRules: s.calendarRules,
       cycles: s.cycles,
       habitPhases: s.habitPhases,
+      habitBindings: s.habitBindings,
     },
   };
   const json = JSON.stringify(bundle, null, 2);
