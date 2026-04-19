@@ -33,6 +33,16 @@ export interface CycleSlot {
    *  cells from the live-data path); enables slot-level actions like
    *  "移除排期". Sample-data paths can leave this undefined. */
   taskId?: string;
+  /** Sub-item progress from the carrying Task. 0/0 = no sub-items.
+   *  Populated by cycleFromStore; sample-data paths leave undefined. */
+  subItemsDone?: number;
+  subItemsTotal?: number;
+  /** True when the carrying Task has a non-empty `note`. */
+  hasNote?: boolean;
+  /** Optional milestone percent from the carrying Task. */
+  milestonePercent?: number;
+  /** True when the carrying Task is a habit-materialized auto-task. */
+  isAutoTask?: boolean;
 }
 
 export interface SampleCycle {
