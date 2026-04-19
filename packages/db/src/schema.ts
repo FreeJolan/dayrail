@@ -5,18 +5,23 @@
 //     which CycleView section is currently focused, which popover is
 //     open) stays in Zustand / component state.
 //   - Most entity mutations land as rows in `events`; the domain tables
-//     (rails, templates, tracks...) are snapshots derived by reducers
+//     (rails, templates, tasks...) are snapshots derived by reducers
 //     from those events. This lets us implement session-level undo by
 //     rolling the events table back.
 //   - `hlc_wall` + `hlc_logical` columns are a pair materialising the
 //     HLC clock from docs/v0.2-plan.md. Sorting by (hlc_wall ASC,
 //     hlc_logical ASC, id ASC) yields a deterministic causal order
 //     across devices post-sync.
+//   - v0.4 note: event log payloads and snapshots are NOT backward-
+//     compatible with v0.3. The `Rail.defaultLineId`, `AutoTaskMarker`,
+//     and `RailInstance.status` concepts all disappeared. A dev with a
+//     pre-v0.4 OPFS store needs to clear it (DevTools → Application →
+//     OPFS → delete) and let the first-run seed rebuild. There are no
+//     "old users" to migrate in this solo-dev phase.
 
 import {
   index,
   integer,
-  primaryKey,
   sqliteTable,
   text,
 } from 'drizzle-orm/sqlite-core';
@@ -162,40 +167,12 @@ export const habitBindings = sqliteTable(
   }),
 );
 
-export const cycleDays = sqliteTable(
-  'cycle_days',
-  {
-    cycleId: text('cycle_id')
-      .notNull()
-      .references(() => cycles.id, { onDelete: 'cascade' }),
-    date: text('date').notNull(),
-    templateKey: text('template_key').notNull(),
-    overridden: integer('overridden', { mode: 'boolean' }).notNull().default(false),
-  },
-  (t) => ({ pk: primaryKey({ columns: [t.cycleId, t.date] }) }),
-);
-
-export const slots = sqliteTable(
-  'slots',
-  {
-    cycleId: text('cycle_id').notNull(),
-    date: text('date').notNull(),
-    railId: text('rail_id').notNull(),
-    /** Free-text label for a slot that has no Task attached (the
-     *  "quick text" slot form from §5.3). Name kept for historical
-     *  reasons — any column rename would require another migration. */
-    label: text('task_name'),
-    taskIds: text('task_ids').notNull().default('[]'), // JSON array
-  },
-  (t) => ({ pk: primaryKey({ columns: [t.cycleId, t.date, t.railId] }) }),
-);
-
-export const tracks = sqliteTable('tracks', {
-  id: text('id').primaryKey(),
-  date: text('date').notNull().unique(),
-  tz: text('tz').notNull(),
-  templateKey: text('template_key'),
-});
+// v0.3 had three tables (cycle_days / slots / tracks) seeded from
+// static mock data. v0.4 derives all of them live from Task rows +
+// CalendarRule resolution + CycleSection grouping; the tables stayed
+// empty on every boot. Dropped here to shrink the schema. If a dev's
+// OPFS still has the old tables, they'll get DROPped on next boot by
+// the DDL at the bottom of this file.
 
 export const shifts = sqliteTable(
   'shifts',
@@ -390,29 +367,12 @@ CREATE TABLE IF NOT EXISTS habit_bindings (
 CREATE INDEX IF NOT EXISTS habit_bindings_habit_idx ON habit_bindings(habit_id);
 CREATE INDEX IF NOT EXISTS habit_bindings_rail_idx ON habit_bindings(rail_id);
 
-CREATE TABLE IF NOT EXISTS cycle_days (
-  cycle_id TEXT NOT NULL REFERENCES cycles(id) ON DELETE CASCADE,
-  date TEXT NOT NULL,
-  template_key TEXT NOT NULL,
-  overridden INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (cycle_id, date)
-);
-
-CREATE TABLE IF NOT EXISTS slots (
-  cycle_id TEXT NOT NULL,
-  date TEXT NOT NULL,
-  rail_id TEXT NOT NULL,
-  task_name TEXT,
-  task_ids TEXT NOT NULL DEFAULT '[]',
-  PRIMARY KEY (cycle_id, date, rail_id)
-);
-
-CREATE TABLE IF NOT EXISTS tracks (
-  id TEXT PRIMARY KEY,
-  date TEXT NOT NULL UNIQUE,
-  tz TEXT NOT NULL,
-  template_key TEXT
-);
+-- v0.4 schema cleanup: cycle_days / slots / tracks are dropped.
+-- IF EXISTS guards let a dev's existing v0.3 OPFS store auto-clean
+-- on next boot; new installs no-op here.
+DROP TABLE IF EXISTS cycle_days;
+DROP TABLE IF EXISTS slots;
+DROP TABLE IF EXISTS tracks;
 
 CREATE TABLE IF NOT EXISTS shifts (
   id TEXT PRIMARY KEY,
