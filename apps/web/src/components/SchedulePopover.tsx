@@ -9,6 +9,7 @@ import {
   PopoverTrigger,
 } from './primitives/Popover';
 import { RAIL_COLOR_HEX } from './railColors';
+import { RailPicker } from './RailPicker';
 
 // ERD §5.5.2 — schedule popover with two mutually exclusive modes:
 //   A · Bind to a Rail on the chosen date (default)
@@ -75,31 +76,13 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
     [templatesMap, calendarRules, date],
   );
 
-  const railOptions = useMemo(() => {
-    const rails = Object.values(railsMap).sort(
-      (a, b) => a.startMinutes - b.startMinutes,
-    );
-    const groups = new Map<string, Rail[]>();
-    for (const r of rails) {
-      const list = groups.get(r.templateKey) ?? [];
-      list.push(r);
-      groups.set(r.templateKey, list);
-    }
-    // Surface the template that actually fires on this date first; the
-    // rest still render in `templatesMap` order so cross-template
-    // scheduling stays one click away.
-    const entries = [...groups.entries()].sort(([a], [b]) => {
-      if (a === resolvedTemplateKey) return -1;
-      if (b === resolvedTemplateKey) return 1;
-      return 0;
-    });
-    return entries.map(([templateKey, rs]) => ({
-      templateKey,
-      templateName: templatesMap[templateKey]?.name ?? templateKey,
-      rails: rs,
-      active: templateKey === resolvedTemplateKey,
-    }));
-  }, [railsMap, templatesMap, resolvedTemplateKey]);
+  const allRails = useMemo(
+    () =>
+      Object.values(railsMap).sort(
+        (a, b) => a.startMinutes - b.startMinutes,
+      ),
+    [railsMap],
+  );
 
   const canConfirm =
     mode === 'rail'
@@ -163,28 +146,20 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
           <ModePicker value={mode} onChange={setMode} />
 
           {mode === 'rail' ? (
-            <div className="mt-2">
-              <select
+            <div className="mt-2 flex flex-col gap-2">
+              <RailPicker
+                rails={allRails}
+                templates={templatesMap}
                 value={railId}
-                onChange={(e) => setRailId(e.target.value)}
-                className="w-full rounded-md border border-hairline/60 bg-surface-0 px-2 py-1.5 text-sm text-ink-primary outline-none transition focus:border-ink-secondary"
-              >
-                <option value="">选择 Rail…</option>
-                {railOptions.map((g) => (
-                  <optgroup
-                    key={g.templateKey}
-                    label={g.active ? `${g.templateName} · 当天模板` : g.templateName}
-                  >
-                    {g.rails.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {formatRailOption(r)}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-              {railOptions.length === 0 && (
-                <p className="mt-2 text-xs text-ink-tertiary">
+                onChange={setRailId}
+                {...(resolvedTemplateKey && {
+                  activeTemplateKey: resolvedTemplateKey,
+                })}
+                usageDate={date}
+                className="w-full"
+              />
+              {allRails.length === 0 && (
+                <p className="text-xs text-ink-tertiary">
                   还没有 Rail。去 Template Editor 建一条，或改成"直接指定时间"。
                 </p>
               )}
@@ -335,12 +310,6 @@ function RailPreview({
       <span className="truncate text-sm text-ink-primary">{rail.name}</span>
     </div>
   );
-}
-
-function formatRailOption(rail: Rail): string {
-  const start = minutesToHHMM(rail.startMinutes);
-  const end = minutesToHHMM(rail.startMinutes + rail.durationMinutes);
-  return `${start}–${end}  ${rail.name}`;
 }
 
 function minutesToHHMM(min: number): string {
