@@ -7,6 +7,7 @@ import {
   materializeAutoTasks,
   mondayOf,
   purgeFutureAutoTasks,
+  selectHabitPhasesByLine,
   useStore,
   type HabitBinding,
   type Line,
@@ -14,6 +15,7 @@ import {
   type Task,
   type Template,
 } from '@dayrail/core';
+import { buildPhaseBands, type PhaseBand } from './reviewFromStore';
 import { RAIL_COLOR_HEX, RAIL_COLOR_STEP_4, RAIL_COLOR_STEP_6, RAIL_COLOR_STEP_7 } from '@/components/railColors';
 import { RailPicker } from '@/components/RailPicker';
 import {
@@ -49,6 +51,7 @@ export function HabitDetail({ habit }: Props) {
   const templates = useStore((s) => s.templates);
   const tasks = useStore((s) => s.tasks);
   const habitBindings = useStore((s) => s.habitBindings);
+  const habitPhases = useStore((s) => s.habitPhases);
   const updateLine = useStore((s) => s.updateLine);
   const navigate = useNavigate();
 
@@ -139,6 +142,18 @@ export function HabitDetail({ habit }: Props) {
     [tasks, habit.id, updateTask],
   );
 
+  // Phase-band overlay on the rhythm strip — shared helper lifted from
+  // reviewFromStore so Review + HabitDetail render bands the same way.
+  const phaseBands = useMemo<PhaseBand[]>(() => {
+    const phases = selectHabitPhasesByLine({ habitPhases }, habit.id);
+    if (phases.length === 0) return [];
+    const dates: string[] = [];
+    for (let t = 0; t < WINDOW_DAYS; t++) {
+      dates.push(isoDatePlus(windowStart, t));
+    }
+    return buildPhaseBands(phases, dates);
+  }, [habitPhases, habit.id, windowStart]);
+
   return (
     <div className="flex flex-col gap-8">
       <RhythmStrip
@@ -147,6 +162,7 @@ export function HabitDetail({ habit }: Props) {
         windowEnd={windowEnd}
         tasks={tasks}
         color={habit.color}
+        phaseBands={phaseBands}
         onBackfill={handleRhythmBackfill}
       />
 
@@ -179,6 +195,7 @@ function RhythmStrip({
   windowEnd,
   tasks,
   color,
+  phaseBands,
   onBackfill,
 }: {
   habitId: string;
@@ -186,6 +203,9 @@ function RhythmStrip({
   windowEnd: string;
   tasks: Record<string, Task>;
   color?: RailColor;
+  /** HabitPhase bands for the 14-day window. Each band annotates the
+   *  columns where one phase was active. */
+  phaseBands?: PhaseBand[];
   /** Retroactively write a status to every auto-task on `date` for
    *  this habit. Disabled / omitted → cells stay read-only. */
   onBackfill?: (date: string, action: BackfillAction) => void;
@@ -226,6 +246,9 @@ function RhythmStrip({
           最近 {WINDOW_DAYS} 天 · 点击回填
         </span>
       </header>
+      {phaseBands && phaseBands.length > 0 && (
+        <RhythmPhaseBandRow bands={phaseBands} totalCols={WINDOW_DAYS} />
+      )}
       <div className="flex items-end gap-1">
         {dates.map((d) => (
           <RhythmCell
@@ -241,6 +264,55 @@ function RhythmStrip({
       <Legend />
     </section>
   );
+}
+
+function RhythmPhaseBandRow({
+  bands,
+  totalCols,
+}: {
+  bands: PhaseBand[];
+  totalCols: number;
+}) {
+  // Mirrors Review's PhaseBandRow but flex-based to line up with the
+  // cell row (which is also flex, not a table). Each band occupies
+  // columns [startCol, endCol] inclusive; gaps between bands render
+  // as empty flex filler so alignment stays exact.
+  const sorted = [...bands].sort((a, b) => a.startCol - b.startCol);
+  const segments: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const band of sorted) {
+    if (band.startCol > cursor) {
+      segments.push(
+        <div
+          key={`gap-${cursor}`}
+          className="shrink-0"
+          style={{ flex: `${band.startCol - cursor} 1 0` }}
+        />,
+      );
+    }
+    const span = band.endCol - band.startCol + 1;
+    segments.push(
+      <div
+        key={`band-${band.phaseId}`}
+        title={band.label}
+        className="min-w-0 shrink-0 truncate rounded-sm bg-surface-3 px-1.5 py-0.5 font-mono text-2xs uppercase tracking-widest text-ink-secondary"
+        style={{ flex: `${span} 1 0` }}
+      >
+        {band.label}
+      </div>,
+    );
+    cursor = band.endCol + 1;
+  }
+  if (cursor < totalCols) {
+    segments.push(
+      <div
+        key={`gap-${cursor}-tail`}
+        className="shrink-0"
+        style={{ flex: `${totalCols - cursor} 1 0` }}
+      />,
+    );
+  }
+  return <div className="flex items-center gap-1">{segments}</div>;
 }
 
 function RhythmCell({
