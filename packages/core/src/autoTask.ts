@@ -106,8 +106,7 @@ export async function materializeAutoTasks(
   const bindings = Object.values(state.habitBindings);
   if (bindings.length === 0) return;
 
-  // Group bindings by habitId so we can track (habitId, cycleId)
-  // markers consistently across bindings of the same habit.
+  // Group bindings by habitId for clean iteration.
   const byHabit = new Map<string, typeof bindings>();
   for (const b of bindings) {
     const list = byHabit.get(b.habitId) ?? [];
@@ -119,16 +118,7 @@ export async function materializeAutoTasks(
     const habit = state.lines[habitId];
     if (!habit || habit.status !== 'active') continue;
 
-    const cyclesTouched = new Map<string, { start: string; end: string }>();
-
     for (const date of iterDates(range.startDate, range.endDate)) {
-      const cid = cycleIdOf(date);
-      if (state.autoTaskMarkers[`${habit.id}|${cid}`]) continue;
-
-      const tracked = cyclesTouched.get(cid);
-      if (tracked) tracked.end = date;
-      else cyclesTouched.set(cid, { start: date, end: date });
-
       const tplKey = resolveTemplateForDate(state, date, () => null);
       if (!tplKey) continue;
       const dow = new Date(`${date}T00:00:00`).getDay();
@@ -140,16 +130,21 @@ export async function materializeAutoTasks(
         if (!recurrenceCovers(rail.recurrence, date)) continue;
         if (binding.weekdays && !binding.weekdays.includes(dow)) continue;
 
+        // ERD §10.3 "未物化的过去 cycle 不因配置变更而补": skip any
+        // occurrence whose plannedStart precedes the binding's
+        // createdAt. New bindings don't retroactively populate past
+        // days; those are reserved for A+B click-to-backfill.
+        const plannedStartIso = toIsoDateTime(date, rail.startMinutes);
+        const plannedStartMs = Date.parse(plannedStartIso);
+        if (
+          !Number.isNaN(plannedStartMs) &&
+          plannedStartMs < binding.createdAt
+        ) {
+          continue;
+        }
+
         const task: Task = buildAutoTask(habit.id, habit.name, rail, date);
         await state.upsertAutoTask(task);
-      }
-    }
-
-    for (const [cid, span] of cyclesTouched) {
-      const mondayIso = cid.replace('cycle-', '');
-      const endOfCycle = addDays(mondayIso, 6);
-      if (span.start <= mondayIso && span.end >= endOfCycle) {
-        await state.upsertAutoTaskMarker(habit.id, cid);
       }
     }
   }
