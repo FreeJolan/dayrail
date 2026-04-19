@@ -51,8 +51,8 @@ export default function App() {
 // call `useNavigate`).
 function Shell() {
   const cheatsheet = useCheatsheetToggle();
-  useGlobalShortcuts(cheatsheet.show);
   const backlog = useBacklogDrawerState();
+  useGlobalShortcuts(cheatsheet.show, backlog.toggle);
   return (
     <div className="flex min-h-screen w-full bg-surface-0">
       <SideNav />
