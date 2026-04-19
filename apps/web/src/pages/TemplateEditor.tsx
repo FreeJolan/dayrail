@@ -9,6 +9,8 @@ import {
   Undo2,
 } from 'lucide-react';
 import {
+  findAffectedFutureAutoTasksForRail,
+  purgeFutureAutoTasksForRail,
   useStore,
   type EditSession,
   type Rail,
@@ -162,8 +164,27 @@ export function TemplateEditor() {
     void updateRailAction(id, railPatch, sessionId ?? undefined);
   };
 
-  const del = (id: string) => {
-    void deleteRailAction(id, sessionId ?? undefined);
+  // Rail deletion triggers ERD §10.3 purge: every habit bound to this
+  // rail loses future pending auto-tasks carrying it. Both the rail
+  // delete and the purges share the Template Editor session so undo
+  // rolls the whole batch back in one step.
+  const del = async (id: string) => {
+    const state = useStore.getState();
+    const affected = findAffectedFutureAutoTasksForRail(state, id);
+    const railName = state.rails[id]?.name ?? id;
+    if (affected.length > 0) {
+      const ok = window.confirm(
+        `删除 rail「${railName}」?\n` +
+          `· ${affected.length} 个未开始的 habit auto-task 会被清理\n` +
+          `· 已完成/跳过/归档的保留\n` +
+          `继续?`,
+      );
+      if (!ok) return;
+    }
+    await deleteRailAction(id, sessionId ?? undefined);
+    if (affected.length > 0) {
+      await purgeFutureAutoTasksForRail(id, sessionId ?? undefined);
+    }
   };
 
   const duplicate = (id: string) => {
@@ -377,7 +398,9 @@ export function TemplateEditor() {
                 focused={row.rail.id === focusRailId}
                 onFocus={() => setFocusRailId(row.rail.id)}
                 onChange={(patch) => mutate(row.rail.id, patch)}
-                onDelete={() => del(row.rail.id)}
+                onDelete={() => {
+                  void del(row.rail.id);
+                }}
                 onDuplicate={() => duplicate(row.rail.id)}
               />
             ) : (
