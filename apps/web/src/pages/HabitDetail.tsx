@@ -735,16 +735,38 @@ function ScheduleRow({
   const start = formatMinutes(rail.startMinutes);
   const end = formatMinutes(rail.startMinutes + rail.durationMinutes);
   const [editingWeekdays, setEditingWeekdays] = useState(false);
-  // Warn when the binding's weekday filter lists days the rail itself
-  // doesn't fire on — those dates never materialize (rail recurrence
-  // AND binding filter). Common pitfall when the rail was originally
-  // created with a narrow custom[n] recurrence.
+  const calendarRules = useStore((s) => s.calendarRules);
+  // Weekdays the rail *could* fire on, per its own recurrence.
   const railCoveredDays = useMemo(() => {
     const r = rail.recurrence;
     if (r.kind === 'daily') return new Set([0, 1, 2, 3, 4, 5, 6]);
     if (r.kind === 'weekdays') return new Set([1, 2, 3, 4, 5]);
     return new Set(r.weekdays);
   }, [rail.recurrence]);
+  // Weekdays the rail's template is actually active on — derived from
+  // the template's weekday-kind CalendarRule. Other rule kinds (single
+  // date / cycle / date-range) are time-specific and not summarised
+  // as a weekday set; fall back to "all seven" when no weekday rule
+  // exists, which is the permissive choice.
+  const templateActiveDays = useMemo(() => {
+    const rule = calendarRules[`cr-weekday-${rail.templateKey}`];
+    if (!rule || rule.kind !== 'weekday') return new Set([0, 1, 2, 3, 4, 5, 6]);
+    const raw = (rule.value as { weekdays?: number[] }).weekdays;
+    if (!raw || raw.length === 0) return new Set([0, 1, 2, 3, 4, 5, 6]);
+    return new Set(raw);
+  }, [calendarRules, rail.templateKey]);
+  // rail.recurrence × template days. Empty = rail is unreachable — no
+  // date ever satisfies both filters and the materializer produces
+  // zero tasks. Classic trap: weekdays-default rail dropped into a
+  // restday template.
+  const railTemplateIntersects = useMemo(() => {
+    for (const d of railCoveredDays) {
+      if (templateActiveDays.has(d)) return true;
+    }
+    return false;
+  }, [railCoveredDays, templateActiveDays]);
+  // binding.weekdays × rail.recurrence — the "user set weekdays that
+  // the rail itself doesn't fire on" pitfall from the earlier pass.
   const uncoveredWeekdays = useMemo(() => {
     if (!binding.weekdays) return [];
     return binding.weekdays.filter((d) => !railCoveredDays.has(d));
@@ -788,7 +810,14 @@ function ScheduleRow({
             </button>
           )}
         </div>
-        {uncoveredWeekdays.length > 0 && (
+        {!railTemplateIntersects && (
+          <p className="rounded-sm bg-warn/20 px-1.5 py-0.5 text-2xs text-warn">
+            ⚠ Rail 循环（{recurrenceLabel(rail.recurrence)}）与模板「
+            {templateName}」实际生效的日期没有交集,这条 rail 永远不会生成 task。
+            去 Template Editor 删掉这条 rail 重建（新 rail 默认每天）,或把它换到匹配的模板。
+          </p>
+        )}
+        {railTemplateIntersects && uncoveredWeekdays.length > 0 && (
           <p className="rounded-sm bg-warn/10 px-1.5 py-0.5 text-2xs text-warn">
             ⚠ Rail 循环不覆盖{' '}
             {uncoveredWeekdays
