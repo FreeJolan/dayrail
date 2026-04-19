@@ -132,12 +132,20 @@ export function deriveCycleFromStore(
     else if (task.status === 'deferred') cellState = 'skipped';
     else if (task.status === 'archived') cellState = 'na';
     else cellState = 'planned-task';
+    const subItems = task.subItems ?? [];
     slotsByKey.set(key, {
       railId,
       date,
       state: cellState,
       taskName: task.title,
       taskId: task.id,
+      subItemsDone: subItems.filter((s) => s.done).length,
+      subItemsTotal: subItems.length,
+      hasNote: Boolean(task.note && task.note.trim().length > 0),
+      ...(task.milestonePercent != null && {
+        milestonePercent: task.milestonePercent,
+      }),
+      isAutoTask: task.source === 'auto-habit',
     });
   }
 

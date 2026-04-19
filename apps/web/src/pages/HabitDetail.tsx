@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import { useNavigate } from 'react-router-dom';
-import { Archive, ArrowUpRight, Plus, Trash2, X } from 'lucide-react';
+import { Archive, ArrowUpRight, Pencil, Plus, Trash2, X } from 'lucide-react';
 import {
   materializeAutoTasks,
   mondayOf,
@@ -467,9 +467,11 @@ function ScheduleRow({
             <button
               type="button"
               onClick={() => setEditingWeekdays(true)}
-              className="rounded-sm px-1.5 py-0.5 text-xs text-ink-secondary transition hover:bg-surface-3"
+              className="inline-flex items-center gap-1 rounded-sm border border-dashed border-hairline/50 px-1.5 py-0.5 text-xs text-ink-secondary transition hover:border-ink-secondary hover:bg-surface-3 hover:text-ink-primary"
+              title="点击编辑哪些星期生效"
             >
               {weekdaysLabel(binding.weekdays)}
+              <Pencil className="h-3 w-3 text-ink-tertiary" strokeWidth={1.8} />
             </button>
           )}
         </div>

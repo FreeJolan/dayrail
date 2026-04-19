@@ -206,6 +206,11 @@ export function CycleSection({
                                   color={rail.color}
                                   taskName={slot.taskName}
                                   meta={slot.meta}
+                                  subItemsDone={slot.subItemsDone}
+                                  subItemsTotal={slot.subItemsTotal}
+                                  hasNote={slot.hasNote}
+                                  milestonePercent={slot.milestonePercent}
+                                  isAutoTask={slot.isAutoTask}
                                 />
                               </button>
                             </PopoverTrigger>
@@ -259,6 +264,11 @@ export function CycleSection({
                             color={rail.color}
                             taskName={slot.taskName}
                             meta={slot.meta}
+                            subItemsDone={slot.subItemsDone}
+                            subItemsTotal={slot.subItemsTotal}
+                            hasNote={slot.hasNote}
+                            milestonePercent={slot.milestonePercent}
+                            isAutoTask={slot.isAutoTask}
                           />
                         )
                       ) : onQuickCreate ? (

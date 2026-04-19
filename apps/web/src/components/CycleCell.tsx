@@ -25,25 +25,87 @@ interface Props {
   color: RailColor; // Rail's color token (for non-na states)
   taskName?: string;
   meta?: string; // "→ 20:00" etc, Mono inline
+  subItemsDone?: number;
+  subItemsTotal?: number;
+  hasNote?: boolean;
+  milestonePercent?: number;
+  isAutoTask?: boolean;
 }
 
-export function CycleCell({ state, color, taskName, meta }: Props) {
-  if (state === 'done') return <DoneCell color={color} taskName={taskName} meta={meta} />;
-  if (state === 'shifted') return <ShiftedCell color={color} taskName={taskName} meta={meta} />;
+export function CycleCell({
+  state,
+  color,
+  taskName,
+  meta,
+  subItemsDone,
+  subItemsTotal,
+  hasNote,
+  milestonePercent,
+  isAutoTask,
+}: Props) {
+  const badges = (
+    <TaskBadges
+      subItemsDone={subItemsDone}
+      subItemsTotal={subItemsTotal}
+      hasNote={hasNote}
+      milestonePercent={milestonePercent}
+      isAutoTask={isAutoTask}
+    />
+  );
+  if (state === 'done')
+    return <DoneCell color={color} taskName={taskName} meta={meta} badges={badges} />;
+  if (state === 'shifted')
+    return <ShiftedCell color={color} taskName={taskName} meta={meta} badges={badges} />;
   if (state === 'skipped') return <SkippedCell color={color} meta={meta} />;
   if (state === 'na') return <NaCell color={color} />;
-  if (state === 'planned-task') return <PlannedTaskCell color={color} taskName={taskName} />;
+  if (state === 'planned-task')
+    return <PlannedTaskCell color={color} taskName={taskName} badges={badges} />;
   return <PlannedEmptyCell />;
+}
+
+function TaskBadges({
+  subItemsDone,
+  subItemsTotal,
+  hasNote,
+  milestonePercent,
+  isAutoTask,
+}: {
+  subItemsDone?: number;
+  subItemsTotal?: number;
+  hasNote?: boolean;
+  milestonePercent?: number;
+  isAutoTask?: boolean;
+}) {
+  const anything =
+    (subItemsTotal ?? 0) > 0 ||
+    hasNote ||
+    milestonePercent != null ||
+    isAutoTask;
+  if (!anything) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1 pt-0.5 font-mono text-2xs tabular-nums text-ink-tertiary">
+      {isAutoTask && <span>habit</span>}
+      {(subItemsTotal ?? 0) > 0 && (
+        <span>
+          {subItemsDone}/{subItemsTotal}
+        </span>
+      )}
+      {hasNote && <span>·备</span>}
+      {milestonePercent != null && <span>{milestonePercent}%</span>}
+    </div>
+  );
 }
 
 function DoneCell({
   color,
   taskName,
   meta,
+  badges,
 }: {
   color: RailColor;
   taskName?: string;
   meta?: string;
+  badges?: React.ReactNode;
 }) {
   const bg = RAIL_COLOR_HEX[color];
   const text = RAIL_TEXT_ON_SOLID[color];
@@ -72,6 +134,7 @@ function DoneCell({
           {meta}
         </span>
       )}
+      {badges}
     </div>
   );
 }
@@ -80,10 +143,12 @@ function ShiftedCell({
   color,
   taskName,
   meta,
+  badges,
 }: {
   color: RailColor;
   taskName?: string;
   meta?: string;
+  badges?: React.ReactNode;
 }) {
   return (
     <div
@@ -99,6 +164,7 @@ function ShiftedCell({
       {meta && (
         <span className="font-mono text-2xs text-ink-secondary">{meta}</span>
       )}
+      {badges}
     </div>
   );
 }
@@ -135,9 +201,11 @@ function NaCell({ color }: { color: RailColor }) {
 function PlannedTaskCell({
   color,
   taskName,
+  badges,
 }: {
   color: RailColor;
   taskName?: string;
+  badges?: React.ReactNode;
 }) {
   return (
     <div className="relative flex h-full min-h-[44px] flex-col justify-center gap-1 rounded-sm bg-surface-1 px-2 py-1.5 transition hover:bg-surface-2">
@@ -151,6 +219,7 @@ function PlannedTaskCell({
           {taskName}
         </span>
       </div>
+      {badges}
     </div>
   );
 }
