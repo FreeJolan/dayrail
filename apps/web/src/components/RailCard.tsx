@@ -37,7 +37,10 @@ interface Props {
   tags?: string[];
   /** Carrying-Task info rendered inline on the card so the user can
    *  scan title / notes / sub-items / milestone without opening the
-   *  detail drawer. `undefined` = bare rail (no task on this slot). */
+   *  detail drawer. `undefined` = bare rail (no task on this slot).
+   *  v0.4: when `extraCount > 0`, a small "+N" chip surfaces the rare
+   *  case where multiple tasks share the same (rail, date). Users open
+   *  Cycle View to disambiguate. */
   taskInfo?: {
     title: string;
     hasNote: boolean;
@@ -45,6 +48,7 @@ interface Props {
     subItemsTotal: number;
     milestonePercent?: number;
     isAutoTask: boolean;
+    extraCount?: number;
   };
 }
 
@@ -210,6 +214,14 @@ export function RailCard({
             {taskInfo.isAutoTask && (
               <span className="rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
                 habit
+              </span>
+            )}
+            {taskInfo.extraCount != null && taskInfo.extraCount > 0 && (
+              <span
+                title={`该 rail 今日还有 ${taskInfo.extraCount} 个任务`}
+                className="rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-2xs tabular-nums text-ink-tertiary"
+              >
+                +{taskInfo.extraCount}
               </span>
             )}
             {taskInfo.subItemsTotal > 0 && (

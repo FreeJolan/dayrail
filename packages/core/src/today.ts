@@ -175,8 +175,10 @@ export interface TimelineRow {
   date: string;
   plannedStart: string;
   plannedEnd: string;
-  /** Carrying task if one exists on this (date, railId); else undefined. */
-  task: Task | undefined;
+  /** All tasks scheduled to (date, railId). Empty = bare rail.
+   *  ERD §4.1 "Slot ↔ Task one-to-many" — a single rail on a single
+   *  date may carry multiple tasks. */
+  tasks: Task[];
 }
 
 /** Today's timeline — the union of:
@@ -195,14 +197,18 @@ export function selectTodayTimeline(
   const activeTemplate = selectActiveTemplateKey(state, date);
 
   // Index tasks by (date, railId) — used both for the task-carrying
-  // rail set (b) and for the per-row task lookup.
-  const taskByKey = new Map<string, Task>();
+  // rail set (b) and for the per-row task lookup. v0.4 supports
+  // multiple tasks per (rail, date) so the value is an array.
+  const tasksByKey = new Map<string, Task[]>();
   const taskRailIds = new Set<string>();
   for (const t of Object.values(state.tasks)) {
     if (!t.slot) continue;
     if (t.status === 'deleted') continue;
     if (t.slot.date !== date) continue;
-    taskByKey.set(`${t.slot.railId}|${date}`, t);
+    const key = `${t.slot.railId}|${date}`;
+    const bucket = tasksByKey.get(key);
+    if (bucket) bucket.push(t);
+    else tasksByKey.set(key, [t]);
     taskRailIds.add(t.slot.railId);
   }
 
@@ -224,14 +230,36 @@ export function selectTodayTimeline(
     const rail = state.rails[railId];
     if (!rail) continue;
     const { start, end } = plannedWindow(rail, date);
+    // Per-slot sort: pending first, then in-progress/done/deferred,
+    // archived last. Within a group, preserve insertion order.
+    const bucket = tasksByKey.get(`${rail.id}|${date}`) ?? [];
+    const tasks = [...bucket].sort(
+      (a, b) => taskStatusRank(a) - taskStatusRank(b),
+    );
     rows.push({
       key: `${rail.id}|${date}`,
       rail,
       date,
       plannedStart: start,
       plannedEnd: end,
-      task: taskByKey.get(`${rail.id}|${date}`),
+      tasks,
     });
   }
   return rows.sort((a, b) => a.plannedStart.localeCompare(b.plannedStart));
+}
+
+function taskStatusRank(t: Task): number {
+  switch (t.status) {
+    case 'pending':
+    case 'in-progress':
+      return 0;
+    case 'done':
+      return 1;
+    case 'deferred':
+      return 2;
+    case 'archived':
+      return 3;
+    default:
+      return 4;
+  }
 }

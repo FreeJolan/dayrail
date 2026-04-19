@@ -8,207 +8,50 @@ import {
   RAIL_TEXT_ON_SOLID,
 } from './railColors';
 import type { RailColor } from '@/data/sample';
-import type { SlotState } from '@/data/sampleCycle';
+import type { SlotTaskState, SlotTaskSummary } from '@/data/sampleCycle';
 
-// ERD §5.3 D7 three-part hatching semantics, mapped per cell:
-//   done           — solid step 9
-//   shifted        — step 7 tint + inline `↗` arrow
-//   skipped        — step 6 hatching (over step 2 surface)
-//   na             — step 4 hatching (over step 2 surface)
-//   planned-task   — surface-1 + small rail-color tag + task name
-//   planned-empty  — dashed border, no fill
-//
-// Cell hover = step-3 bg, revealing the cell is interactive.
+// ERD §5.3 D7 / §4.1 "Slot ↔ Task one-to-many". One cell renders a
+// list of task pills stacked vertically; each pill is styled per
+// task.status. Empty cell = dashed placeholder that invites +add.
 
 interface Props {
-  state: SlotState;
-  color: RailColor; // Rail's color token (for non-na states)
-  taskName?: string;
-  meta?: string; // "→ 20:00" etc, Mono inline
-  subItemsDone?: number;
-  subItemsTotal?: number;
-  hasNote?: boolean;
-  milestonePercent?: number;
-  isAutoTask?: boolean;
-}
-
-export function CycleCell({
-  state,
-  color,
-  taskName,
-  meta,
-  subItemsDone,
-  subItemsTotal,
-  hasNote,
-  milestonePercent,
-  isAutoTask,
-}: Props) {
-  const badges = (
-    <TaskBadges
-      subItemsDone={subItemsDone}
-      subItemsTotal={subItemsTotal}
-      hasNote={hasNote}
-      milestonePercent={milestonePercent}
-      isAutoTask={isAutoTask}
-    />
-  );
-  if (state === 'done')
-    return <DoneCell color={color} taskName={taskName} meta={meta} badges={badges} />;
-  if (state === 'shifted')
-    return <ShiftedCell color={color} taskName={taskName} meta={meta} badges={badges} />;
-  if (state === 'skipped') return <SkippedCell color={color} meta={meta} />;
-  if (state === 'na') return <NaCell color={color} />;
-  if (state === 'planned-task')
-    return <PlannedTaskCell color={color} taskName={taskName} badges={badges} />;
-  return <PlannedEmptyCell />;
-}
-
-function TaskBadges({
-  subItemsDone,
-  subItemsTotal,
-  hasNote,
-  milestonePercent,
-  isAutoTask,
-}: {
-  subItemsDone?: number;
-  subItemsTotal?: number;
-  hasNote?: boolean;
-  milestonePercent?: number;
-  isAutoTask?: boolean;
-}) {
-  const anything =
-    (subItemsTotal ?? 0) > 0 ||
-    hasNote ||
-    milestonePercent != null ||
-    isAutoTask;
-  if (!anything) return null;
-  return (
-    <div className="flex flex-wrap items-center gap-1 pt-0.5 font-mono text-2xs tabular-nums text-ink-tertiary">
-      {isAutoTask && <span>habit</span>}
-      {(subItemsTotal ?? 0) > 0 && (
-        <span>
-          {subItemsDone}/{subItemsTotal}
-        </span>
-      )}
-      {hasNote && <span>·备</span>}
-      {milestonePercent != null && <span>{milestonePercent}%</span>}
-    </div>
-  );
-}
-
-function DoneCell({
-  color,
-  taskName,
-  meta,
-  badges,
-}: {
+  tasks: SlotTaskSummary[];
   color: RailColor;
-  taskName?: string;
-  meta?: string;
-  badges?: React.ReactNode;
-}) {
-  const bg = RAIL_COLOR_HEX[color];
-  const text = RAIL_TEXT_ON_SOLID[color];
+}
+
+export function CycleCell({ tasks, color }: Props) {
+  if (tasks.length === 0) return <PlannedEmptyCell />;
   return (
-    <div
-      className="relative flex h-full min-h-[44px] flex-col justify-center gap-0.5 rounded-sm px-2 py-1.5"
-      style={{ background: bg, color: text }}
-    >
-      <Check
-        aria-hidden
-        className="absolute right-1.5 top-1.5 h-3 w-3"
-        strokeWidth={2.4}
-        style={{ opacity: 0.5 }}
-      />
-      {taskName ? (
-        <span className="line-clamp-2 pr-4 text-xs" style={{ opacity: 0.92 }}>
-          {taskName}
-        </span>
-      ) : (
-        <span className="font-mono text-2xs uppercase tracking-widest" style={{ opacity: 0.6 }}>
-          Done
-        </span>
-      )}
-      {meta && (
-        <span className="font-mono text-2xs" style={{ opacity: 0.7 }}>
-          {meta}
-        </span>
-      )}
-      {badges}
+    <div className="relative flex h-full min-h-[44px] flex-col gap-1 rounded-sm bg-surface-1 px-1.5 py-1.5 transition hover:bg-surface-2">
+      {tasks.map((t) => (
+        <TaskPill key={t.taskId} task={t} color={color} />
+      ))}
     </div>
   );
 }
 
-function ShiftedCell({
+function TaskPill({
+  task,
   color,
-  taskName,
-  meta,
-  badges,
 }: {
+  task: SlotTaskSummary;
   color: RailColor;
-  taskName?: string;
-  meta?: string;
-  badges?: React.ReactNode;
 }) {
-  return (
-    <div
-      className="relative flex h-full min-h-[44px] flex-col justify-center gap-0.5 rounded-sm px-2 py-1.5"
-      style={{ background: RAIL_COLOR_STEP_7[color] }}
-    >
-      <div className="flex items-center gap-1">
-        <ArrowUpRight className="h-3 w-3 text-ink-secondary" strokeWidth={1.8} />
-        <span className="text-xs text-ink-primary">
-          {taskName ?? 'Shifted'}
-        </span>
-      </div>
-      {meta && (
-        <span className="font-mono text-2xs text-ink-secondary">{meta}</span>
-      )}
-      {badges}
-    </div>
-  );
+  if (task.state === 'done') return <DonePill task={task} color={color} />;
+  if (task.state === 'deferred') return <DeferredPill task={task} color={color} />;
+  if (task.state === 'archived') return <ArchivedPill task={task} color={color} />;
+  return <PendingPill task={task} color={color} />;
 }
 
-function SkippedCell({ color, meta }: { color: RailColor; meta?: string }) {
-  return (
-    <div
-      className="relative flex h-full min-h-[44px] flex-col justify-center rounded-sm bg-surface-1 px-2 py-1.5 hatch-skipped"
-      style={{ ['--hatch' as string]: RAIL_COLOR_STEP_6[color] }}
-    >
-      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-        Skipped
-      </span>
-      {meta && (
-        <span className="font-mono text-2xs text-ink-tertiary">{meta}</span>
-      )}
-    </div>
-  );
-}
-
-function NaCell({ color }: { color: RailColor }) {
-  return (
-    <div
-      className="relative flex h-full min-h-[44px] items-center justify-center rounded-sm bg-surface-1 hatch-unmarked"
-      style={{ ['--hatch' as string]: RAIL_COLOR_STEP_4[color] }}
-    >
-      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary/70">
-        N/A
-      </span>
-    </div>
-  );
-}
-
-function PlannedTaskCell({
+function PendingPill({
+  task,
   color,
-  taskName,
-  badges,
 }: {
+  task: SlotTaskSummary;
   color: RailColor;
-  taskName?: string;
-  badges?: React.ReactNode;
 }) {
   return (
-    <div className="relative flex h-full min-h-[44px] flex-col justify-center gap-1 rounded-sm bg-surface-1 px-2 py-1.5 transition hover:bg-surface-2">
+    <div className="flex flex-col gap-0.5 rounded-sm px-1 py-0.5">
       <div className="flex items-center gap-1.5">
         <span
           aria-hidden
@@ -216,10 +59,118 @@ function PlannedTaskCell({
           style={{ background: RAIL_COLOR_HEX[color] }}
         />
         <span className="line-clamp-2 text-xs text-ink-primary">
-          {taskName}
+          {task.title}
         </span>
       </div>
-      {badges}
+      <Badges task={task} tone="default" />
+    </div>
+  );
+}
+
+function DonePill({
+  task,
+  color,
+}: {
+  task: SlotTaskSummary;
+  color: RailColor;
+}) {
+  const bg = RAIL_COLOR_HEX[color];
+  const text = RAIL_TEXT_ON_SOLID[color];
+  return (
+    <div
+      className="relative flex flex-col gap-0.5 rounded-sm px-1.5 py-1"
+      style={{ background: bg, color: text }}
+    >
+      <div className="flex items-start gap-1.5">
+        <Check
+          aria-hidden
+          className="mt-0.5 h-3 w-3 shrink-0"
+          strokeWidth={2.4}
+          style={{ opacity: 0.7 }}
+        />
+        <span className="line-clamp-2 text-xs" style={{ opacity: 0.92 }}>
+          {task.title}
+        </span>
+      </div>
+      <Badges task={task} tone="on-solid" />
+    </div>
+  );
+}
+
+function DeferredPill({
+  task,
+  color,
+}: {
+  task: SlotTaskSummary;
+  color: RailColor;
+}) {
+  return (
+    <div
+      className="flex flex-col gap-0.5 rounded-sm px-1.5 py-1"
+      style={{ background: RAIL_COLOR_STEP_7[color] }}
+    >
+      <div className="flex items-start gap-1.5">
+        <ArrowUpRight className="mt-0.5 h-3 w-3 shrink-0 text-ink-secondary" strokeWidth={1.8} />
+        <span className="line-clamp-2 text-xs text-ink-primary">
+          {task.title}
+        </span>
+      </div>
+      <Badges task={task} tone="default" />
+    </div>
+  );
+}
+
+function ArchivedPill({
+  task,
+  color,
+}: {
+  task: SlotTaskSummary;
+  color: RailColor;
+}) {
+  return (
+    <div
+      className="flex flex-col gap-0.5 rounded-sm px-1.5 py-1 hatch-skipped opacity-80"
+      style={{ ['--hatch' as string]: RAIL_COLOR_STEP_6[color] }}
+    >
+      <span className="line-clamp-2 text-xs text-ink-tertiary line-through decoration-ink-tertiary/40">
+        {task.title}
+      </span>
+      <Badges task={task} tone="default" />
+    </div>
+  );
+}
+
+function Badges({
+  task,
+  tone,
+}: {
+  task: SlotTaskSummary;
+  tone: 'default' | 'on-solid';
+}) {
+  const anything =
+    task.subItemsTotal > 0 ||
+    task.hasNote ||
+    task.milestonePercent != null ||
+    task.isAutoTask;
+  if (!anything) return null;
+  const color =
+    tone === 'on-solid' ? { opacity: 0.75 } : undefined;
+  return (
+    <div
+      className={clsx(
+        'flex flex-wrap items-center gap-1 font-mono text-2xs tabular-nums',
+        tone === 'on-solid' ? '' : 'text-ink-tertiary',
+      )}
+      style={color}
+    >
+      {task.isAutoTask && <span>habit</span>}
+      {task.subItemsTotal > 0 && (
+        <span>
+          {task.subItemsDone}/{task.subItemsTotal}
+        </span>
+      )}
+      {task.hasNote && <span>·备</span>}
+      {task.milestonePercent != null && <span>{task.milestonePercent}%</span>}
     </div>
   );
 }
@@ -235,3 +186,9 @@ function PlannedEmptyCell() {
     />
   );
 }
+
+// Keep the STEP_4 import referenced so future N/A-style cells can
+// re-use it without a round-trip through git blame.
+void RAIL_COLOR_STEP_4;
+void Array.isArray;
+export type { SlotTaskState };

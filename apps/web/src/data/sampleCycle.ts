@@ -15,35 +15,31 @@ export interface CycleDay {
   overridden: boolean; // user changed it from the default weekday rule
 }
 
-export type SlotState =
-  | 'planned-empty' // future; Rail row exists but no task assigned
-  | 'planned-task' // future; a Task is scheduled
-  | 'done' // completed in the past
-  | 'shifted' // happened but with a postpone / swap / resize
-  | 'skipped' // user marked skipped
-  | 'na'; // day doesn't apply (unused Rail row for this day)
+/** Per-task status as it appears on a Cycle cell pill. */
+export type SlotTaskState =
+  | 'pending'
+  | 'done'
+  | 'deferred'
+  | 'archived';
+
+export interface SlotTaskSummary {
+  taskId: string;
+  title: string;
+  state: SlotTaskState;
+  isAutoTask: boolean;
+  hasNote: boolean;
+  subItemsDone: number;
+  subItemsTotal: number;
+  milestonePercent?: number;
+}
 
 export interface CycleSlot {
   railId: string;
   date: string;
-  state: SlotState;
-  taskName?: string;
-  /** For shifted/done states that carry a Mono meta (e.g. `→ 20:00`). */
-  meta?: string;
-  /** Populated when the slot is backed by a live Task (planned-task
-   *  cells from the live-data path); enables slot-level actions like
-   *  "移除排期". Sample-data paths can leave this undefined. */
-  taskId?: string;
-  /** Sub-item progress from the carrying Task. 0/0 = no sub-items.
-   *  Populated by cycleFromStore; sample-data paths leave undefined. */
-  subItemsDone?: number;
-  subItemsTotal?: number;
-  /** True when the carrying Task has a non-empty `note`. */
-  hasNote?: boolean;
-  /** Optional milestone percent from the carrying Task. */
-  milestonePercent?: number;
-  /** True when the carrying Task is a habit-materialized auto-task. */
-  isAutoTask?: boolean;
+  /** All tasks scheduled to this (date, railId). Empty array = bare
+   *  slot (renders as planned-empty). Multiple entries render as a
+   *  vertical pill list; each pill is styled by its own status. */
+  tasks: SlotTaskSummary[];
 }
 
 export interface SampleCycle {

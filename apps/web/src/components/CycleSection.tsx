@@ -1,9 +1,10 @@
 import { clsx } from 'clsx';
 import { useState } from 'react';
-import { ArrowUpRight, Check, ChevronDown, X } from 'lucide-react';
+import { ArrowUpRight, Check, ChevronDown, Plus, X } from 'lucide-react';
 import {
   type CycleDay,
   type CycleSlot,
+  type SlotTaskSummary,
   formatDayLabel,
 } from '@/data/sampleCycle';
 import {
@@ -22,19 +23,10 @@ import {
 } from './primitives/Popover';
 
 // ERD §5.3 D1-1B — per-template stacked section. Each section is a
-// self-contained mini-grid. Structure:
-//
-//   ┌─── 8 px Template.color strip ───────────────────────────────┐
-//   │  ┌─ 24 px section mini-header ───────────────────────────┐  │
-//   │  │ TEMPLATE · N days  | Mon 13 | Tue 14 | ... | Thu 16   │  │
-//   │  │                      ↑ each date cell is the sole     │  │
-//   │  │                        CycleDay template-switch entry │  │
-//   │  └────────────────────────────────────────────────────── ┘  │
-//   │  Rail row: [name · time]  | cell | cell | cell | cell       │
-//   │  ...                                                         │
-//   └──────────────────────────────────────────────────────────────┘
+// self-contained mini-grid. Each cell can hold multiple tasks
+// (Slot ↔ Task one-to-many), so the popover lists every scheduled
+// task with its own per-task actions and a trailing "add another" row.
 
-/** Minimal template shape a section's day-header popover needs. */
 export interface TemplateChoice {
   key: TemplateKey;
   label: string;
@@ -58,9 +50,9 @@ interface Props {
   onOpenTaskDetail?: (taskId: string) => void;
   onOpenTaskProject?: (taskId: string) => void;
   onQuickCreate?: (date: string, railId: string, title: string) => void;
-  /** Look up the Project / Habit a task belongs to, so the slot
-   *  popover can render the Line name + color without each cell
-   *  subscribing to the store directly. */
+  /** Resolve the Line a task belongs to so the popover can render a
+   *  small coloured chip per row without each cell subscribing to
+   *  the store directly. */
   lineLookup?: (taskId: string) => { name: string; color?: RailColor } | undefined;
 }
 
@@ -85,16 +77,12 @@ export function CycleSection({
   const stripColor = RAIL_COLOR_HEX[templateColor];
   const [hoverKey, setHoverKey] = useState<string | null>(null);
   const [openPopoverKey, setOpenPopoverKey] = useState<string | null>(null);
-  const [openQuickCreateKey, setOpenQuickCreateKey] = useState<string | null>(
-    null,
-  );
 
   return (
     <section
       aria-label={`${templateLabel} section`}
       className="relative overflow-hidden rounded-md bg-surface-1"
     >
-      {/* 8 px left color strip (decorative, G2 whitelist) */}
       <span
         aria-hidden
         className="absolute inset-y-0 left-0 w-2"
@@ -132,10 +120,12 @@ export function CycleSection({
                 {days.map((d) => {
                   const slot = slotsByKey.get(`${rail.id}|${d.date}`);
                   const cellKey = `${rail.id}|${d.date}`;
-                  // Only empty cells accept drops — preventing a second
-                  // task from silently shadowing an existing slot.
-                  const canDrop = onDropTask != null && slot == null;
+                  const tasks = slot?.tasks ?? [];
+                  // Drag-drop always lands on (rail,date); multiple tasks
+                  // can coexist so we keep drop open even when tasks > 0.
+                  const canDrop = onDropTask != null;
                   const isHover = hoverKey === cellKey;
+                  const popoverOpen = openPopoverKey === cellKey;
                   return (
                     <td
                       key={d.date}
@@ -185,128 +175,74 @@ export function CycleSection({
                         isHover && 'bg-cta-soft/30 ring-1 ring-inset ring-cta/60',
                       )}
                     >
-                      {slot ? (
-                        slot.state === 'planned-task' &&
-                        slot.taskId &&
-                        onClearSlot ? (
-                          <Popover
-                            open={openPopoverKey === cellKey}
-                            onOpenChange={(o) =>
-                              setOpenPopoverKey(o ? cellKey : null)
+                      <Popover
+                        open={popoverOpen}
+                        onOpenChange={(o) =>
+                          setOpenPopoverKey(o ? cellKey : null)
+                        }
+                      >
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            className="block w-full text-left"
+                            aria-label={
+                              tasks.length === 0
+                                ? `Add task on ${d.date} to ${rail.name}`
+                                : `Open ${rail.name} on ${d.date}`
                             }
                           >
-                            <PopoverTrigger asChild>
-                              <button
-                                type="button"
-                                className="block w-full text-left"
-                                aria-label={`Slot for ${slot.taskName ?? 'task'}`}
-                              >
-                                <CycleCell
-                                  state={slot.state}
-                                  color={rail.color}
-                                  taskName={slot.taskName}
-                                  meta={slot.meta}
-                                  subItemsDone={slot.subItemsDone}
-                                  subItemsTotal={slot.subItemsTotal}
-                                  hasNote={slot.hasNote}
-                                  milestonePercent={slot.milestonePercent}
-                                  isAutoTask={slot.isAutoTask}
-                                />
-                              </button>
-                            </PopoverTrigger>
-                            <PopoverContent
-                              align="center"
-                              className="w-[260px]"
-                            >
-                              {(() => {
-                                const line = slot.taskId
-                                  ? lineLookup?.(slot.taskId)
-                                  : undefined;
-                                return (
-                                  <SlotPopoverBody
-                                    taskName={slot.taskName ?? ''}
-                                    railName={rail.name}
-                                    date={d.date}
-                                    lineName={line?.name}
-                                    lineColor={line?.color}
-                                    onMarkDone={() => {
-                                      onMarkTaskDone?.(slot.taskId!);
-                                      setOpenPopoverKey(null);
-                                    }}
-                                    onClear={() => {
-                                      onClearSlot(slot.taskId!);
-                                      setOpenPopoverKey(null);
-                                    }}
-                                    onOpenProject={
-                                      onOpenTaskProject
-                                        ? () => {
-                                            onOpenTaskProject(slot.taskId!);
-                                            setOpenPopoverKey(null);
-                                          }
-                                        : undefined
-                                    }
-                                    onOpenDetail={
-                                      onOpenTaskDetail
-                                        ? () => {
-                                            onOpenTaskDetail(slot.taskId!);
-                                            setOpenPopoverKey(null);
-                                          }
-                                        : undefined
-                                    }
-                                  />
-                                );
-                              })()}
-                            </PopoverContent>
-                          </Popover>
-                        ) : (
-                          <CycleCell
-                            state={slot.state}
-                            color={rail.color}
-                            taskName={slot.taskName}
-                            meta={slot.meta}
-                            subItemsDone={slot.subItemsDone}
-                            subItemsTotal={slot.subItemsTotal}
-                            hasNote={slot.hasNote}
-                            milestonePercent={slot.milestonePercent}
-                            isAutoTask={slot.isAutoTask}
+                            <CycleCell tasks={tasks} color={rail.color} />
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent align="center" className="w-[280px]">
+                          <SlotPopoverBody
+                            railName={rail.name}
+                            date={d.date}
+                            tasks={tasks}
+                            lineLookup={lineLookup}
+                            onMarkDone={
+                              onMarkTaskDone
+                                ? (taskId) => {
+                                    onMarkTaskDone(taskId);
+                                    setOpenPopoverKey(null);
+                                  }
+                                : undefined
+                            }
+                            onClear={
+                              onClearSlot
+                                ? (taskId) => {
+                                    onClearSlot(taskId);
+                                    setOpenPopoverKey(null);
+                                  }
+                                : undefined
+                            }
+                            onOpenDetail={
+                              onOpenTaskDetail
+                                ? (taskId) => {
+                                    onOpenTaskDetail(taskId);
+                                    setOpenPopoverKey(null);
+                                  }
+                                : undefined
+                            }
+                            onOpenProject={
+                              onOpenTaskProject
+                                ? (taskId) => {
+                                    onOpenTaskProject(taskId);
+                                    setOpenPopoverKey(null);
+                                  }
+                                : undefined
+                            }
+                            onQuickCreate={
+                              onQuickCreate
+                                ? (title) => {
+                                    onQuickCreate(d.date, rail.id, title);
+                                    setOpenPopoverKey(null);
+                                  }
+                                : undefined
+                            }
                           />
-                        )
-                      ) : onQuickCreate ? (
-                        <Popover
-                          open={openQuickCreateKey === cellKey}
-                          onOpenChange={(o) =>
-                            setOpenQuickCreateKey(o ? cellKey : null)
-                          }
-                        >
-                          <PopoverTrigger asChild>
-                            <button
-                              type="button"
-                              className="block w-full text-left"
-                              aria-label={`Add task on ${d.date} to ${rail.name}`}
-                            >
-                              <CycleCell
-                                state="planned-empty"
-                                color={rail.color}
-                              />
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            align="center"
-                            className="w-[260px]"
-                          >
-                            <QuickCreateBody
-                              railName={rail.name}
-                              date={d.date}
-                              onSubmit={(title) => {
-                                onQuickCreate(d.date, rail.id, title);
-                                setOpenQuickCreateKey(null);
-                              }}
-                            />
-                          </PopoverContent>
-                        </Popover>
-                      ) : (
-                        <CycleCell state="planned-empty" color={rail.color} />
-                      )}
+                        </PopoverContent>
+                      </Popover>
                     </td>
                   );
                 })}
@@ -520,14 +456,180 @@ function RailRowLabel({ rail }: { rail: EditableRail }) {
   );
 }
 
-function QuickCreateBody({
+function SlotPopoverBody({
   railName,
   date,
-  onSubmit,
+  tasks,
+  lineLookup,
+  onMarkDone,
+  onClear,
+  onOpenDetail,
+  onOpenProject,
+  onQuickCreate,
 }: {
   railName: string;
   date: string;
+  tasks: SlotTaskSummary[];
+  lineLookup?: (taskId: string) => { name: string; color?: RailColor } | undefined;
+  onMarkDone?: (taskId: string) => void;
+  onClear?: (taskId: string) => void;
+  onOpenDetail?: (taskId: string) => void;
+  onOpenProject?: (taskId: string) => void;
+  onQuickCreate?: (title: string) => void;
+}) {
+  const [addOpen, setAddOpen] = useState(false);
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div className="flex flex-col gap-0.5">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          {railName} · {formatSlotDate(date)}
+        </span>
+      </div>
+
+      {tasks.length === 0 ? (
+        <p className="text-xs text-ink-tertiary">这一天该 rail 还没有任务。</p>
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {tasks.map((t) => (
+            <TaskRow
+              key={t.taskId}
+              task={t}
+              line={lineLookup?.(t.taskId)}
+              onMarkDone={onMarkDone ? () => onMarkDone(t.taskId) : undefined}
+              onClear={onClear ? () => onClear(t.taskId) : undefined}
+              onOpenDetail={
+                onOpenDetail ? () => onOpenDetail(t.taskId) : undefined
+              }
+              onOpenProject={
+                onOpenProject ? () => onOpenProject(t.taskId) : undefined
+              }
+            />
+          ))}
+        </ul>
+      )}
+
+      {onQuickCreate &&
+        (addOpen ? (
+          <QuickCreateInline
+            onSubmit={(title) => {
+              onQuickCreate(title);
+              setAddOpen(false);
+            }}
+            onCancel={() => setAddOpen(false)}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAddOpen(true)}
+            className="flex items-center gap-1.5 self-start rounded-sm px-1.5 py-1 text-xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            <Plus className="h-3 w-3" strokeWidth={1.8} />
+            添加任务
+          </button>
+        ))}
+    </div>
+  );
+}
+
+function TaskRow({
+  task,
+  line,
+  onMarkDone,
+  onClear,
+  onOpenDetail,
+  onOpenProject,
+}: {
+  task: SlotTaskSummary;
+  line?: { name: string; color?: RailColor };
+  onMarkDone?: () => void;
+  onClear?: () => void;
+  onOpenDetail?: () => void;
+  onOpenProject?: () => void;
+}) {
+  const done = task.state === 'done';
+  return (
+    <li className="flex flex-col gap-0.5 rounded-sm px-1.5 py-1 hover:bg-surface-2/60">
+      <span
+        className={clsx(
+          'line-clamp-2 text-xs',
+          done ? 'text-ink-tertiary line-through' : 'text-ink-primary',
+        )}
+      >
+        {task.title || '未命名任务'}
+      </span>
+      {line &&
+        (onOpenProject ? (
+          <button
+            type="button"
+            onClick={onOpenProject}
+            className="group flex items-center gap-1.5 self-start font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:text-ink-primary"
+          >
+            {line.color && (
+              <span
+                aria-hidden
+                className="h-2 w-[2px] rounded-sm"
+                style={{ background: RAIL_COLOR_HEX[line.color] }}
+              />
+            )}
+            <span className="truncate">{line.name}</span>
+            <ArrowUpRight
+              className="h-2.5 w-2.5 opacity-0 transition group-hover:opacity-100"
+              strokeWidth={1.8}
+            />
+          </button>
+        ) : (
+          <span className="flex items-center gap-1.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            {line.color && (
+              <span
+                aria-hidden
+                className="h-2 w-[2px] rounded-sm"
+                style={{ background: RAIL_COLOR_HEX[line.color] }}
+              />
+            )}
+            <span className="truncate">{line.name}</span>
+          </span>
+        ))}
+      <div className="flex flex-wrap items-center gap-1 pt-0.5">
+        {onMarkDone && !done && (
+          <button
+            type="button"
+            onClick={onMarkDone}
+            className="inline-flex items-center gap-1 rounded-sm bg-surface-2 px-1.5 py-0.5 text-2xs text-ink-primary transition hover:bg-surface-3"
+          >
+            <Check className="h-3 w-3" strokeWidth={2} />
+            完成
+          </button>
+        )}
+        {onOpenDetail && (
+          <button
+            type="button"
+            onClick={onOpenDetail}
+            className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            详情
+          </button>
+        )}
+        {onClear && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            <X className="h-3 w-3" strokeWidth={1.8} />
+            移除
+          </button>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function QuickCreateInline({
+  onSubmit,
+  onCancel,
+}: {
   onSubmit: (title: string) => void;
+  onCancel: () => void;
 }) {
   const [value, setValue] = useState('');
   const submit = () => {
@@ -536,125 +638,26 @@ function QuickCreateBody({
     onSubmit(trimmed);
   };
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-col gap-0.5">
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          Add task
-        </span>
-        <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
-          {railName} · {formatSlotDate(date)}
-        </span>
-      </div>
-      <input
-        type="text"
-        value={value}
-        autoFocus
-        placeholder="任务标题 · Enter"
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          // `nativeEvent.isComposing` is true while an IME candidate
-          // window is open — Enter in that state confirms the pinyin
-          // pick, not a form submit.
-          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-        className="h-8 rounded-md border border-hairline/60 bg-surface-0 px-2 text-sm text-ink-primary outline-none transition focus:border-ink-secondary"
-      />
-    </div>
-  );
-}
-
-function SlotPopoverBody({
-  taskName,
-  railName,
-  date,
-  lineName,
-  lineColor,
-  onMarkDone,
-  onClear,
-  onOpenProject,
-  onOpenDetail,
-}: {
-  taskName: string;
-  railName: string;
-  date: string;
-  lineName?: string;
-  lineColor?: RailColor;
-  onMarkDone: () => void;
-  onClear: () => void;
-  onOpenProject?: () => void;
-  onOpenDetail?: () => void;
-}) {
-  const lineChip = lineName && (
-    <>
-      {lineColor && (
-        <span
-          aria-hidden
-          className="h-2 w-[2px] rounded-sm"
-          style={{ background: RAIL_COLOR_HEX[lineColor] }}
-        />
-      )}
-      {lineName}
-    </>
-  );
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-col gap-1">
-        <span className="line-clamp-2 text-sm text-ink-primary">
-          {taskName || '未命名任务'}
-        </span>
-        {lineName &&
-          (onOpenProject ? (
-            <button
-              type="button"
-              onClick={onOpenProject}
-              className="group flex items-center gap-1.5 self-start font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:text-ink-primary"
-            >
-              {lineChip}
-              <ArrowUpRight
-                className="h-2.5 w-2.5 opacity-0 transition group-hover:opacity-100"
-                strokeWidth={1.8}
-              />
-            </button>
-          ) : (
-            <span className="flex items-center gap-1.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-              {lineChip}
-            </span>
-          ))}
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          {railName} · {formatSlotDate(date)}
-        </span>
-      </div>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <button
-          type="button"
-          onClick={onMarkDone}
-          className="inline-flex items-center gap-1.5 rounded-md bg-surface-2 px-2 py-1 text-xs text-ink-primary transition hover:bg-surface-3"
-        >
-          <Check className="h-3 w-3" strokeWidth={2} />
-          标记完成
-        </button>
-        {onOpenDetail && (
-          <button
-            type="button"
-            onClick={onOpenDetail}
-            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-          >
-            查看详情
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={onClear}
-          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-        >
-          <X className="h-3 w-3" strokeWidth={1.8} />
-          移除排期
-        </button>
-      </div>
-    </div>
+    <input
+      type="text"
+      value={value}
+      autoFocus
+      placeholder="任务标题 · Enter 添加"
+      onChange={(e) => setValue(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+          e.preventDefault();
+          submit();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          onCancel();
+        }
+      }}
+      onBlur={() => {
+        if (!value.trim()) onCancel();
+      }}
+      className="h-8 rounded-md border border-hairline/60 bg-surface-0 px-2 text-sm text-ink-primary outline-none transition focus:border-ink-secondary"
+    />
   );
 }
 
