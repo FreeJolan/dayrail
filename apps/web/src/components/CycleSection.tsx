@@ -477,7 +477,10 @@ function SlotPopoverBody({
   onOpenProject?: (taskId: string) => void;
   onQuickCreate?: (title: string) => void;
 }) {
-  const [addOpen, setAddOpen] = useState(false);
+  // For empty cells, jump straight to the QuickCreate input — the
+  // user opened the popover on a dashed placeholder, their intent is
+  // clearly "add something", no need for an intermediate button.
+  const [addOpen, setAddOpen] = useState(tasks.length === 0);
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex flex-col gap-0.5">
@@ -486,9 +489,7 @@ function SlotPopoverBody({
         </span>
       </div>
 
-      {tasks.length === 0 ? (
-        <p className="text-xs text-ink-tertiary">这一天该 rail 还没有任务。</p>
-      ) : (
+      {tasks.length > 0 && (
         <ul className="flex flex-col gap-1">
           {tasks.map((t) => (
             <TaskRow
