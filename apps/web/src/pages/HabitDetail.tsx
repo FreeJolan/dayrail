@@ -247,7 +247,12 @@ function RhythmStrip({
         </span>
       </header>
       {phaseBands && phaseBands.length > 0 && (
-        <RhythmPhaseBandRow bands={phaseBands} totalCols={WINDOW_DAYS} />
+        <RhythmPhaseBandRow
+          bands={phaseBands}
+          totalCols={WINDOW_DAYS}
+          dates={dates}
+          cellByDate={cellByDate}
+        />
       )}
       <div className="flex items-end gap-1">
         {dates.map((d) => (
@@ -269,14 +274,20 @@ function RhythmStrip({
 function RhythmPhaseBandRow({
   bands,
   totalCols,
+  dates,
+  cellByDate,
 }: {
   bands: PhaseBand[];
   totalCols: number;
+  dates: string[];
+  cellByDate: Record<string, CellState>;
 }) {
   // Mirrors Review's PhaseBandRow but flex-based to line up with the
   // cell row (which is also flex, not a table). Each band occupies
   // columns [startCol, endCol] inclusive; gaps between bands render
-  // as empty flex filler so alignment stays exact.
+  // as empty flex filler so alignment stays exact. Per-band match%
+  // is appended next to the label so the user can see training/taper
+  // phase adherence at a glance without leaving the page.
   const sorted = [...bands].sort((a, b) => a.startCol - b.startCol);
   const segments: React.ReactNode[] = [];
   let cursor = 0;
@@ -291,14 +302,24 @@ function RhythmPhaseBandRow({
       );
     }
     const span = band.endCol - band.startCol + 1;
+    const stats = bandStats(band, dates, cellByDate);
     segments.push(
       <div
         key={`band-${band.phaseId}`}
-        title={band.label}
-        className="min-w-0 shrink-0 truncate rounded-sm bg-surface-3 px-1.5 py-0.5 font-mono text-2xs uppercase tracking-widest text-ink-secondary"
+        title={
+          stats.applied > 0
+            ? `${band.label} · ${stats.done}/${stats.applied} · ${stats.matchPct}% match`
+            : band.label
+        }
+        className="flex min-w-0 shrink-0 items-center justify-between gap-1.5 rounded-sm bg-surface-3 px-1.5 py-0.5 font-mono text-2xs uppercase tracking-widest text-ink-secondary"
         style={{ flex: `${span} 1 0` }}
       >
-        {band.label}
+        <span className="min-w-0 truncate">{band.label}</span>
+        {stats.applied > 0 && (
+          <span className="shrink-0 tabular-nums text-ink-tertiary">
+            {stats.matchPct}%
+          </span>
+        )}
       </div>,
     );
     cursor = band.endCol + 1;
@@ -313,6 +334,31 @@ function RhythmPhaseBandRow({
     );
   }
   return <div className="flex items-center gap-1">{segments}</div>;
+}
+
+/** done / applied counts for the dates spanned by a phase band. Empty
+ *  cells (habit not scheduled that day) don't contribute to the
+ *  denominator — same rule as the Review heatmap's per-row stats. */
+function bandStats(
+  band: PhaseBand,
+  dates: string[],
+  cellByDate: Record<string, CellState>,
+): { done: number; applied: number; matchPct: number } {
+  let done = 0;
+  let applied = 0;
+  for (let i = band.startCol; i <= band.endCol; i++) {
+    const date = dates[i];
+    if (!date) continue;
+    const state = cellByDate[date];
+    if (!state || state === 'empty') continue;
+    applied++;
+    if (state === 'done') done++;
+  }
+  return {
+    done,
+    applied,
+    matchPct: applied === 0 ? 0 : Math.round((done / applied) * 100),
+  };
 }
 
 function RhythmCell({
