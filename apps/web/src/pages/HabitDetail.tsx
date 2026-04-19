@@ -533,6 +533,13 @@ function ScheduleList({
           ? { weekdays: opts.weekdays }
           : {}),
       });
+      // Materialize immediately so the rhythm strip shows today's /
+      // upcoming auto-tasks without requiring a page reload. The
+      // useEffect-based materialization only fires on window change.
+      await materializeAutoTasks({
+        startDate: todayIso(),
+        endDate: isoDatePlus(todayIso(), 27),
+      });
       setFormOpen(false);
     },
     [upsertHabitBinding, habit.id],
