@@ -18,6 +18,10 @@ export interface CheckInEntry {
   taskId: string;
   railId: string;
   railName: string;
+  /** Title of the Task carrying this Rail. Rendered next to the rail
+   *  name so the user knows what specifically needs marking, not just
+   *  which time-slot. */
+  taskTitle: string;
   subtitle?: string;
   color: RailColor;
   start: string; // HH:MM
@@ -100,10 +104,19 @@ function CheckInRow({
       <span className="font-mono text-xs text-ink-tertiary">
         {entry.start}–{entry.end}
       </span>
-      <span className="text-sm text-ink-primary">{entry.railName}</span>
-      {entry.subtitle && (
-        <span className="truncate text-sm text-ink-tertiary">· {entry.subtitle}</span>
-      )}
+      <span className="flex min-w-0 flex-1 items-baseline gap-2">
+        <span className="truncate text-sm text-ink-primary">
+          {entry.taskTitle || entry.railName}
+        </span>
+        <span className="shrink-0 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          {entry.railName}
+        </span>
+        {entry.subtitle && (
+          <span className="truncate text-xs text-ink-tertiary">
+            · {entry.subtitle}
+          </span>
+        )}
+      </span>
 
       <span className="ml-auto flex items-center gap-1">
         <ActionChip variant="primary" onClick={() => onAction(entry, 'done')}>

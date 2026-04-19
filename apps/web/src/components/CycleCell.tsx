@@ -1,5 +1,5 @@
 import { clsx } from 'clsx';
-import { ArrowUpRight, Check } from 'lucide-react';
+import { ArrowUpRight, Check, X } from 'lucide-react';
 import {
   RAIL_COLOR_HEX,
   RAIL_COLOR_STEP_4,
@@ -13,18 +13,29 @@ import type { SlotTaskState, SlotTaskSummary } from '@/data/sampleCycle';
 // ERD §5.3 D7 / §4.1 "Slot ↔ Task one-to-many". One cell renders a
 // list of task pills stacked vertically; each pill is styled per
 // task.status. Empty cell = dashed placeholder that invites +add.
+// Each pill has a hover-reveal X for one-click unschedule; the full
+// task actions still live in the popover.
 
 interface Props {
   tasks: SlotTaskSummary[];
   color: RailColor;
+  /** Unschedule a specific task from this cell. Hover-reveal X on
+   *  each pill. The X swallows the click so the slot popover doesn't
+   *  open. */
+  onClearTask?: (taskId: string) => void;
 }
 
-export function CycleCell({ tasks, color }: Props) {
+export function CycleCell({ tasks, color, onClearTask }: Props) {
   if (tasks.length === 0) return <PlannedEmptyCell />;
   return (
     <div className="relative flex h-full min-h-[44px] flex-col gap-1 rounded-sm bg-surface-1 px-1.5 py-1.5 transition hover:bg-surface-2">
       {tasks.map((t) => (
-        <TaskPill key={t.taskId} task={t} color={color} />
+        <TaskPill
+          key={t.taskId}
+          task={t}
+          color={color}
+          {...(onClearTask && { onClear: () => onClearTask(t.taskId) })}
+        />
       ))}
     </div>
   );
@@ -33,25 +44,65 @@ export function CycleCell({ tasks, color }: Props) {
 function TaskPill({
   task,
   color,
+  onClear,
 }: {
   task: SlotTaskSummary;
   color: RailColor;
+  onClear?: () => void;
 }) {
-  if (task.state === 'done') return <DonePill task={task} color={color} />;
-  if (task.state === 'deferred') return <DeferredPill task={task} color={color} />;
-  if (task.state === 'archived') return <ArchivedPill task={task} color={color} />;
-  return <PendingPill task={task} color={color} />;
+  if (task.state === 'done')
+    return <DonePill task={task} color={color} onClear={onClear} />;
+  if (task.state === 'deferred')
+    return <DeferredPill task={task} color={color} onClear={onClear} />;
+  if (task.state === 'archived')
+    return <ArchivedPill task={task} color={color} onClear={onClear} />;
+  return <PendingPill task={task} color={color} onClear={onClear} />;
+}
+
+/** Hover-reveal X positioned inside a pill. Stops click propagation so
+ *  the parent popover trigger doesn't fire — "clear" is a distinct
+ *  action from "open popover". */
+function ClearButton({
+  onClear,
+  tone = 'default',
+}: {
+  onClear: () => void;
+  tone?: 'default' | 'on-solid';
+}) {
+  return (
+    <button
+      type="button"
+      aria-label="移除排期"
+      title="移除排期"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClear();
+      }}
+      onPointerDown={(e) => e.stopPropagation()}
+      className={clsx(
+        'absolute right-0.5 top-0.5 rounded-sm p-0.5 opacity-0 transition',
+        'group-hover/pill:opacity-100 focus:opacity-100',
+        tone === 'on-solid'
+          ? 'text-cta-foreground/80 hover:bg-black/10 hover:text-cta-foreground'
+          : 'text-ink-tertiary hover:bg-surface-3 hover:text-ink-primary',
+      )}
+    >
+      <X className="h-3 w-3" strokeWidth={1.8} />
+    </button>
+  );
 }
 
 function PendingPill({
   task,
   color,
+  onClear,
 }: {
   task: SlotTaskSummary;
   color: RailColor;
+  onClear?: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-0.5 rounded-sm px-1 py-0.5">
+    <div className="group/pill relative flex flex-col gap-0.5 rounded-sm px-1 py-0.5 pr-5">
       <div className="flex items-center gap-1.5">
         <span
           aria-hidden
@@ -63,6 +114,7 @@ function PendingPill({
         </span>
       </div>
       <Badges task={task} tone="default" />
+      {onClear && <ClearButton onClear={onClear} />}
     </div>
   );
 }
@@ -70,15 +122,17 @@ function PendingPill({
 function DonePill({
   task,
   color,
+  onClear,
 }: {
   task: SlotTaskSummary;
   color: RailColor;
+  onClear?: () => void;
 }) {
   const bg = RAIL_COLOR_HEX[color];
   const text = RAIL_TEXT_ON_SOLID[color];
   return (
     <div
-      className="relative flex flex-col gap-0.5 rounded-sm px-1.5 py-1"
+      className="group/pill relative flex flex-col gap-0.5 rounded-sm px-1.5 py-1 pr-5"
       style={{ background: bg, color: text }}
     >
       <div className="flex items-start gap-1.5">
@@ -93,6 +147,7 @@ function DonePill({
         </span>
       </div>
       <Badges task={task} tone="on-solid" />
+      {onClear && <ClearButton onClear={onClear} tone="on-solid" />}
     </div>
   );
 }
@@ -100,13 +155,15 @@ function DonePill({
 function DeferredPill({
   task,
   color,
+  onClear,
 }: {
   task: SlotTaskSummary;
   color: RailColor;
+  onClear?: () => void;
 }) {
   return (
     <div
-      className="flex flex-col gap-0.5 rounded-sm px-1.5 py-1"
+      className="group/pill relative flex flex-col gap-0.5 rounded-sm px-1.5 py-1 pr-5"
       style={{ background: RAIL_COLOR_STEP_7[color] }}
     >
       <div className="flex items-start gap-1.5">
@@ -116,6 +173,7 @@ function DeferredPill({
         </span>
       </div>
       <Badges task={task} tone="default" />
+      {onClear && <ClearButton onClear={onClear} />}
     </div>
   );
 }
@@ -123,19 +181,22 @@ function DeferredPill({
 function ArchivedPill({
   task,
   color,
+  onClear,
 }: {
   task: SlotTaskSummary;
   color: RailColor;
+  onClear?: () => void;
 }) {
   return (
     <div
-      className="flex flex-col gap-0.5 rounded-sm px-1.5 py-1 hatch-skipped opacity-80"
+      className="group/pill relative flex flex-col gap-0.5 rounded-sm px-1.5 py-1 pr-5 hatch-skipped opacity-80"
       style={{ ['--hatch' as string]: RAIL_COLOR_STEP_6[color] }}
     >
       <span className="line-clamp-2 text-xs text-ink-tertiary line-through decoration-ink-tertiary/40">
         {task.title}
       </span>
       <Badges task={task} tone="default" />
+      {onClear && <ClearButton onClear={onClear} />}
     </div>
   );
 }

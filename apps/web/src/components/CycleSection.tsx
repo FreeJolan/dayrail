@@ -191,7 +191,11 @@ export function CycleSection({
                                 : `Open ${rail.name} on ${d.date}`
                             }
                           >
-                            <CycleCell tasks={tasks} color={rail.color} />
+                            <CycleCell
+                              tasks={tasks}
+                              color={rail.color}
+                              {...(onClearSlot && { onClearTask: onClearSlot })}
+                            />
                           </button>
                         </PopoverTrigger>
                         <PopoverContent align="center" className="w-[280px]">
