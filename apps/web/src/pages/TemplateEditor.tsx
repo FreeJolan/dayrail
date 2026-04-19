@@ -329,7 +329,13 @@ export function TemplateEditor() {
       durationMinutes: endMin - startMin,
       color,
       showInCheckin: true,
-      recurrence: { kind: 'weekdays' },
+      // Default to `daily` so the rail fires whenever its template's
+      // CalendarRule says the day matches. `weekdays` was the v0.3
+      // default but broke when dropped into a non-workday template
+      // (e.g. Restday) — intersection came out empty and no task was
+      // ever materialized. Users who want a narrower recurrence can
+      // edit it per-rail (v0.5 Template-Editor feature).
+      recurrence: { kind: 'daily' },
     };
     void createRailAction(rail, sessionId ?? undefined);
   };
