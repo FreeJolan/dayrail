@@ -355,7 +355,7 @@ export function TemplateEditor() {
   }
 
   return (
-    <div className="flex w-full flex-col pl-10 pr-8 xl:pl-14">
+    <div className="flex w-full flex-col px-10 xl:px-14">
       <TopBar
         changeCount={changeCount}
         template={currentTemplate}
@@ -438,7 +438,7 @@ function TopBar({
 }) {
   const canUndo = changeCount > 0;
   return (
-    <header className="sticky top-0 z-40 -mx-10 flex h-[52px] items-center justify-between gap-4 bg-surface-0 px-10">
+    <header className="sticky top-0 z-40 -mx-10 flex h-[52px] items-center justify-between gap-4 bg-surface-0 px-10 xl:-mx-14 xl:px-14">
       <div className="flex items-baseline gap-3">
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
           Template Editor

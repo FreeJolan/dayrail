@@ -7,6 +7,7 @@
 
 import type { RailColor } from './sample';
 import type { TemplateKey } from './sampleTemplate';
+import type { TaskPriority } from '@dayrail/core';
 
 export interface CycleDay {
   date: string; // ISO "YYYY-MM-DD"
@@ -27,10 +28,18 @@ export interface SlotTaskSummary {
   title: string;
   state: SlotTaskState;
   isAutoTask: boolean;
+  /** Kept as a flag so the tooltip knows to render the note section.
+   *  The actual note text is fetched via `noteSnippet` when present. */
   hasNote: boolean;
+  noteSnippet?: string;
   subItemsDone: number;
   subItemsTotal: number;
+  /** Full sub-items array — lets the pill tooltip list them and the
+   *  per-pill popover expose a toggle checklist without each cell
+   *  subscribing to the store directly. */
+  subItems?: Array<{ id: string; title: string; done: boolean }>;
   milestonePercent?: number;
+  priority?: TaskPriority;
 }
 
 export interface CycleSlot {

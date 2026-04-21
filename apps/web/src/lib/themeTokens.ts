@@ -69,8 +69,8 @@ function baseTokens(scope: 'light' | 'dark'): string {
   ].join(' ');
 }
 
-// Rail scales — plain hex, one mapping per light/dark. Steps 4 / 6 / 7
-// / 9 all swap; text-on-solid is computed separately (foreground color
+// Rail scales — plain hex, one mapping per light/dark. Steps 3 / 4 / 6
+// / 7 / 9 all swap; text-on-solid is computed separately (foreground color
 // matters for legibility on solid step-9 fills, stays ink-primary /
 // surface-0 depending on scale luminance).
 type Scale = Record<string, string>;
@@ -91,6 +91,7 @@ function railTokens(scope: 'light' | 'dark'): string {
   const parts: string[] = [];
   for (const [name, pair] of Object.entries(RAIL_PAIRS)) {
     const pal = scope === 'dark' ? pair.dark : pair.light;
+    parts.push(`--rail-${name}-3: ${pal[`${name}3`]};`);
     parts.push(`--rail-${name}-4: ${pal[`${name}4`]};`);
     parts.push(`--rail-${name}-6: ${pal[`${name}6`]};`);
     parts.push(`--rail-${name}-7: ${pal[`${name}7`]};`);

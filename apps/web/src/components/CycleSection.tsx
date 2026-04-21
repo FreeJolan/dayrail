@@ -1,10 +1,10 @@
 import { clsx } from 'clsx';
-import { useState } from 'react';
-import { ArrowUpRight, Check, ChevronDown, Plus, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Check, ChevronDown } from 'lucide-react';
+import type { TaskPriority } from '@dayrail/core';
 import {
   type CycleDay,
   type CycleSlot,
-  type SlotTaskSummary,
   formatDayLabel,
 } from '@/data/sampleCycle';
 import {
@@ -22,10 +22,10 @@ import {
   PopoverTrigger,
 } from './primitives/Popover';
 
-// ERD §5.3 D1-1B — per-template stacked section. Each section is a
-// self-contained mini-grid. Each cell can hold multiple tasks
-// (Slot ↔ Task one-to-many), so the popover lists every scheduled
-// task with its own per-task actions and a trailing "add another" row.
+// ERD §5.3 D1-1B — per-template stacked section. Cells own their own
+// popovers now (per-pill action popover + cell-level add-bar popover);
+// this component only handles the table frame, the day headers, and
+// drag-drop routing onto (rail, date).
 
 export interface TemplateChoice {
   key: TemplateKey;
@@ -47,12 +47,17 @@ interface Props {
   onDropTask?: (taskId: string, date: string, railId: string) => void;
   onClearSlot?: (taskId: string) => void;
   onMarkTaskDone?: (taskId: string) => void;
+  onUndoTaskDone?: (taskId: string) => void;
+  onArchiveTask?: (taskId: string) => void;
+  onUnarchiveTask?: (taskId: string) => void;
   onOpenTaskDetail?: (taskId: string) => void;
   onOpenTaskProject?: (taskId: string) => void;
+  onSetTaskPriority?: (taskId: string, priority: TaskPriority | null) => void;
+  onToggleSubItem?: (taskId: string, subItemId: string) => void;
   onQuickCreate?: (date: string, railId: string, title: string) => void;
-  /** Resolve the Line a task belongs to so the popover can render a
-   *  small coloured chip per row without each cell subscribing to
-   *  the store directly. */
+  /** Resolve the Line a task belongs to so the cell can render a small
+   *  coloured chip per row without each cell subscribing to the store
+   *  directly. */
   lineLookup?: (taskId: string) => { name: string; color?: RailColor } | undefined;
 }
 
@@ -69,14 +74,40 @@ export function CycleSection({
   onDropTask,
   onClearSlot,
   onMarkTaskDone,
+  onUndoTaskDone,
+  onArchiveTask,
+  onUnarchiveTask,
   onOpenTaskDetail,
   onOpenTaskProject,
+  onSetTaskPriority,
+  onToggleSubItem,
   onQuickCreate,
   lineLookup,
 }: Props) {
   const stripColor = RAIL_COLOR_HEX[templateColor];
   const [hoverKey, setHoverKey] = useState<string | null>(null);
-  const [openPopoverKey, setOpenPopoverKey] = useState<string | null>(null);
+  // `hoverRailId` falls out of the hoverKey (railId|date). Derived
+  // separately so the rail row + left label can signal "this Rail
+  // will receive the drop" without every cell tracking it.
+  const hoverRailId = hoverKey ? hoverKey.split('|')[0] : null;
+
+  // Clear the drag highlight once the drag ends (successful drop,
+  // cancel/ESC, or dragging out of the window). We don't use per-cell
+  // dragleave because it fires every time the cursor transitions
+  // between a cell's child elements — that's the "frantic flicker"
+  // bug. dragover alone handles the "what cell am I over" question
+  // (each hover sets hoverKey to that cell, overwriting the previous
+  // in a single state write), and window-level dragend/drop wipes
+  // state exactly once when the gesture is over.
+  useEffect(() => {
+    const clear = () => setHoverKey(null);
+    window.addEventListener('dragend', clear);
+    window.addEventListener('drop', clear, true);
+    return () => {
+      window.removeEventListener('dragend', clear);
+      window.removeEventListener('drop', clear, true);
+    };
+  }, []);
 
   return (
     <section
@@ -109,50 +140,40 @@ export function CycleSection({
           </colgroup>
 
           <tbody>
-            {rails.map((rail) => (
+            {rails.map((rail) => {
+              const railIsDropTarget = hoverRailId === rail.id;
+              return (
               <tr key={rail.id}>
                 <th
                   scope="row"
-                  className="pr-3 py-1 text-left align-top"
+                  className={clsx(
+                    'pr-3 py-1 text-left align-top transition',
+                    railIsDropTarget && 'bg-cta-soft/25',
+                  )}
                 >
-                  <RailRowLabel rail={rail} />
+                  <RailRowLabel rail={rail} isDropTarget={railIsDropTarget} />
                 </th>
                 {days.map((d) => {
                   const slot = slotsByKey.get(`${rail.id}|${d.date}`);
                   const cellKey = `${rail.id}|${d.date}`;
                   const tasks = slot?.tasks ?? [];
-                  // Drag-drop always lands on (rail,date); multiple tasks
-                  // can coexist so we keep drop open even when tasks > 0.
                   const canDrop = onDropTask != null;
                   const isHover = hoverKey === cellKey;
-                  const popoverOpen = openPopoverKey === cellKey;
+                  const railSoftHover = railIsDropTarget && !isHover;
                   return (
                     <td
                       key={d.date}
-                      onDragEnter={
-                        canDrop
-                          ? (e) => {
-                              if (!hasTaskPayload(e)) return;
-                              e.preventDefault();
-                              setHoverKey(cellKey);
-                            }
-                          : undefined
-                      }
                       onDragOver={
                         canDrop
                           ? (e) => {
                               if (!hasTaskPayload(e)) return;
                               e.preventDefault();
                               e.dataTransfer.dropEffect = 'move';
-                            }
-                          : undefined
-                      }
-                      onDragLeave={
-                        canDrop
-                          ? () => {
-                              setHoverKey((k) =>
-                                k === cellKey ? null : k,
-                              );
+                              // Monotonic set — React bails when next
+                              // state equals prev, so the ~60Hz dragover
+                              // cadence doesn't cause re-renders once
+                              // the cursor stabilizes on a cell.
+                              if (hoverKey !== cellKey) setHoverKey(cellKey);
                             }
                           : undefined
                       }
@@ -172,86 +193,34 @@ export function CycleSection({
                       className={clsx(
                         'p-1 align-top transition',
                         d.date === todayISO && 'bg-surface-2/40',
+                        railSoftHover && 'bg-cta-soft/15',
                         isHover && 'bg-cta-soft/30 ring-1 ring-inset ring-cta/60',
                       )}
                     >
-                      <Popover
-                        open={popoverOpen}
-                        onOpenChange={(o) =>
-                          setOpenPopoverKey(o ? cellKey : null)
-                        }
-                      >
-                        <PopoverTrigger asChild>
-                          <button
-                            type="button"
-                            className="block w-full text-left"
-                            aria-label={
-                              tasks.length === 0
-                                ? `Add task on ${d.date} to ${rail.name}`
-                                : `Open ${rail.name} on ${d.date}`
-                            }
-                          >
-                            <CycleCell
-                              tasks={tasks}
-                              color={rail.color}
-                              {...(onClearSlot && { onClearTask: onClearSlot })}
-                            />
-                          </button>
-                        </PopoverTrigger>
-                        <PopoverContent align="center" className="w-[280px]">
-                          <SlotPopoverBody
-                            railName={rail.name}
-                            date={d.date}
-                            tasks={tasks}
-                            lineLookup={lineLookup}
-                            onMarkDone={
-                              onMarkTaskDone
-                                ? (taskId) => {
-                                    onMarkTaskDone(taskId);
-                                    setOpenPopoverKey(null);
-                                  }
-                                : undefined
-                            }
-                            onClear={
-                              onClearSlot
-                                ? (taskId) => {
-                                    onClearSlot(taskId);
-                                    setOpenPopoverKey(null);
-                                  }
-                                : undefined
-                            }
-                            onOpenDetail={
-                              onOpenTaskDetail
-                                ? (taskId) => {
-                                    onOpenTaskDetail(taskId);
-                                    setOpenPopoverKey(null);
-                                  }
-                                : undefined
-                            }
-                            onOpenProject={
-                              onOpenTaskProject
-                                ? (taskId) => {
-                                    onOpenTaskProject(taskId);
-                                    setOpenPopoverKey(null);
-                                  }
-                                : undefined
-                            }
-                            onQuickCreate={
-                              onQuickCreate
-                                ? (title) => {
-                                    onQuickCreate(d.date, rail.id, title);
-                                    setOpenPopoverKey(null);
-                                  }
-                                : undefined
-                            }
-                          />
-                        </PopoverContent>
-                      </Popover>
+                      <CycleCell
+                        tasks={tasks}
+                        color={rail.color}
+                        date={d.date}
+                        railId={rail.id}
+                        railName={rail.name}
+                        {...(onClearSlot && { onClearTask: onClearSlot })}
+                        {...(onMarkTaskDone && { onMarkTaskDone })}
+                        {...(onUndoTaskDone && { onUndoTaskDone })}
+                        {...(onArchiveTask && { onArchiveTask })}
+                        {...(onUnarchiveTask && { onUnarchiveTask })}
+                        {...(onOpenTaskDetail && { onOpenTaskDetail })}
+                        {...(onOpenTaskProject && { onOpenTaskProject })}
+                        {...(onSetTaskPriority && { onSetTaskPriority })}
+                        {...(onToggleSubItem && { onToggleSubItem })}
+                        {...(onQuickCreate && { onQuickCreate })}
+                        {...(lineLookup && { lineLookup })}
+                      />
                     </td>
                   );
                 })}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -440,9 +409,28 @@ function DayCellButton({
   );
 }
 
-function RailRowLabel({ rail }: { rail: EditableRail }) {
+function RailRowLabel({
+  rail,
+  isDropTarget,
+}: {
+  rail: EditableRail;
+  isDropTarget: boolean;
+}) {
+  // All drop-target affordances here must be layout-neutral: earlier
+  // versions bumped the color-bar size and conditionally rendered an
+  // arrow glyph, both of which shifted the row height or width. That
+  // nudged the cursor onto a different `<td>`, which re-fired
+  // `dragover` on a new cell, which flipped the state back → the
+  // "frantic shaking" bug. So: fixed bar dimensions, arrow always
+  // rendered but opacity-animated. All indication comes from
+  // box-shadow / color, never layout.
   return (
-    <div className="flex items-center gap-2">
+    <div
+      className={clsx(
+        'flex items-center gap-2 rounded-sm pl-0.5 pr-1.5 transition-colors',
+        isDropTarget && 'ring-1 ring-inset ring-cta/60',
+      )}
+    >
       <span
         aria-hidden
         className="h-6 w-1 shrink-0 rounded-sm"
@@ -456,221 +444,15 @@ function RailRowLabel({ rail }: { rail: EditableRail }) {
           {fmtHHMM(rail.startMin)} → {fmtHHMM(rail.endMin)}
         </span>
       </span>
-    </div>
-  );
-}
-
-function SlotPopoverBody({
-  railName,
-  date,
-  tasks,
-  lineLookup,
-  onMarkDone,
-  onClear,
-  onOpenDetail,
-  onOpenProject,
-  onQuickCreate,
-}: {
-  railName: string;
-  date: string;
-  tasks: SlotTaskSummary[];
-  lineLookup?: (taskId: string) => { name: string; color?: RailColor } | undefined;
-  onMarkDone?: (taskId: string) => void;
-  onClear?: (taskId: string) => void;
-  onOpenDetail?: (taskId: string) => void;
-  onOpenProject?: (taskId: string) => void;
-  onQuickCreate?: (title: string) => void;
-}) {
-  // For empty cells, jump straight to the QuickCreate input — the
-  // user opened the popover on a dashed placeholder, their intent is
-  // clearly "add something", no need for an intermediate button.
-  const [addOpen, setAddOpen] = useState(tasks.length === 0);
-  return (
-    <div className="flex flex-col gap-2.5">
-      <div className="flex flex-col gap-0.5">
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          {railName} · {formatSlotDate(date)}
-        </span>
-      </div>
-
-      {tasks.length > 0 && (
-        <ul className="flex flex-col gap-1">
-          {tasks.map((t) => (
-            <TaskRow
-              key={t.taskId}
-              task={t}
-              line={lineLookup?.(t.taskId)}
-              onMarkDone={onMarkDone ? () => onMarkDone(t.taskId) : undefined}
-              onClear={onClear ? () => onClear(t.taskId) : undefined}
-              onOpenDetail={
-                onOpenDetail ? () => onOpenDetail(t.taskId) : undefined
-              }
-              onOpenProject={
-                onOpenProject ? () => onOpenProject(t.taskId) : undefined
-              }
-            />
-          ))}
-        </ul>
-      )}
-
-      {onQuickCreate &&
-        (addOpen ? (
-          <QuickCreateInline
-            onSubmit={(title) => {
-              onQuickCreate(title);
-              setAddOpen(false);
-            }}
-            onCancel={() => setAddOpen(false)}
-          />
-        ) : (
-          <button
-            type="button"
-            onClick={() => setAddOpen(true)}
-            className="flex items-center gap-1.5 self-start rounded-sm px-1.5 py-1 text-xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
-          >
-            <Plus className="h-3 w-3" strokeWidth={1.8} />
-            添加任务
-          </button>
-        ))}
-    </div>
-  );
-}
-
-function TaskRow({
-  task,
-  line,
-  onMarkDone,
-  onClear,
-  onOpenDetail,
-  onOpenProject,
-}: {
-  task: SlotTaskSummary;
-  line?: { name: string; color?: RailColor };
-  onMarkDone?: () => void;
-  onClear?: () => void;
-  onOpenDetail?: () => void;
-  onOpenProject?: () => void;
-}) {
-  const done = task.state === 'done';
-  return (
-    <li className="flex flex-col gap-0.5 rounded-sm px-1.5 py-1 hover:bg-surface-2/60">
       <span
+        aria-hidden
         className={clsx(
-          'line-clamp-2 text-xs',
-          done ? 'text-ink-tertiary line-through' : 'text-ink-primary',
+          'font-mono text-[9px] uppercase tracking-widest text-cta transition-opacity',
+          isDropTarget ? 'opacity-100' : 'opacity-0',
         )}
       >
-        {task.title || '未命名任务'}
+        →
       </span>
-      {line &&
-        (onOpenProject ? (
-          <button
-            type="button"
-            onClick={onOpenProject}
-            className="group flex items-center gap-1.5 self-start font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:text-ink-primary"
-          >
-            {line.color && (
-              <span
-                aria-hidden
-                className="h-2 w-[2px] rounded-sm"
-                style={{ background: RAIL_COLOR_HEX[line.color] }}
-              />
-            )}
-            <span className="truncate">{line.name}</span>
-            <ArrowUpRight
-              className="h-2.5 w-2.5 opacity-0 transition group-hover:opacity-100"
-              strokeWidth={1.8}
-            />
-          </button>
-        ) : (
-          <span className="flex items-center gap-1.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-            {line.color && (
-              <span
-                aria-hidden
-                className="h-2 w-[2px] rounded-sm"
-                style={{ background: RAIL_COLOR_HEX[line.color] }}
-              />
-            )}
-            <span className="truncate">{line.name}</span>
-          </span>
-        ))}
-      <div className="flex flex-wrap items-center gap-1 pt-0.5">
-        {onMarkDone && !done && (
-          <button
-            type="button"
-            onClick={onMarkDone}
-            className="inline-flex items-center gap-1 rounded-sm bg-surface-2 px-1.5 py-0.5 text-2xs text-ink-primary transition hover:bg-surface-3"
-          >
-            <Check className="h-3 w-3" strokeWidth={2} />
-            完成
-          </button>
-        )}
-        {onOpenDetail && (
-          <button
-            type="button"
-            onClick={onOpenDetail}
-            className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-          >
-            详情
-          </button>
-        )}
-        {onClear && (
-          <button
-            type="button"
-            onClick={onClear}
-            className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-          >
-            <X className="h-3 w-3" strokeWidth={1.8} />
-            移除
-          </button>
-        )}
-      </div>
-    </li>
+    </div>
   );
-}
-
-function QuickCreateInline({
-  onSubmit,
-  onCancel,
-}: {
-  onSubmit: (title: string) => void;
-  onCancel: () => void;
-}) {
-  const [value, setValue] = useState('');
-  const submit = () => {
-    const trimmed = value.trim();
-    if (!trimmed) return;
-    onSubmit(trimmed);
-  };
-  return (
-    <input
-      type="text"
-      value={value}
-      autoFocus
-      placeholder="任务标题 · Enter 添加"
-      onChange={(e) => setValue(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-          e.preventDefault();
-          submit();
-        } else if (e.key === 'Escape') {
-          e.preventDefault();
-          onCancel();
-        }
-      }}
-      onBlur={() => {
-        if (!value.trim()) onCancel();
-      }}
-      className="h-8 rounded-md border border-hairline/60 bg-surface-0 px-2 text-sm text-ink-primary outline-none transition focus:border-ink-secondary"
-    />
-  );
-}
-
-function formatSlotDate(iso: string): string {
-  const d = new Date(`${iso}T00:00:00`);
-  return d.toLocaleDateString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: '2-digit',
-  });
 }

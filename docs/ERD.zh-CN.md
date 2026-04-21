@@ -62,6 +62,8 @@ DayRail 面向这样一类人：
 
 **刻意不做的事**：连续打卡计数、失败提示、社交排行、强提醒、复杂优先级系统。
 
+> "复杂优先级系统" 指评分引擎、按权重自动重排、由优先级触发提醒升级这一类机制。Task（§5.5）上单值的 `P0 / P1 / P2` 提示**不在此列** —— 它是用户手动打上的被动视觉标签，不驱动任何调度器、check-in 加权或通知。
+
 ***
 
 ## 3. 用户故事（示例场景）
@@ -133,6 +135,7 @@ DayRail 面向这样一类人：
   - **Project 进度**：已完成 Tasks 中 `milestonePercent` 的**最大值**（不做加权总和；无 `milestonePercent` 的 Task 不参与进度计算，但计入"已完成事项数"）。
   - **归档触发**：`milestonePercent === 100` 的 Task 转为 `done` 时 Project 自动归档；也允许用户随时手动归档。归档后不支持解档；若想做"v2"，通过"复制新建"生成新 Project。
   - **计划时间窗**（Project Line 级）：可选 `plannedStart` / `plannedEnd`，作为软提示 —— 把 Task 排入窗口外的日期会警示但不阻止。
+  - **优先级（轻量提示）**：可选 `priority: 'P0' | 'P1' | 'P2'`（不填 = 无优先级）。**被动**：不驱动任何调度器、check-in 加权、通知升级、或自动重排 —— §2 刻意拒绝的"复杂优先级系统"指的就是这些。**主动**仅作为 Cycle View 任务清单及未来任意列表视图的**排序 / 分组 / 筛选**维度（支持"只看 P0"、"按 P0 → P2 排"、"按优先级分组"）。UI 上在每个 Cycle View task pill 上以小 chip 体现（`P0` 红 / `P1` 琥珀 / `P2` 灰）；通过 pill 级 popover 和 `TaskDetailDrawer` 修改。Habit auto-task 也可以带优先级（默认为无；用户可在详情抽屉里逐次设置）。
 - **规划会话**（内部概念）：一次在 Cycle View（周期视图）里集中编辑的过程。其中产生的 RailInstance override 共享一个内部 `sessionId`，用于"撤销本次规划"的原子回退。**不是用户可见的名词** —— 没有 Plan 页面、不用命名、没有升格流程。对于会反复出现的多周安排（考试周、出差周），请走专门的 Template + Calendar 日期范围规则。
 
 ### 4.2 概念总览（Mermaid）
@@ -380,8 +383,26 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
 
 **单元格（Slot）可编辑性**：
 
-- 空 Slot（Template 生效 + 无内容）：虚线 border + 显眼的 `+ 添加`；hover 实化。点击弹 popover：`[新建 Task 到 Project]` / `[从已有 Task 挑选]` / `[快速文本 taskName]`。
-- 有内容 Slot：顶部按 order 列出 Task pill（左 4px **Project** 色条 + 名称 + 可选 `milestonePercent`），底部若有 `taskName` 则以小号灰字附一行。点击 pill → 弹层 `[标记完成]` / `[移除此处分配]` / `[查看详情 …]` / `[打开 Project]`。「查看详情」打开同一个 TaskDetailDrawer (§5.5)，habit auto-task 适用 §5.5.0 的编辑权限表 (title / schedule / milestone 只读)。Cell 上额外展示「N/M 子任务」「有备注」小徽标。
+单元格不再用"整 cell 一个 popover"统摄 `(date, rail)` 下的所有 task。每个 task pill 自己挂一个 popover；cell 自己另外挂一个轻量"再加一个"入口 —— 同一格出现多个 task（例如 habit auto-task + 手动排的一个）时点击才不会串。
+
+- **空 Slot**（Template 生效 + 无 task）：虚线 border；hover 转实线。点击 cell 任意处弹 popover，内置 `QuickCreate` 输入框（Enter = 追加一个 pending Task 到当前 `(date, rail)`；指针移出取消）。不再有 `[新建到 Project]` / `[从已有挑选]` 子菜单 —— 对 ~95% 场景过度设计。"从已有挑选"走 Backlog 抽屉；"新建到 Project" 走 Tasks 页。
+- **非空 Slot**（≥ 1 个 task）：
+  - 多个 task 垂直堆叠为 pill 列。排序：state rank (`pending < done < deferred < archived`) → priority rank (`P0 < P1 < P2 < 无`) → 稳定插入序。
+  - **每个 pill 自己独立点击** 打开自己的 popover。这个 popover 只承载**"该排期此刻的状态"**操作，动作集合随 task 当前状态变化：
+    - `pending` → `[标记完成] · [归档] · [子任务清单（逐项可点击切换）] · [详情] · [打开项目] · [移除排期]`
+    - `done` → `[撤销完成] · [详情] · [打开项目] · [移除排期]`（撤销 = `status` 翻回 pending + 清 `doneAt`，走 Edit Session 的 ⤺ 批量撤销路径）
+    - `deferred` / `archived` → `[详情] · [打开项目] · [移除排期]`
+  - **任务配置类编辑（标题 · 优先级 · note · milestone · 子任务增删改名）不在此 popover 出现** —— 它们归共享的 `TaskDetailDrawer`。Popover 只回答"这条排期现在是什么状态"。早期草案曾把优先级 picker 塞进来，后来撤掉：把配置和状态混在一起会让误点成本变高。
+  - **Popover 里的子任务**：如果 task 带 sub-items，列表内联带勾选框；点击切换会写一条带 sessionId 的 `task.updated`（新 `subItems` 数组）。对 auto-habit task 的每日分解（拉伸 / 跑 / 放松）勾起来特别顺手，不用开 detail drawer。
+  - **Pill 色方案**（另见 §9.6 调色板）：
+    - `pending` → 背景 = Rail 色 step 3（柔色调），文字 ink-primary，左侧 1px step-9 色条做 accent。去掉小色块。
+    - `done` → 背景 = **中性色** `surface-2`，文字 ink-tertiary，标题**加粗 strike-through**，整个 pill `opacity ≈ 0.7`。左侧 step-6 细色条保留 rail 识别。理由：用户反馈 step-9 实色版本读起来像"Rail 颜色的庆祝态"，不够"已完成、可以忽略"；改为中性灰底 + 强删除线后一眼就是"划掉了"。
+    - `deferred` → 背景 = Rail 色 step 7。
+    - `archived` → step 6 hatch + 标题 strike-through。
+  - **每个 pill 的 hover tooltip**（Radix tooltip，200ms 延时）：完整标题 · 所属 Line · 优先级（如有） · note 摘要（前 ~120 字）· milestone % · 子任务进度 + 内联子任务列表（最多 6 行，溢出显 `… +N more`，每行带完成态字形）。原本内联的 `·备` / `·N/M` 徽标全部下沉到 tooltip —— cell 本身保持视觉克制，稠密信息按需显示。
+  - **hover 才显的"+ 添加"行**：只在 cell（或其中某 pill）被 hover 时才浮现在 pill 栈底部，虚线、全 cell 宽、同一 step-3 色调。点击 → 同空 slot 的 inline `QuickCreate` 输入框。视觉语汇统一：虚线那行读作"还空着的一格 slot"。
+  - **拖拽源**：每个 pill 都 draggable，`TASK_DRAG_MIME` 载荷 = taskId。跨 cell 拖拽 → `scheduleTaskToRail` 原地改写 `slot`；拖回自己的 `(date, rail)` 为 no-op（短路掉避免无意义事件）；`deferred` task 被拖重新排期 → 自动翻回 `pending`（与 backlog → cycle 一致）。
+  - **Drop 视觉反馈**：拖拽时同时给两层提示，让"要丢到哪"无歧义。(1) 被 hover 的 **目标 cell** 加 `cta-soft/30` 的 ring；(2) 整条 **目标 Rail 行** 加 `cta-soft/25` 背景（该行未被 hover 的 cell 是更淡的 `cta-soft/15`），rail 左侧彩条从 1px × 24px 放大到 1.5px × 28px 并在行标签右侧出现一个 `→` 字形。两层反馈是用户反馈"单靠 cell 的 ring 在长列上分辨不清到底是哪条 rail"后加的。
 - **"Rail 不适用"cell**（该列 Template 不生效 → 整列所有 cell）：**Rail step 4** 色 2px 间距对角斜线 hatching + 中心 Mono `—` + `cursor: not-allowed`。使用 step 4（而非 Skipped 的 step 6）让"不适用"比"被跳过"更淡，传达"这格根本没这条 Rail"而非"你曾经要在这里做事"。
 - **视觉语义三分**（全 app 统一）：**实线 = 正常内容** / **虚线 = 可添加 or Ad-hoc 叠层** / **hatching = 降格状态（Skipped / 不适用）**。任何新交互必须落到这三类之一，不新增第四类。
 
@@ -396,6 +417,7 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
 - **钉住（pin）**：抽屉内右上角一枚 📌 按钮 → 切换为**常驻侧栏**（主 grid 自动让出 320px，不再被覆盖）；再点一次 📌 解除。钉住状态持久化到本地 UI 设置（**不参与同步** —— 是设备个人偏好，不是规划数据）。
 - **响应式降级**：lg 及以下屏幕强制走抽屉形态、忽略钉住标记；xl 以上尊重用户钉住状态。
 - **抽屉内容**：Project / Task 列表（按 Project 分组、Task 可拖到 Slot），与 §5.5 的 Projects 独立视图互为补充（tab + 侧栏双入口）。
+- **分组开关**（搜索框旁）：三档 segmented `None / Priority / Project`。`None` = 扁平列表（deferred 优先 · priority rank · order）。`Priority` = 分段为 `P0 / P1 / P2 / 未设`，空分段自动隐藏。`Project` = 按 Line 分段，Inbox 固定置顶，其余按名字。状态设备本地、不参与同步。加这个开关是为了让 §5.5 的 Task.priority hint 真正派上用场 —— 没有它，priority 就只是一个视觉 chip，不会影响用户的视线落点。
 
 #### 5.3.1 编辑会话（Edit Session）：通用的批量撤销机制
 
@@ -1231,7 +1253,7 @@ Template ──(包含)──► Rail ──(recurrence + CalendarRule 决定触
 **轴 3 · 工作单元（Task）— "具体做什么 + 做没做"**
 
 - `Task` 属于一个 Line（`lineId`），`status` 是**完成状态的唯一真源**
-- 字段：title / note / order / status / milestonePercent / subItems
+- 字段：title / note / order / status / milestonePercent / priority / subItems
 - **排期两种互斥模式**：
   - Mode A：`task.slot = { cycleId, date, railId }` —— 占用某个 Rail 某天的格子
   - Mode B：`task.slot = undefined`，对应一条 `AdhocEvent.taskId = task.id`
@@ -1547,6 +1569,7 @@ type Task = {
   title: string;
   note?: string;               // 自由文本备注（搜索会扫这个字段）
   milestonePercent?: number;   // 0–100，带百分比即里程碑；缺省为"附加事项"
+  priority?: 'P0' | 'P1' | 'P2'; // 可选的轻量提示（§5.5）。不驱动调度 / check-in / 通知 —— 仅作为清单视图的 排序 / 分组 / 筛选 维度。
   subItems: SubItem[];         // 内部 checklist，不单独排程
   status:
     | 'pending'

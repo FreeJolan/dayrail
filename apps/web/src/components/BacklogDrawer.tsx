@@ -10,9 +10,11 @@ import {
   Search,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { INBOX_LINE_ID, useStore, type Line, type Task } from '@dayrail/core';
 import { selectBacklogTasks } from '@/pages/cycleFromStore';
+import { TaskDetailDrawer } from '@/pages/Tasks';
 import {
   Popover,
   PopoverContent,
@@ -32,6 +34,8 @@ interface Props {
   onToggle: () => void;
 }
 
+type BacklogGroupBy = 'none' | 'priority' | 'project';
+
 export function BacklogDrawer({ open, onToggle }: Props) {
   const tasksMap = useStore((s) => s.tasks);
   const linesMap = useStore((s) => s.lines);
@@ -39,6 +43,8 @@ export function BacklogDrawer({ open, onToggle }: Props) {
   const createTask = useStore((s) => s.createTask);
   const [query, setQuery] = useState('');
   const [adding, setAdding] = useState(false);
+  const [groupBy, setGroupBy] = useState<BacklogGroupBy>('none');
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
   const onCyclePage = location.pathname === '/cycle';
@@ -74,6 +80,50 @@ export function BacklogDrawer({ open, onToggle }: Props) {
         (t.note?.toLowerCase().includes(q) ?? false),
     );
   }, [tasks, query]);
+
+  // Backlog can be viewed flat or broken into sections. Group order
+  // is deterministic so the drawer doesn't jitter across edits:
+  //   - priority: P0 → P1 → P2 → 未设置
+  //   - project:  Inbox first (pinned), then Lines by name
+  const groups = useMemo<Array<{ key: string; label: string; items: Task[] }>>(() => {
+    if (groupBy === 'none' || filtered.length === 0) return [];
+    if (groupBy === 'priority') {
+      const buckets = new Map<string, Task[]>();
+      const order = ['P0', 'P1', 'P2', '__none'];
+      for (const k of order) buckets.set(k, []);
+      for (const t of filtered) {
+        const key = t.priority ?? '__none';
+        buckets.get(key)!.push(t);
+      }
+      return order
+        .filter((k) => (buckets.get(k) ?? []).length > 0)
+        .map((k) => ({
+          key: k,
+          label: k === '__none' ? '未设优先级' : k,
+          items: buckets.get(k)!,
+        }));
+    }
+    // groupBy === 'project'
+    const byLine = new Map<string, Task[]>();
+    for (const t of filtered) {
+      const arr = byLine.get(t.lineId) ?? [];
+      arr.push(t);
+      byLine.set(t.lineId, arr);
+    }
+    const entries = [...byLine.entries()];
+    entries.sort(([a], [b]) => {
+      if (a === INBOX_LINE_ID) return -1;
+      if (b === INBOX_LINE_ID) return 1;
+      const nameA = linesMap[a]?.name ?? a;
+      const nameB = linesMap[b]?.name ?? b;
+      return nameA.localeCompare(nameB);
+    });
+    return entries.map(([lineId, items]) => ({
+      key: lineId,
+      label: linesMap[lineId]?.name ?? '未知项目',
+      items,
+    }));
+  }, [filtered, groupBy, linesMap]);
 
   return (
     <aside
@@ -142,7 +192,7 @@ export function BacklogDrawer({ open, onToggle }: Props) {
             </div>
           )}
 
-          <div className="px-4 pb-3">
+          <div className="px-4 pb-2">
             <label className="flex items-center gap-2 rounded-md bg-surface-2 px-2.5 py-1.5">
               <Search
                 className="h-3.5 w-3.5 text-ink-tertiary"
@@ -158,13 +208,20 @@ export function BacklogDrawer({ open, onToggle }: Props) {
             </label>
           </div>
 
+          <div className="flex items-center gap-1.5 px-4 pb-3">
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              分组
+            </span>
+            <GroupBySwitch value={groupBy} onChange={setGroupBy} />
+          </div>
+
           {filtered.length === 0 ? (
             <div className="px-5 py-6 text-sm text-ink-tertiary">
               {query.trim()
                 ? '没有匹配的任务'
                 : '所有任务都已排期或归档 —— 在 Tasks 视图里建几个试试。'}
             </div>
-          ) : (
+          ) : groupBy === 'none' ? (
             <ul className="flex-1 overflow-y-auto px-2">
               {filtered.map((task) => (
                 <li key={task.id} className="px-2 py-1">
@@ -172,10 +229,38 @@ export function BacklogDrawer({ open, onToggle }: Props) {
                     task={task}
                     projectName={linesMap[task.lineId]?.name}
                     projectColor={linesMap[task.lineId]?.color}
+                    onOpen={() => setDetailTaskId(task.id)}
                   />
                 </li>
               ))}
             </ul>
+          ) : (
+            <div className="flex-1 overflow-y-auto px-2">
+              {groups.map((g) => (
+                <section key={g.key} className="pb-2 pt-1">
+                  <div className="flex items-baseline gap-2 px-2 pb-1 pt-1">
+                    <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                      {g.label}
+                    </span>
+                    <span className="font-mono text-2xs tabular-nums text-ink-tertiary/70">
+                      {g.items.length}
+                    </span>
+                  </div>
+                  <ul className="flex flex-col">
+                    {g.items.map((task) => (
+                      <li key={task.id} className="px-2 py-1">
+                        <BacklogCard
+                          task={task}
+                          projectName={linesMap[task.lineId]?.name}
+                          projectColor={linesMap[task.lineId]?.color}
+                          onOpen={() => setDetailTaskId(task.id)}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
           )}
 
           <div className="hairline-t px-4 py-3">
@@ -209,7 +294,61 @@ export function BacklogDrawer({ open, onToggle }: Props) {
           </div>
         </>
       )}
+
+      {/* Portal the detail drawer out to document.body. The aside is
+          `position: sticky top-0` which creates a stacking context;
+          rendering TaskDetailDrawer as a descendant traps its
+          `fixed / z-50` backdrop + panel inside that local layer
+          (invisible/un-clickable). Portal resolves against the
+          document root so the drawer lands where it should. */}
+      {detailTaskId &&
+        tasksMap[detailTaskId] &&
+        createPortal(
+          <TaskDetailDrawer
+            task={tasksMap[detailTaskId]!}
+            line={linesMap[tasksMap[detailTaskId]!.lineId]}
+            onClose={() => setDetailTaskId(null)}
+          />,
+          document.body,
+        )}
     </aside>
+  );
+}
+
+function GroupBySwitch({
+  value,
+  onChange,
+}: {
+  value: BacklogGroupBy;
+  onChange: (v: BacklogGroupBy) => void;
+}) {
+  const opts: Array<{ key: BacklogGroupBy; label: string }> = [
+    { key: 'none', label: 'None' },
+    { key: 'priority', label: 'Priority' },
+    { key: 'project', label: 'Project' },
+  ];
+  return (
+    <div className="inline-flex items-stretch overflow-hidden rounded-sm border border-hairline/60">
+      {opts.map((o, i) => {
+        const active = o.key === value;
+        return (
+          <button
+            key={o.key}
+            type="button"
+            onClick={() => onChange(o.key)}
+            className={clsx(
+              'px-2 py-0.5 font-mono text-2xs tabular-nums transition',
+              i > 0 && 'border-l border-hairline/60',
+              active
+                ? 'bg-surface-2 text-ink-primary'
+                : 'text-ink-tertiary hover:bg-surface-2/70 hover:text-ink-primary',
+            )}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -341,27 +480,45 @@ function BacklogCard({
   task,
   projectName,
   projectColor,
+  onOpen,
 }: {
   task: Task;
   projectName: string | undefined;
   projectColor: string | undefined;
+  onOpen?: () => void;
 }) {
   const accent = projectColor
     ? RAIL_COLOR_HEX[projectColor as keyof typeof RAIL_COLOR_HEX]
     : undefined;
   const isDeferred = task.status === 'deferred';
+  // HTML5 drag suppresses the click that follows a drag gesture, so a
+  // plain onClick works correctly for "tap opens detail, drag to a
+  // Cycle cell to schedule" without extra disambiguation logic.
   return (
     <div
+      role={onOpen ? 'button' : undefined}
+      tabIndex={onOpen ? 0 : undefined}
       draggable
       onDragStart={(e) => {
         e.dataTransfer.setData(TASK_DRAG_MIME, task.id);
         e.dataTransfer.setData('text/plain', task.title);
         e.dataTransfer.effectAllowed = 'move';
       }}
+      onClick={onOpen}
+      onKeyDown={
+        onOpen
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onOpen();
+              }
+            }
+          : undefined
+      }
       title={
         isDeferred
-          ? '之前标记为「以后再说」· 拖到格子即重新排期'
-          : '拖到格子即排期'
+          ? '之前标记为「以后再说」· 拖到格子即重新排期,点开查看详情'
+          : '拖到格子即排期,点开查看详情'
       }
       className="group flex cursor-grab items-start gap-2 rounded-md bg-surface-1 px-2 py-2 transition hover:bg-surface-2 active:cursor-grabbing"
     >
@@ -386,6 +543,18 @@ function BacklogCard({
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
+          {task.priority && (
+            <span
+              className={clsx(
+                'inline-flex h-3.5 min-w-[1.25rem] items-center justify-center rounded-sm px-1 font-mono text-[9px] font-medium uppercase tracking-wider text-white',
+                task.priority === 'P0' && 'bg-red-500/90',
+                task.priority === 'P1' && 'bg-amber-500/90',
+                task.priority === 'P2' && 'bg-slate-400/80',
+              )}
+            >
+              {task.priority}
+            </span>
+          )}
           {projectName && (
             <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
               {projectName}

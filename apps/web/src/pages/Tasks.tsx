@@ -32,6 +32,7 @@ import {
   type Line,
   type Shift,
   type Task,
+  type TaskPriority,
 } from '@dayrail/core';
 import type { RailColor } from '@/data/sample';
 import { RAIL_COLOR_HEX } from '@/components/railColors';
@@ -1407,6 +1408,8 @@ export function TaskDetailDrawer({
             </label>
           )}
 
+          <PrioritySection task={task} />
+
           <SubItemsSection task={task} />
 
           <div className="flex flex-col gap-1 pt-2">
@@ -1441,6 +1444,52 @@ export function TaskDetailDrawer({
         </footer>
       </aside>
     </>
+  );
+}
+
+// §5.5 lightweight priority hint. Writes `priority: undefined` on
+// "None" so the field is cleared rather than carried as a string.
+function PrioritySection({ task }: { task: Task }) {
+  const updateTask = useStore((s) => s.updateTask);
+  const current = task.priority ?? null;
+  const opts: Array<{ key: TaskPriority | null; label: string; tone: string }> = [
+    { key: null, label: 'None', tone: 'bg-surface-2 text-ink-secondary' },
+    { key: 'P0', label: 'P0', tone: 'bg-red-500/90 text-white' },
+    { key: 'P1', label: 'P1', tone: 'bg-amber-500/90 text-white' },
+    { key: 'P2', label: 'P2', tone: 'bg-slate-400/80 text-white' },
+  ];
+  const commit = (next: TaskPriority | null) => {
+    if (next === current) return;
+    void updateTask(task.id, { priority: next ?? undefined });
+  };
+  return (
+    <div className="flex items-center gap-3 text-xs text-ink-secondary">
+      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+        优先级
+      </span>
+      <div className="inline-flex items-stretch overflow-hidden rounded-md border border-hairline/60">
+        {opts.map((o, i) => {
+          const active = o.key === current;
+          return (
+            <button
+              key={o.label}
+              type="button"
+              onClick={() => commit(o.key)}
+              className={clsx(
+                'px-2.5 py-1 font-mono text-2xs tabular-nums transition',
+                i > 0 && 'border-l border-hairline/60',
+                active
+                  ? o.tone
+                  : 'text-ink-tertiary hover:bg-surface-2/70 hover:text-ink-primary',
+              )}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+      <span className="ml-auto text-2xs text-ink-tertiary">仅排序/筛选</span>
+    </div>
   );
 }
 

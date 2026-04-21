@@ -158,7 +158,7 @@ export function Review() {
   };
 
   return (
-    <div className="flex w-full flex-col pl-10 pr-8 xl:pl-14">
+    <div className="flex w-full flex-col px-10 xl:px-14">
       <TopBar scope={scope} onScopeChange={setScope} />
 
       <PeriodPager
@@ -261,7 +261,7 @@ function HabitFilterRow({
   onChange: (next: string | undefined) => void;
 }) {
   return (
-    <div className="hairline-b flex flex-wrap items-center gap-2 -mx-10 px-10 pb-3">
+    <div className="hairline-b flex flex-wrap items-center gap-2 -mx-10 px-10 pb-3 xl:-mx-14 xl:px-14">
       <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
         Habit 节奏
       </span>
@@ -310,7 +310,7 @@ function TopBar({
   // separate it from the Day/Cycle/Month segmented so the three scopes
   // don't appear to be a 4-option row with "Review" as sibling.
   return (
-    <header className="sticky top-0 z-40 -mx-10 flex h-[52px] items-center justify-between gap-4 bg-surface-0 px-10">
+    <header className="sticky top-0 z-40 -mx-10 flex h-[52px] items-center justify-between gap-4 bg-surface-0 px-10 xl:-mx-14 xl:px-14">
       <div className="flex items-center gap-4">
         <span className="font-mono text-sm font-medium tracking-wide text-ink-primary">
           Review
@@ -369,7 +369,7 @@ function PeriodPager({
   onToday: () => void;
 }) {
   return (
-    <div className="hairline-b sticky top-[52px] z-20 -mx-10 flex h-9 items-center gap-3 bg-surface-0 px-10">
+    <div className="hairline-b sticky top-[52px] z-20 -mx-10 flex h-9 items-center gap-3 bg-surface-0 px-10 xl:-mx-14 xl:px-14">
       <button
         type="button"
         aria-label="Previous period"
