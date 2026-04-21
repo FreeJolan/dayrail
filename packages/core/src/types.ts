@@ -255,6 +255,8 @@ export interface CalendarRule {
 
 /** A unit of work within a Line. ERD pre-v0.2.1 called this "Chunk";
  *  renamed to "Task" to match universal TODO-tool vocabulary. */
+export type TaskPriority = 'P0' | 'P1' | 'P2';
+
 export interface Task {
   id: string;
   /** Owning Line. Tasks without an explicit Project default to `INBOX_LINE_ID`. */
@@ -262,6 +264,10 @@ export interface Task {
   title: string;
   note?: string;
   order: number;
+  /** §5.5 lightweight priority hint. Unset = no priority. Does NOT
+   *  drive scheduling, check-in weighting, or notifications — only
+   *  sort/group/filter in list surfaces. */
+  priority?: TaskPriority;
   /** `deferred` = "do this later" (from v0.4 §5.6 check-in "Later").
    *  Semi-terminal; lands in §5.7 Pending queue for re-decision.
    *  `archived` = user parked it (restorable).

@@ -194,13 +194,25 @@ export function CycleView() {
 
   const handleDropTask = useCallback(
     (taskId: string, date: string, railId: string) => {
+      // No-op if the task was dragged back onto its own (date, rail) —
+      // scheduleTaskToRail would still write a redundant task.scheduled
+      // event otherwise, which pads the Edit-Session change count for
+      // no user-visible effect.
+      const existing = tasks[taskId]?.slot;
+      if (
+        existing &&
+        existing.date === date &&
+        existing.railId === railId
+      ) {
+        return;
+      }
       void scheduleTaskToRail(
         taskId,
         { cycleId: `cycle-${date}`, date, railId },
         sessionId ?? undefined,
       );
     },
-    [scheduleTaskToRail, sessionId],
+    [scheduleTaskToRail, sessionId, tasks],
   );
 
   const handleClearSlot = useCallback(
@@ -228,6 +240,77 @@ export function CycleView() {
       });
     },
     [tasks, rails, fire, sessionId],
+  );
+
+  const handleSetTaskPriority = useCallback(
+    (taskId: string, priority: import('@dayrail/core').TaskPriority | null) => {
+      // `priority: undefined` in a Partial<Task> patch means "clear it".
+      // Upstream reducer spreads the patch into the task verbatim.
+      void updateTask(
+        taskId,
+        { priority: priority ?? undefined },
+        sessionId ?? undefined,
+      );
+    },
+    [updateTask, sessionId],
+  );
+
+  const handleUndoTaskDone = useCallback(
+    (taskId: string) => {
+      // Going through updateTask (not a dedicated event) so the flip
+      // is tagged with the Cycle-View edit session — users can still
+      // wrap a misclick into the session undo. `doneAt: undefined`
+      // clears the completion stamp; status → pending is the only
+      // sane landing for "nope, not done".
+      void updateTask(
+        taskId,
+        { status: 'pending', doneAt: undefined },
+        sessionId ?? undefined,
+      );
+    },
+    [updateTask, sessionId],
+  );
+
+  const handleArchiveTask = useCallback(
+    (taskId: string) => {
+      // Same reasoning as handleUndoTaskDone — updateTask keeps the
+      // mutation inside the session rather than the store's dedicated
+      // `archiveTask` action (which writes a `task.archived` event
+      // without sessionId).
+      void updateTask(
+        taskId,
+        { status: 'archived', archivedAt: new Date().toISOString() },
+        sessionId ?? undefined,
+      );
+    },
+    [updateTask, sessionId],
+  );
+
+  const handleUnarchiveTask = useCallback(
+    (taskId: string) => {
+      // Restores an archived task back to pending. Clears archivedAt
+      // so the task re-enters the normal flow (Backlog / Cycle pill).
+      // Session-tagged for symmetry with archive.
+      void updateTask(
+        taskId,
+        { status: 'pending', archivedAt: undefined },
+        sessionId ?? undefined,
+      );
+    },
+    [updateTask, sessionId],
+  );
+
+  const handleToggleSubItem = useCallback(
+    (taskId: string, subItemId: string) => {
+      const task = tasks[taskId];
+      const items = task?.subItems;
+      if (!items || items.length === 0) return;
+      const next = items.map((it) =>
+        it.id === subItemId ? { ...it, done: !it.done } : it,
+      );
+      void updateTask(taskId, { subItems: next }, sessionId ?? undefined);
+    },
+    [tasks, updateTask, sessionId],
   );
 
   const handleOpenTaskProject = useCallback(
@@ -299,7 +382,7 @@ export function CycleView() {
   }, [sessionId, undoEditSessionAction, openEditSession]);
 
   return (
-    <div className="flex min-h-screen w-full flex-col pl-10 pr-6 xl:pl-14">
+    <div className="flex min-h-screen w-full flex-col px-10 xl:px-14">
       <TopBar
           anchorDate={anchorDate}
           onPrev={() => shiftWeek(-7)}
@@ -339,8 +422,13 @@ export function CycleView() {
                 onDropTask={handleDropTask}
                 onClearSlot={handleClearSlot}
                 onMarkTaskDone={handleMarkTaskDone}
+                onUndoTaskDone={handleUndoTaskDone}
+                onArchiveTask={handleArchiveTask}
+                onUnarchiveTask={handleUnarchiveTask}
                 onOpenTaskDetail={(taskId) => setDetailTaskId(taskId)}
                 onOpenTaskProject={handleOpenTaskProject}
+                onSetTaskPriority={handleSetTaskPriority}
+                onToggleSubItem={handleToggleSubItem}
                 onQuickCreate={handleQuickCreate}
                 lineLookup={lineLookup}
               />
@@ -405,7 +493,7 @@ function TopBar({
   const anchorIso = toIsoDate(monday);
   const storedForAnchor = cycles[`cycle-${anchorIso}`];
   return (
-    <header className="sticky top-0 z-40 -mx-10 flex h-[52px] items-center justify-between gap-4 bg-surface-0 px-10">
+    <header className="sticky top-0 z-40 -mx-10 flex h-[52px] items-center justify-between gap-4 bg-surface-0 px-10 xl:-mx-14 xl:px-14">
       <div className="flex items-center gap-2">
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
           Cycle

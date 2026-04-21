@@ -231,6 +231,7 @@ export const tasks = sqliteTable(
     order: integer('order').notNull().default(0),
     status: text('status').notNull().default('pending'),
     milestonePercent: integer('milestone_percent'), // null = not a milestone
+    priority: text('priority'), // 'P0' | 'P1' | 'P2' | null — §5.5 lightweight hint
     subItems: text('sub_items'), // JSON array or null
     slotCycleId: text('slot_cycle_id'),
     slotDate: text('slot_date'),
@@ -418,6 +419,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   "order" INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'pending',
   milestone_percent INTEGER,
+  priority TEXT,
   sub_items TEXT,
   slot_cycle_id TEXT,
   slot_date TEXT,

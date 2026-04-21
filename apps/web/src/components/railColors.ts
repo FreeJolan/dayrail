@@ -6,11 +6,11 @@ import type { RailColor } from '@/data/sample';
 // `<html>`. Inline `style={{ background: RAIL_COLOR_HEX[color] }}`
 // therefore tracks the active theme without component-side changes.
 
-function railVar(name: RailColor, step: 4 | 6 | 7 | 9): string {
+function railVar(name: RailColor, step: 3 | 4 | 6 | 7 | 9): string {
   return `var(--rail-${name}-${step})`;
 }
 
-function buildStepMap(step: 4 | 6 | 7 | 9): Record<RailColor, string> {
+function buildStepMap(step: 3 | 4 | 6 | 7 | 9): Record<RailColor, string> {
   const names: RailColor[] = [
     'sand',
     'sage',
@@ -40,6 +40,7 @@ function buildStepMap(step: 4 | 6 | 7 | 9): Record<RailColor, string> {
 export const CTA_HEX = 'rgb(var(--cta))';
 
 export const RAIL_COLOR_HEX: Record<RailColor, string> = buildStepMap(9);
+export const RAIL_COLOR_STEP_3: Record<RailColor, string> = buildStepMap(3);
 export const RAIL_COLOR_STEP_4: Record<RailColor, string> = buildStepMap(4);
 export const RAIL_COLOR_STEP_6: Record<RailColor, string> = buildStepMap(6);
 export const RAIL_COLOR_STEP_7: Record<RailColor, string> = buildStepMap(7);

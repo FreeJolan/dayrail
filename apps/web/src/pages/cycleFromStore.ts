@@ -134,17 +134,24 @@ export function deriveCycleFromStore(
     else if (task.status === 'deferred') state = 'deferred';
     else if (task.status === 'archived') state = 'archived';
     else state = 'pending';
+    const trimmedNote = task.note?.trim() ?? '';
     const summary: SlotTaskSummary = {
       taskId: task.id,
       title: task.title,
       state,
       isAutoTask: task.source === 'auto-habit',
-      hasNote: Boolean(task.note && task.note.trim().length > 0),
+      hasNote: trimmedNote.length > 0,
+      ...(trimmedNote.length > 0 && {
+        noteSnippet:
+          trimmedNote.length > 120 ? `${trimmedNote.slice(0, 120)}…` : trimmedNote,
+      }),
       subItemsDone: subItems.filter((s) => s.done).length,
       subItemsTotal: subItems.length,
+      ...(subItems.length > 0 && { subItems }),
       ...(task.milestonePercent != null && {
         milestonePercent: task.milestonePercent,
       }),
+      ...(task.priority != null && { priority: task.priority }),
     };
     const existing = slotsByKey.get(key);
     if (existing) {
@@ -153,17 +160,29 @@ export function deriveCycleFromStore(
       slotsByKey.set(key, { railId, date, tasks: [summary] });
     }
   }
-  // Sort each slot's tasks: pending first (top priority to act on),
-  // then in-progress-ish, then done, then deferred, then archived.
-  // Within a state group, keep insertion order (iteration-stable).
+  // Sort each slot's tasks by (state rank → priority rank → stable
+  // insertion). State rank keeps pending items at the top where the
+  // user will act on them; priority rank (P0 → P1 → P2 → unset)
+  // surfaces the item the user flagged as most important first within
+  // each state bucket (ERD §5.5 "lightweight hint" clause).
   const STATE_RANK: Record<SlotTaskState, number> = {
     pending: 0,
     done: 1,
     deferred: 2,
     archived: 3,
   };
+  const priorityRank = (p: SlotTaskSummary['priority']): number => {
+    if (p === 'P0') return 0;
+    if (p === 'P1') return 1;
+    if (p === 'P2') return 2;
+    return 3;
+  };
   for (const slot of slotsByKey.values()) {
-    slot.tasks.sort((a, b) => STATE_RANK[a.state] - STATE_RANK[b.state]);
+    slot.tasks.sort((a, b) => {
+      const byState = STATE_RANK[a.state] - STATE_RANK[b.state];
+      if (byState !== 0) return byState;
+      return priorityRank(a.priority) - priorityRank(b.priority);
+    });
   }
 
   const slots: CycleSlot[] = [...slotsByKey.values()];
@@ -272,6 +291,12 @@ export function selectBacklogTasks(
   for (const a of Object.values(state.adhocEvents)) {
     if (a.status === 'active' && a.taskId) adhocTaskIds.add(a.taskId);
   }
+  const priorityRank = (p: Task['priority']): number => {
+    if (p === 'P0') return 0;
+    if (p === 'P1') return 1;
+    if (p === 'P2') return 2;
+    return 3;
+  };
   return Object.values(state.tasks)
     .filter((t) => {
       if (t.status === 'deferred') return true;
@@ -279,11 +304,13 @@ export function selectBacklogTasks(
       return !t.slot && !adhocTaskIds.has(t.id);
     })
     .sort((a, b) => {
-      // Deferred first (they're waiting longer for a decision), then
-      // the rest by user-set order.
-      const aPri = a.status === 'deferred' ? 0 : 1;
-      const bPri = b.status === 'deferred' ? 0 : 1;
-      if (aPri !== bPri) return aPri - bPri;
+      // Deferred first (they've been waiting longer for a decision),
+      // then priority rank (P0 → unset), then user-set order.
+      const aDef = a.status === 'deferred' ? 0 : 1;
+      const bDef = b.status === 'deferred' ? 0 : 1;
+      if (aDef !== bDef) return aDef - bDef;
+      const pr = priorityRank(a.priority) - priorityRank(b.priority);
+      if (pr !== 0) return pr;
       return a.order - b.order;
     });
 }

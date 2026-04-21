@@ -55,7 +55,7 @@ function Shell() {
   useGlobalShortcuts(cheatsheet.show, backlog.toggle);
   return (
     <div className="flex min-h-screen w-full bg-surface-0">
-      <SideNav onToggleBacklog={backlog.toggle} backlogOpen={backlog.open} />
+      <SideNav />
       <main className="min-w-0 flex-1">
         <Routes>
           <Route path="/" element={<TodayTrack />} />
