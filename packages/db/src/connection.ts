@@ -16,6 +16,7 @@
 // set up vite/client types of their own when they follow the import.
 /// <reference path="./vite-env.d.ts" />
 import SqliteWorker from './sqlite.worker.ts?worker';
+import { runMigrations } from './migrate';
 
 export interface Database {
   exec(opts: {
@@ -47,6 +48,13 @@ let worker: Worker | null = null;
 let nextId = 1;
 const pending = new Map<number, Pending>();
 let dbInstance: Database | null = null;
+// Single in-flight migration promise. Every caller of getDb() awaits
+// this, so the schema is guaranteed ready before the first query runs
+// — protects callers that touch tables pre-hydrate (e.g. the Import
+// flow in apps/web/src/boot.ts writes a snapshot before hydrate is
+// reached, which was landing INSERTs against a not-yet-created
+// `snapshots` table).
+let migrationsPromise: Promise<void> | null = null;
 
 function send<T>(
   w: Worker,
@@ -96,9 +104,15 @@ function ensureWorker(): Worker {
 }
 
 export async function getDb(): Promise<Database> {
-  if (dbInstance) return dbInstance;
+  if (dbInstance) {
+    // Cached handle — still wait for migrations so the first caller
+    // that triggers getDb() can't race ahead of the schema setup if
+    // a second caller arrives before the promise resolves.
+    if (migrationsPromise) await migrationsPromise;
+    return dbInstance;
+  }
   const w = ensureWorker();
-  dbInstance = {
+  const instance: Database = {
     async exec({ sql, bind }) {
       await send<void>(w, 'exec', { sql, bind });
     },
@@ -117,9 +131,17 @@ export async function getDb(): Promise<Database> {
       w.terminate();
       worker = null;
       dbInstance = null;
+      migrationsPromise = null;
     },
   };
-  return dbInstance;
+  dbInstance = instance;
+  // Run schema DDL exactly once per session so every getDb() caller
+  // sees a migrated DB. The store still calls runMigrations() from
+  // hydrate as belt-and-suspenders — idempotent thanks to the
+  // IF-(NOT)-EXISTS guards.
+  migrationsPromise = runMigrations(instance);
+  await migrationsPromise;
+  return instance;
 }
 
 export async function resetDb(): Promise<void> {
@@ -142,6 +164,7 @@ export async function resetDb(): Promise<void> {
     }
     worker = null;
     dbInstance = null;
+    migrationsPromise = null;
   }
   // Reject anything left dangling so callers get a clean error instead
   // of a hung promise.
