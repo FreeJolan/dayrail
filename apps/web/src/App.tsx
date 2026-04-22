@@ -9,9 +9,11 @@ import { Pending } from './pages/Pending';
 import { Settings } from './pages/Settings';
 import { Calendar } from './pages/Calendar';
 import { BacklogDrawer } from './components/BacklogDrawer';
+import { ReasonToast } from './components/ReasonToast';
 import { SideNav } from './components/SideNav';
 import { ShortcutCheatsheet } from './components/ShortcutCheatsheet';
 import { UpdateBanner } from './components/UpdateBanner';
+import { useReschedulePrompt } from './components/useReschedulePrompt';
 import { TooltipProvider } from './components/primitives/Tooltip';
 import {
   useCheatsheetToggle,
@@ -57,6 +59,11 @@ function Shell() {
   const cheatsheet = useCheatsheetToggle();
   const backlog = useBacklogDrawerState();
   useGlobalShortcuts(cheatsheet.show, backlog.toggle);
+  // Global reschedule Reason toast (§5.5.6). Mounted at the shell
+  // level so every schedule surface (CycleCell drag, SchedulePopover,
+  // TaskDetailDrawer, BacklogDrawer, Tasks-page reschedules) gets the
+  // toast without each having to mount its own.
+  const reschedulePrompt = useReschedulePrompt();
   return (
     <div className="flex min-h-screen w-full bg-surface-0">
       <UpdateBanner />
@@ -84,6 +91,12 @@ function Shell() {
       </main>
       <BacklogDrawer open={backlog.open} onToggle={backlog.toggle} />
       <ShortcutCheatsheet open={cheatsheet.open} onClose={cheatsheet.hide} />
+      <ReasonToast
+        state={reschedulePrompt.toast}
+        onAddTag={reschedulePrompt.onAddTag}
+        onUndo={reschedulePrompt.onUndo}
+        onClose={reschedulePrompt.onClose}
+      />
     </div>
   );
 }
