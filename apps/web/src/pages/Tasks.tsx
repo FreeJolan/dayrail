@@ -43,6 +43,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/primitives/DropdownMenu';
+import { MarkdownField } from '@/components/MarkdownField';
 import { SchedulePopover } from '@/components/SchedulePopover';
 import { HabitDetail } from './HabitDetail';
 import { ReasonToast } from '@/components/ReasonToast';
@@ -688,14 +689,23 @@ function MainPanel({
   const canEditLine =
     editableLine != null && !editableLine.isDefault;
 
-  const handleRenameLine = useCallback(() => {
+  // Inline rename is owned by PageHeader; the parent only needs a
+  // commit path. The `⋯` menu's Rename item trips a request counter
+  // that PageHeader watches to flip into edit mode.
+  const [renameRequestCount, setRenameRequestCount] = useState(0);
+  const handleRequestRename = useCallback(() => {
     if (!editableLine) return;
-    const raw = window.prompt('重命名 · 输入新名称', editableLine.name);
-    if (raw == null) return;
-    const name = raw.trim();
-    if (!name || name === editableLine.name) return;
-    void updateLine(editableLine.id, { name });
-  }, [editableLine, updateLine]);
+    setRenameRequestCount((n) => n + 1);
+  }, [editableLine]);
+  const handleCommitLineName = useCallback(
+    (next: string) => {
+      if (!editableLine) return;
+      const trimmed = next.trim();
+      if (!trimmed || trimmed === editableLine.name) return;
+      void updateLine(editableLine.id, { name: trimmed });
+    },
+    [editableLine, updateLine],
+  );
 
   const handleArchiveLine = useCallback(() => {
     if (!editableLine) return;
@@ -724,7 +734,9 @@ function MainPanel({
         title={title}
         selection={selection}
         hideTaskCount={isHabitView}
-        {...(canEditLine && { onRenameLine: handleRenameLine })}
+        {...(canEditLine && { onRequestRename: handleRequestRename })}
+        {...(canEditLine && { onCommitLineName: handleCommitLineName })}
+        renameRequestCount={renameRequestCount}
         {...(canEditLine &&
           !isHabitView && { onArchiveLine: handleArchiveLine })}
         {...(canEditLine && { onChangeLineColor: handleChangeLineColor })}
@@ -748,6 +760,18 @@ function MainPanel({
           <HabitPhasePanel lineId={selectedHabit.id} />
           <HabitDetail habit={selectedHabit} />
         </>
+      )}
+
+      {!isHabitView && selectedLine && !selectedLine.isDefault && (
+        <MarkdownField
+          value={selectedLine.note}
+          onCommit={(next) =>
+            void updateLine(selectedLine.id, { note: next })
+          }
+          placeholder="+ 添加描述 · Markdown"
+          dialogTitle={`${selectedLine.name} · 描述`}
+          ariaLabel="Project 描述"
+        />
       )}
 
       {!isHabitView && canCreate && (
@@ -866,7 +890,9 @@ function PageHeader({
   title,
   selection,
   rightSlot,
-  onRenameLine,
+  onRequestRename,
+  onCommitLineName,
+  renameRequestCount,
   onArchiveLine,
   onChangeLineColor,
   lineColor,
@@ -876,7 +902,16 @@ function PageHeader({
   title: string;
   selection: Selection;
   rightSlot?: React.ReactNode;
-  onRenameLine?: () => void;
+  /** The `⋯` menu's Rename item calls this; PageHeader flips to inline
+   *  edit mode via the request counter. */
+  onRequestRename?: () => void;
+  /** Commit path for inline rename / `⋯` menu rename. Trimmed
+   *  non-empty values only; parent short-circuits if unchanged. */
+  onCommitLineName?: (next: string) => void;
+  /** Ticked by the parent when the `⋯` menu's Rename is pressed.
+   *  PageHeader watches this counter to enter edit mode — decouples
+   *  parent from the header's internal state. */
+  renameRequestCount?: number;
   onArchiveLine?: () => void;
   onChangeLineColor?: (next: RailColor) => void;
   lineColor?: RailColor;
@@ -885,6 +920,33 @@ function PageHeader({
   hideTaskCount?: boolean;
 }) {
   const tasksMap = useStore((s) => s.tasks);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [draftName, setDraftName] = useState(title);
+  // React to external rename requests (from the ⋯ menu item).
+  useEffect(() => {
+    if (renameRequestCount == null || renameRequestCount === 0) return;
+    setDraftName(title);
+    setIsRenaming(true);
+  }, [renameRequestCount, title]);
+  // Keep draft fresh when the selection changes underneath us.
+  useEffect(() => {
+    if (!isRenaming) setDraftName(title);
+  }, [title, isRenaming]);
+
+  const canRename = !!onCommitLineName;
+  const commitName = useCallback(() => {
+    const trimmed = draftName.trim();
+    setIsRenaming(false);
+    if (!trimmed || trimmed === title) {
+      setDraftName(title);
+      return;
+    }
+    onCommitLineName?.(trimmed);
+  }, [draftName, onCommitLineName, title]);
+  const cancelRename = useCallback(() => {
+    setDraftName(title);
+    setIsRenaming(false);
+  }, [title]);
 
   // Project-selection only: show `N / total 任务` + conditional milestone
   // progress bar (only when at least one task in this Project has a
@@ -918,13 +980,53 @@ function PageHeader({
   return (
     <header className="flex flex-col gap-3">
       <div className="flex items-baseline justify-between gap-4">
-        <div>
+        <div className="min-w-0">
           <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
             {overline}
           </span>
-          <h2 className="mt-1 text-2xl font-medium text-ink-primary">
-            {title}
-          </h2>
+          {isRenaming && canRename ? (
+            <input
+              type="text"
+              value={draftName}
+              autoFocus
+              onFocus={(e) => e.currentTarget.select()}
+              onChange={(e) => setDraftName(e.target.value)}
+              onBlur={commitName}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  commitName();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  cancelRename();
+                }
+              }}
+              aria-label="重命名"
+              className="mt-1 w-full rounded-sm bg-transparent text-2xl font-medium text-ink-primary outline-none ring-2 ring-cta/40 ring-offset-2 ring-offset-surface-0"
+            />
+          ) : (
+            <div
+              className="group relative mt-1 inline-flex max-w-full items-center gap-2"
+              onDoubleClick={
+                canRename ? () => setIsRenaming(true) : undefined
+              }
+            >
+              <h2 className="truncate text-2xl font-medium text-ink-primary">
+                {title}
+              </h2>
+              {canRename && (
+                <button
+                  type="button"
+                  onClick={() => setIsRenaming(true)}
+                  aria-label="重命名"
+                  title="重命名 · 双击标题也行"
+                  className="shrink-0 rounded-sm p-1 text-ink-tertiary opacity-0 transition hover:bg-surface-2 hover:text-ink-primary group-hover:opacity-100 focus-visible:opacity-100"
+                >
+                  <Pencil className="h-3.5 w-3.5" strokeWidth={1.8} />
+                </button>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-4">
           {!hideTaskCount && stats && stats.total > 0 && (
@@ -933,10 +1035,10 @@ function PageHeader({
               <span className="text-ink-tertiary">/{stats.total}</span> 任务
             </span>
           )}
-          {(onRenameLine || onArchiveLine || onChangeLineColor) && (
+          {(onRequestRename || onArchiveLine || onChangeLineColor) && (
             <LineActionsMenu
               currentColor={lineColor}
-              onRename={onRenameLine}
+              onRename={onRequestRename}
               onArchive={onArchiveLine}
               onChangeColor={onChangeLineColor}
             />
@@ -1223,20 +1325,19 @@ export function TaskDetailDrawer({
   );
 
   const [title, setTitle] = useState(task.title);
-  const [note, setNote] = useState(task.note ?? '');
   const [milestone, setMilestone] = useState<string>(
     task.milestonePercent != null ? String(task.milestonePercent) : '',
   );
 
   // Sync editor state when a different task is opened from the list
-  // without unmounting the drawer (fast successive clicks).
+  // without unmounting the drawer (fast successive clicks). MarkdownField
+  // owns the note buffer internally and re-syncs when `value` changes.
   useEffect(() => {
     setTitle(task.title);
-    setNote(task.note ?? '');
     setMilestone(
       task.milestonePercent != null ? String(task.milestonePercent) : '',
     );
-  }, [task.id, task.title, task.note, task.milestonePercent]);
+  }, [task.id, task.title, task.milestonePercent]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1255,15 +1356,14 @@ export function TaskDetailDrawer({
     void updateTask(task.id, { title: trimmed });
   };
 
-  const commitNote = () => {
-    const trimmed = note.trim();
-    const current = task.note ?? '';
-    if (trimmed === current) return;
-    void updateTask(
-      task.id,
-      trimmed ? { note: trimmed } : { note: undefined },
-    );
-  };
+  const commitNote = useCallback(
+    (next: string | undefined) => {
+      const normalized = next && next.trim() ? next.trim() : undefined;
+      if ((task.note ?? undefined) === normalized) return;
+      void updateTask(task.id, { note: normalized });
+    },
+    [task.id, task.note, updateTask],
+  );
 
   const commitMilestone = () => {
     const raw = milestone.trim();
@@ -1372,19 +1472,18 @@ export function TaskDetailDrawer({
             />
           </label>
 
-          <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+          <div className="flex flex-col gap-1 text-xs text-ink-secondary">
             <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
               备注
             </span>
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              onBlur={commitNote}
-              placeholder="任何需要记下的上下文..."
-              rows={6}
-              className="resize-none rounded-md border border-hairline/60 bg-surface-0 px-2.5 py-2 text-sm text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+            <MarkdownField
+              value={task.note}
+              onCommit={commitNote}
+              placeholder="+ 添加备注 · Markdown"
+              dialogTitle={`${task.title || '任务'} · 备注`}
+              ariaLabel="任务备注"
             />
-          </label>
+          </div>
 
           {task.lineId !== INBOX_LINE_ID && !isAutoTask && (
             <label className="flex items-center gap-3 text-xs text-ink-secondary">

@@ -7,6 +7,7 @@ import {
   RAIL_COLOR_STEP_4,
   RAIL_COLOR_STEP_6,
 } from './railColors';
+import { NoteHoverPopover } from './NoteHoverPopover';
 
 // v0.4 per-task-independent layout.
 //
@@ -36,6 +37,10 @@ export interface TimelineTask {
   title: string;
   state: TimelineTaskState;
   hasNote: boolean;
+  /** Full Markdown source — used by the `· 备注` badge's hover popover
+   *  to render the note with structure instead of a plain-text blurb.
+   *  Only populated when `hasNote` is true. */
+  note?: string;
   subItemsDone: number;
   subItemsTotal: number;
   milestonePercent?: number;
@@ -298,11 +303,20 @@ function TaskBadges({ task }: { task: TimelineTask }) {
           子项 {task.subItemsDone}/{task.subItemsTotal}
         </span>
       )}
-      {task.hasNote && (
+      {task.hasNote && task.note ? (
+        <NoteHoverPopover note={task.note} side="top" align="start">
+          <span
+            tabIndex={0}
+            className="cursor-help rounded-sm font-mono text-2xs uppercase tracking-widest transition hover:text-ink-primary focus:outline-none focus-visible:text-ink-primary"
+          >
+            · 备注
+          </span>
+        </NoteHoverPopover>
+      ) : task.hasNote ? (
         <span className="font-mono text-2xs uppercase tracking-widest">
           · 备注
         </span>
-      )}
+      ) : null}
       {task.milestonePercent != null && (
         <span className="font-mono text-2xs tabular-nums">
           · {task.milestonePercent}%
