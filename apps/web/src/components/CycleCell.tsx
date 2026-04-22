@@ -22,6 +22,7 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from './primitives/Tooltip';
+import { NoteHoverPopover } from './NoteHoverPopover';
 import {
   RAIL_COLOR_HEX,
   RAIL_COLOR_STEP_3,
@@ -167,20 +168,42 @@ function TaskPill(props: PillProps) {
   } = props;
   return (
     <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-      <TooltipRoot>
-        <PopoverTrigger asChild>
-          <TooltipTrigger asChild>
+      {task.hasNote && task.note ? (
+        <NoteHoverPopover
+          note={task.note}
+          side="right"
+          align="start"
+          header={<PillMetaChips task={task} line={line} invert={false} />}
+          footer={
+            (task.subItems?.length ?? 0) > 0 ? (
+              <PillSubItemsList task={task} invert={false} />
+            ) : undefined
+          }
+        >
+          <PopoverTrigger asChild>
             <PillBody
               task={task}
               color={color}
               {...(onClear && { onClear })}
             />
-          </TooltipTrigger>
-        </PopoverTrigger>
-        <TooltipContent side="right" className="max-w-none p-2">
-          <PillTooltipBody task={task} line={line} />
-        </TooltipContent>
-      </TooltipRoot>
+          </PopoverTrigger>
+        </NoteHoverPopover>
+      ) : (
+        <TooltipRoot>
+          <PopoverTrigger asChild>
+            <TooltipTrigger asChild>
+              <PillBody
+                task={task}
+                color={color}
+                {...(onClear && { onClear })}
+              />
+            </TooltipTrigger>
+          </PopoverTrigger>
+          <TooltipContent side="right" className="max-w-none p-2">
+            <PillTooltipBody task={task} line={line} />
+          </TooltipContent>
+        </TooltipRoot>
+      )}
       <PopoverContent
         side="right"
         align="start"
@@ -685,58 +708,95 @@ function PillTooltipBody({
       <span className="line-clamp-3 text-2xs font-medium leading-snug text-surface-0">
         {task.title || '未命名任务'}
       </span>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] text-surface-0/70">
-        {task.priority && <span>{task.priority}</span>}
-        {line && <span>· {line.name}</span>}
-        {task.isAutoTask && <span>· habit</span>}
-        {task.subItemsTotal > 0 && (
-          <span>
-            · {task.subItemsDone}/{task.subItemsTotal}
-          </span>
-        )}
-        {task.milestonePercent != null && <span>· {task.milestonePercent}%</span>}
-      </div>
+      <PillMetaChips task={task} line={line} invert />
       {task.noteSnippet && (
         <span className="text-[10px] leading-snug text-surface-0/80">
           {task.noteSnippet}
         </span>
       )}
-      {visible.length > 0 && (
-        <ul className="flex flex-col gap-0.5 border-t border-surface-0/15 pt-1">
-          {visible.map((it) => (
-            <li
-              key={it.id}
-              className="flex items-start gap-1 text-[10px] leading-snug"
-            >
-              <span
-                aria-hidden
-                className={clsx(
-                  'mt-0.5 shrink-0',
-                  it.done ? 'text-surface-0/90' : 'text-surface-0/40',
-                )}
-              >
-                {it.done ? '✓' : '○'}
-              </span>
-              <span
-                className={clsx(
-                  'line-clamp-2',
-                  it.done
-                    ? 'text-surface-0/60 line-through decoration-surface-0/30'
-                    : 'text-surface-0/90',
-                )}
-              >
-                {it.title}
-              </span>
-            </li>
-          ))}
-          {hidden > 0 && (
-            <li className="pl-3 font-mono text-[9px] text-surface-0/60">
-              … +{hidden} more
-            </li>
-          )}
-        </ul>
+      {visible.length > 0 && <PillSubItemsList task={task} invert />}
+    </div>
+  );
+}
+
+/** Shared meta row. `invert` swaps colors for dark tooltip backgrounds
+ *  (surface-0 text on ink-primary fill) vs the lighter NoteHoverPopover
+ *  (ink-primary / tertiary on surface-1). */
+function PillMetaChips({
+  task,
+  line,
+  invert,
+}: {
+  task: SlotTaskSummary;
+  line?: { name: string; color?: RailColor };
+  invert: boolean;
+}) {
+  return (
+    <div
+      className={clsx(
+        'flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px]',
+        invert ? 'text-surface-0/70' : 'text-ink-tertiary',
+      )}
+    >
+      {task.priority && <span>{task.priority}</span>}
+      {line && <span>· {line.name}</span>}
+      {task.isAutoTask && <span>· habit</span>}
+      {task.subItemsTotal > 0 && (
+        <span>
+          · {task.subItemsDone}/{task.subItemsTotal}
+        </span>
+      )}
+      {task.milestonePercent != null && (
+        <span>· {task.milestonePercent}%</span>
       )}
     </div>
+  );
+}
+
+/** Shared sub-items list (capped at 6 rows, surplus collapsed). */
+function PillSubItemsList({
+  task,
+  invert,
+}: {
+  task: SlotTaskSummary;
+  invert: boolean;
+}) {
+  const SUB_LIMIT = 6;
+  const items = task.subItems ?? [];
+  const visible = items.slice(0, SUB_LIMIT);
+  const hidden = items.length - visible.length;
+  const borderCls = invert ? 'border-surface-0/15' : 'border-hairline/60';
+  const glyphDone = invert ? 'text-surface-0/90' : 'text-ink-primary';
+  const glyphPending = invert ? 'text-surface-0/40' : 'text-ink-tertiary';
+  const titleDone = invert
+    ? 'text-surface-0/60 line-through decoration-surface-0/30'
+    : 'text-ink-tertiary line-through decoration-ink-tertiary/40';
+  const titlePending = invert ? 'text-surface-0/90' : 'text-ink-primary';
+  const moreCls = invert ? 'text-surface-0/60' : 'text-ink-tertiary';
+  return (
+    <ul className={clsx('flex flex-col gap-0.5 border-t pt-1', borderCls)}>
+      {visible.map((it) => (
+        <li
+          key={it.id}
+          className="flex items-start gap-1 text-[10px] leading-snug"
+        >
+          <span
+            aria-hidden
+            className={clsx('mt-0.5 shrink-0', it.done ? glyphDone : glyphPending)}
+          >
+            {it.done ? '✓' : '○'}
+          </span>
+          <span className={clsx('line-clamp-2', it.done ? titleDone : titlePending)}>
+            {it.title}
+          </span>
+        </li>
+      ))}
+      {hidden > 0 && (
+        <li className={clsx('pl-3 font-mono text-[9px]', moreCls)}>
+          … +{hidden} more
+        </li>
+      )}
+    </ul>
   );
 }
 
