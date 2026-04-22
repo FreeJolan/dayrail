@@ -11,11 +11,13 @@ import { Calendar } from './pages/Calendar';
 import { BacklogDrawer } from './components/BacklogDrawer';
 import { SideNav } from './components/SideNav';
 import { ShortcutCheatsheet } from './components/ShortcutCheatsheet';
+import { UpdateBanner } from './components/UpdateBanner';
 import { TooltipProvider } from './components/primitives/Tooltip';
 import {
   useCheatsheetToggle,
   useGlobalShortcuts,
 } from './lib/keyboardShortcuts';
+import { VersionUpdateProvider } from './lib/swRegistration';
 
 // ERD §5.0 App Shell · v0.2 routing (react-router-dom v6). URL scheme
 // locked in `docs/v0.2-plan.md §3`:
@@ -40,9 +42,11 @@ import {
 export default function App() {
   return (
     <BrowserRouter>
-      <TooltipProvider delayDuration={200} skipDelayDuration={300}>
-        <Shell />
-      </TooltipProvider>
+      <VersionUpdateProvider>
+        <TooltipProvider delayDuration={200} skipDelayDuration={300}>
+          <Shell />
+        </TooltipProvider>
+      </VersionUpdateProvider>
     </BrowserRouter>
   );
 }
@@ -55,6 +59,7 @@ function Shell() {
   useGlobalShortcuts(cheatsheet.show, backlog.toggle);
   return (
     <div className="flex min-h-screen w-full bg-surface-0">
+      <UpdateBanner />
       <SideNav />
       <main className="min-w-0 flex-1">
         <Routes>

@@ -23,6 +23,7 @@ import {
 import { resetLocalData } from '@/lib/resetLocalData';
 import { exportLocalData } from '@/lib/exportData';
 import { importLocalData } from '@/lib/importData';
+import { useVersionUpdate } from '@/lib/swRegistration';
 import { applyTheme, getThemePref, type ThemePref } from '@/lib/theme';
 
 // ============ Appearance ============
@@ -749,9 +750,11 @@ export function AboutSection() {
           )}
         </div>
 
+        <UpdateCheckRow />
+
         <div className="flex flex-col gap-1">
           <a
-            href="https://github.com/"
+            href="https://github.com/FreeJolan/dayrail"
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1.5 text-sm text-ink-primary underline underline-offset-4 hover:text-ink-secondary"
@@ -760,7 +763,9 @@ export function AboutSection() {
             <ExternalLink className="h-3 w-3" strokeWidth={1.8} />
           </a>
           <a
-            href="#"
+            href="https://github.com/FreeJolan/dayrail/issues"
+            target="_blank"
+            rel="noreferrer"
             className="inline-flex items-center gap-1.5 text-sm text-ink-secondary underline underline-offset-4 hover:text-ink-primary"
           >
             贡献 · 开 issue / 提 PR
@@ -799,4 +804,67 @@ function DayRailMarkLarge() {
       <line x1="3" y1="18" x2="25" y2="18" strokeWidth={1} opacity={0.5} />
     </svg>
   );
+}
+
+// ------------------------------------------------------------------
+// Manual update check row — hosts "检查更新" + last-check-at + an
+// inline "已是最新版本" flash for the no-op branch. The update-
+// available branch is handled by the global UpdateBanner. ERD §13.5.
+// ------------------------------------------------------------------
+
+function UpdateCheckRow() {
+  const { checkNow, lastCheckedAt, status } = useVersionUpdate();
+  const [flash, setFlash] = useState<'up-to-date' | null>(null);
+  const [relative, setRelative] = useState<string>(() =>
+    formatRelativeCheck(lastCheckedAt),
+  );
+  useEffect(() => {
+    setRelative(formatRelativeCheck(lastCheckedAt));
+    // Tick every 30s so the "N 分钟前" label doesn't freeze while the
+    // user is parked on the About page.
+    const id = window.setInterval(() => {
+      setRelative(formatRelativeCheck(lastCheckedAt));
+    }, 30_000);
+    return () => window.clearInterval(id);
+  }, [lastCheckedAt]);
+
+  const handleClick = async () => {
+    setFlash(null);
+    const outcome = await checkNow();
+    if (outcome === 'up-to-date') {
+      setFlash('up-to-date');
+      window.setTimeout(() => setFlash(null), 2500);
+    }
+    // 'needs-update' routes through the global UpdateBanner.
+  };
+
+  const busy = status === 'checking';
+  return (
+    <div className="flex w-full items-center gap-3">
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={busy}
+        className="inline-flex items-center gap-1.5 rounded-md border border-hairline/60 bg-surface-0 px-3 py-1.5 text-xs text-ink-primary transition hover:border-ink-tertiary hover:bg-surface-1 disabled:opacity-60"
+      >
+        {busy ? '检查中…' : '检查更新'}
+      </button>
+      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+        {flash === 'up-to-date' ? '已是最新版本' : relative}
+      </span>
+    </div>
+  );
+}
+
+function formatRelativeCheck(ts: number | null): string {
+  if (ts == null) return '未检查';
+  const sec = Math.floor((Date.now() - ts) / 1000);
+  if (sec < 5) return '刚刚';
+  if (sec < 60) return `${sec} 秒前`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} 分钟前`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} 小时前`;
+  const day = Math.floor(hr / 24);
+  return `${day} 天前`;
 }

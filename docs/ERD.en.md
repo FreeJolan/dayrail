@@ -1899,4 +1899,84 @@ Open questions are split into two lists. **Now** items affect MVP surface / data
 
 ---
 
+## 13. Versioning & update delivery (from v0.4.1)
+
+**Why this chapter exists**: DayRail is a PWA and Service Workers cache aggressively. Pre-v0.4.1 feedback was *"had to restart the app several times before the new version showed up"* and *"no idea which version I'm currently on"*. This chapter pins the policy.
+
+### 13.1 Version sources
+
+Vite injects three constants at build time (see `apps/web/vite.config.ts`):
+
+| Constant | Source | Example |
+|---|---|---|
+| `__APP_VERSION__` | `apps/web/package.json`'s `version` | `"0.4.1"` |
+| `__APP_GIT_SHA__` | `git rev-parse --short HEAD` | `"badd560"` |
+| `__APP_BUILD_DATE__` | build-time `new Date().toISOString().slice(0,10)` | `"2026-04-22"` |
+
+Human-readable version = `v{version} · {gitSha} · {buildDate}`. The semver says *which milestone*, the git SHA is the actual identity (what the user reports when something looks off).
+
+### 13.2 SW lifecycle stance
+
+**`vite-plugin-pwa`'s `registerType` is `'prompt'`**, not `'autoUpdate'`. Rationale:
+
+- `'autoUpdate'` silently `skipWaiting`s and hands control to the new SW. The current tab's in-memory JS is still the old build — the user has to re-open the tab to see the new version, with zero signal in the meantime.
+- `'prompt'` leaves "when to activate" to app code — we show an explicit banner, the user clicks once, we `skipWaiting` + `location.reload()`. **One click, no mystery restarts.**
+
+### 13.3 Top-of-page `UpdateBanner`
+
+- **Trigger**: `registerSW({ onNeedRefresh })` flips `needsRefresh = true`.
+- **Appearance**: full-width bar pinned above the app shell (z-index above all views), `surface-2` fill with a `cta` accent.
+- **Copy**:
+  ```
+  ⭡ Update available: {currentSha} → {newSha}   [Update now]  [Later]
+  ```
+  Note: `newSha` isn't knowable from the `'prompt'` flow (the SW doesn't announce "my SHA is X"). **Fallback**: show "Update downloaded · Restart to apply" + the two buttons, drop the arrow comparison. If we later want the new SHA surfaced we can have the SW fetch a `/__version__.json` and broadcast it; MVP doesn't bother.
+- **Update now** → `updateSW(true)` → SW `skipWaiting` → listen for `navigator.serviceWorker.controllerchange` → `location.reload()`.
+- **Later**:
+  - Hide the banner.
+  - **Suppress re-prompt for the remainder of this session** (React state, not storage).
+  - Closing + re-opening the tab = fresh state, banner re-appears if still applicable.
+  - If a newer SW (different `waiting` reference) appears mid-session, re-prompt — a new version is worth re-asking about.
+
+### 13.4 Auto-check triggers
+
+| Trigger | Behavior |
+|---|---|
+| App cold-start | vite-plugin-pwa registers once automatically |
+| `setInterval(5 min)` | periodic silent `updateSW()` |
+| `visibilitychange → visible` | immediate `updateSW()` when user returns to the tab |
+| `online` event | immediate `updateSW()` on regaining connectivity |
+| Settings "Check for updates" button | manual `updateSW()`; "already up to date" inline toast on miss; banner flows as usual on hit |
+
+**Cost**: `updateSW()` ends up calling `ServiceWorkerRegistration.update()`, which is one conditional GET on `/sw.js` (`If-Modified-Since` / `ETag`). Unchanged → HTTP 304, no body. Changed → a few KB. 5-minute cadence is comfortably in budget; total per-day bandwidth stays well under 100 KB.
+
+### 13.5 Settings "About" block
+
+Lives inside `SettingsSections.tsx` (not a separate file):
+
+```
+┌─ About ──────────────────────────────────────┐
+│  DayRail  v0.4.1                             │
+│  Build    badd560 · 2026-04-22                │
+│  Repo     github.com/FreeJolan/dayrail         │
+│                                                │
+│  [ Check for updates ]    Last checked: 2m ago │
+└────────────────────────────────────────────────┘
+```
+
+- Version / SHA / date come straight from the Vite-injected constants.
+- Clicking "Check for updates" triggers `updateSW()`; an inline "Already up to date" toast (~2s fade) covers the no-op branch; the banner covers the hit branch.
+
+### 13.6 First-time offline-ready toast
+
+`registerSW({ onOfflineReady })` → one-time bottom-right toast "Ready to work offline", auto-dismiss 5s. Fires only on first SW install; silent on every subsequent boot.
+
+### 13.7 Explicitly out of scope
+
+- **Force-update channel** (security-critical "must upgrade immediately"): no business driver yet. If we need it, it's its own design — SW reads `/__force_version__.json`, `{minVersion: "0.5.2"}` overrides the banner and forces `updateSW(true)`. Not in v0.4.1.
+- **Delta patching / incremental update**: gzipped bundle is ~240 KB; delta infra complexity > savings.
+- **Inline CHANGELOG in Settings**: the Repo link carries the "read the changelog" job for now; we revisit once a proper CHANGELOG machine exists.
+
+---
+
 > This document is the starting point of DayRail's design discussion, not the end. Any decision can be overturned.
