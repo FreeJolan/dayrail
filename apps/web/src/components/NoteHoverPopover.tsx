@@ -1,10 +1,13 @@
 import * as RadixPopover from '@radix-ui/react-popover';
 import { clsx } from 'clsx';
 import {
+  cloneElement,
   useCallback,
   useEffect,
   useRef,
   useState,
+  type FocusEvent as ReactFocusEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactElement,
   type ReactNode,
 } from 'react';
@@ -19,16 +22,33 @@ import { MarkdownView } from './MarkdownField';
 // onMouseEnter / onMouseLeave with open + close delays so the
 // pointer can traverse the gap between trigger and popover without
 // the panel flickering shut.
+//
+// Positioning note: earlier revisions wrapped `children` in a
+// `<span className="contents">` and used `<Popover.Trigger asChild>`.
+// `display: contents` strips the span's layout box, so
+// `getBoundingClientRect()` returned all zeros and Radix happily
+// parked the popover at (0, 0). We now clone `children` to attach
+// hover handlers directly, and anchor the popover via
+// `<Popover.Anchor asChild>` on the already-sized child. No wrapper,
+// no geometry loss.
 // ------------------------------------------------------------------
 
 const OPEN_DELAY = 200;
 const CLOSE_DELAY = 200;
 
+type HoverChildProps = {
+  onMouseEnter?: (e: ReactMouseEvent) => void;
+  onMouseLeave?: (e: ReactMouseEvent) => void;
+  onFocus?: (e: ReactFocusEvent) => void;
+  onBlur?: (e: ReactFocusEvent) => void;
+};
+
 export interface NoteHoverPopoverProps {
   /** The Markdown source. Empty string hides the popover entirely. */
   note: string | undefined;
-  /** Trigger element — cloned with hover handlers and a ref. */
-  children: ReactElement;
+  /** Trigger element — cloned with hover handlers. Must accept
+   *  onMouseEnter / onMouseLeave / onFocus / onBlur via spread. */
+  children: ReactElement<HoverChildProps>;
   /** Optional header block (meta row). Rendered above the Markdown. */
   header?: ReactNode;
   /** Optional footer block (e.g. sub-items list). Rendered below. */
@@ -81,19 +101,28 @@ export function NoteHoverPopover({
   const hasNote = !!note && note.trim().length > 0;
   if (!hasNote) return children;
 
+  const mergedChild = cloneElement(children, {
+    onMouseEnter: composeHandlers<ReactMouseEvent>(
+      children.props.onMouseEnter,
+      scheduleOpen,
+    ),
+    onMouseLeave: composeHandlers<ReactMouseEvent>(
+      children.props.onMouseLeave,
+      scheduleClose,
+    ),
+    onFocus: composeHandlers<ReactFocusEvent>(
+      children.props.onFocus,
+      scheduleOpen,
+    ),
+    onBlur: composeHandlers<ReactFocusEvent>(
+      children.props.onBlur,
+      scheduleClose,
+    ),
+  });
+
   return (
     <RadixPopover.Root open={open} onOpenChange={setOpen}>
-      <RadixPopover.Trigger asChild>
-        <span
-          onMouseEnter={scheduleOpen}
-          onMouseLeave={scheduleClose}
-          onFocus={scheduleOpen}
-          onBlur={scheduleClose}
-          className="contents"
-        >
-          {children}
-        </span>
-      </RadixPopover.Trigger>
+      <RadixPopover.Anchor asChild>{mergedChild}</RadixPopover.Anchor>
       <RadixPopover.Portal>
         <RadixPopover.Content
           side={side}
@@ -115,10 +144,7 @@ export function NoteHoverPopover({
               {header}
             </div>
           )}
-          <div
-            className="overflow-y-auto"
-            style={{ maxHeight }}
-          >
+          <div className="overflow-y-auto" style={{ maxHeight }}>
             <MarkdownView source={note!} />
           </div>
           {footer && (
@@ -128,4 +154,12 @@ export function NoteHoverPopover({
       </RadixPopover.Portal>
     </RadixPopover.Root>
   );
+}
+
+function composeHandlers<E>(
+  ...fns: Array<((e: E) => void) | undefined>
+): (e: E) => void {
+  return (e: E) => {
+    for (const fn of fns) fn?.(e);
+  };
 }

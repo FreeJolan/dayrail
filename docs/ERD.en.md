@@ -830,7 +830,7 @@ There are exactly **two** Markdown-rendered long-form fields in DayRail:
 - **Empty state**: a faint single-line placeholder `+ Add description` / `+ Add notes` that clicks straight into edit mode.
 - **Entering edit mode**: clicking the display block or the placeholder focuses a textarea.
 - **Saving**: autosave on blur (trim → write; empty string normalizes to `undefined`). `Cmd/Ctrl + Enter` saves and exits immediately.
-- **Discarding**: `Esc` abandons the edit and restores the prior value.
+- **Esc = commit + exit** (same as blur; no in-place discard). The only destructive-revert surface is the `↶ Discard` button inside the fullscreen Dialog — avoids the single-keystroke "nuke a paragraph" footgun.
 - **Large-canvas entry point**: a `Maximize2` icon button in the top-right of the edit pane opens the fullscreen Dialog (detailed below).
 
 ##### Editor key bindings (Markdown-aware `<textarea>`, no heavyweight editor dependency)
@@ -847,7 +847,8 @@ There are exactly **two** Markdown-rendered long-form fields in DayRail:
 | `Cmd/Ctrl + Enter` | Save and exit edit mode |
 | `Cmd/Ctrl + Shift + E` | Toggle the fullscreen Dialog (in-place edit → open; inside Dialog → close and return to in-place) |
 | `Cmd/Ctrl + P` | Inside the fullscreen Dialog: toggle **split-pane preview** on / off |
-| `Esc` | Discard and exit (in-place) / Close the Dialog (fullscreen) |
+| `Esc` (in-place) | Commit and exit (matches blur; does NOT discard) |
+| `Esc` (fullscreen Dialog) | Close the Dialog; unsaved edits are committed (same as backdrop-click / X) |
 
 **Why not CodeMirror / Milkdown / TipTap**: bundle cost (CodeMirror 6 + markdown lang ≥ 120KB gzip) and interaction-learning overhead exceed the payoff for a single-user tool's notes box. A smart textarea covers ~95% of daily authoring.
 

@@ -79,11 +79,6 @@ export function MarkdownField({
     setEditing(false);
   }, [commit, draft]);
 
-  const discardInPlace = useCallback(() => {
-    setDraft(value ?? '');
-    setEditing(false);
-  }, [value]);
-
   const openDialog = useCallback(() => {
     setDraft((prev) => (editing ? prev : value ?? ''));
     setEditing(false);
@@ -130,7 +125,6 @@ export function MarkdownField({
         value={draft}
         onChange={setDraft}
         onCommit={commitInPlace}
-        onDiscard={discardInPlace}
         onOpenDialog={openDialog}
         ariaLabel={ariaLabel ?? dialogTitle}
       />
@@ -176,14 +170,12 @@ function InPlaceEditor({
   value,
   onChange,
   onCommit,
-  onDiscard,
   onOpenDialog,
   ariaLabel,
 }: {
   value: string;
   onChange: (next: string) => void;
   onCommit: () => void;
-  onDiscard: () => void;
   onOpenDialog: () => void;
   ariaLabel: string;
 }) {
@@ -200,18 +192,27 @@ function InPlaceEditor({
 
   const handleKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-      if (markdownKeyHandler(e, onChange)) return;
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      if (markdownKeyHandler(e)) return;
+      // `isComposing` catches active IME sessions (pinyin / kana / etc.)
+      // — the composition's own Enter confirms the candidate, we must
+      // not treat it as "save" or we'd eat the confirmation.
+      const composing = e.nativeEvent.isComposing;
+      if (!composing && e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         onCommit();
         return;
       }
+      // Esc = commit-and-exit (same as blur) so users can't nuke a
+      // long-form note with a single keystroke. Destructive discard
+      // is only available through the `↶ 放弃` button in the
+      // fullscreen Dialog.
       if (e.key === 'Escape') {
         e.preventDefault();
-        onDiscard();
+        onCommit();
         return;
       }
       if (
+        !composing &&
         (e.metaKey || e.ctrlKey) &&
         e.shiftKey &&
         (e.key === 'e' || e.key === 'E')
@@ -220,8 +221,12 @@ function InPlaceEditor({
         onOpenDialog();
       }
     },
-    [onChange, onCommit, onDiscard, onOpenDialog],
+    [onCommit, onOpenDialog],
   );
+  // `onChange` is still the plumbing for React to observe the textarea
+  // value; the Markdown-aware keys route through execCommand now so
+  // native undo / IME both keep working.
+  void onChange;
 
   return (
     <div className="relative flex flex-col">
@@ -332,7 +337,6 @@ function FullscreenEditor({
               <FullscreenTextarea
                 value={draft}
                 onChange={setDraft}
-                onDiscard={onDiscard}
                 ariaLabel={title}
               />
             </div>
@@ -426,12 +430,10 @@ function DialogFooter({ splitOpen }: { splitOpen: boolean }) {
 function FullscreenTextarea({
   value,
   onChange,
-  onDiscard,
   ariaLabel,
 }: {
   value: string;
   onChange: (next: string) => void;
-  onDiscard: () => void;
   ariaLabel: string;
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
@@ -444,17 +446,14 @@ function FullscreenTextarea({
     }
   }, []);
 
+  // Esc is handled by Radix Dialog at the root — it flips onOpenChange
+  // and we commit the draft there. No discard-on-Esc inside the
+  // textarea; destructive revert lives on the `↶ 放弃` button.
   const handleKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-      if (markdownKeyHandler(e, onChange)) return;
-      // Esc is intercepted by Radix Dialog and routed through
-      // onOpenChange (= commit). Shift+Esc = explicit discard.
-      if (e.key === 'Escape' && e.shiftKey) {
-        e.preventDefault();
-        onDiscard();
-      }
+      markdownKeyHandler(e);
     },
-    [onChange, onDiscard],
+    [],
   );
 
   return (
@@ -586,14 +585,26 @@ const REMARK_PLUGINS = [remarkGfm];
 // markdownKeyHandler — shared Markdown-aware key bindings (Tab /
 // Shift+Tab indent, Enter list continuation, Cmd+B / Cmd+I wrap).
 // Returns `true` when handled (preventDefault already called) so the
-// caller can chain contextual shortcuts (Esc, Cmd+Enter, …).
+// caller can chain contextual shortcuts (Cmd+Enter, Cmd+Shift+E, …).
+//
+// Implementation detail: every content mutation routes through
+// `document.execCommand('insertText' / 'delete')` rather than the
+// React-controlled value swap. Programmatic `value =` assignment or
+// `el.value = x` wipes the browser's native undo stack, and the
+// controlled-component `onChange(fullString)` path was doing exactly
+// that. execCommand is the only way — in current browsers — to edit
+// a <textarea> while keeping Ctrl+Z / Cmd+Z working.
 // ------------------------------------------------------------------
 
 function markdownKeyHandler(
   e: ReactKeyboardEvent<HTMLTextAreaElement>,
-  onChange: (next: string) => void,
 ): boolean {
   const el = e.currentTarget;
+  // IME composition: the candidate-confirm Enter must pass through.
+  // Tab / Cmd+B / Cmd+I during composition are unusual but still
+  // unsafe to intercept — the IME owns the input flow.
+  if (e.nativeEvent.isComposing) return false;
+
   const value = el.value;
   const start = el.selectionStart;
   const end = el.selectionEnd;
@@ -605,19 +616,15 @@ function markdownKeyHandler(
         const lineStart = value.lastIndexOf('\n', start - 1) + 1;
         const stripped = stripIndent(value.slice(lineStart));
         if (stripped.removed === 0) return true;
-        const next =
-          value.slice(0, lineStart) +
-          stripped.text +
-          value.slice(lineStart + stripped.removed);
-        onChange(next);
-        queueCaret(el, start - stripped.removed);
+        // Select the leading spaces of this line and delete them.
+        el.setSelectionRange(lineStart, lineStart + stripped.removed);
+        document.execCommand('delete');
         return true;
       }
-      const next = value.slice(0, start) + '  ' + value.slice(end);
-      onChange(next);
-      queueCaret(el, start + 2);
+      document.execCommand('insertText', false, '  ');
       return true;
     }
+    // Range selection — indent or dedent every line that intersects.
     const rangeStart = value.lastIndexOf('\n', start - 1) + 1;
     const rangeEnd = end;
     const block = value.slice(rangeStart, rangeEnd);
@@ -630,11 +637,9 @@ function markdownKeyHandler(
           .split('\n')
           .map((ln) => '  ' + ln)
           .join('\n');
-    const nextValue =
-      value.slice(0, rangeStart) + transformed + value.slice(rangeEnd);
-    onChange(nextValue);
-    const delta = transformed.length - block.length;
-    queueSelection(el, rangeStart, rangeEnd + delta);
+    el.setSelectionRange(rangeStart, rangeEnd);
+    document.execCommand('insertText', false, transformed);
+    el.setSelectionRange(rangeStart, rangeStart + transformed.length);
     return true;
   }
 
@@ -646,11 +651,14 @@ function markdownKeyHandler(
     e.preventDefault();
     const wrap = e.key === 'b' || e.key === 'B' ? '**' : '*';
     const selected = value.slice(start, end);
-    const next =
-      value.slice(0, start) + wrap + selected + wrap + value.slice(end);
-    onChange(next);
-    if (start === end) queueCaret(el, start + wrap.length);
-    else queueSelection(el, start + wrap.length, end + wrap.length);
+    document.execCommand('insertText', false, wrap + selected + wrap);
+    if (start === end) {
+      // Parked the caret between the markers so the user can type.
+      const caret = start + wrap.length;
+      el.setSelectionRange(caret, caret);
+    } else {
+      el.setSelectionRange(start + wrap.length, end + wrap.length);
+    }
     return true;
   }
 
@@ -668,19 +676,16 @@ function markdownKeyHandler(
 
     const afterPrefix = lineToCaret.slice(prefix.raw.length);
     if (afterPrefix.trim() === '') {
-      // Empty list/quote line → strip the prefix and break out.
+      // Empty list/quote line → delete the prefix and let the
+      // cursor sit at the now-empty line start (no newline inserted).
       e.preventDefault();
-      const next = value.slice(0, lineStart) + value.slice(start);
-      onChange(next);
-      queueCaret(el, lineStart);
+      el.setSelectionRange(lineStart, start);
+      document.execCommand('delete');
       return true;
     }
 
     e.preventDefault();
-    const insertion = '\n' + nextListPrefix(prefix);
-    const next = value.slice(0, start) + insertion + value.slice(end);
-    onChange(next);
-    queueCaret(el, start + insertion.length);
+    document.execCommand('insertText', false, '\n' + nextListPrefix(prefix));
     return true;
   }
 
@@ -741,13 +746,3 @@ function nextListPrefix(prev: ListPrefix): string {
   }
 }
 
-// Caret placement has to wait for React to flush the onChange → value
-// swap; otherwise the textarea resets the caret to the end of the
-// new text.
-function queueCaret(el: HTMLTextAreaElement, pos: number) {
-  requestAnimationFrame(() => el.setSelectionRange(pos, pos));
-}
-
-function queueSelection(el: HTMLTextAreaElement, s: number, e: number) {
-  requestAnimationFrame(() => el.setSelectionRange(s, e));
-}
