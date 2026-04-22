@@ -72,6 +72,25 @@ export function deriveReviewData(
     taskByKey.set(`${task.slot.railId}|${task.slot.date}`, task);
   }
 
+  // §5.5.6 · "something was rescheduled away from this cell" index.
+  // Built from Shifts of `type='reschedule'` whose `fromRailId` is set
+  // and `fromDate` lies inside the review window. Used below to
+  // upgrade an otherwise-unmarked past cell to `shifted`, so Review
+  // preserves the "used to hold a task that got pushed away" trace
+  // instead of silently erasing the original slot after the move.
+  const rescheduledFromKey = new Set<string>();
+  const dateSetForReschedule = new Set(dates);
+  for (const sh of Object.values(state.shifts)) {
+    if (sh.type !== 'reschedule') continue;
+    const p = sh.payload as {
+      fromDate?: string;
+      fromRailId?: string;
+    };
+    if (!p.fromDate || !p.fromRailId) continue;
+    if (!dateSetForReschedule.has(p.fromDate)) continue;
+    rescheduledFromKey.add(`${p.fromRailId}|${p.fromDate}`);
+  }
+
   // Filter rails to those bound to the selected habit Line when
   // habit scope is active. v0.4: the habit↔rail relationship lives
   // in HabitBinding, not Rail.defaultLineId.
@@ -116,6 +135,16 @@ export function deriveReviewData(
         // No terminal state yet: past days count as unmarked (stale-
         // pending), future days as empty (rail hasn't run yet).
         cell = date < todayIso ? 'unmarked' : 'empty';
+        // §5.5.6 upgrade — if a reschedule shift originated from this
+        // exact (rail, date), promote the cell to `shifted` so the
+        // past-overdue trace survives the move. Don't touch future
+        // `empty` cells; only cells that would otherwise be `unmarked`.
+        if (
+          cell === 'unmarked' &&
+          rescheduledFromKey.has(`${rail.id}|${date}`)
+        ) {
+          cell = 'shifted';
+        }
       }
       byDate[date] = cell;
       if (cell !== 'empty') {

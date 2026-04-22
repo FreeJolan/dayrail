@@ -25,6 +25,10 @@ export type EventType =
   | 'template.deleted'
   // Shift records (anchored to Task from v0.4)
   | 'shift.recorded'
+  // v0.4.1 · append tags to an existing shift. Used by the
+  // reschedule Reason toast (§5.5.6) — shift is persisted eagerly
+  // with empty tags, then augmented when the user picks a reason.
+  | 'shift.tags_updated'
   // Check-in surface (Signal response)
   | 'signal.acted'
   // Cycle planning (Cycle View session)

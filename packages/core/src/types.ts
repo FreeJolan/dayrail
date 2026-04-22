@@ -66,21 +66,46 @@ export interface Slot {
   taskIds: string[];
 }
 
-/** §5.2: only two Shift types survive v0.2 — each matches a terminal-
- *  or-semi-terminal status transition. Within-day postponing is
- *  handled via Cycle-View drag (not a Shift); swap / resize / replace
- *  are re-evaluated in v0.3. */
-export type ShiftType = 'defer' | 'archive';
+/** §5.2 / §5.5.6. The Shift vocabulary:
+ *   - `defer`      — paired with status → deferred (§5.6 check-in /
+ *                    §5.7 Pending). User pressed "later".
+ *   - `archive`    — paired with status → archived.
+ *   - `reschedule` — emitted automatically when the user moves an
+ *                    **already-overdue** Task to **a different day**
+ *                    (drag, SchedulePopover, TaskDetailDrawer — any
+ *                    path that ends in `scheduleTaskToRail` /
+ *                    `scheduleTaskFreeTime`). Same-day drag and
+ *                    rescheduling a still-future task do NOT emit.
+ *                    v0.4.1. See §5.5.6 for trigger rules + Review
+ *                    consumption. */
+export type ShiftType = 'defer' | 'archive' | 'reschedule';
+
+/** Payload shape when `Shift.type === 'reschedule'`. Captured so
+ *  Review can annotate the `(fromRailId, fromDate)` heatmap cell
+ *  even after `Task.slot` has moved. `fromAdhocId` / `toAdhocId`
+ *  are filled when the prior / new binding is a free-time Ad-hoc
+ *  rather than a Rail slot. */
+export interface ReschedulePayload {
+  fromDate: string;
+  fromRailId?: string;
+  fromAdhocId?: string;
+  toDate: string;
+  toRailId?: string;
+  toAdhocId?: string;
+}
 
 /** An audit record attached to a Task occurrence when the user
- *  deferred / archived it. Multiple tags + optional reason. v0.4:
- *  anchored to `taskId` (was `railInstanceId` before the RailInstance
- *  entity removal). */
+ *  deferred / archived / rescheduled it. Multiple tags + optional
+ *  reason. v0.4: anchored to `taskId` (was `railInstanceId` before
+ *  the RailInstance entity removal). */
 export interface Shift {
   id: string;
   taskId: string;
   type: ShiftType;
   at: string;
+  /** Shape depends on `type`. For `reschedule`, this is a
+   *  `ReschedulePayload`. For `defer` / `archive`, currently
+   *  free-form (empty object in practice). */
   payload: Record<string, unknown>;
   tags?: string[];
   /** Not captured in v0.2 — the Reason toast only writes tags.
