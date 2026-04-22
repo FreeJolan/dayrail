@@ -32,6 +32,10 @@ export interface SlotTaskSummary {
    *  The actual note text is fetched via `noteSnippet` when present. */
   hasNote: boolean;
   noteSnippet?: string;
+  /** Full Markdown source — used by the NoteHoverPopover so the hover
+   *  preview renders structure (lists / headings / code) rather than
+   *  a truncated raw string. Absent when the task has no note. */
+  note?: string;
   subItemsDone: number;
   subItemsTotal: number;
   /** Full sub-items array — lets the pill tooltip list them and the

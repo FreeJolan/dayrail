@@ -142,6 +142,7 @@ export function deriveCycleFromStore(
       isAutoTask: task.source === 'auto-habit',
       hasNote: trimmedNote.length > 0,
       ...(trimmedNote.length > 0 && {
+        note: trimmedNote,
         noteSnippet:
           trimmedNote.length > 120 ? `${trimmedNote.slice(0, 120)}…` : trimmedNote,
       }),

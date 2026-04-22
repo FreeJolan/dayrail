@@ -67,6 +67,93 @@
   }
 }
 
+/* ---------- Markdown prose (MarkdownField + NoteHoverPopover) ---------- */
+/* Compact prose surface for ReactMarkdown output. DayRail doesn't ship
+   @tailwindcss/typography — the tree is small and bespoke spacing fits
+   the design system better than the opinionated defaults. */
+
+.dr-prose {
+  @apply text-sm leading-relaxed text-ink-primary;
+}
+.dr-prose > * + * {
+  @apply mt-2;
+}
+.dr-prose h1,
+.dr-prose h2,
+.dr-prose h3,
+.dr-prose h4 {
+  @apply font-medium text-ink-primary;
+}
+.dr-prose h1 {
+  @apply text-base leading-snug;
+}
+.dr-prose h2 {
+  @apply text-sm leading-snug;
+}
+.dr-prose h3,
+.dr-prose h4 {
+  @apply text-sm uppercase tracking-wider text-ink-secondary;
+}
+.dr-prose p {
+  @apply text-sm leading-relaxed;
+}
+.dr-prose strong {
+  @apply font-semibold text-ink-primary;
+}
+.dr-prose em {
+  @apply italic;
+}
+.dr-prose del {
+  @apply text-ink-tertiary line-through;
+}
+.dr-prose a {
+  @apply text-cta underline decoration-cta/40 underline-offset-2 hover:decoration-cta;
+}
+.dr-prose code {
+  @apply rounded-sm bg-surface-2 px-1 py-0.5 font-mono text-xs text-ink-primary;
+}
+.dr-prose pre {
+  @apply overflow-x-auto rounded-md bg-surface-2 p-3 font-mono text-xs leading-relaxed;
+}
+.dr-prose pre code {
+  @apply bg-transparent p-0 text-xs;
+}
+.dr-prose blockquote {
+  @apply border-l-2 border-hairline pl-3 text-ink-secondary;
+}
+.dr-prose ul,
+.dr-prose ol {
+  @apply pl-5;
+}
+.dr-prose ul {
+  @apply list-disc;
+}
+.dr-prose ol {
+  @apply list-decimal;
+}
+.dr-prose li + li {
+  @apply mt-1;
+}
+.dr-prose li > p {
+  @apply my-0;
+}
+.dr-prose input[type='checkbox'] {
+  @apply mr-1 align-middle;
+}
+.dr-prose hr {
+  @apply my-3 border-hairline;
+}
+.dr-prose table {
+  @apply w-full border-collapse text-xs;
+}
+.dr-prose th,
+.dr-prose td {
+  @apply border border-hairline/60 px-2 py-1 text-left;
+}
+.dr-prose th {
+  @apply bg-surface-1 font-medium;
+}
+
 /* ---------- Keyframes ---------- */
 
 @keyframes popoverIn {
