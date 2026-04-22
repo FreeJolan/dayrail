@@ -11,6 +11,12 @@ import type {
   ToastAction,
 } from './ReasonToast';
 
+// `useReasonToast` covers the defer/archive/done flows — reschedule
+// is owned by `useReschedulePrompt`. Narrow the hook's action type
+// to that subset so callers can't accidentally ask this hook to fire
+// a reschedule toast (which it doesn't know how to handle).
+type CheckInAction = Exclude<ToastAction, 'reschedule'>;
+
 // Shared controller for the §5.2 Reason toast. Both the check-in
 // strip on Today Track and the Pending page wire into it so all
 // three action surfaces behave identically.
@@ -39,7 +45,7 @@ export function useReasonToast(surface: Signal['surface']): {
      *  write is tagged so the session-level undo rolls it back with
      *  the rest of the batch. Cycle View passes its session here. */
     sessionId?: string;
-    action: ToastAction;
+    action: CheckInAction;
   }) => void;
   handleAddTag: (tag: string) => void;
   handleUndo: () => void;
@@ -55,7 +61,7 @@ export function useReasonToast(surface: Signal['surface']): {
   // Committed-on-close state; refs because they don't drive rendering.
   const tagsRef = useRef<string[]>([]);
   const taskIdRef = useRef<string | null>(null);
-  const actionRef = useRef<ToastAction | null>(null);
+  const actionRef = useRef<CheckInAction | null>(null);
   // Pre-action task snapshot so Undo restores precisely.
   const prevTaskStatusRef = useRef<TaskStatus | null>(null);
 
@@ -69,7 +75,7 @@ export function useReasonToast(surface: Signal['surface']): {
       displayName: string;
       railId?: string;
       sessionId?: string;
-      action: ToastAction;
+      action: CheckInAction;
     }) => {
       const task = tasks[taskId];
       if (!task) return;

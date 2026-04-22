@@ -46,6 +46,7 @@ import {
   type Line,
   type Rail,
   type RailColor,
+  type ReschedulePayload,
   type Shift,
   type ShiftType,
   type Signal,
@@ -55,6 +56,8 @@ import {
   type TemplateKey,
   type HabitBinding,
 } from './types';
+import { toIsoDate } from './today';
+import { detectReschedule } from './reschedule';
 
 // ------------------------------------------------------------------
 // Store shape.
@@ -76,6 +79,12 @@ export interface DayRailState {
   /** §5.5.0 v0.4 · habit ↔ rail bindings. Keyed on binding id. */
   habitBindings: Record<string, HabitBinding>;
   sessions: Record<string, EditSession>;
+  /** §5.5.6 · ephemeral queue for the reschedule Reason toast. Set by
+   *  `scheduleTaskToRail` / `scheduleTaskFreeTime` when they auto-record
+   *  a `type='reschedule'` shift; cleared via `ackReschedulePrompt`.
+   *  Not replayed from the event log — the shift itself is durable, this
+   *  field is only "did we just record one the UI should annotate?". */
+  pendingReschedulePrompt: Shift | null;
 }
 
 interface DayRailActions {
@@ -101,6 +110,13 @@ interface DayRailActions {
     surface: Signal['surface'],
   ) => Promise<void>;
   recordShift: (shift: Shift) => Promise<void>;
+  /** Append tags to an existing shift. Used by the reschedule Reason
+   *  toast (§5.5.6) when the user picks a tag AFTER the shift has
+   *  already been recorded. Emits `shift.tags_updated`. */
+  setShiftTags: (shiftId: string, tags: string[]) => Promise<void>;
+  /** Clear pendingReschedulePrompt once the toast has been shown /
+   *  dismissed / acted on. No event — UI bookkeeping only. */
+  ackReschedulePrompt: (shiftId: string) => void;
   // --- lines (Project / Habit / Tag, §5.5) ---
   createLine: (line: Line) => Promise<void>;
   updateLine: (id: string, patch: Partial<Line>) => Promise<void>;
@@ -337,6 +353,18 @@ function applyEventInPlace(
         tags: p.tags,
         reason: p.reason,
       };
+      break;
+    }
+    case 'shift.tags_updated': {
+      // §5.5.6 · append tags to an already-recorded shift. Merges
+      // with existing tags so replay is commutative if two tag
+      // updates ever race (they shouldn't in practice; one toast
+      // per shift — but the event log is the source of truth).
+      const p = payload as unknown as { id: string; tags: string[] };
+      const existing = state.shifts[p.id];
+      if (!existing) break;
+      const merged = new Set([...(existing.tags ?? []), ...p.tags]);
+      existing.tags = [...merged];
       break;
     }
     case 'signal.acted': {
@@ -661,6 +689,83 @@ export const useStore = create<DayRailStore>()(
       }
     };
 
+    // §5.5.6 · auto-emit a `type='reschedule'` Shift when a schedule
+    // mutation moves an already-overdue Task to a different day.
+    // Called by `scheduleTaskToRail` / `scheduleTaskFreeTime` after
+    // their binding change has committed so we have the final task
+    // state to compare against.
+    //
+    // Fires ONLY when:
+    //   - task is hand-built (auto-habit occurrences out of scope for
+    //     v0.4.1 — the habit edit table marks `slot` read-only anyway).
+    //   - prior binding existed (first-time schedule = not a reschedule).
+    //   - priorDate < today (genuinely overdue; future-task reschedule
+    //     is planning, not slippage).
+    //   - newDate != priorDate (cross-day, not an intraday shuffle).
+    //
+    // Seeds `pendingReschedulePrompt` so the UI Reason toast can
+    // surface and let the user tag why.
+    const maybeEmitReschedule = async (opts: {
+      taskId: string;
+      priorSlot: Task['slot'] | undefined;
+      priorAdhoc: AdhocEvent | undefined;
+      nextDate: string;
+      nextRailId?: string;
+      nextAdhocId?: string;
+      isAutoHabit: boolean;
+      sessionId?: string;
+    }): Promise<void> => {
+      const decision = detectReschedule({
+        priorSlot: opts.priorSlot,
+        priorAdhoc: opts.priorAdhoc,
+        nextDate: opts.nextDate,
+        todayIso: toIsoDate(),
+        isAutoHabit: opts.isAutoHabit,
+      });
+      if (!decision.shouldEmit) return;
+      const priorDate = decision.priorDate;
+
+      const shiftId = ulidLite('shift');
+      const payload: ReschedulePayload = {
+        fromDate: priorDate,
+        toDate: opts.nextDate,
+        ...(opts.priorSlot?.railId != null && {
+          fromRailId: opts.priorSlot.railId,
+        }),
+        ...(opts.priorSlot == null &&
+          opts.priorAdhoc?.id != null && {
+            fromAdhocId: opts.priorAdhoc.id,
+          }),
+        ...(opts.nextRailId != null && { toRailId: opts.nextRailId }),
+        ...(opts.nextAdhocId != null && { toAdhocId: opts.nextAdhocId }),
+      };
+      const ev = await appendEvent({
+        aggregateId: `task:${opts.taskId}`,
+        type: 'shift.recorded',
+        payload: {
+          id: shiftId,
+          taskId: opts.taskId,
+          type: 'reschedule',
+          at: new Date().toISOString(),
+          payload,
+          tags: [],
+        },
+        ...(opts.sessionId && { sessionId: opts.sessionId }),
+      });
+      set((draft) => {
+        applyEventInPlace(draft, ev.type, ev.payload);
+        const recorded = draft.shifts[shiftId];
+        if (recorded) {
+          // Copy so UI consumers can't mutate the reducer state.
+          draft.pendingReschedulePrompt = {
+            ...recorded,
+            payload: { ...recorded.payload },
+            ...(recorded.tags && { tags: [...recorded.tags] }),
+          };
+        }
+      });
+    };
+
     return {
       ready: false,
       templates: {},
@@ -675,6 +780,7 @@ export const useStore = create<DayRailStore>()(
       habitPhases: {},
       habitBindings: {},
       sessions: {},
+      pendingReschedulePrompt: null,
 
       hydrate: async () => {
         try {
@@ -890,6 +996,26 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
+      setShiftTags: async (shiftId, tags) => {
+        const existing = get().shifts[shiftId];
+        if (!existing) return;
+        const event = await appendEvent({
+          aggregateId: `task:${existing.taskId}`,
+          type: 'shift.tags_updated',
+          payload: { id: shiftId, tags },
+        });
+        set((draft) => applyEventInPlace(draft, event.type, event.payload));
+        afterMutation();
+      },
+
+      ackReschedulePrompt: (shiftId) => {
+        set((draft) => {
+          if (draft.pendingReschedulePrompt?.id === shiftId) {
+            draft.pendingReschedulePrompt = null;
+          }
+        });
+      },
+
       // ---- Line CRUD (§5.5) --------------------------------------
 
       createLine: async (line) => {
@@ -1030,6 +1156,15 @@ export const useStore = create<DayRailStore>()(
       // ---- Task scheduling (§5.5.2) ------------------------------
 
       scheduleTaskToRail: async (taskId, slot, sessionId) => {
+        // Capture prior binding BEFORE any mutation so the reschedule
+        // detection below has a clean "from" to compare against.
+        const priorTask = get().tasks[taskId];
+        const priorSlot = priorTask?.slot;
+        const priorAdhoc = Object.values(get().adhocEvents).find(
+          (a) => a.taskId === taskId && a.status === 'active',
+        );
+        const isAutoHabit = priorTask?.source === 'auto-habit';
+
         // If the task currently has a free-time Ad-hoc backing it, drop
         // it first — modes A and B are mutually exclusive. Both the
         // Ad-hoc deletion and the schedule event share the session tag
@@ -1078,14 +1213,30 @@ export const useStore = create<DayRailStore>()(
           });
           set((draft) => applyEventInPlace(draft, flip.type, flip.payload));
         }
+        await maybeEmitReschedule({
+          taskId,
+          priorSlot,
+          priorAdhoc,
+          nextDate: slot.date,
+          nextRailId: slot.railId,
+          isAutoHabit,
+          ...(sessionId && { sessionId }),
+        });
         if (sessionId) await touchSession(sessionId);
         afterMutation();
       },
 
       scheduleTaskFreeTime: async (taskId, opts) => {
+        // Capture prior binding for reschedule detection.
+        const task = get().tasks[taskId];
+        const priorSlot = task?.slot;
+        const priorAdhoc = Object.values(get().adhocEvents).find(
+          (a) => a.taskId === taskId && a.status === 'active',
+        );
+        const isAutoHabit = task?.source === 'auto-habit';
+
         // Clear Rail binding first if present — keeps the two modes
         // mutually exclusive.
-        const task = get().tasks[taskId];
         if (task?.slot) {
           const clr = await appendEvent({
             aggregateId: `task:${taskId}`,
@@ -1098,15 +1249,14 @@ export const useStore = create<DayRailStore>()(
         }
         // Re-use an existing active Ad-hoc for this task if present
         // (user is just shifting the time window), otherwise create.
-        const existing = Object.values(get().adhocEvents).find(
-          (a) => a.taskId === taskId && a.status === 'active',
-        );
-        if (existing) {
+        let nextAdhocId: string;
+        if (priorAdhoc) {
+          nextAdhocId = priorAdhoc.id;
           const ev = await appendEvent({
-            aggregateId: `adhoc:${existing.id}`,
+            aggregateId: `adhoc:${priorAdhoc.id}`,
             type: 'adhoc.updated',
             payload: {
-              id: existing.id,
+              id: priorAdhoc.id,
               date: opts.date,
               startMinutes: opts.startMinutes,
               durationMinutes: opts.durationMinutes,
@@ -1114,13 +1264,13 @@ export const useStore = create<DayRailStore>()(
           });
           set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
         } else {
-          const adhocId = `adhoc-${taskId}-${Date.now().toString(36)}`;
+          nextAdhocId = `adhoc-${taskId}-${Date.now().toString(36)}`;
           const name = task?.title ?? 'Task';
           const ev = await appendEvent({
-            aggregateId: `adhoc:${adhocId}`,
+            aggregateId: `adhoc:${nextAdhocId}`,
             type: 'adhoc.created',
             payload: {
-              id: adhocId,
+              id: nextAdhocId,
               date: opts.date,
               startMinutes: opts.startMinutes,
               durationMinutes: opts.durationMinutes,
@@ -1148,6 +1298,14 @@ export const useStore = create<DayRailStore>()(
           });
           set((draft) => applyEventInPlace(draft, flip.type, flip.payload));
         }
+        await maybeEmitReschedule({
+          taskId,
+          priorSlot,
+          priorAdhoc,
+          nextDate: opts.date,
+          nextAdhocId,
+          isAutoHabit,
+        });
         afterMutation();
       },
 
