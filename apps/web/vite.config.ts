@@ -31,7 +31,12 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // `'prompt'` hands "when to activate the new SW" to app code
+      // (see ERD §13 and src/lib/swRegistration.ts). `'autoUpdate'`
+      // silently skipWaited the new SW — the current tab kept running
+      // the old JS with no signal, so users needed multiple restarts
+      // before actually landing on the new version.
+      registerType: 'prompt',
       includeAssets: ['favicon.svg', 'icon-192.svg', 'icon-512.svg'],
       manifest: {
         name: 'DayRail',

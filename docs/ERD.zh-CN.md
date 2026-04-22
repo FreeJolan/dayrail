@@ -1745,5 +1745,87 @@ type SyncedSettings = {
 
 ***
 
+## 13. 版本发布与更新机制（v0.4.1 起）
+
+**问题背景**：DayRail 是 PWA，Service Worker 缓存很激进。v0.4 之前用户反馈"重启了好多次才更新"、"不知道自己在哪个版本"。这一章钉下机制。
+
+### 13.1 版本号来源
+
+构建时 Vite 经 `define` 注入三个常量（已在 `apps/web/vite.config.ts`）：
+
+| 常量 | 来源 | 示例 |
+|---|---|---|
+| `__APP_VERSION__` | `apps/web/package.json` 的 `version` | `"0.4.1"` |
+| `__APP_GIT_SHA__` | `git rev-parse --short HEAD` | `"badd560"` |
+| `__APP_BUILD_DATE__` | 构建时 `new Date().toISOString().slice(0,10)` | `"2026-04-22"` |
+
+用户看到的 human-readable 版本 = `v{version} · {gitSha} · {buildDate}`。semver 给"这是什么里程碑"，git SHA 给"这是哪一次构建"（主要识别标识）。
+
+### 13.2 SW 生命周期立场
+
+**`vite-plugin-pwa` 的 `registerType` 选 `'prompt'`**（不用 `'autoUpdate'`）。原因：
+
+- `'autoUpdate'` 会在后台 `skipWaiting` + 把控制权交给新 SW。当前 tab 内存里依旧是旧 JS —— 用户要再次打开 tab 才看到新版本，期间毫无提示
+- `'prompt'` 把"何时激活新版本"交给 app 层 —— 我们负责显式提示 + 一键更新 + `location.reload()`。**1 次点击完事**，不用多次重启
+
+### 13.3 顶栏更新浮条 `UpdateBanner`
+
+- **触发**：`registerSW({ onNeedRefresh })` 回调中设 `needsRefresh = true`
+- **外观**：全宽浮条，吸附在 app 顶部（所有视图之上），`surface-2` 底 + `cta` 色 accent
+- **文案**：
+  ```
+  ⭡ 新版本可用：{currentSha} → {newSha}   [立即更新]  [稍后]
+  ```
+  注：`newSha` 在 `prompt` 模式下拿不到（SW 不会告诉我们"新版是什么 SHA"）。**退化方案**：显示 `[立即更新]  [稍后]` + "新版本已下载"，去掉 SHA 箭头。未来真想拿到可以让 SW 自己读取一个 `/__version__.json` 广播给 client —— 当前 MVP 不做。
+- **立即更新**：调 `updateSW(true)` → SW `skipWaiting` → 监听 `navigator.serviceWorker.controllerchange` → `location.reload()`
+- **稍后**：
+  - 隐藏 banner
+  - **本次 session 内不再提醒**（保存到 React 组件级 state，不落 localStorage / sessionStorage）
+  - 关闭 tab 再开 = 自然重新提示（因为 state 重置）
+  - 本 session 里若又有 v3 waiting 出现（新的 `SKIP_WAITING` 事件、waiting SW 的引用换了）= 再次提示（新版本值得再问一次）
+
+### 13.4 自动检查触发点
+
+| 触发点 | 行为 |
+|---|---|
+| tab 启动 | vite-plugin-pwa 默认会注册一次 |
+| `setInterval(5 min)` | 周期 `updateSW()`（无 arg，静默轮询） |
+| `visibilitychange → visible` | 立即 `updateSW()`（用户回到页面） |
+| `online` 事件 | 立即 `updateSW()`（刚从离线恢复） |
+| Settings "检查更新" 按钮 | 手动 `updateSW()`；已是最新 → toast "已是最新版本"；有新版 → banner 浮出 |
+
+**成本**：`updateSW()` 内部调 `ServiceWorkerRegistration.update()` → 一次 conditional GET `/sw.js`（带 `If-Modified-Since` / `ETag`）。未变 → HTTP 304 + 零 body。变了 → 几 KB 下载。5 分钟粒度完全负担得起；常见场景下一天内网络开销 << 100 KB。
+
+### 13.5 Settings "关于" 区块
+
+在 `SettingsSections.tsx` 下新增（非单独文件）：
+
+```
+┌─ 关于 ──────────────────────────────────────┐
+│  DayRail  v0.4.1                            │
+│  构建      badd560 · 2026-04-22              │
+│  Repo      github.com/FreeJolan/dayrail       │
+│                                              │
+│  [ 检查更新 ]    上次检查：2 分钟前           │
+└──────────────────────────────────────────────┘
+```
+
+- 版本 / SHA / date 直接从 Vite 注入的常量读
+- "检查更新" 按钮点一下立刻触发 `updateSW()`，按钮下方显示"上次检查：XX 前"相对时间
+- 检查完如果没更新 → 在按钮旁 toast / 行内提示"已是最新版本"，2 秒淡出
+- 有更新 → 主流程（banner 出现）
+
+### 13.6 首次离线可用提示
+
+`registerSW({ onOfflineReady })` → 一次性右下角 toast "已可离线使用"，5 秒自动消失。首次 SW 装好时触发，后续启动不再出现。
+
+### 13.7 暂不做
+
+- **强制更新通道**（安全漏洞级别"必须马上升级"）：暂无业务驱动。真遇到，单独方案 —— SW 读 `/__force_version__.json`，返回 `{minVersion: "0.5.2"}` 时 app 强制 `updateSW(true)` 绕过 banner。v0.4.1 不做。
+- **增量更新 / delta patch**：完整 bundle gzip 后 ~240KB，delta 系统复杂度 > 收益。
+- **版本日志 / CHANGELOG inline 展示**：Settings 里的 "Repo" 链接先承担查更新日志的职责，直到 CHANGELOG 机制单独落地。
+
+***
+
 > 本文档是 DayRail 设计讨论的起点，不是终点。所有决策都可以被推翻。
 
