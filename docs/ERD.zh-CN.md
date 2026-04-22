@@ -755,7 +755,7 @@ DayRail 里承载 Markdown 的长文字段共 **两个**：
 - **空态**：淡色一行占位 `+ 添加描述` / `+ 添加备注`，点击直接进入编辑态。
 - **切编辑态**：点击展示态或占位 → textarea 抢焦点。
 - **保存**：失焦自动保存（trim 后写入；空串统一写 `undefined`）。`Cmd/Ctrl + Enter` 立即保存并退出。
-- **放弃**：`Esc` 放弃本次编辑，恢复原值。
+- **Esc = 提交并退出**（和失焦一致，不放弃改动）。destructive "放弃" 入口只在大屏 Dialog 的 `↶ 放弃` 按钮 —— 避免单键误触把长文清空的 footgun。
 - **大屏编辑入口**：编辑态右上角有一枚 `Maximize2` 图标按钮，点击打开大屏 Dialog（下详）。
 
 ##### 编辑器键位（Markdown-aware `<textarea>`，不引入重型编辑器）
@@ -772,7 +772,8 @@ DayRail 里承载 Markdown 的长文字段共 **两个**：
 | `Cmd/Ctrl + Enter` | 立即保存并退出 |
 | `Cmd/Ctrl + Shift + E` | 切换大屏 Dialog（in-place 编辑态 → 打开；Dialog 内部 → 关闭并回到 in-place） |
 | `Cmd/Ctrl + P` | 大屏 Dialog 内：切换**分栏预览**的开 / 关 |
-| `Esc` | 放弃改动并退出（in-place）/ 关闭 Dialog（大屏） |
+| `Esc`（in-place） | 提交并退出（和失焦一致，不放弃改动） |
+| `Esc`（大屏 Dialog） | 关闭 Dialog（未保存改动按提交处理，和 backdrop click / X 一致） |
 
 **为什么不上 CodeMirror / Milkdown / TipTap**：体积（CM 6 加 markdown lang ≥ 120KB gzip）和交互学习成本都超出"一个单人工具的备注框"的收益；smart textarea 已覆盖 95% 的日常写作需要。
 
