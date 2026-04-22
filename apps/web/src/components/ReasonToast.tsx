@@ -20,7 +20,7 @@ const TIMEOUT_MS = 6_000;
 
 const FALLBACK_TAGS = ['天气', '太累', '会议'];
 
-export type ToastAction = 'done' | 'defer' | 'archive';
+export type ToastAction = 'done' | 'defer' | 'archive' | 'reschedule';
 
 export interface ReasonToastState {
   action: ToastAction;
@@ -170,6 +170,10 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
   // to "explain". Keep the toast to a confirmation + Undo so the happy-
   // path finish feels frictionless.
   const showChips = cached.action !== 'done';
+  // Reschedule doesn't show Undo: the schedule mutation already
+  // committed and the inverse is "drag it back", not a toast button.
+  // The archive-recurring hint also doesn't apply.
+  const showUndo = cached.action !== 'reschedule';
 
   return createPortal(
     <div className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-6">
@@ -245,17 +249,21 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
             </span>
           </>
         )}
-        <span className="h-4 w-px bg-hairline/40" aria-hidden />
-        <button
-          type="button"
-          onClick={() => {
-            onUndo();
-            onClose();
-          }}
-          className="text-xs font-medium text-ink-secondary underline-offset-2 hover:text-ink-primary hover:underline"
-        >
-          撤销
-        </button>
+        {showUndo && (
+          <>
+            <span className="h-4 w-px bg-hairline/40" aria-hidden />
+            <button
+              type="button"
+              onClick={() => {
+                onUndo();
+                onClose();
+              }}
+              className="text-xs font-medium text-ink-secondary underline-offset-2 hover:text-ink-primary hover:underline"
+            >
+              撤销
+            </button>
+          </>
+        )}
         {cached.action === 'archive' && cached.isRecurring && (
           <>
             <span className="h-4 w-px bg-hairline/40" aria-hidden />
@@ -284,5 +292,7 @@ function headline(action: ToastAction): string {
       return '以后再说';
     case 'archive':
       return '已归档';
+    case 'reschedule':
+      return '已改期';
   }
 }
