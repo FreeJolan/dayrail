@@ -267,11 +267,13 @@ function taskToTimelineTask(
     else state = 'pending';
   }
   const tags = latestTagsForTask(task.id, shifts);
+  const trimmedNote = task.note?.trim() ?? '';
   return {
     id: task.id,
     title: task.title,
     state,
-    hasNote: Boolean(task.note && task.note.trim().length > 0),
+    hasNote: trimmedNote.length > 0,
+    ...(trimmedNote.length > 0 && { note: trimmedNote }),
     subItemsDone: subItems.filter((s) => s.done).length,
     subItemsTotal: subItems.length,
     ...(task.milestonePercent != null && {

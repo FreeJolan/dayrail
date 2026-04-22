@@ -16,6 +16,7 @@ import {
   type Template,
 } from '@dayrail/core';
 import { buildPhaseBands, type PhaseBand } from './reviewFromStore';
+import { MarkdownField } from '@/components/MarkdownField';
 import { RAIL_COLOR_HEX, RAIL_COLOR_STEP_4, RAIL_COLOR_STEP_6, RAIL_COLOR_STEP_7 } from '@/components/railColors';
 import { RailPicker } from '@/components/RailPicker';
 import {
@@ -174,7 +175,10 @@ export function HabitDetail({ habit }: Props) {
         onGoToTemplate={(templateKey) => navigate(`/templates/${templateKey}`)}
       />
 
-      <NotesSection line={habit} onCommit={(note) => updateLine(habit.id, { note })} />
+      <NotesSection
+        line={habit}
+        onCommit={(note) => updateLine(habit.id, { note })}
+      />
 
       <DangerSection line={habit} onArchive={() => navigate('/tasks/inbox')} />
     </div>
@@ -1125,31 +1129,19 @@ function NotesSection({
   onCommit,
 }: {
   line: Line;
-  onCommit: (note: string) => void;
+  onCommit: (note: string | undefined) => void;
 }) {
-  const [draft, setDraft] = useState(line.note ?? '');
-  useEffect(() => {
-    setDraft(line.note ?? '');
-  }, [line.id, line.note]);
-
-  const commit = useCallback(() => {
-    const trimmed = draft;
-    if (trimmed === (line.note ?? '')) return;
-    onCommit(trimmed);
-  }, [draft, line.note, onCommit]);
-
   return (
     <section aria-label="Habit notes" className="flex flex-col gap-2">
       <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
         Notes
       </span>
-      <textarea
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        placeholder="写一些动机、目标或要记住的上下文…(失焦自动保存)"
-        rows={4}
-        className="resize-y rounded-md border border-hairline/60 bg-surface-0 px-3 py-2 text-sm leading-relaxed text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+      <MarkdownField
+        value={line.note}
+        onCommit={onCommit}
+        placeholder="+ 写一些动机、目标或要记住的上下文 · Markdown"
+        dialogTitle={`${line.name} · 备注`}
+        ariaLabel="Habit 备注"
       />
     </section>
   );

@@ -399,7 +399,9 @@ Cells don't have a single popover for the whole `(date, rail)` tuple. Each task 
     - `done` → background = **neutral** `surface-2`, text = ink-tertiary, **strong strikethrough** on the title, whole pill at opacity ≈ 0.7. A thin step-6 rail accent bar on the left preserves the rail's identity for scanning. Rationale: users asked for done to read as "inert, ignore me" at a glance, not as a rail-colored celebration — the step-9 solid variant failed that read.
     - `deferred` → background = Rail-color step 7.
     - `archived` → hatched step 6 with strike-through title.
-  - **Hover tooltip on each pill** (Radix tooltip, 200 ms delay): full title · owning Line · priority (if set) · note snippet (first ~120 chars) · milestone % · sub-items progress + an inline sub-items list (up to 6 rows, surplus as `… +N more` with done-state glyph per row). The tooltip replaces the old `·备` / `·N/M` in-pill badges — the cell is kept visually calm and the dense data only shows on demand.
+  - **Hover preview on each pill** (adaptive tooltip / popover, 200 ms open delay): full title · owning Line · priority (if set) · milestone % · sub-items progress + an inline sub-items list (up to 6 rows, surplus as `… +N more` with done-state glyph per row). The hover layer replaces the old `·备` / `·N/M` in-pill badges — the cell stays visually calm and the dense data only shows on demand.
+    - **No note → Radix tooltip** (narrow, read-only): carries all the meta above.
+    - **Has a note → Radix popover (hover-triggered)**: carries the same meta plus a Markdown-rendered note body (`prose` styling, max-width ≈ 360px, max-height ≈ 280px, scrolls on overflow). Unlike a tooltip the popover lets the cursor enter for scrolling/selection; close delay 200 ms so moving the pointer from pill to popover body doesn't flicker-close. Implementation details in §5.5.4. **Why the split**: a 120-char truncated raw Markdown blob in a tooltip loses all structure (headings, lists, code all collapse to character soup); a popover with real rendering preserves information.
   - **Hover-reveal "+ add" row at the stack bottom**: only visible while the cell (or one of its pills) is hovered. Dashed, full-cell-width, same step-3 tint. Click → inline `QuickCreate` input same as the empty-slot flow. Consistent visual vocabulary: the dashed row reads as "another slot, not yet filled".
   - **Drag source**: every pill is draggable; `TASK_DRAG_MIME` payload = taskId. Dragging between cells fires `scheduleTaskToRail`, which reassigns the `slot` in place. A pill dragged back onto its own `(date, rail)` is a no-op (short-circuit to avoid a useless event). A `deferred` task rescheduled via drag flips back to `pending` (same behavior as backlog → cycle drop).
   - **Drop affordance**: while a drag hovers a valid cell, two scopes of feedback render simultaneously so the user can never misread where the task will land. (1) The **target cell** gets a `cta-soft/30` ring. (2) The **entire destination Rail row** tints `cta-soft/25` across its label column + cells (soft at `cta-soft/15` for the non-hovered cells in the same row), and the rail's left color bar bumps from 1px × 24px to 1.5px × 28px with a small `→` glyph in the label — the row-scope highlight was added after user feedback that the cell-only ring wasn't enough to answer "which Rail am I dropping into?" on rails with many columns.
@@ -537,6 +539,8 @@ Net effect: the user-facing vocabulary stays Template / Track / Rail / Shift / L
 - **Progress bar is conditional**: rendered **only if** at least one task in the Project has `milestonePercent` set (bar width = max `milestonePercent` among done tasks). A Project without any milestone never shows a progress bar — avoids "progress stuck at 0%" confusion.
 - Time window: shown only if `plannedStart` / `plannedEnd` exist; **a missing `plannedEnd` is not a risk signal** — open-ended Projects are legitimate and should not be visually demoted.
 - `⋯` menu: Rename / Recolor / Edit time window / Archive / Delete (soft).
+- **Project description (Markdown)**: rendered directly below the header and above the FilterBar — backed by `Line.note` (see §5.5.4). Optional; when empty, shows a faint `+ Add description` placeholder that clicks into edit mode. Inbox (`isDefault`) does not render this block.
+- **Inline title rename** (Project / Habit share the same header; Inbox excluded): hovering `<h2>{title}</h2>` on an editable Line reveals a small `Pencil` icon on the right; clicking the icon or **double-clicking the title** swaps the heading for an `<input>` in place (autofocus + select-all). Enter commits; Esc discards; blur commits; only fires an event when the trimmed value is non-empty and differs from the current name. Duplicate names are not blocked (id is the real key). The `⋯` menu's Rename item stays as a keyboard / touch fallback — its action is now "enter header edit mode" rather than popping a prompt. **`window.prompt()` is retired from this surface.**
 
 #### 5.5.0 Habits (v0.3.3 goes live; v0.4 deepens)
 
@@ -662,7 +666,7 @@ dialog fires before save.
 ├───────────────────────────────────────┤
 │  Phases (only when enabled)           │  ← v0.3.3 PhaseForm / list, untouched
 ├───────────────────────────────────────┤
-│  Notes                                │  ← long-text Line.note-style field, added in v0.4
+│  Notes (Markdown)                     │  ← long-form Line.note, added in v0.4; rendered as Markdown (§5.5.4)
 ├───────────────────────────────────────┤
 │  Danger: Archive / Delete             │
 └───────────────────────────────────────┘
@@ -809,7 +813,82 @@ Every destructive action defaults to **soft delete**, with Trash as the recovery
 
 **Habit / Phase transitions** still live on Habit Lines (§4.1) and land in v0.4. In Tasks view they sit in the `Habits` nav group with their own list rules (rhythm tracking, not task-pile management) — see §5.5.0 for the v0.4 habit detail layout.
 
----
+#### 5.5.4 Markdown long-form fields (notes / descriptions)
+
+There are exactly **two** Markdown-rendered long-form fields in DayRail:
+
+| Field | Location | UI entry point |
+|---|---|---|
+| `Line.note` | Every Line (`project` / `habit` both enabled; Inbox / Archived / Trash bucket selections do not expose editing) | Project detail — below the header; Habit detail — the Notes section (§5.5.0 v0.4 layout) |
+| `Task.note` | Hand-built Tasks + auto-tasks | TaskDetailDrawer's "Notes" field |
+
+**Not Markdown**: `HabitPhase.description` is a single-line "goal tagline" and stays **plain text** — Markdown would add noise for zero value on a one-line field.
+
+##### Rendering (shared `MarkdownField` component)
+
+- **Display mode**: `react-markdown` + `remark-gfm` rendering a GFM subset — headings / ordered & unordered lists / task lists / links / fenced code blocks / inline code / blockquotes / tables / strikethrough / horizontal rules. **Raw HTML is disabled** (safety + visual consistency).
+- **Empty state**: a faint single-line placeholder `+ Add description` / `+ Add notes` that clicks straight into edit mode.
+- **Entering edit mode**: clicking the display block or the placeholder focuses a textarea.
+- **Saving**: autosave on blur (trim → write; empty string normalizes to `undefined`). `Cmd/Ctrl + Enter` saves and exits immediately.
+- **Esc = commit + exit** (same as blur; no in-place discard). The only destructive-revert surface is the `↶ Discard` button inside the fullscreen Dialog — avoids the single-keystroke "nuke a paragraph" footgun.
+- **Large-canvas entry point**: a `Maximize2` icon button in the top-right of the edit pane opens the fullscreen Dialog (detailed below).
+
+##### Editor key bindings (Markdown-aware `<textarea>`, no heavyweight editor dependency)
+
+| Key | Behavior |
+|---|---|
+| `Tab` (no selection) | Insert two spaces at the caret |
+| `Tab` (selection) | Indent every selected line by 2 spaces |
+| `Shift + Tab` | Dedent every selected line (or the current line) by up to 2 spaces |
+| `Enter` (at end of `- ` / `* ` / `1. ` / `> ` / `- [ ] ` line) | New line, continue the same prefix; ordered-list numbers increment |
+| `Enter` (on an empty list / quote line) | Strip the prefix and exit the continuation (the "second Enter" heuristic) |
+| `Cmd/Ctrl + B` | Wrap the selection in `**…**` (no selection → insert a placeholder with caret between the stars) |
+| `Cmd/Ctrl + I` | Wrap the selection in `*…*` |
+| `Cmd/Ctrl + Enter` | Save and exit edit mode |
+| `Cmd/Ctrl + Shift + E` | Toggle the fullscreen Dialog (in-place edit → open; inside Dialog → close and return to in-place) |
+| `Cmd/Ctrl + P` | Inside the fullscreen Dialog: toggle **split-pane preview** on / off |
+| `Esc` (in-place) | Commit and exit (matches blur; does NOT discard) |
+| `Esc` (fullscreen Dialog) | Close the Dialog; unsaved edits are committed (same as backdrop-click / X) |
+
+**Why not CodeMirror / Milkdown / TipTap**: bundle cost (CodeMirror 6 + markdown lang ≥ 120KB gzip) and interaction-learning overhead exceed the payoff for a single-user tool's notes box. A smart textarea covers ~95% of daily authoring.
+
+##### Fullscreen editor Dialog (split-pane preview)
+
+The in-place editor suits short notes; long-form content (Project descriptions often run several hundred to a thousand-plus characters) needs more canvas + a rendering reference. `MarkdownField` ships a built-in "fullscreen mode":
+
+- **Trigger**: the `Maximize2` icon in the in-place edit pane, or `Cmd/Ctrl + Shift + E`
+- **Container**: Radix Dialog, modal, centered; width `min(1040px, 94vw)`, height `88vh`
+- **Layout (split-pane on by default)**: 50/50 left/right, 1px draggable divider in the middle (drag range 20%–80%)
+  - **Left pane**: `MarkdownEditorTextarea` — the same instance backing in-place editing, key bindings are identical
+  - **Right pane**: `MarkdownView`, live-rendering the left pane's contents (`prose-sm`, scrolls independently on overflow)
+  - Scroll sync is **not implemented** — a single-user tool doesn't warrant the effort; manual scrolling is fine
+- **Header**: title (context-aware copy: `Project description` / `Notes` / …) + preview toggle (`👁 Split` / `✎ Editor only`, bound to `Cmd/Ctrl + P`) + close `X`
+- **Footer**: a subtle row of shortcut hints (`⌘+Enter` save · `Esc` close · `⌘+P` toggle preview)
+- **Save semantics** (identical to in-place, no second state machine):
+  - `Cmd/Ctrl + Enter`: save and close the Dialog (return to in-place display)
+  - Clicking backdrop / `Esc` / `X`: close the Dialog; **unsaved changes are committed** (matches the optimistic-write posture of in-place blur). Avoids the "I edited a bunch, clicked outside, lost everything" footgun
+  - Explicit discard: a small `↶ Discard` button top-right of the Dialog, visible only when dirty (click = revert to prior value and close)
+- **Relationship with in-place**: while the Dialog is open, the in-place block enters a "mirror" state (non-interactive static preview) so edits don't race in two places. Closing the Dialog restores it.
+
+**Editor-only (single-pane) mode**: `Cmd/Ctrl + P` or the header toggle hides the right pane and lets the textarea fill the Dialog width. Useful for "write first, look at structure after".
+
+**Why split-pane, not "tab between edit and preview"**: DayRail already has plenty of tab-toggled panels (Pending / Review / Calendar drawer). For long-form authoring the more-wanted affordance is "see the structure shift while typing" — split-pane gets you there in one step.
+
+##### Note hover popover (shared by CycleCell / RailCard)
+
+Cycle View pills and Today Track's RailCard badges may both surface a note preview on hover. **Not a tooltip** (tooltips can't carry Markdown) but a dedicated `NoteHoverPopover` component:
+
+- **Trigger**: a pill with a note (the note-branch of the CycleCell pill hover) / a RailCard `· Note` badge → opens on hover after 200 ms, closes 200 ms after pointer-out; pausing close while the pointer is over the popover body (to allow scrolling / selection)
+- **Content**: a compact meta row on top (same shape as today's tooltip in the CycleCell case; RailCard case just the Markdown body since meta already lives on the card) + the Markdown body (`prose-sm`, max 360 × 280px, scrolls on overflow) + optional sub-items list at the bottom (CycleCell case only)
+- **Pills without a note still use the Radix tooltip** (narrow, read-only); RailCard doesn't render the `· Note` badge when the task has no note, so no change there
+- **Styling**: faint surface fill + hairline border, weaker shadow than TaskDetailDrawer so it doesn't steal focus
+
+Implementation uses the already-installed `@radix-ui/react-popover`; hover-trigger is hand-rolled via `onMouseEnter` / `onMouseLeave` controlling `open` (Radix popover defaults to click-trigger).
+
+##### Search and compatibility
+
+- §5.5's search box substring-matches `title` + `note` against the **raw** Markdown source — no syntax stripping. Searching for `**important**` hitting `**important**` is the intended behavior.
+- Plain text written into `note` before v0.3 remains valid Markdown; no migration required.
 
 ### 5.6 Signal: the check-in strip on app open
 
@@ -1679,6 +1758,10 @@ type Line = {
   isDefault?: boolean;        // Lines with isDefault=true cannot be deleted/renamed/recolored (reserved for Inbox, id='line-inbox')
   plannedStart?: string;      // YYYY-MM-DD, soft window for Project / Habit
   plannedEnd?: string;        // YYYY-MM-DD; a Line without plannedEnd is legitimately open-ended, NOT a risk signal
+  note?: string;              // Optional long-form text, rendered as Markdown (see §5.5.4) —
+                              //   Project detail surface labels it "Description"; Habit detail surface
+                              //   labels it "Notes". Plain text is valid Markdown; no syntax is required.
+                              //   Search substring-matches the raw source.
   // `kind='habit'` Lines may associate with any number of HabitPhase
   // records (separate entity, see below). ≥ 1 records = phase-tracking
   // enabled; 0 = simple (non-progressive) habit.
@@ -1713,7 +1796,7 @@ type HabitPhase = {
   id: string;        // ULID
   lineId: string;    // parent Line (must be kind='habit')
   name: string;      // user-defined: 热身期 / 基础期 / 冲刺期 / ...
-  description?: string;
+  description?: string;  // Optional goal tagline — single-line plain text, NOT Markdown (see §5.5.4).
   startDate: string; // YYYY-MM-DD
   createdAt: number;
 };
@@ -1722,7 +1805,7 @@ type Task = {
   id: string;
   lineId: string;              // owning Line; tasks without a chosen Project default to 'line-inbox'
   title: string;
-  note?: string;               // free-text notes (search scans this field)
+  note?: string;               // Markdown notes (see §5.5.4). Search substring-matches the raw source.
   milestonePercent?: number;   // 0–100; if set, this task is a milestone; otherwise an "extra item"
   priority?: 'P0' | 'P1' | 'P2'; // optional lightweight hint (§5.5). Does not drive scheduling / check-in / notifications — only sort / group / filter in list surfaces.
   subItems: SubItem[];         // internal checklist, not independently scheduled
