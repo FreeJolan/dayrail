@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import { Archive, CalendarClock, CircleDashed, Clock, Inbox } from 'lucide-react';
 import {
@@ -509,32 +509,37 @@ function PendingItemRow({
   );
 }
 
-function ActionChip({
-  children,
-  variant = 'default',
-  onClick,
-}: {
-  children: React.ReactNode;
-  variant?: 'default' | 'primary' | 'ghost';
-  onClick?: (e: React.MouseEvent) => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={clsx(
-        'rounded-sm px-2.5 py-1 text-xs font-medium transition',
-        variant === 'primary' &&
-          'bg-ink-primary text-surface-0 hover:bg-ink-secondary',
-        variant === 'default' &&
-          'bg-surface-2 text-ink-secondary hover:bg-surface-3 hover:text-ink-primary',
-        variant === 'ghost' && 'text-ink-tertiary hover:text-ink-secondary',
-      )}
-    >
-      {children}
-    </button>
-  );
-}
+/** Tiny pill button used by Pending row actions. Must be a forwardRef
+ *  so that Radix's `asChild` (used by SchedulePopover's PopoverTrigger
+ *  to wrap the 改期 chip) can attach its trigger ref + inject the
+ *  aria-/data-state props the popover needs to anchor and toggle.
+ *  Without this, the popover never appears and the chip looks
+ *  un-clickable. */
+const ActionChip = forwardRef<
+  HTMLButtonElement,
+  {
+    children: React.ReactNode;
+    variant?: 'default' | 'primary' | 'ghost';
+  } & Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'children'>
+>(({ children, variant = 'default', className, ...rest }, ref) => (
+  <button
+    ref={ref}
+    type="button"
+    className={clsx(
+      'rounded-sm px-2.5 py-1 text-xs font-medium transition',
+      variant === 'primary' &&
+        'bg-ink-primary text-surface-0 hover:bg-ink-secondary',
+      variant === 'default' &&
+        'bg-surface-2 text-ink-secondary hover:bg-surface-3 hover:text-ink-primary',
+      variant === 'ghost' && 'text-ink-tertiary hover:text-ink-secondary',
+      className,
+    )}
+    {...rest}
+  >
+    {children}
+  </button>
+));
+ActionChip.displayName = 'ActionChip';
 
 function EmptyState() {
   return (
