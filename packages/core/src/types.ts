@@ -77,8 +77,14 @@ export interface Slot {
  *                    `scheduleTaskFreeTime`). Same-day drag and
  *                    rescheduling a still-future task do NOT emit.
  *                    v0.4.1. See §5.5.6 for trigger rules + Review
- *                    consumption. */
-export type ShiftType = 'defer' | 'archive' | 'reschedule';
+ *                    consumption.
+ *  - unschedule    : auto-emitted when the user CLEARS the schedule of
+ *                    an already-overdue Task (the Schedule popover's
+ *                    `取消排期` button, or any other path ending in
+ *                    `unscheduleTask`). Same overdue gate as reschedule
+ *                    minus the cross-day requirement. v0.4.2. See
+ *                    §5.5.6. */
+export type ShiftType = 'defer' | 'archive' | 'reschedule' | 'unschedule';
 
 /** Payload shape when `Shift.type === 'reschedule'`. Captured so
  *  Review can annotate the `(fromRailId, fromDate)` heatmap cell
@@ -94,18 +100,27 @@ export interface ReschedulePayload {
   toAdhocId?: string;
 }
 
+/** Payload shape when `Shift.type === 'unschedule'`. Same `from*`
+ *  fields as `ReschedulePayload` so Review's heatmap-cell upgrade
+ *  works uniformly; no `to*` since the task is headed nowhere. */
+export interface UnschedulePayload {
+  fromDate: string;
+  fromRailId?: string;
+  fromAdhocId?: string;
+}
+
 /** An audit record attached to a Task occurrence when the user
- *  deferred / archived / rescheduled it. Multiple tags + optional
- *  reason. v0.4: anchored to `taskId` (was `railInstanceId` before
- *  the RailInstance entity removal). */
+ *  deferred / archived / rescheduled / unscheduled it. Multiple tags +
+ *  optional reason. v0.4: anchored to `taskId` (was `railInstanceId`
+ *  before the RailInstance entity removal). */
 export interface Shift {
   id: string;
   taskId: string;
   type: ShiftType;
   at: string;
-  /** Shape depends on `type`. For `reschedule`, this is a
-   *  `ReschedulePayload`. For `defer` / `archive`, currently
-   *  free-form (empty object in practice). */
+  /** Shape depends on `type`. `reschedule` → `ReschedulePayload`;
+   *  `unschedule` → `UnschedulePayload`; `defer` / `archive` are
+   *  currently free-form (empty object in practice). */
   payload: Record<string, unknown>;
   tags?: string[];
   /** Not captured in v0.2 — the Reason toast only writes tags.

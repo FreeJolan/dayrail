@@ -890,36 +890,41 @@ Implementation uses the already-installed `@radix-ui/react-popover`; hover-trigg
 - §5.5's search box substring-matches `title` + `note` against the **raw** Markdown source — no syntax stripping. Searching for `**important**` hitting `**important**` is the intended behavior.
 - Plain text written into `note` before v0.3 remains valid Markdown; no migration required.
 
-#### 5.5.6 Overdue-reschedule Review accounting (v0.4.1+)
+#### 5.5.6 Overdue-shift Review accounting (v0.4.1+)
 
-**Why this chapter exists**: pre-v0.4.1, `Shift` records only arose from `defer` / `archive` on the check-in strip or Pending queue. **Moving an overdue Task to another day** ran through `scheduleTaskToRail` / `scheduleTaskFreeTime`, which emitted `task.scheduled` but **no Shift**. Review's heatmap derives from `Task.slot.date`, so after the move the original date silently regressed from `unmarked` (stale-pending) to `empty` (rail never applied). Review missed both the reschedule itself AND the prior-overdue trace.
+**Why this chapter exists**: pre-v0.4.1, `Shift` records only arose from `defer` / `archive` on the check-in strip or Pending queue. Two other mutations on an **already-overdue** Task were silently lost:
 
-That's exactly the signal Review exists to surface ("how much got pushed this cycle / what's chronically slipping"). We need it back.
+- **Moving it to another day** via `scheduleTaskToRail` / `scheduleTaskFreeTime` (addressed in v0.4.1).
+- **Clearing its schedule entirely** via `unscheduleTask` — i.e. the `取消排期` button in the Schedule popover (addressed in v0.4.2).
+
+Both ran their own event vocabulary (`task.scheduled` / `task.unscheduled`) but produced **no Shift**. Review's heatmap derives from `Task.slot.date`, so after the mutation the original date silently regressed from `unmarked` (stale-pending) to `empty` (rail never applied). Review missed the action itself AND the prior-overdue trace.
+
+That's exactly the signal Review exists to surface ("how much got pushed or dropped this cycle / what's chronically slipping"). We need it back.
 
 ##### Trigger rules
 
-`scheduleTaskToRail` / `scheduleTaskFreeTime` call an internal helper `maybeEmitReschedule` after the binding mutation commits:
+Two trigger points share one gate:
 
 ```text
 priorDate   = task.slot?.date ?? activeAdhoc(task.id)?.date
-nextDate    = incoming slot.date (rail mode) or opts.date (free-time mode)
 todayIso    = toIsoDate(new Date())
 isAutoHabit = task.source === 'auto-habit'
 
-Emit a Shift IFF:
+Common gate (both types):
   !isAutoHabit
   priorDate != null
   priorDate < todayIso      // genuinely overdue
-  nextDate  != priorDate    // actually cross-day
 ```
 
+- **`reschedule`** — emitted by `maybeEmitReschedule` inside `scheduleTaskToRail` / `scheduleTaskFreeTime` after the binding mutation commits. Extra condition: `nextDate != priorDate` (same-day swaps don't fire).
+- **`unschedule`** — emitted by `maybeEmitUnschedule` inside `unscheduleTask` after the slot / adhoc clear commits. No `next*` condition; the task is headed to nowhere.
+
 **Does NOT fire** (spelled out so implementation boundaries can't drift):
-- First-time scheduling (`priorDate == null`)
-- Within-day drag (`nextDate == priorDate`) — pure intraday shuffling
-- Rescheduling a future task (`priorDate >= todayIso`) — planning, not slippage
-- Same-day rail swap — same logic
-- `unscheduleTask` (scheduled → unscheduled has its own event vocabulary)
-- Auto-habit tasks — their `slot` is read-only in the habit detail surface (ERD §5.5.0); the reschedule path is not opened in v0.4.1
+- Acting on a future-dated task (`priorDate >= todayIso`) — planning, not slippage.
+- First-time scheduling (`priorDate == null`).
+- Within-day rail swap (reschedule only, `nextDate == priorDate`).
+- Auto-habit tasks — their `slot` is read-only in the habit detail surface (ERD §5.5.0); neither path is opened in v0.4.1/v0.4.2.
+- `deleteTask` (soft delete has its own Trash vocabulary and a different review surface; see "out of scope" below).
 
 ##### Shift shape
 
@@ -927,13 +932,15 @@ Emit a Shift IFF:
 {
   id:      ulid-like,
   taskId:  <task>,
-  type:    'reschedule',
+  type:    'reschedule' | 'unschedule',
   at:      ISO now,
   payload: {
+    // common (both types):
     fromDate,
     fromRailId?,   // set when the prior binding was a Rail slot
     fromAdhocId?,  // set when the prior binding was an Ad-hoc
-    toDate,
+    // reschedule only:
+    toDate?,
     toRailId?,     // set when the new binding is a Rail slot
     toAdhocId?,    // set when the new binding is an Ad-hoc
   },
@@ -941,34 +948,43 @@ Emit a Shift IFF:
 }
 ```
 
+`ReschedulePayload` carries both `from*` and `to*`; `UnschedulePayload` carries only `from*`.
+
 ##### Reason toast
 
-Reuses the §5.2 `ReasonToast` with `action='reschedule'` and copy `"已改期 · {taskTitle} → {toDate}"`:
+Reuses the §5.2 `ReasonToast`:
 
-- Trigger: after the Shift is persisted, the store sets `pendingReschedulePrompt` to the Shift record. A shell-level `useReschedulePrompt` hook subscribes and opens the toast.
-- Tag-pick: `setShiftTags(shiftId, tags)` — a new `shift.tags_updated` event (payload `{id, tags}`). Reducer merges with the existing tag set (Set-union; replay-commutative).
-- Close (X / Esc / auto-timeout 6 s): if any tags were picked, commit them first, then `ackReschedulePrompt(shiftId)` clears the queue.
-- **No Undo button** (`showUndo === false`). The schedule mutation is already committed; the inverse is "drag it back", which is faster via direct manipulation than via toast button.
+- `action='reschedule'` → copy `"已改期 · {taskTitle} → {toDate}"`
+- `action='unschedule'` → copy `"已取消排期 · {taskTitle}"`
+
+Both follow the same flow:
+
+- Trigger: after the Shift is persisted, the store sets `pendingShiftPrompt` (rename from the v0.4.1 `pendingReschedulePrompt`) to the Shift record. A shell-level `useShiftPrompt` hook subscribes and opens the toast.
+- Tag-pick: `setShiftTags(shiftId, tags)` — a `shift.tags_updated` event (payload `{id, tags}`). Reducer merges with the existing tag set (Set-union; replay-commutative).
+- Close (X / Esc / auto-timeout 6 s): if any tags were picked, commit them first, then `ackShiftPrompt(shiftId)` clears the queue.
+- **No Undo button** (`showUndo === false`). The mutation is already committed; the inverse is re-scheduling via the Schedule popover / drag, which direct manipulation does faster than any toast button would.
 
 ##### Review consumption
 
-`reviewFromStore.ts` adds one step to heatmap derivation:
+`reviewFromStore.ts` builds one shared set during heatmap derivation:
 
-- Scan `state.shifts`; for every shift with `type === 'reschedule'` and both `payload.fromRailId` and `payload.fromDate` present, and `fromDate` inside the review window, add `'{fromRailId}|{fromDate}'` to a set `rescheduledFromKey`.
-- Existing cell logic: when there's no terminal status and no task on the key and `date < today`, assign `unmarked`. **New upgrade**: if the cell is `unmarked` and `rescheduledFromKey.has('{rail.id}|{date}')`, promote it to `shifted`.
-- `ShiftTagBars` unchanged — `aggregateShiftTags` naturally picks up `reschedule` tags. v0.4.1 merges them into the same bars as defer/archive; we don't split the visualization yet.
+- Scan `state.shifts`; for every shift with `type` ∈ `{'reschedule', 'unschedule'}` and both `payload.fromRailId` and `payload.fromDate` present, and `fromDate` inside the review window, add `'{fromRailId}|{fromDate}'` to a set `shiftedFromKey` (rename from the v0.4.1 `rescheduledFromKey`).
+- Existing cell logic: when there's no terminal status and no task on the key and `date < today`, assign `unmarked`. **Upgrade**: if the cell is `unmarked` and `shiftedFromKey.has('{rail.id}|{date}')`, promote it to `shifted`.
+- `ShiftTagBars` unchanged — `aggregateShiftTags` naturally picks up both `reschedule` and `unschedule` tags. v0.4.2 merges them into the same bars as defer/archive; we don't split the visualization yet.
 
 ##### Interaction with other systems
 
-- **Event-log compatibility**: `shift.recorded` payload now includes the new `type='reschedule'` case with `ReschedulePayload`. Pre-v0.4.1 rows are all `defer/archive` — untouched. `shift.tags_updated` is a new event type; it simply doesn't appear in old logs.
+- **Event-log compatibility**: `shift.recorded` payload now covers both `type='reschedule'` (v0.4.1) and `type='unschedule'` (v0.4.2). Pre-v0.4.1 rows are all `defer/archive` — untouched. `shift.tags_updated` is a v0.4.1 event type; v0.4.2 reuses it unchanged.
 - **Replay idempotence**: the tags reducer merges as a set, so replaying `shift.tags_updated` any number of times converges to the same state.
 - **No DB schema change**: `shifts.type` is already TEXT; `shifts.payload_json` is JSON TEXT.
+- **Unschedule-then-reschedule chain**: if the user clears an overdue task's schedule and later reschedules it from Inbox, only the `unschedule` shift is emitted — the reschedule path sees `priorDate == null` (the binding was already cleared) and the gate fails. The `unschedule` record preserves the overdue trace; subsequent scheduling is "new work from a decided state", not a second slip.
 
-##### Deliberately out of scope for v0.4.1
+##### Deliberately out of scope for v0.4.2
 
-- **Undo reschedule**: no programmatic reverse — drag it back manually.
-- **Splitting `ShiftTagBars`** into "deferred/archived" vs "rescheduled" segments: extra visual weight without obvious density gain; revisit once we have a few cycles of real data.
-- **Auto-habit reschedule accounting**: those occurrences have a read-only `slot` (ERD §5.5.0) — the reschedule path is not opened in v0.4.1.
+- **Undo shift**: no programmatic reverse for either type. The user rebinds manually via drag or the Schedule popover.
+- **Splitting `ShiftTagBars`** into "deferred/archived" vs "rescheduled/unscheduled" segments: extra visual weight without obvious density gain; revisit once we have a few cycles of real data.
+- **Auto-habit accounting**: auto-task `slot` is read-only (ERD §5.5.0) — neither path is opened.
+- **Terminal deletion tracing**: deleting an overdue task (as opposed to clearing its schedule) is a more decisive action and already has its own Trash/purge event vocabulary. Whether it should also emit a Shift is left open — current thinking is that Trash serves a different review surface ("things I decided weren't worth doing") and doesn't need the heatmap hook.
 
 ### 5.6 Signal: the check-in strip on app open
 
@@ -1794,25 +1810,32 @@ type RailInstance = {
 type Shift = {
   id: string;
   taskId: string;                              // v0.4: anchored to Task (was railInstanceId before).
-  type: 'defer' | 'archive' | 'reschedule';
+  type: 'defer' | 'archive' | 'reschedule' | 'unschedule';
   //        defer       — paired with status → deferred (§5.2 / §5.6).
   //        archive     — paired with status → archived.
   //        reschedule  — added in v0.4.1. Emitted automatically when the user moves an
   //                      **already-overdue** Task to **a different day**. See §5.5.6.
+  //                      Fires only when (prior slot.date || prior adhoc.date) < today
+  //                      AND nextDate != priorDate. Same-day drag / future-task reschedule /
+  //                      first-time schedule → no fire.
+  //                      Auto-habit tasks are out of scope.
+  //        unschedule  — added in v0.4.2. Emitted automatically when the user clears the
+  //                      schedule of an **already-overdue** Task (Schedule popover 取消排期).
   //                      Fires only when (prior slot.date || prior adhoc.date) < today.
-  //                      Same-day drag / future-task reschedule / first-time schedule → no fire.
-  //                      Auto-habit tasks are out of scope for v0.4.1.
+  //                      Future-dated unschedule / auto-habit / deleteTask → no fire. See §5.5.6.
   // (v0.2-early 'postpone' / 'swap' / 'skip' / 'resize' / 'replace' / 'note' are retired;
   //  within-day drag in Cycle View still does NOT produce a Shift.)
   at: string;
   payload: Record<string, unknown>;
   // `reschedule` payload shape (`ReschedulePayload`):
   //   { fromDate, fromRailId?, fromAdhocId?, toDate, toRailId?, toAdhocId? }
+  // `unschedule` payload shape (`UnschedulePayload`):
+  //   { fromDate, fromRailId?, fromAdhocId? }   // no to* fields
   // Review uses fromRailId + fromDate to upgrade the original heatmap cell from
-  // `unmarked` to `shifted` (see §5.5.6).
+  // `unmarked` to `shifted` (see §5.5.6); both types feed the same upgrade path.
   tags?: string[]; // Global shared tags, written by the §5.2 Reason toast's quick-reason chips;
                    // chips are sourced from this Rail's top-3 historical tags, falling back to a static set on cold start.
-                   // `reschedule` shifts are persisted with empty tags first; the toast then appends via
+                   // `reschedule` / `unschedule` shifts are persisted with empty tags first; the toast then appends via
                    // the `shift.tags_updated` event (set-union merge).
   reason?: string; // Not captured in v0.2 — the Reason toast only writes tags.
                    // Free-text reason is deferred to v0.3 (Pending queue detail page).
