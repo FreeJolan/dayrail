@@ -11,11 +11,12 @@ import type {
   ToastAction,
 } from './ReasonToast';
 
-// `useReasonToast` covers the defer/archive/done flows — reschedule
-// is owned by `useReschedulePrompt`. Narrow the hook's action type
-// to that subset so callers can't accidentally ask this hook to fire
-// a reschedule toast (which it doesn't know how to handle).
-type CheckInAction = Exclude<ToastAction, 'reschedule'>;
+// `useReasonToast` covers the defer/archive/done flows — the
+// overdue-shift actions (reschedule / unschedule) are owned by
+// `useShiftPrompt`. Narrow the hook's action type to that subset so
+// callers can't accidentally ask this hook to fire one of those
+// (which it doesn't know how to handle).
+type CheckInAction = Exclude<ToastAction, 'reschedule' | 'unschedule'>;
 
 // Shared controller for the §5.2 Reason toast. Both the check-in
 // strip on Today Track and the Pending page wire into it so all

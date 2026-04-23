@@ -20,7 +20,12 @@ const TIMEOUT_MS = 6_000;
 
 const FALLBACK_TAGS = ['天气', '太累', '会议'];
 
-export type ToastAction = 'done' | 'defer' | 'archive' | 'reschedule';
+export type ToastAction =
+  | 'done'
+  | 'defer'
+  | 'archive'
+  | 'reschedule'
+  | 'unschedule';
 
 export interface ReasonToastState {
   action: ToastAction;
@@ -170,10 +175,11 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
   // to "explain". Keep the toast to a confirmation + Undo so the happy-
   // path finish feels frictionless.
   const showChips = cached.action !== 'done';
-  // Reschedule doesn't show Undo: the schedule mutation already
-  // committed and the inverse is "drag it back", not a toast button.
-  // The archive-recurring hint also doesn't apply.
-  const showUndo = cached.action !== 'reschedule';
+  // Reschedule / unschedule don't show Undo: the mutation already
+  // committed and the inverse gesture is direct manipulation (drag
+  // it back / rebind via the Schedule popover), not a toast button.
+  const showUndo =
+    cached.action !== 'reschedule' && cached.action !== 'unschedule';
 
   return createPortal(
     <div className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-6">
@@ -294,5 +300,7 @@ function headline(action: ToastAction): string {
       return '已归档';
     case 'reschedule':
       return '已改期';
+    case 'unschedule':
+      return '已取消排期';
   }
 }

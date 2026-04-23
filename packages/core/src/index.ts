@@ -13,3 +13,4 @@ export * from './today';
 export * from './types';
 export * from './autoTask';
 export * from './reschedule';
+export * from './unschedule';
