@@ -54,10 +54,12 @@ import {
   type Task,
   type Template,
   type TemplateKey,
+  type UnschedulePayload,
   type HabitBinding,
 } from './types';
 import { toIsoDate } from './today';
 import { detectReschedule } from './reschedule';
+import { detectUnschedule } from './unschedule';
 
 // ------------------------------------------------------------------
 // Store shape.
@@ -79,12 +81,13 @@ export interface DayRailState {
   /** §5.5.0 v0.4 · habit ↔ rail bindings. Keyed on binding id. */
   habitBindings: Record<string, HabitBinding>;
   sessions: Record<string, EditSession>;
-  /** §5.5.6 · ephemeral queue for the reschedule Reason toast. Set by
-   *  `scheduleTaskToRail` / `scheduleTaskFreeTime` when they auto-record
-   *  a `type='reschedule'` shift; cleared via `ackReschedulePrompt`.
-   *  Not replayed from the event log — the shift itself is durable, this
-   *  field is only "did we just record one the UI should annotate?". */
-  pendingReschedulePrompt: Shift | null;
+  /** §5.5.6 · ephemeral queue for the overdue-shift Reason toast. Set by
+   *  `scheduleTaskToRail` / `scheduleTaskFreeTime` (type='reschedule')
+   *  and by `unscheduleTask` (type='unschedule') when they auto-record
+   *  a shift; cleared via `ackShiftPrompt`. Not replayed from the
+   *  event log — the shift itself is durable, this field is only
+   *  "did we just record one the UI should annotate?". */
+  pendingShiftPrompt: Shift | null;
 }
 
 interface DayRailActions {
@@ -110,13 +113,13 @@ interface DayRailActions {
     surface: Signal['surface'],
   ) => Promise<void>;
   recordShift: (shift: Shift) => Promise<void>;
-  /** Append tags to an existing shift. Used by the reschedule Reason
+  /** Append tags to an existing shift. Used by the overdue-shift Reason
    *  toast (§5.5.6) when the user picks a tag AFTER the shift has
    *  already been recorded. Emits `shift.tags_updated`. */
   setShiftTags: (shiftId: string, tags: string[]) => Promise<void>;
-  /** Clear pendingReschedulePrompt once the toast has been shown /
+  /** Clear pendingShiftPrompt once the toast has been shown /
    *  dismissed / acted on. No event — UI bookkeeping only. */
-  ackReschedulePrompt: (shiftId: string) => void;
+  ackShiftPrompt: (shiftId: string) => void;
   // --- lines (Project / Habit / Tag, §5.5) ---
   createLine: (line: Line) => Promise<void>;
   updateLine: (id: string, patch: Partial<Line>) => Promise<void>;
@@ -689,6 +692,48 @@ export const useStore = create<DayRailStore>()(
       }
     };
 
+    // §5.5.6 · internal helper · persist a newly-recorded shift and
+    // queue it for the Reason toast. Shared by the reschedule and
+    // unschedule emitters so both overdue-mutation paths end with the
+    // same UI handoff.
+    const persistShiftAndQueuePrompt = async (opts: {
+      taskId: string;
+      type: ShiftType;
+      // Callers pass a typed `ReschedulePayload` / `UnschedulePayload`;
+      // the event log widens to `Record<string, unknown>` below. The
+      // union here keeps the call sites typed without needing a cast
+      // at each one.
+      payload: ReschedulePayload | UnschedulePayload;
+      sessionId?: string;
+    }): Promise<void> => {
+      const shiftId = ulidLite('shift');
+      const ev = await appendEvent({
+        aggregateId: `task:${opts.taskId}`,
+        type: 'shift.recorded',
+        payload: {
+          id: shiftId,
+          taskId: opts.taskId,
+          type: opts.type,
+          at: new Date().toISOString(),
+          payload: opts.payload as unknown as Record<string, unknown>,
+          tags: [],
+        },
+        ...(opts.sessionId && { sessionId: opts.sessionId }),
+      });
+      set((draft) => {
+        applyEventInPlace(draft, ev.type, ev.payload);
+        const recorded = draft.shifts[shiftId];
+        if (recorded) {
+          // Copy so UI consumers can't mutate the reducer state.
+          draft.pendingShiftPrompt = {
+            ...recorded,
+            payload: { ...recorded.payload },
+            ...(recorded.tags && { tags: [...recorded.tags] }),
+          };
+        }
+      });
+    };
+
     // §5.5.6 · auto-emit a `type='reschedule'` Shift when a schedule
     // mutation moves an already-overdue Task to a different day.
     // Called by `scheduleTaskToRail` / `scheduleTaskFreeTime` after
@@ -696,15 +741,15 @@ export const useStore = create<DayRailStore>()(
     // state to compare against.
     //
     // Fires ONLY when:
-    //   - task is hand-built (auto-habit occurrences out of scope for
-    //     v0.4.1 — the habit edit table marks `slot` read-only anyway).
+    //   - task is hand-built (auto-habit occurrences out of scope —
+    //     the habit edit table marks `slot` read-only anyway).
     //   - prior binding existed (first-time schedule = not a reschedule).
     //   - priorDate < today (genuinely overdue; future-task reschedule
     //     is planning, not slippage).
     //   - newDate != priorDate (cross-day, not an intraday shuffle).
     //
-    // Seeds `pendingReschedulePrompt` so the UI Reason toast can
-    // surface and let the user tag why.
+    // Seeds `pendingShiftPrompt` so the UI Reason toast can surface
+    // and let the user tag why.
     const maybeEmitReschedule = async (opts: {
       taskId: string;
       priorSlot: Task['slot'] | undefined;
@@ -725,7 +770,6 @@ export const useStore = create<DayRailStore>()(
       if (!decision.shouldEmit) return;
       const priorDate = decision.priorDate;
 
-      const shiftId = ulidLite('shift');
       const payload: ReschedulePayload = {
         fromDate: priorDate,
         toDate: opts.nextDate,
@@ -739,30 +783,52 @@ export const useStore = create<DayRailStore>()(
         ...(opts.nextRailId != null && { toRailId: opts.nextRailId }),
         ...(opts.nextAdhocId != null && { toAdhocId: opts.nextAdhocId }),
       };
-      const ev = await appendEvent({
-        aggregateId: `task:${opts.taskId}`,
-        type: 'shift.recorded',
-        payload: {
-          id: shiftId,
-          taskId: opts.taskId,
-          type: 'reschedule',
-          at: new Date().toISOString(),
-          payload,
-          tags: [],
-        },
+      await persistShiftAndQueuePrompt({
+        taskId: opts.taskId,
+        type: 'reschedule',
+        payload,
         ...(opts.sessionId && { sessionId: opts.sessionId }),
       });
-      set((draft) => {
-        applyEventInPlace(draft, ev.type, ev.payload);
-        const recorded = draft.shifts[shiftId];
-        if (recorded) {
-          // Copy so UI consumers can't mutate the reducer state.
-          draft.pendingReschedulePrompt = {
-            ...recorded,
-            payload: { ...recorded.payload },
-            ...(recorded.tags && { tags: [...recorded.tags] }),
-          };
-        }
+    };
+
+    // §5.5.6 · auto-emit a `type='unschedule'` Shift when the user
+    // clears the schedule of an already-overdue Task. Called by
+    // `unscheduleTask` with the prior binding captured BEFORE the
+    // clear committed — once the mutation runs, `task.slot` /
+    // `task.adhoc` are gone and the decision can't be reconstructed.
+    //
+    // Same overdue / auto-habit gate as reschedule; no cross-day
+    // check since there is no next date.
+    const maybeEmitUnschedule = async (opts: {
+      taskId: string;
+      priorSlot: Task['slot'] | undefined;
+      priorAdhoc: AdhocEvent | undefined;
+      isAutoHabit: boolean;
+      sessionId?: string;
+    }): Promise<void> => {
+      const decision = detectUnschedule({
+        priorSlot: opts.priorSlot,
+        priorAdhoc: opts.priorAdhoc,
+        todayIso: toIsoDate(),
+        isAutoHabit: opts.isAutoHabit,
+      });
+      if (!decision.shouldEmit) return;
+
+      const payload: UnschedulePayload = {
+        fromDate: decision.priorDate,
+        ...(opts.priorSlot?.railId != null && {
+          fromRailId: opts.priorSlot.railId,
+        }),
+        ...(opts.priorSlot == null &&
+          opts.priorAdhoc?.id != null && {
+            fromAdhocId: opts.priorAdhoc.id,
+          }),
+      };
+      await persistShiftAndQueuePrompt({
+        taskId: opts.taskId,
+        type: 'unschedule',
+        payload,
+        ...(opts.sessionId && { sessionId: opts.sessionId }),
       });
     };
 
@@ -780,7 +846,7 @@ export const useStore = create<DayRailStore>()(
       habitPhases: {},
       habitBindings: {},
       sessions: {},
-      pendingReschedulePrompt: null,
+      pendingShiftPrompt: null,
 
       hydrate: async () => {
         try {
@@ -1008,10 +1074,10 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
-      ackReschedulePrompt: (shiftId) => {
+      ackShiftPrompt: (shiftId) => {
         set((draft) => {
-          if (draft.pendingReschedulePrompt?.id === shiftId) {
-            draft.pendingReschedulePrompt = null;
+          if (draft.pendingShiftPrompt?.id === shiftId) {
+            draft.pendingShiftPrompt = null;
           }
         });
       },
@@ -1588,9 +1654,17 @@ export const useStore = create<DayRailStore>()(
       },
 
       unscheduleTask: async (taskId, sessionId) => {
-        const task = get().tasks[taskId];
+        // Capture prior binding BEFORE any mutation so maybeEmitUnschedule
+        // can decide whether to record a §5.5.6 overdue-shift record.
+        const priorTask = get().tasks[taskId];
+        const priorSlot = priorTask?.slot;
+        const priorAdhoc = Object.values(get().adhocEvents).find(
+          (a) => a.taskId === taskId && a.status === 'active',
+        );
+        const isAutoHabit = priorTask?.source === 'auto-habit';
+
         let touched = false;
-        if (task?.slot) {
+        if (priorTask?.slot) {
           const ev = await appendEvent({
             aggregateId: `task:${taskId}`,
             type: 'task.unscheduled',
@@ -1615,6 +1689,15 @@ export const useStore = create<DayRailStore>()(
             set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
             touched = true;
           }
+        }
+        if (touched) {
+          await maybeEmitUnschedule({
+            taskId,
+            priorSlot,
+            priorAdhoc,
+            isAutoHabit,
+            ...(sessionId && { sessionId }),
+          });
         }
         if (touched && sessionId) await touchSession(sessionId);
         afterMutation();

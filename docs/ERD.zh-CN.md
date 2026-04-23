@@ -815,38 +815,41 @@ Cycle View pill 和 Today Track 的 RailCard 徽标在 hover 时都可能展示 
 - `§5.5` 搜索框对 `title` + `note` 做**子串**匹配 —— 直接对原始 Markdown 源码匹配即可；不额外剥离语法（`**重要**` 的检索命中 `**重要**` 是期望行为）。
 - v0.3 之前写进 `note` 的纯文本在 Markdown 语义下完全等价，不需要迁移。
 
-#### 5.5.6 过期改期的 Review 记账（v0.4.1 起）
+#### 5.5.6 过期 task 变更的 Review 记账（v0.4.1 起）
 
-**问题背景**：v0.4 之前，`Shift` 只在 check-in 条 / Pending 队列点 `defer` / `archive` 时产生。用户把**过期 task 拖到另一天**走 `scheduleTaskToRail` / `scheduleTaskFreeTime`，只发 `task.scheduled` 事件、**不产生 Shift**；Review 的热力图由 `Task.slot.date` 派生，改期后旧日期的格子从"过期未做（`unmarked`）"悄悄退回"rail 空着（`empty`）"。Review 不但没统计到改期，连"曾经过期过"的灰迹也被抹掉了。
+**问题背景**：v0.4 之前，`Shift` 只在 check-in 条 / Pending 队列点 `defer` / `archive` 时产生。**已过期 task** 上还有两种变更也被静默丢掉：
 
-这正好是 Review 最该统计的信号（"这周有多少事被推走了 / 哪些事一直在被推"），不能丢。
+- **挪到另一天**走 `scheduleTaskToRail` / `scheduleTaskFreeTime`（v0.4.1 修）。
+- **直接取消排期**走 `unscheduleTask`，即 Schedule popover 上的「取消排期」按钮（v0.4.2 修）。
+
+两条路径都只发各自的事件（`task.scheduled` / `task.unscheduled`）、**不产生 Shift**；Review 的热力图由 `Task.slot.date` 派生，变更后旧日期的格子从"过期未做（`unmarked`）"悄悄退回"rail 空着（`empty`）"。Review 不但没统计到动作本身，连"曾经过期过"的灰迹也被抹掉了。
+
+这正好是 Review 最该统计的信号（"这周有多少事被推走 / 被拿掉 / 哪些事一直在被推"），不能丢。
 
 ##### 触发规则
 
-`scheduleTaskToRail` / `scheduleTaskFreeTime` 在绑定 mutation 提交后调用内部 helper `maybeEmitReschedule`：
+两个触发点共享一套 gate：
 
 ```text
 priorDate   = task.slot?.date ?? activeAdhoc(task.id)?.date
-nextDate    = incoming slot.date (rail 模式) 或 opts.date (自由时间模式)
 todayIso    = toIsoDate(new Date())
 isAutoHabit = task.source === 'auto-habit'
 
-发 Shift 的条件全部为真：
+共享 gate（两种类型都要过）：
   !isAutoHabit
   priorDate != null
   priorDate < todayIso     // 真的过期
-  nextDate  != priorDate   // 真的跨日
-
-失败任一项则不发。
 ```
 
+- **`reschedule`** —— 由 `maybeEmitReschedule` 在 `scheduleTaskToRail` / `scheduleTaskFreeTime` 的绑定 mutation 提交后发出。额外条件：`nextDate != priorDate`（同日切换 rail 不算）。
+- **`unschedule`** —— 由 `maybeEmitUnschedule` 在 `unscheduleTask` 清掉 slot / adhoc 后发出。没有 `next*`，task 去向是"没有"。
+
 **明确不触发**的场景（写出来避免实现时边界漂）：
-- 首次排期（`priorDate == null`）
-- 当天内拖拽（`nextDate == priorDate`）—— 纯时内调度
-- 未来 task 改期（`priorDate >= todayIso`）—— 这是规划，不是 slippage
-- 同日切换 rail —— 同上
-- `unscheduleTask`（"排期 → 未排"走独立事件语义）
-- auto-habit task —— `slot` 在 habit 详情页是 read-only，这条路径 v0.4.1 不打开
+- 未来日期的 task 上做这两个动作（`priorDate >= todayIso`）—— 这是规划，不是 slippage。
+- 首次排期（`priorDate == null`）。
+- 当天内切换 rail（仅 reschedule，`nextDate == priorDate`）。
+- auto-habit task —— `slot` 在 habit 详情页是 read-only（§5.5.0），两条路径都不打开。
+- `deleteTask`（软删有自己的 Trash 事件语义，Review 不走 heatmap；见下文"暂不做"）。
 
 ##### Shift 的形状
 
@@ -854,13 +857,15 @@ isAutoHabit = task.source === 'auto-habit'
 {
   id:      ulid-like,
   taskId:  <task>,
-  type:    'reschedule',
+  type:    'reschedule' | 'unschedule',
   at:      ISO now,
   payload: {
+    // 两种类型都有：
     fromDate,
     fromRailId?,   // prior 是 rail 模式时
     fromAdhocId?,  // prior 是 ad-hoc 模式时
-    toDate,
+    // 仅 reschedule：
+    toDate?,
     toRailId?,     // new 是 rail 模式时
     toAdhocId?,    // new 是 ad-hoc 模式时
   },
@@ -868,34 +873,43 @@ isAutoHabit = task.source === 'auto-habit'
 }
 ```
 
+`ReschedulePayload` 带 `from*` + `to*`；`UnschedulePayload` 只带 `from*`。
+
 ##### Reason toast
 
-共用 §5.2 的 `ReasonToast`，`action='reschedule'`，文案"已改期 · {taskTitle} → {toDate}"：
+共用 §5.2 的 `ReasonToast`：
 
-- 触发：store 写完 Shift 后，把 shift 对象塞进 `pendingReschedulePrompt`；共享 App Shell 上挂的 `useReschedulePrompt` hook 订阅到，弹 toast。
-- Tag pick 后：`setShiftTags(shiftId, tags)` —— 新事件 `shift.tags_updated`（payload `{id, tags}`），reducer 以集合并入（多次 update 可交换）。
-- 关闭路径（点 X、Esc、或自动 6s 超时）：若有 tag 则写入，然后 `ackReschedulePrompt(shiftId)` 清队列。
-- **不提供撤销按钮**（`showUndo === false`）—— 改期的 mutation 已提交，反向操作是"再拖回去"，toast 按钮不合适。用户要反悔，手动拖回即可。
+- `action='reschedule'` → 文案"已改期 · {taskTitle} → {toDate}"
+- `action='unschedule'` → 文案"已取消排期 · {taskTitle}"
+
+两种路径共走同一个流程：
+
+- 触发：store 写完 Shift 后，把 shift 对象塞进 `pendingShiftPrompt`（由 v0.4.1 的 `pendingReschedulePrompt` 更名）；App Shell 上挂的 `useShiftPrompt` hook 订阅到、弹 toast。
+- Tag pick 后：`setShiftTags(shiftId, tags)` —— `shift.tags_updated` 事件（payload `{id, tags}`），reducer 以集合并入（多次 update 可交换）。
+- 关闭路径（点 X、Esc、或自动 6s 超时）：若有 tag 则写入，然后 `ackShiftPrompt(shiftId)` 清队列。
+- **不提供撤销按钮**（`showUndo === false`）—— mutation 已提交，反向操作是通过 Schedule popover / 拖拽重排，直接操作比 toast 按钮快。
 
 ##### Review 消费
 
-`reviewFromStore.ts` 在 heatmap 派生阶段多一步：
+`reviewFromStore.ts` 在 heatmap 派生阶段多一步（一套集合覆盖两种类型）：
 
-- 遍历 `state.shifts`，对每个 `type === 'reschedule'` 且 `payload.fromRailId` / `payload.fromDate` 都存在、且 `fromDate` 落在 review 窗口内的，加入集合 `rescheduledFromKey = '{fromRailId}|{fromDate}'`。
-- 原有判断：如果 cell 既不 done / deferred / archived 也无 task，且 `date < today` 就标 `unmarked`。**新增升级**：`unmarked` 且 `rescheduledFromKey.has('{rail.id}|{date}')` → 升级为 `shifted`。
-- `ShiftTagBars` 不用改 —— `aggregateShiftTags` 天然把 `reschedule` 的 tags 纳入计数。视觉上暂不分段（"弃用/顺延" vs "改期"），v0.4.1 先合并展示。
+- 遍历 `state.shifts`，对每个 `type` ∈ `{'reschedule', 'unschedule'}` 且 `payload.fromRailId` / `payload.fromDate` 都存在、且 `fromDate` 落在 review 窗口内的，加入集合 `shiftedFromKey = '{fromRailId}|{fromDate}'`（由 v0.4.1 的 `rescheduledFromKey` 更名）。
+- 原有判断：如果 cell 既不 done / deferred / archived 也无 task，且 `date < today` 就标 `unmarked`。**升级**：`unmarked` 且 `shiftedFromKey.has('{rail.id}|{date}')` → 升级为 `shifted`。
+- `ShiftTagBars` 不用改 —— `aggregateShiftTags` 天然把 `reschedule` 和 `unschedule` 的 tags 一起纳入计数。视觉上暂不分段（"弃用/顺延" vs "改期/取消排期"），v0.4.2 先合并展示。
 
 ##### 与其他系统的关系
 
-- **Event log 兼容**：`shift.recorded` payload 新增 `type='reschedule'` + `ReschedulePayload` 结构 —— 旧行全部 `defer/archive`，不受影响。新加 `shift.tags_updated` 事件类型，旧日志不会出现。
+- **Event log 兼容**：`shift.recorded` payload 现在覆盖 `type='reschedule'`（v0.4.1）和 `type='unschedule'`（v0.4.2）两种。旧行全部 `defer/archive`，不受影响。`shift.tags_updated` 是 v0.4.1 引入的事件类型，v0.4.2 原样复用。
 - **事件 replay 幂等**：`shift.tags_updated` 的 reducer 以 `Set` 合并 tags，多次 replay 得到相同结果。
 - **数据库 schema 零改动**：`shifts.type` 已是 TEXT，`shifts.payload_json` 已是 JSON TEXT。
+- **先取消排期、后重新排期 的链路**：用户如果先取消一个过期 task 的排期、之后从 Inbox 再排期，只会产生一条 `unschedule` shift —— 因为这时 reschedule 的 gate 会看到 `priorDate == null`（绑定已被 unschedule 清空）不触发。`unschedule` 已保住"曾经过期过"的灰迹；后续重排相当于"在已决定的状态上重新开工"，不是第二次 slip。
 
 ##### 暂不做
 
-- **撤销 reschedule**：v0.4.1 不支持一键反向；用户手动拖回即可。
-- **拆分 ShiftTagBars**：把"弃用" / "改期" 分两段展示，视觉复杂度增加但信息密度未必提升；先看真实数据。
-- **auto-habit reschedule 记账**：habit 自动生成的 auto-task `slot` 在 UI 是 read-only（ERD §5.5.0），改期路径 v0.4.1 不打开。
+- **撤销 shift**：两种类型都不支持一键反向，用户通过拖拽 / Schedule popover 手动重排即可。
+- **拆分 ShiftTagBars**：把"弃用 / 改期 / 取消排期"分段展示，视觉复杂度增加但信息密度未必提升；先看真实数据。
+- **auto-habit 记账**：auto-task `slot` 是 read-only（§5.5.0），两条路径都不打开。
+- **软删记账**：删除过期 task 是更决绝的动作，已有自己的 Trash / purge 事件语义。是否也发 Shift 留开 —— 当前倾向是 Trash 服务的是另一个 Review 面（"我决定这事不值得做"），不走 heatmap。
 
 ### 5.6 Signal：打开 App 时的 check-in 条
 
@@ -1650,24 +1664,31 @@ type RailInstance = {
 type Shift = {
   id: string;
   taskId: string;                              // v0.4: anchored to Task（之前是 railInstanceId）。
-  type: 'defer' | 'archive' | 'reschedule';
+  type: 'defer' | 'archive' | 'reschedule' | 'unschedule';
   //        defer       —— 伴随 status = deferred 的那次动作（§5.2 / §5.6）。
   //        archive     —— 伴随 status = archived 的那次动作。
   //        reschedule  —— v0.4.1 新增。用户把**已过期**的 Task 拖 / 改期到
   //                       **另一天**时自动生成。见 §5.5.6。
-  //                       仅当 (原 slot.date || 原 adhoc.date) < 今天 时触发。
+  //                       仅当 (原 slot.date || 原 adhoc.date) < 今天 且 nextDate != priorDate 时触发。
   //                       当天内拖拽 / 未来 task 改期 / 首次排期 → 不触发。
   //                       auto-habit task 暂不在触发范围内。
+  //        unschedule  —— v0.4.2 新增。用户对**已过期**的 Task 点 Schedule popover 的
+  //                       「取消排期」时自动生成。见 §5.5.6。
+  //                       仅当 (原 slot.date || 原 adhoc.date) < 今天 时触发。
+  //                       未来 task 取消排期 / auto-habit / deleteTask → 不触发。
   // （v0.2 early 的 'postpone' / 'swap' / 'skip' / 'resize' / 'replace' / 'note' 已弃用；
   //  "时内推移" 依旧交给 Cycle View 拖拽，不产生 Shift。）
   at: string;
   payload: Record<string, unknown>;
   // reschedule 的 payload 形如（ReschedulePayload）：
   //   { fromDate, fromRailId?, fromAdhocId?, toDate, toRailId?, toAdhocId? }
-  // Review 用 fromRailId + fromDate 把旧 heatmap cell 从 `unmarked` 升级为 `shifted`（§5.5.6）。
+  // unschedule 的 payload 形如（UnschedulePayload）：
+  //   { fromDate, fromRailId?, fromAdhocId? }   // 没有 to* 字段
+  // Review 用 fromRailId + fromDate 把旧 heatmap cell 从 `unmarked` 升级为 `shifted`（§5.5.6）；
+  // 两种类型共享同一个升级路径。
   tags?: string[]; // 全局共享标签，由 §5.2 Reason toast 的快速原因 chip 写入；
                    // chip 内容取自该 Rail 的历史 tag 频次 top 3，冷启动回落到静态集。
-                   // reschedule 的 shift 先以空 tags 持久化；tag pick 后通过
+                   // reschedule / unschedule 的 shift 先以空 tags 持久化；tag pick 后通过
                    // `shift.tags_updated` 事件追加（追加式并集合并）。
   reason?: string; // v0.2 不采集 —— Reason toast 只给 tag，reason 留到 v0.3 Pending 详情页再加。
 };
