@@ -145,7 +145,7 @@ export function CycleSection({
 
         <table className="table-fixed border-separate border-spacing-0">
           <colgroup>
-            <col className="w-[140px]" />
+            <col className="w-[220px]" />
             {days.map((d) => (
               <col key={d.date} className="w-[180px]" />
             ))}
@@ -269,7 +269,7 @@ function SectionMiniHeader({
     <div className="flex min-h-[48px] items-center gap-0 border-b border-transparent py-2">
       <table className="table-fixed border-separate border-spacing-0">
         <colgroup>
-          <col className="w-[140px]" />
+          <col className="w-[220px]" />
           {days.map((d) => (
             <col key={d.date} className="w-[180px]" />
           ))}
@@ -277,16 +277,16 @@ function SectionMiniHeader({
         <thead>
           <tr>
             <th className="pr-3 text-left align-middle">
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 items-center gap-2">
                 <span
                   aria-hidden
-                  className="h-3 w-[3px] rounded-sm"
+                  className="h-3 w-[3px] shrink-0 rounded-sm"
                   style={{ background: stripColor }}
                 />
-                <span className="font-mono text-2xs uppercase tracking-widest text-ink-primary">
+                <span className="min-w-0 truncate font-mono text-2xs uppercase tracking-widest text-ink-primary">
                   {templateLabel}
                 </span>
-                <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                <span className="shrink-0 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
                   · {days.length} days
                 </span>
               </div>
@@ -488,7 +488,7 @@ function RailRowLabel({
         <span className="truncate text-sm text-ink-primary">
           {rail.name}
         </span>
-        <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+        <span className="truncate font-mono text-2xs tabular-nums text-ink-tertiary">
           {fmtHHMM(rail.startMin)} → {fmtHHMM(rail.endMin)}
         </span>
       </span>
