@@ -40,7 +40,7 @@ export function TimelineRuler({ rails, summary, focusRailId }: Props) {
   return (
     <aside
       aria-label="Template timeline overview"
-      className="sticky top-[92px] flex w-[96px] shrink-0 flex-col gap-4 self-start pt-2"
+      className="sticky top-[92px] flex w-[96px] shrink-0 flex-col gap-4 self-start"
     >
       <header className="flex items-baseline gap-2">
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">

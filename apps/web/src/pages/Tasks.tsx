@@ -584,10 +584,16 @@ function MainPanel({
 
   // Split into the two collapsible groups for inbox / line views.
   // Archived / trash don't split — they're status-scoped lists already.
+  // `deferred` is "still awaiting a decision" (§5.7 Pending semantics)
+  // — it belongs in 未完成 next to pending / in-progress, not silently
+  // dropped between the two buckets.
   const openTasks = useMemo(
     () =>
       filteredTasks.filter(
-        (t) => t.status === 'pending' || t.status === 'in-progress',
+        (t) =>
+          t.status === 'pending' ||
+          t.status === 'in-progress' ||
+          t.status === 'deferred',
       ),
     [filteredTasks],
   );
