@@ -119,6 +119,13 @@ These stories act as a design touchstone — any new feature should plug natural
 - **Shift**: A record of a `pending → *` transition on a RailInstance. v0.2 keeps two types: `defer` (Later; lands in Pending) and `archive` (no more scheduling). May optionally carry tags from a global shared library (see §5.7). Within-day postponing is handled by Cycle-View drag; `swap / resize / replace` are deferred to v0.3.
 - **Signal**: Lightweight check-in at a Rail boundary — named after the railway signal at each crossing: it lights up, it doesn't command. `continue` / `adjust` / `skip`.
 - **Ad-hoc Event**: A one-off time block not belonging to any template. Higher priority than template resolution. Optionally attached to a Line.
+- **DailyReflection (v0.4.3+)**: One hand-written Markdown blob per calendar date — the user's space for journaling, retrospection, mood, or any free-form note about that day.
+  - **Keyed by date**: `date` (`YYYY-MM-DD`, natural day per `Track.tz`) is the primary key; at most one row per day. An empty string means "not written" (`reflection.cleared` on the event log).
+  - **Orthogonal to Rail / Task / Habit**: does not feed the heatmap, does not affect Project progress, triggers no scheduling side effects — purely a container for "what I want to say about today." Intentionally absent from the Mermaid diagram to keep it noise-free.
+  - **Any date is editable**: not restricted to "today." Past dates (so users can fill in yesterday) and future dates (leave a note for an upcoming day) are both allowed.
+  - **Two entry points share one record**: (1) a "Today Reflection" card at the bottom of Today Track, hard-wired to the current date; (2) a collapsible block at the bottom of `/review/day/:anchor`, usable to revisit or edit any date. Both surfaces sync through the event log so the two views stay live-consistent.
+  - **Storage**: event-sourced + materialized table (`reflection.upserted { date, content }` / `reflection.cleared { date }`, aggregateId = date). Snapshot gains `reflections: Record<date, DailyReflection>`; participates in session-level undo and cross-device replay just like Habit / Task.
+  - **Not in scope**: revision history (the event log is the history), AI summarization, templates/prompts, cross-day search (revisit in v0.5+), word-count caps.
 - **Line (internal container type · never in UI copy)**: DayRail's only multi-Rail / Task grouping concept, forming a continuum. `Line` exists only in types / schema / event log — UI views / menus / copy always show the concrete shape per `kind`: `Project` / `Habit` / `Tag` (formerly "Group").
   - **Three states**: `status: 'active' | 'archived' | 'deleted'`. `archived` is a user-intentional terminal state (restorable); `deleted` is a soft delete (visible in Trash, restorable; hard delete only via an explicit "permanently delete" confirmation).
   - **Inbox is a built-in singleton Line**: `id = 'line-inbox'`, `kind = 'project'`, `isDefault: true`, undeletable and uneditable. Every task the user creates without picking a Project lands here (see §5.5.1).
@@ -349,6 +356,8 @@ Keyboard: `1` / `2` / `3` select the corresponding chip; `u` = undo; `Esc` = clo
 **No "bento future blocks"**: Today Track is a single timeline end-to-end; future Rails continue on the main track as `pending` rows — **no separate card grid** for afternoon slots or "distant" Rails. Reason: the DayRail data model has no fields for "participant avatars / focus intensity", so a bento would only add decorative noise. A single timeline also keeps the visual system aligned with Now View §5.1 and Cycle View §5.3.
 
 **Task-detail editing** (v0.4 add): clicking a RailCard opens the `TaskDetailDrawer` (same component as §5.5) for inline edits of note / sub-items / milestone / schedule. **For auto-tasks**, the edit permissions follow §5.5.0 "Auto-task editability" — title / schedule / milestone are read-only; note / sub-items stay editable. Clicking a bare rail (no carrying Task) does nothing. Inline badges on the RailCard (「N/M 子任务」, "has notes") let the user scan the state without opening the drawer.
+
+**Today Reflection card** (v0.4.3 add · see §4.1 DailyReflection): a single card pinned to the **bottom** of the page, titled `今日复盘 / Today Reflection`, with the date as subtitle. The card body reuses `MarkdownField` (same component used by Project / Habit notes): auto-grow, Markdown rendering, write-on-blur into the event log; an empty body emits `reflection.cleared`. **Bottom placement is intentional** — reflection is what the user does *after* scanning today, so it must not crowd the main timeline. The card is **hard-wired to today** (no date switcher); to edit other dates use `/review/day/:anchor`. It shares the same record as the Review · Day surface, so writes from either side propagate live.
 
 ### 5.3 Cycle View (planning mode)
 
@@ -1052,6 +1061,7 @@ Pending is the *complete* set of "awaiting a decision"; §5.6's check-in strip i
   - Observe: patterns in the period
   - Review: structured weekly / monthly report
   - All AI runs only when explicitly triggered or enabled.
+- **Daily Reflection block** (v0.4.3+ · see §4.1 DailyReflection): rendered **only in day scope**, as the final waterfall section, titled `今日复盘 / Daily Reflection`. Reuses `MarkdownField` and shares the underlying record with the Today Track bottom card; the key difference is that **the anchor follows the URL** (`/review/day/:anchor`), so the user can revisit or backfill **any date** (past / present / future). Hidden in Cycle / Month scopes — aggregating per-day reflections is deferred to v0.5+.
 
 ### 5.9 Settings
 
@@ -1930,6 +1940,23 @@ type AdhocEvent = {
 // endDate — the next phase's startDate implicitly closes the prior.
 // "Current phase" = the phase with `startDate <= today` and the
 // largest startDate.
+
+// DailyReflection (v0.4.3+). One hand-written Markdown blob per date.
+// See §4.1 for full semantics.
+// Primary key = date (natural day per `Track.tz`). An empty content
+// is "not written" (event-log: reflection.cleared; the materialized
+// row is removed).
+// Events:
+//   reflection.upserted  payload = { date: 'YYYY-MM-DD', content: string }
+//   reflection.cleared   payload = { date: 'YYYY-MM-DD' }
+//   Both carry aggregateId = date. HLC last-writer-wins, same as every
+//   other entity.
+type DailyReflection = {
+  date: string;       // YYYY-MM-DD, primary key
+  content: string;    // raw user input, rendered as Markdown (no transform beyond sanitize)
+  updatedAt: number;  // wall-clock of the latest event (epoch ms)
+};
+
 type HabitPhase = {
   id: string;        // ULID
   lineId: string;    // parent Line (must be kind='habit')

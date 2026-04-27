@@ -44,6 +44,7 @@ import {
   type CalendarRuleSingleDate,
   type CalendarRuleWeekday,
   type Cycle,
+  type DailyReflection,
   type HabitBinding,
   type HabitBindingRevision,
   type HabitPhase,
@@ -85,6 +86,10 @@ export interface DayRailState {
   calendarRules: Record<string, CalendarRule>;
   cycles: Record<string, Cycle>;
   habitPhases: Record<string, HabitPhase>;
+  /** §4.1 / §10.4 · daily reflections (v0.4.3+). Keyed by date
+   *  (YYYY-MM-DD). Empty entries are dropped — `state.reflections[date]`
+   *  returns `undefined` for "not written today". */
+  reflections: Record<string, DailyReflection>;
   /** §5.5.0 v0.4 · habit ↔ rail bindings. Keyed on binding id. */
   habitBindings: Record<string, HabitBinding>;
   // ----------------------------------------------------------------
@@ -296,6 +301,11 @@ interface DayRailActions {
    *  it back to "simple habit" mode — derived from record count,
    *  no Line mutation needed. */
   removeHabitPhase: (id: string) => Promise<void>;
+  // --- daily reflections (§4.1; v0.4.3+) ---
+  /** Upsert the user's reflection for a given date. Empty / whitespace-
+   *  only `content` emits `reflection.cleared` instead, dropping the
+   *  materialized row. */
+  setReflection: (date: string, content: string) => Promise<void>;
   // --- habit ↔ rail bindings (§5.5.0 v0.4) ---
   /** Upsert a HabitBinding. Pass `id` to update in place (preserves
    *  `createdAt`); omit to create (ULID id). */
@@ -360,6 +370,7 @@ type ReducerState = Pick<
   | 'calendarRules'
   | 'cycles'
   | 'habitPhases'
+  | 'reflections'
   | 'habitBindings'
   | 'railRevisions'
   | 'templateRevisions'
@@ -586,6 +597,20 @@ function applyEventInPlace(
     case 'habit-phase.removed': {
       const id = (payload as { id: string }).id;
       delete state.habitPhases[id];
+      break;
+    }
+    case 'reflection.upserted': {
+      const p = payload as { date: string; content: string; updatedAt: number };
+      state.reflections[p.date] = {
+        date: p.date,
+        content: p.content,
+        updatedAt: p.updatedAt,
+      };
+      break;
+    }
+    case 'reflection.cleared': {
+      const date = (payload as { date: string }).date;
+      delete state.reflections[date];
       break;
     }
     case 'habit-binding.upserted': {
@@ -998,6 +1023,7 @@ type SnapshotPayload = Pick<
   | 'calendarRules'
   | 'cycles'
   | 'habitPhases'
+  | 'reflections'
   | 'habitBindings'
   | 'railRevisions'
   | 'templateRevisions'
@@ -1022,6 +1048,7 @@ function emptyReducerState(): ReducerState {
     calendarRules: {},
     cycles: {},
     habitPhases: {},
+    reflections: {},
     habitBindings: {},
     railRevisions: {},
     templateRevisions: {},
@@ -1047,6 +1074,7 @@ function snapshotFromState(s: DayRailState): SnapshotPayload {
     calendarRules: s.calendarRules,
     cycles: s.cycles,
     habitPhases: s.habitPhases,
+    reflections: s.reflections,
     habitBindings: s.habitBindings,
     railRevisions: s.railRevisions,
     templateRevisions: s.templateRevisions,
@@ -1555,6 +1583,7 @@ export const useStore = create<DayRailStore>()(
       calendarRules: {},
       cycles: {},
       habitPhases: {},
+      reflections: {},
       habitBindings: {},
       railRevisions: {},
       templateRevisions: {},
@@ -1596,6 +1625,7 @@ export const useStore = create<DayRailStore>()(
               reducerState.calendarRules = { ...(snap.state.calendarRules ?? {}) };
               reducerState.cycles = { ...(snap.state.cycles ?? {}) };
               reducerState.habitPhases = { ...(snap.state.habitPhases ?? {}) };
+              reducerState.reflections = { ...(snap.state.reflections ?? {}) };
               reducerState.habitBindings = {
                 ...(snap.state.habitBindings ?? {}),
               };
@@ -1640,6 +1670,7 @@ export const useStore = create<DayRailStore>()(
             draft.calendarRules = reducerState.calendarRules;
             draft.cycles = reducerState.cycles;
             draft.habitPhases = reducerState.habitPhases;
+            draft.reflections = reducerState.reflections;
             draft.habitBindings = reducerState.habitBindings;
             draft.railRevisions = reducerState.railRevisions;
             draft.templateRevisions = reducerState.templateRevisions;
@@ -2357,6 +2388,29 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
+      setReflection: async (date, content) => {
+        const trimmed = content.replace(/\s+$/u, '');
+        const existing = get().reflections[date];
+        const isClear = trimmed.length === 0;
+        if (isClear && !existing) return;
+        if (!isClear && existing && existing.content === trimmed) return;
+        const ev = await appendEvent(
+          isClear
+            ? {
+                aggregateId: `reflection:${date}`,
+                type: 'reflection.cleared',
+                payload: { date },
+              }
+            : {
+                aggregateId: `reflection:${date}`,
+                type: 'reflection.upserted',
+                payload: { date, content: trimmed, updatedAt: Date.now() },
+              },
+        );
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        afterMutation();
+      },
+
       upsertHabitBinding: async (opts, sessionId) => {
         const id = opts.id ?? ulidLite('binding');
         const existing = get().habitBindings[id];
@@ -2615,6 +2669,17 @@ export function selectTasksByLine(
     .filter((t) => includeDeleted || t.status !== 'deleted')
     .filter((t) => includeArchived || t.status !== 'archived')
     .sort((a, b) => a.order - b.order);
+}
+
+/** §4.1 / §10.4 · returns the user's reflection for a date, or
+ *  `undefined` when nothing was written. The store keys reflections
+ *  by date so this is an O(1) hash lookup; safe to call from a
+ *  Zustand `useStore` selector without memoization. */
+export function selectReflection(
+  state: Pick<DayRailState, 'reflections'>,
+  date: string,
+): DailyReflection | undefined {
+  return state.reflections[date];
 }
 
 /** Phases attached to a habit Line, ordered by startDate asc.

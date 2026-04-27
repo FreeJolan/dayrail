@@ -64,6 +64,11 @@ export type EventType =
   // Habit-phase tracking (§5.5.0; v0.3.3+)
   | 'habit-phase.upserted'
   | 'habit-phase.removed'
+  // Daily reflection (§4.1; v0.4.3+) — one Markdown blob per date.
+  // aggregateId = date. Empty content is `reflection.cleared`; the
+  // materialized row is dropped.
+  | 'reflection.upserted'
+  | 'reflection.cleared'
   // Habit bindings — habit ↔ rail relationship (§5.5.0; v0.4+)
   | 'habit-binding.upserted'
   | 'habit-binding.removed'

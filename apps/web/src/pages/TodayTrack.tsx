@@ -17,6 +17,7 @@ import {
 } from '@/components/CheckInStrip';
 import { RailCard, type TimelineTask } from '@/components/RailCard';
 import { ReasonToast } from '@/components/ReasonToast';
+import { ReflectionCard } from '@/components/ReflectionCard';
 import { TaskDetailDrawer } from './Tasks';
 import {
   latestTagsForTask,
@@ -210,6 +211,7 @@ export function TodayTrack() {
         onTaskUndo={handleTaskUndo}
         onTaskOpenDetail={(taskId) => setDetailTaskId(taskId)}
       />
+      <ReflectionCard date={today} />
       <Footnote />
       <ReasonToast
         state={toast}

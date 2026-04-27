@@ -11,6 +11,7 @@ import {
 import { selectHabitPhasesByLine, useStore, type Line } from '@dayrail/core';
 import { type ReviewScopeData } from '@/data/sampleReview';
 import { RhythmHeatmap } from '@/components/RhythmHeatmap';
+import { ReflectionCard } from '@/components/ReflectionCard';
 import { ShiftTagBars } from '@/components/ShiftTagBars';
 import {
   buildPhaseBands,
@@ -202,6 +203,13 @@ export function Review() {
         <ShiftTagBars tags={data.shiftTags} />
         {data.adhocHint && <AdhocHintCard hint={data.adhocHint} />}
         <AISection enabled={aiEnabled} onToggle={() => setAiEnabled((v) => !v)} />
+
+        {scope === 'day' && (
+          <ReflectionCard
+            date={toIsoDate(anchor)}
+            title="Daily Reflection · 今日复盘"
+          />
+        )}
 
         <Footer scope={scope} data={data} />
       </div>
