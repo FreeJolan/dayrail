@@ -1,6 +1,6 @@
 import { clsx } from 'clsx';
 import { useEffect, useState } from 'react';
-import { Check, ChevronDown } from 'lucide-react';
+import { Check, ChevronDown, NotebookPen } from 'lucide-react';
 import type { TaskPriority } from '@dayrail/core';
 import {
   type CycleDay,
@@ -42,6 +42,14 @@ interface Props {
   slotsByKey: Map<string, CycleSlot>; // key = `${railId}|${date}`
   todayISO: string;
   templateChoices: TemplateChoice[];
+  /** Dates in this section's `days` slice that already have a written
+   *  Daily Reflection (§4.1). Drives the filled vs outlined chip — a
+   *  Set keeps the per-day lookup O(1). */
+  reflectedDates: ReadonlySet<string>;
+  /** Open the Daily Reflection editor for a specific date. Cycle View
+   *  delegates the deep-link to the parent so we don't import
+   *  react-router here. */
+  onOpenReflection: (date: string) => void;
   onOverride: (date: string, nextTemplate: TemplateKey) => void;
   onClearOverride: (date: string) => void;
   onDropTask?: (taskId: string, date: string, railId: string) => void;
@@ -69,6 +77,8 @@ export function CycleSection({
   slotsByKey,
   todayISO,
   templateChoices,
+  reflectedDates,
+  onOpenReflection,
   onOverride,
   onClearOverride,
   onDropTask,
@@ -127,6 +137,8 @@ export function CycleSection({
           stripColor={stripColor}
           todayISO={todayISO}
           templateChoices={templateChoices}
+          reflectedDates={reflectedDates}
+          onOpenReflection={onOpenReflection}
           onOverride={onOverride}
           onClearOverride={onClearOverride}
         />
@@ -238,6 +250,8 @@ function SectionMiniHeader({
   stripColor,
   todayISO,
   templateChoices,
+  reflectedDates,
+  onOpenReflection,
   onOverride,
   onClearOverride,
 }: {
@@ -246,6 +260,8 @@ function SectionMiniHeader({
   stripColor: string;
   todayISO: string;
   templateChoices: TemplateChoice[];
+  reflectedDates: ReadonlySet<string>;
+  onOpenReflection: (date: string) => void;
   onOverride: (date: string, nextTemplate: TemplateKey) => void;
   onClearOverride: (date: string) => void;
 }) {
@@ -277,13 +293,21 @@ function SectionMiniHeader({
             </th>
             {days.map((d) => (
               <th key={d.date} className="px-1 text-left align-middle">
-                <DayCellButton
-                  day={d}
-                  isToday={d.date === todayISO}
-                  templateChoices={templateChoices}
-                  onOverride={(tpl) => onOverride(d.date, tpl)}
-                  onClearOverride={() => onClearOverride(d.date)}
-                />
+                <div className="flex items-center gap-1">
+                  <div className="min-w-0 flex-1">
+                    <DayCellButton
+                      day={d}
+                      isToday={d.date === todayISO}
+                      templateChoices={templateChoices}
+                      onOverride={(tpl) => onOverride(d.date, tpl)}
+                      onClearOverride={() => onClearOverride(d.date)}
+                    />
+                  </div>
+                  <ReflectionChip
+                    hasContent={reflectedDates.has(d.date)}
+                    onClick={() => onOpenReflection(d.date)}
+                  />
+                </div>
               </th>
             ))}
           </tr>
@@ -454,5 +478,34 @@ function RailRowLabel({
         →
       </span>
     </div>
+  );
+}
+
+// Per-day reflection deep-link · §4.1 entry. Filled when the date has
+// content; outlined otherwise. Click → parent navigates to
+// /review/day/<date> where the actual editor lives. Sized to share the
+// 180px column without crowding the day-cell template-switch button.
+function ReflectionChip({
+  hasContent,
+  onClick,
+}: {
+  hasContent: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={hasContent ? '查看 / 编辑今日复盘' : '写一段今日复盘'}
+      title={hasContent ? '今日复盘 · 已写' : '今日复盘'}
+      className={clsx(
+        'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm transition',
+        hasContent
+          ? 'text-ink-secondary hover:bg-surface-2 hover:text-ink-primary'
+          : 'text-ink-tertiary/60 hover:bg-surface-2 hover:text-ink-secondary',
+      )}
+    >
+      <NotebookPen className="h-3.5 w-3.5" strokeWidth={hasContent ? 2 : 1.6} />
+    </button>
   );
 }

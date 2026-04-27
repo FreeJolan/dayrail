@@ -386,6 +386,7 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
   - 左端一格 `[色条] TEMPLATE · N days`（Template 名 + 天数）。
   - 右侧每一"当前 Template 命中的天"各占一格，显示星期缩写 + 日期数字（`Mon 12` / `Tue 13` / …）；今天那一格底色 primary step 2 + 顶部 2px primary step 9 标识条；被覆盖的天（`calendar-rule.upserted`）在日期右侧挂一枚小点。**一个 Cycle 里用了几个模板就堆几段，每段只画自己命中的天**；不命中的天属于另一段，不在本 section 重复。
   - 这一排**就是** CycleDay 模板切换入口（唯一入口 —— 顶部不再单独挂 DAYS 区块）：点任意日期格 → popover 列出所有已创建模板，每项 `radio + Template 色条 + 名称`，末尾 `+ 新建模板`。选中 → 写 `calendar-rule.upserted`（`kind: 'single-date'`、id 按 `cr-single-{date}` 去重，同一日反复切换就是 `update`）；当前已有覆盖时 popover 末尾多一条 `恢复默认` → 写 `calendar-rule.removed`，回到 §5.4 CalendarRule 的 weekday 启发。切换后各 section 的 mini-header / cell 立即重绘（旧 section 该列消失、新 section 多出该列）。
+  - **每个日期格右侧贴一枚 reflection chip**（v0.4.3+，§4.1 DailyReflection 入口）：`NotebookPen` 小图标，**该日已写复盘** → 实色 ink-secondary；**未写** → 描线 ink-tertiary。点击 → `navigate('/review/day/<date>')`，由 Review · Day 卡承担读写（Cycle View 不内嵌编辑器，避免"同一份内容三处可写"的真值污染）。chip 与日期格按钮**并排**（不嵌套），不抢模板切换的 popover 触发区。
   - **周末不再特别着色** —— 是不是 restday 完全由用户给那一天选的 Template 决定；Stitch 的 Sat/Sun tertiary 染色明确废弃。
 - **Section 主体 grid**：行 = 该 Template 的每条 Rail；列 = section mini-header 上已经定下来的"本 Template 命中的那几天"。左栏独立列（≈ 160px 宽）：`[4px Rail 自色条] Mono 时段 08:00–12:00 + 小号 Rail 名`。Cell 对齐该 Rail 在该日的 Slot 内容。
 - **切换模板时处理 orphan task**：如果当天的旧模板下已有 N 个 task 被排到具体 Rail 上（`task.slot.date === 该日`），而新模板里没有这些 Rail，直接切会让它们"隐身"（slot 还指着旧 Rail，但 cell 不再渲染）。所以切换前拦一层：N = 0 时直接切；N > 0 时弹一个小 confirm —— `切换到 restday 会把这一天的 N 个已排任务移出，可以随时从 Backlog 拖回来 · 继续 / 取消`。Continue 后一次性把这 N 个 task 走 `task.unscheduled`（slot → undefined），它们自动回到 Backlog drawer；然后才写 `calendar-rule.upserted`。"恢复默认"同理——如果当前 override 下的 template 里有已排 task 而默认启发的 template 没有对应 rail，也走这个确认流程。
@@ -986,7 +987,8 @@ Pending 是"等待决定"的**全集**；§5.6 check-in 条是它"近 24h 这一
   - 观察（Observe）：本周出现的模式
   - 复盘（Review）：结构化周报 / 月报
   - 所有 AI 分析必须由用户主动触发或已显式启用
-- **每日复盘文本块**（v0.4.3 起 · 见 §4.1 DailyReflection）：**仅 day scope** 显示，瀑布最末尾一节，标题 `今日复盘 / Daily Reflection`。卡内复用 `MarkdownField`，与 Today Track 底部那张卡读写同一字段；这里的关键差别是 **anchor 跟随 URL**（`/review/day/:anchor`），因此可直接回看/补写**任意日期**（过去/今天/未来）。Cycle / Month scope 隐藏（汇总日复盘的范式留到 v0.5+ 评估）。
+- **每日复盘文本块**（v0.4.3 起 · 见 §4.1 DailyReflection）：**仅 day scope** 显示，瀑布最末尾一节，标题 `今日复盘 / Daily Reflection`。卡内复用 `MarkdownField`，与 Today Track 底部那张卡读写同一字段；这里的关键差别是 **anchor 跟随 URL**（`/review/day/:anchor`），因此可直接回看/补写**任意日期**（过去/今天/未来）。
+- **复盘记录段（Cycle / Month scope · v0.4.3 起）**：当 scope ≠ day 时，瀑布末尾改渲染 `复盘记录 / Reflection log` —— 一个**纯导航段**：列出本 scope 范围内已写复盘的日期，每行 = `YYYY-MM-DD · Wd · 首行预览`，点击跳转 `/review/day/<date>`。空 scope 显示一行 muted "本周期未写复盘"。**不展开内容、不做摘要**（聚合范式留到 v0.5+），这里只承担"哪些天写过、点进去看/写"的入口职责。
 
 ### 5.9 Settings
 

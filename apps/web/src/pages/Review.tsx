@@ -1,14 +1,20 @@
 import { useCallback, useMemo, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { clsx } from 'clsx';
 import {
   ChevronLeft,
   ChevronRight,
   Lightbulb,
   MessageSquareQuote,
+  NotebookPen,
   Sparkles,
 } from 'lucide-react';
-import { selectHabitPhasesByLine, useStore, type Line } from '@dayrail/core';
+import {
+  selectHabitPhasesByLine,
+  useStore,
+  type DailyReflection,
+  type Line,
+} from '@dayrail/core';
 import { type ReviewScopeData } from '@/data/sampleReview';
 import { RhythmHeatmap } from '@/components/RhythmHeatmap';
 import { ReflectionCard } from '@/components/ReflectionCard';
@@ -204,11 +210,13 @@ export function Review() {
         {data.adhocHint && <AdhocHintCard hint={data.adhocHint} />}
         <AISection enabled={aiEnabled} onToggle={() => setAiEnabled((v) => !v)} />
 
-        {scope === 'day' && (
+        {scope === 'day' ? (
           <ReflectionCard
             date={toIsoDate(anchor)}
             title="Daily Reflection · 今日复盘"
           />
+        ) : (
+          <ReflectionLog dates={data.dates} />
         )}
 
         <Footer scope={scope} data={data} />
@@ -589,6 +597,81 @@ function MockReviewCard() {
       </div>
     </section>
   );
+}
+
+// ERD §5.8 · Cycle / Month tab entry into per-day reflections. Lists
+// only the dates in the current scope that already have content — a
+// pure deep-link surface, not an editor. Empty state shows a single
+// muted line so the section still anchors the eye on a quiet period.
+// Aggregating / summarising reflections is intentionally out of scope
+// (deferred to v0.5+); this is just navigation.
+function ReflectionLog({ dates }: { dates: string[] }) {
+  const reflections = useStore((s) => s.reflections);
+  const entries = useMemo(() => {
+    const out: Array<{ date: string; reflection: DailyReflection }> = [];
+    for (const d of dates) {
+      const r = reflections[d];
+      if (r) out.push({ date: d, reflection: r });
+    }
+    out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    return out;
+  }, [dates, reflections]);
+
+  return (
+    <section
+      aria-label="Reflection log"
+      className="flex flex-col gap-3 rounded-md border border-hairline/60 bg-surface-0 p-5"
+    >
+      <header className="flex items-baseline justify-between gap-3">
+        <h2 className="flex items-center gap-2 text-sm font-medium text-ink-primary">
+          <NotebookPen className="h-3.5 w-3.5 text-ink-tertiary" strokeWidth={1.8} />
+          复盘记录 · Reflection log
+        </h2>
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          {entries.length} / {dates.length} days
+        </span>
+      </header>
+      {entries.length === 0 ? (
+        <p className="text-xs text-ink-tertiary">
+          本周期未写复盘 —— 在 Today Track 或 Day scope 写一段，将在这里出现。
+        </p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-hairline/40">
+          {entries.map(({ date, reflection }) => (
+            <li key={date}>
+              <Link
+                to={`/review/day/${date}`}
+                className="flex items-baseline justify-between gap-3 rounded-sm px-2 py-2 transition hover:bg-surface-1"
+              >
+                <span className="font-mono text-xs tabular-nums text-ink-secondary">
+                  {date} · {WEEKDAY_LABELS[isoWeekday(date)] ?? ''}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-xs text-ink-tertiary">
+                  {previewLine(reflection.content)}
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function isoWeekday(iso: string): number {
+  const [y, m, d] = iso.split('-').map((n) => Number.parseInt(n, 10));
+  if (!y || !m || !d) return 0;
+  return new Date(y, m - 1, d).getDay();
+}
+
+function previewLine(markdown: string): string {
+  const firstLine = markdown.split('\n').find((l) => l.trim().length > 0) ?? '';
+  // Strip leading Markdown noise (#, -, >, *) so the preview reads like
+  // prose. Cap at ~80 chars; the `truncate` class handles overflow.
+  const stripped = firstLine.replace(/^[#>\-*\s]+/, '').trim();
+  return stripped.length > 0 ? stripped : '(no preview)';
 }
 
 function Footer({ scope, data }: { scope: Scope; data: ReviewScopeData }) {

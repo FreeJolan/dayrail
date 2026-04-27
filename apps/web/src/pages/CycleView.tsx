@@ -75,6 +75,7 @@ export function CycleView() {
   const storedCycles = useStore((s) => s.cycles);
   const upsertCycle = useStore((s) => s.upsertCycle);
   const removeCycle = useStore((s) => s.removeCycle);
+  const reflections = useStore((s) => s.reflections);
 
   // --- session bookkeeping (ERD §5.3.1) ---
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -140,6 +141,25 @@ export function CycleView() {
   );
 
   const todayISO = toIsoDate(new Date());
+
+  // Set of dates in the visible cycle that already have a reflection.
+  // Subscribed as a raw map (per the project's "no fresh array/object
+  // from useStore selectors" rule) and reduced via useMemo so the
+  // child only re-renders when membership actually changes.
+  const reflectedDates = useMemo(() => {
+    const set = new Set<string>();
+    for (const day of cycle.days) {
+      if (reflections[day.date]) set.add(day.date);
+    }
+    return set;
+  }, [cycle.days, reflections]);
+
+  const handleOpenReflection = useCallback(
+    (date: string) => {
+      navigate(`/review/day/${date}`);
+    },
+    [navigate],
+  );
 
   const templateChoices = useMemo<TemplateChoice[]>(
     () =>
@@ -457,6 +477,8 @@ export function CycleView() {
                 slotsByKey={slotMap}
                 todayISO={todayISO}
                 templateChoices={templateChoices}
+                reflectedDates={reflectedDates}
+                onOpenReflection={handleOpenReflection}
                 onOverride={overrideDay}
                 onClearOverride={clearOverride}
                 onDropTask={handleDropTask}
