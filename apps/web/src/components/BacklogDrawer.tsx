@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronsDownUp,
   PanelRightClose,
   PanelRightOpen,
   Plus,
@@ -221,27 +222,39 @@ export function BacklogDrawer({ open, onToggle }: Props) {
           </div>
 
           <div className="flex items-center gap-1.5 px-4 pb-3">
-            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            <span className="shrink-0 whitespace-nowrap font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
               分组
             </span>
-            <GroupBySwitch value={groupBy} onChange={setGroupBy} />
-            {groupBy !== 'none' && groups.length > 0 && (
-              <button
-                type="button"
-                onClick={() => {
-                  // Fold all when at least one group is open; otherwise
-                  // expand all. Single button toggling whichever state
-                  // makes the next click most useful.
-                  const allCollapsed = groups.every((g) => collapsed.has(g.key));
-                  setCollapsed(
-                    allCollapsed ? new Set() : new Set(groups.map((g) => g.key)),
-                  );
-                }}
-                className="ml-auto font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:text-ink-primary"
-              >
-                {groups.every((g) => collapsed.has(g.key)) ? '展开全部' : '折叠全部'}
-              </button>
-            )}
+            <div className="min-w-0 shrink">
+              <GroupBySwitch value={groupBy} onChange={setGroupBy} />
+            </div>
+            {groupBy !== 'none' && groups.length > 0 && (() => {
+              const allCollapsed = groups.every((g) => collapsed.has(g.key));
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCollapsed(
+                      allCollapsed
+                        ? new Set()
+                        : new Set(groups.map((g) => g.key)),
+                    );
+                  }}
+                  aria-label={allCollapsed ? '展开全部' : '折叠全部'}
+                  title={allCollapsed ? '展开全部' : '折叠全部'}
+                  className="ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+                >
+                  {allCollapsed ? (
+                    <ChevronsDownUp
+                      className="h-3.5 w-3.5 rotate-180"
+                      strokeWidth={1.8}
+                    />
+                  ) : (
+                    <ChevronsDownUp className="h-3.5 w-3.5" strokeWidth={1.8} />
+                  )}
+                </button>
+              );
+            })()}
           </div>
 
           {filtered.length === 0 ? (
