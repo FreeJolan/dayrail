@@ -1,5 +1,11 @@
 import { clsx } from 'clsx';
-import { forwardRef, useEffect, useState, type ReactNode } from 'react';
+import {
+  forwardRef,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   Archive,
   ArrowUpRight,
@@ -108,6 +114,24 @@ export function CycleCell({
     };
   }, [onDropTaskAt]);
 
+  // Wrapper-owned drag-over / drop. Owning the whole cell rectangle
+  // (not per-pill slices) means the 4px flex `gap-1` gutters between
+  // pills are valid hit areas too — drops there used to leak to the
+  // `<td>` handler, which short-circuited same-rail/date as a no-op
+  // ("the drop did nothing"). cursor Y vs each pill's bounding rect
+  // picks the insertion gap.
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const computeIndexFromY = (clientY: number): number => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return tasks.length;
+    const pills = wrapper.querySelectorAll<HTMLElement>('[data-pill-row]');
+    for (let i = 0; i < pills.length; i++) {
+      const rect = pills[i]!.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) return i;
+    }
+    return tasks.length;
+  };
+
   if (tasks.length === 0) {
     return (
       <EmptyCell
@@ -119,11 +143,44 @@ export function CycleCell({
     );
   }
   return (
-    <div className="group/cell relative flex h-full min-h-[44px] flex-col gap-1 rounded-sm bg-surface-1 px-1 py-1 transition hover:bg-surface-2">
+    <div
+      ref={wrapperRef}
+      onDragOver={
+        onDropTaskAt
+          ? (e) => {
+              if (
+                !Array.from(e.dataTransfer.types).includes(TASK_DRAG_MIME)
+              )
+                return;
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = 'move';
+              const idx = computeIndexFromY(e.clientY);
+              if (hoverIndex !== idx) setHoverIndex(idx);
+            }
+          : undefined
+      }
+      onDrop={
+        onDropTaskAt
+          ? (e) => {
+              const taskId = e.dataTransfer.getData(TASK_DRAG_MIME);
+              if (!taskId) return;
+              e.preventDefault();
+              e.stopPropagation();
+              const idx = computeIndexFromY(e.clientY);
+              setHoverIndex(null);
+              const ordered = computeOrderedIds(tasks, taskId, idx);
+              const currentIds = tasks.map((x) => x.taskId);
+              if (sameOrder(currentIds, ordered)) return;
+              onDropTaskAt(taskId, ordered);
+            }
+          : undefined
+      }
+      className="group/cell relative flex h-full min-h-[44px] flex-col gap-1 rounded-sm bg-surface-1 px-1 py-1 transition hover:bg-surface-2"
+    >
       {tasks.map((t, i) => (
         <PillRow
           key={t.taskId}
-          dropEnabled={!!onDropTaskAt}
           insertEdge={
             hoverIndex === i
               ? 'top'
@@ -131,20 +188,6 @@ export function CycleCell({
                 ? 'bottom'
                 : null
           }
-          onDragOverHalf={(half) => {
-            const idx = half === 'top' ? i : i + 1;
-            if (hoverIndex !== idx) setHoverIndex(idx);
-          }}
-          onDropHalf={(draggedId, half) => {
-            setHoverIndex(null);
-            const idx = half === 'top' ? i : i + 1;
-            const ordered = computeOrderedIds(tasks, draggedId, idx);
-            // No-op if the drop reproduces the current order — avoids
-            // burning an Edit-Session change-count entry for nothing.
-            const currentIds = tasks.map((x) => x.taskId);
-            if (sameOrder(currentIds, ordered)) return;
-            onDropTaskAt?.(draggedId, ordered);
-          }}
         >
           <TaskPill
             task={t}
@@ -214,51 +257,20 @@ function computeOrderedIds(
   return [...without.slice(0, clamped), draggedId, ...without.slice(clamped)];
 }
 
-// Wraps a TaskPill with a full-height drop target. The cursor's Y
-// within the row's bounding rect decides whether the drop lands above
-// or below the pill, which gives us a pill-sized hit area instead of
-// a 4px-thin gap. A 2px highlighted bar renders on the appropriate
-// edge during dragover. stopPropagation keeps the drop from bubbling
-// to the `<td>` (whose handler runs the legacy append path).
+// Passive pill-row renderer. The CycleCell wrapper owns drag-over /
+// drop (so the gap-1 gutters between pills count as valid hit areas
+// too). PillRow's only job is to render the 2px insertion bar on the
+// matching edge when the cell-wrapper says so, and to mark itself
+// with `data-pill-row` for the wrapper's cursor-Y → index lookup.
 function PillRow({
-  dropEnabled,
   insertEdge,
-  onDragOverHalf,
-  onDropHalf,
   children,
 }: {
-  dropEnabled: boolean;
   insertEdge: 'top' | 'bottom' | null;
-  onDragOverHalf: (half: 'top' | 'bottom') => void;
-  onDropHalf: (taskId: string, half: 'top' | 'bottom') => void;
   children: ReactNode;
 }) {
-  const handlers = dropEnabled
-    ? {
-        onDragOver: (e: React.DragEvent<HTMLDivElement>) => {
-          if (!Array.from(e.dataTransfer.types).includes(TASK_DRAG_MIME)) return;
-          e.preventDefault();
-          e.stopPropagation();
-          e.dataTransfer.dropEffect = 'move';
-          const rect = e.currentTarget.getBoundingClientRect();
-          const half: 'top' | 'bottom' =
-            e.clientY - rect.top < rect.height / 2 ? 'top' : 'bottom';
-          onDragOverHalf(half);
-        },
-        onDrop: (e: React.DragEvent<HTMLDivElement>) => {
-          const taskId = e.dataTransfer.getData(TASK_DRAG_MIME);
-          if (!taskId) return;
-          e.preventDefault();
-          e.stopPropagation();
-          const rect = e.currentTarget.getBoundingClientRect();
-          const half: 'top' | 'bottom' =
-            e.clientY - rect.top < rect.height / 2 ? 'top' : 'bottom';
-          onDropHalf(taskId, half);
-        },
-      }
-    : {};
   return (
-    <div className="relative" {...handlers}>
+    <div className="relative" data-pill-row>
       {insertEdge === 'top' && (
         <span
           aria-hidden
