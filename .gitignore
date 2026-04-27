@@ -22,3 +22,6 @@ coverage
 
 # Claude Code per-user permissions (never ship)
 .claude/settings.local.json
+
+# Local agent state — Claude Code scheduled-tasks lock and the like
+.claude/
