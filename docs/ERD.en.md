@@ -1641,6 +1641,14 @@ have an auto-task:
 
 Both go through the same rule.
 
+> **From v0.5, "edit" here means writing a new revision** (§10.5).
+> Rail / HabitBinding are no longer mutated in place; the write path
+> emits `rail-revision.upserted` / `habit-binding-revision.upserted`
+> (the v0.4 `rail.updated` event is kept only for the migration window).
+> The purge lower bound becomes `max(today, effectiveFrom)` —
+> "the past + the part of today before the new revision takes effect"
+> reads the prior revision and is therefore untouched.
+
 **0. Confirm before saving** (only when the edit would change some
 habit's future auto-tasks):
 
@@ -1692,48 +1700,50 @@ accidentally-wrong config change fully.
 
 type TemplateKey = string; // MVP ships 'workday' | 'restday', extensible
 
+// From v0.5, Rail / Template / CalendarRule / HabitBinding split into
+// "identity shell + a chain of effective-from revisions". The Rail /
+// Template / CalendarRule / HabitBinding types below keep only the
+// **identity fields** (id, createdAt, tombstone); every mutable field
+// moves to the corresponding *Revision type. Full revision schema +
+// read/write/materialization/migration rules live in §10.5.
+
 type Rail = {
   id: string;
-  name: string;
-  startMinutes: number; // 0-1439
-  durationMinutes: number;
-  color: string;            // Radix scale step-9 token (see §9.6)
-  icon?: string;
-  showInCheckin: boolean;     // true = surfaces on the check-in strip when the app opens (§5.6); false = runs silently, never hitting the strip or the pending queue
-  templateKey: TemplateKey; // which template this Rail belongs to
-  // v0.4: `defaultLineId` removed. It used to carry two jobs — habit
-  // binding (now HabitBinding) and Project quick-schedule default
-  // (never wired with a real picker, so we drop it outright).
-  // v0.4 second pass: `recurrence` removed. Template + CalendarRule
-  // decide which dates the rail belongs to; HabitBinding.weekdays
-  // narrows per-habit. Rail-level weekday filter was a third
-  // redundant layer that only produced traps (weekdays default into
-  // a Restday template → ∅ intersection → no tasks ever). Narrower
-  // per-rail schedules can live in a dedicated template + binding
-  // weekdays if ever needed.
+  createdAt: number;
+  // v0.5: delete = tombstone (do not splice from store), so past dates
+  // can still resolve to the last revision.
+  tombstone?: { effectiveFrom: string; at: number; sessionId?: string };
 };
 
 // v0.4 new: habit ↔ rail relationship entity (see §5.5.0 / §10.2).
+// v0.5: pared down to an identity shell — `habitId` / `railId` also
+// move to the revision, since a user may want to keep "the same
+// binding" but rebind it to a different rail at a future cutover.
+// Full fields live on HabitBindingRevision (§10.5).
 type HabitBinding = {
   id: string;
-  habitId: string;   // references Line.id where kind='habit'
-  railId: string;    // references Rail.id
-  // Optional weekday filter (0=Sun, 6=Sat). Intersected with the
-  // rail's template-active days: a date materializes an auto-task iff
-  // the template fires that date AND (weekdays is undefined OR the
-  // date's dayOfWeek is in weekdays).
-  weekdays?: number[];
-  createdAt: number; // epoch ms
+  habitId: string;   // references Line.id where kind='habit' — from v0.5,
+                     // treat this as a redundant index kept in sync with
+                     // the latest revision; the source of truth is
+                     // `latest HabitBindingRevision.habitId`.
+  createdAt: number;
+  tombstone?: { effectiveFrom: string; at: number; sessionId?: string };
 };
 
+// v0.5: Template splits into an identity shell + TemplateRevision (§10.5).
+// `key` and `isDefault` stay on the shell — `key` is the stable identifier
+// and `isDefault` decides whether the template can be deleted (semantics
+// preserved); `name` and `color` are user-editable display attributes that
+// move to the revision.
 type Template = {
   key: TemplateKey;
-  name: string;
   isDefault: boolean;
-  color?: string;   // Radix scale token (shared palette with Rail; see §9.6).
-                    // Drives Cycle View column-header tint, Template Editor tab strip,
-                    // Calendar date cell background, template-switch animation.
-                    // Built-ins: `workday` defaults to 'slate'; `restday` defaults to 'sage'.
+  createdAt: number;
+  // Built-in templates (workday / restday) use a sentinel createdAt;
+  // user-defined templates take their actual creation timestamp.
+  // Built-in templates may not be tombstoned (carries §5.4's
+  // "built-in templates cannot be deleted" constraint).
+  tombstone?: { effectiveFrom: string; at: number; sessionId?: string };
 };
 
 type Cycle = {
@@ -1764,7 +1774,21 @@ type Track = {
   templateKey?: TemplateKey;
 };
 
+// v0.5: CalendarRule splits into an identity shell + CalendarRuleRevision
+// (§10.5). `id` and `kind` are stable identity; `value` and `priority` move
+// to the revision — editing a weekday rule's `weekdays` array or a cycle
+// rule's `mapping` in the drawer no longer overwrites in place; a new
+// revision is appended.
 type CalendarRule = {
+  id: string;
+  kind: 'weekday' | 'cycle' | 'date-range' | 'single-date';
+  createdAt: number;
+  tombstone?: { effectiveFrom: string; at: number; sessionId?: string };
+};
+
+// v0.4 retained for reference: the original "flat" CalendarRule shape (kept
+// as a bridge type for v0.5's compatibility read paths).
+type CalendarRuleFlatV04 = {
   id: string;
   kind: 'weekday' | 'cycle' | 'date-range' | 'single-date';
   // Typed `value` per kind (all live since v0.3):
@@ -1972,6 +1996,363 @@ type SyncedSettings = {
   updatedAt: string;
 };
 ```
+
+### 10.5 Effective-from revision model (since v0.5)
+
+#### Motivation
+
+Before v0.4, Rail / Template / CalendarRule / HabitBinding were all
+**current-state entities**. Edits to a rail's time window, color, or
+owning template — or tweaks to a cycle rule in the calendar drawer —
+would overwrite a single field value. Any read path resolving "the
+day-shape on date D" picked up the latest field values, so already-past
+dates in the historical Cycle View **followed the current config
+backwards**.
+
+Beta feedback shows this violates the user's mental model: editing a
+rail is meant to "set up future days like this", not "rewrite how the
+past actually went". Already-materialized `Task` records carry frozen
+`slot` data and survive (see §10.3 / `purgeFutureAutoTasks`), but the
+visuals around them — rail row name / color / time / existence, day-chip
+Workday/Restday tint — drift with current state.
+
+§10.5 introduces an **effective-from revision model**: split the four
+entity types into "an identity shell + a chain of revisions, each tagged
+with the date it takes effect from", and route every read path through
+a date-aware selector. "Past = frozen" becomes a data-layer guarantee,
+no UI fallback required.
+
+#### Scope
+
+| Entity | Identity shell | Moved to the revision |
+|---|---|---|
+| `Rail` | `id` / `createdAt` / `tombstone?` | `name` / `startMinutes` / `durationMinutes` / `color` / `icon` / `showInCheckin` / `templateKey` |
+| `Template` | `key` / `isDefault` / `createdAt` / `tombstone?` | `name` / `color` |
+| `CalendarRule` | `id` / `kind` / `createdAt` / `tombstone?` | `value` (typed per kind) / `priority` |
+| `HabitBinding` | `id` / `createdAt` / `tombstone?` | `habitId` / `railId` / `weekdays` |
+
+**Not versioned** (already frozen by other means or semantically not in
+need):
+
+- `Slot` — composite key includes `date`; partitioned by date already.
+- `RailInstance` — same reasoning, partitioned by `date` + `railId`.
+- `Task` — `slot` freezes the schedule decision; the rest (title /
+  status / note) is the work-unit's mutable content under the §10.1
+  single-source rule.
+- `Line` (Project / Habit / Tag) — rename / recolor takes effect
+  immediately by design. "Per-day Line label" backfilling is parked in
+  §11.2 pending real signal; out of §10.5 scope.
+- `HabitPhase` — already a self-versioned entity anchored on
+  `startDate`.
+- `AdhocEvent` — one-shot, frozen by `date` already.
+
+#### Revision type definitions
+
+```ts
+type EffectiveDate = string; // 'YYYY-MM-DD', local-day; no tz.
+                             //  Sentinel '1970-01-01' means "in effect from the
+                             //  dawn of time" — used during migration.
+
+type RailRevision = {
+  id: string;            // ULID
+  railId: string;        // refers to identity-shell Rail.id
+  effectiveFrom: EffectiveDate;
+  // mutable fields (1:1 with the v0.4 Rail's mutable fields)
+  name: string;
+  startMinutes: number;
+  durationMinutes: number;
+  color: string;
+  icon?: string;
+  showInCheckin: boolean;
+  templateKey: TemplateKey;
+  // bookkeeping
+  authoredAt: number;    // epoch ms when the revision was written
+  sessionId?: string;    // owning Edit Session (§5.3.1)
+};
+
+type TemplateRevision = {
+  id: string;
+  templateKey: TemplateKey;
+  effectiveFrom: EffectiveDate;
+  name: string;
+  color?: string;
+  authoredAt: number;
+  sessionId?: string;
+};
+
+type CalendarRuleRevision = {
+  id: string;
+  ruleId: string;        // refers to identity-shell CalendarRule.id
+  effectiveFrom: EffectiveDate;
+  // typed per kind — same shape as §10.4 CalendarRuleFlatV04.value
+  value: unknown;
+  priority: number;      // mostly fixed per kind in practice (single-date 100 /
+                         // date-range 50 / cycle 30 / weekday 10), but kept on
+                         // the revision so future per-date priority overrides
+                         // remain possible.
+  authoredAt: number;
+  sessionId?: string;
+};
+
+type HabitBindingRevision = {
+  id: string;
+  bindingId: string;     // refers to identity-shell HabitBinding.id
+  effectiveFrom: EffectiveDate;
+  habitId: string;       // refers to Line.id (kind='habit')
+  railId: string;        // refers to Rail.id
+  weekdays?: number[];   // 0=Sun ... 6=Sat; undefined = no weekday narrowing
+  authoredAt: number;
+  sessionId?: string;
+};
+```
+
+In the store, each revision type lives in `Record<entityId, Revision[]>`
+(kept ordered by `effectiveFrom asc`) or as a flat table with an
+entityId index — implementation detail left to the store layer.
+
+#### Read semantics: `atDate`
+
+```ts
+function railAtDate(state, railId, date): RailRevision | undefined {
+  const rail = state.rails[railId];
+  if (!rail) return undefined;
+  if (rail.tombstone && date >= rail.tombstone.effectiveFrom) return undefined;
+  const revs = state.railRevisions[railId] ?? [];
+  // pick the largest r.effectiveFrom <= date
+  let pick;
+  for (const r of revs) {
+    if (r.effectiveFrom <= date) pick = r;
+    else break;
+  }
+  return pick;
+}
+```
+
+The same shape applies to all four types: `templateAtDate(key, date)`,
+`calendarRuleRevisionsActiveOn(date)`, `habitBindingsActiveOn(date)`.
+`activeOn(date)` returns every "exists and not yet tombstoned at D"
+entity's latest revision.
+
+**Caller contract**:
+
+- Any "render-by-date" component reads `atDate(date)`; `undefined` means
+  "the entity does not exist on that day".
+- "Today / future" callers always pass `today` or the target date —
+  never read fields directly off the identity shell.
+- The notion of "rail's current state" no longer exists as a global
+  concept. The closest equivalent is `railAtDate(today)`.
+
+#### Write semantics: `upsertRevision`
+
+Every edit walks the "close prior revision + open a new one" path:
+
+1. **Default `effectiveFrom = today`** (local-day) — the edit takes
+   effect immediately for today and onwards; past dates can't see the
+   new revision so their rendering doesn't change.
+2. If a revision with the same `(entityId, effectiveFrom)` already
+   exists, **replace in place** (no new row). This handles "user drags
+   a time pill back and forth inside one Edit Session" without
+   ballooning the revision count.
+3. Otherwise **append** a new revision; the prior revision stays put
+   and continues to serve `[oldFrom, newFrom)` reads.
+4. Write events: `rail-revision.upserted` /
+   `template-revision.upserted` / `calendar-rule-revision.upserted` /
+   `habit-binding-revision.upserted`, with the full new revision as
+   payload.
+
+**`effectiveFrom` UI options**:
+
+- Default: from today
+- Alternatives: from tomorrow / from a custom future date
+- Advanced (power-user, hidden by default): "edit the most recent
+  revision" — overwrite the currently-active revision in place
+  (same id replace), equivalent to "I really do want to rewrite
+  the past too". Surfaces as a collapsed inline option in the
+  Template Editor / calendar drawer; never a default button.
+
+#### Delete semantics: tombstone
+
+`tombstone: { effectiveFrom, at, sessionId? }` on the identity shell
+means "this entity stops existing from that date forward".
+
+- Past dates (`date < tombstone.effectiveFrom`) still find the last
+  revision via `atDate`, render normally.
+- Today and future (`date >= tombstone.effectiveFrom`) get `undefined`
+  from `atDate`; treated as "does not exist" by render.
+- Undo = clear the `tombstone`.
+- Built-in templates (`isDefault: true`) cannot be tombstoned (carries
+  the §5.4 constraint).
+
+#### Create semantics
+
+Create = write the identity shell + a first revision
+(`effectiveFrom = today`, or a user-chosen start date). Past dates
+return `undefined` from `atDate` — the entity simply did not exist
+in the past, so historical Cycle View won't gain an empty rail row.
+
+#### Materialization algorithm (updates §10.2)
+
+```
+materialize(startDate, endDate):
+  for date in [startDate .. endDate]:
+    templateKeyForDate = resolveActiveTemplate(date)
+      // internally: calendarRuleRevisionsActiveOn(date) → priority desc → first match
+
+    for binding in habitBindingsActiveOn(date):
+      bRev = bindingAtDate(binding.id, date)
+      rRev = railAtDate(bRev.railId, date)
+      habit = lines[bRev.habitId]
+      if !habit or habit.status != 'active' or !rRev: continue
+      if rRev.templateKey != templateKeyForDate: continue
+      if bRev.weekdays && !bRev.weekdays.includes(dayOfWeek(date)): continue
+      if date < dateOf(binding.createdAt): continue
+
+      upsert Task {
+        id: `task-auto-${habit.id}-${date}`,
+        lineId: habit.id,
+        title: habit.name,
+        slot: { cycleId: cycleIdOf(date), date, railId: bRev.railId },
+        status: 'pending',
+        source: 'auto-habit',
+      }
+    mark (habit.id, cycleId) as materialized for cycles fully inside [startDate, endDate]
+```
+
+Key points:
+
+- `templateKeyForDate` and `rRev.templateKey` are both resolved
+  per-date; past dates land on the prior revision.
+- The "(habitId, cycleId) materialized" marker is keyed on the
+  identity-level `habitId` — it's shared across binding revisions.
+- `binding.createdAt` lives on the identity shell and continues to
+  enforce "do not backfill dates before the binding was created"
+  (the invariant survives even if the binding later swaps its
+  `railId`).
+
+#### How §10.3 extends in v0.5
+
+The §10.3 purge rule keeps its overall shape under the revision model,
+but its trigger surface broadens:
+
+| Edit | Equivalent revision op | Purge scope |
+|---|---|---|
+| Change a rail's time / template / color | `rail-revision.upserted` (effectiveFrom = D) | Auto-tasks on this rail with `plannedStart >= D AND status='pending'` |
+| Delete a rail | `rail.tombstone` (effectiveFrom = D) | All future pending auto-tasks on this rail with `date >= D`, **and** manual tasks' `slot` cleared |
+| Edit / delete a calendar rule | `calendar-rule-revision.upserted` or `tombstone` | Auto-tasks in the affected window whose templateKey-fit flips |
+| Change a habit binding (railId / weekdays) | `habit-binding-revision.upserted` | Future dates that no longer match are purged; newly matching dates are filled |
+
+**Key delta**: the purge lower bound moves from v0.4's `now()` to
+`max(now, effectiveFrom)`. If the user picks "from tomorrow" /
+"from next Monday", today's remaining auto-tasks aren't disturbed —
+today reads the prior revision and stays on the old config.
+
+**Manual-task unscheduling** (new in v0.5): when a rail is tombstoned,
+every manual task with `slot.railId === railId AND slot.date >= effectiveFrom`
+has its `slot` cleared and reverts to "unscheduled". Task content
+(title / note / subItems) is preserved. Event: `task.unscheduled`,
+sharing the same sessionId. The reschedule shift (§5.5.6) does **not**
+fire here — `slot.date` is necessarily `>= effectiveFrom >= today`,
+so it never falls into the "overdue unschedule" branch.
+
+#### Event log
+
+New event types (compatible with §7 sync):
+
+- `rail-revision.upserted` / `rail-revision.removed`
+- `template-revision.upserted` / `template-revision.removed`
+- `calendar-rule-revision.upserted` / `calendar-rule-revision.removed`
+- `habit-binding-revision.upserted` / `habit-binding-revision.removed`
+- `rail.tombstoned` / `rail.tombstone-cleared`
+- `template.tombstoned` / `template.tombstone-cleared`
+- `calendar-rule.tombstoned` / `calendar-rule.tombstone-cleared`
+- `habit-binding.tombstoned` / `habit-binding.tombstone-cleared`
+
+Old events (`rail.updated`, `calendar-rule.upserted` /
+`calendar-rule.removed`, `habit-binding.upserted` /
+`habit-binding.removed`, ...) **may still appear** in the event log
+during migration windows or for older devices syncing in. The reader
+normalizes them into "identity shell + single revision" form via the
+migration rule below.
+
+#### Data migration (first boot of v0.5)
+
+Per the beta back-compat policy (no destructive migrations, no silent
+reinterpretation), run an idempotent migration:
+
+1. For each v0.4 `Rail`:
+   - Create the identity shell `Rail` keeping `id`, with
+     `createdAt = now() if missing`.
+   - Create one `RailRevision`:
+     - `effectiveFrom = '1970-01-01'` (sentinel "from the dawn of
+       time", so every historical date hits this revision)
+     - All mutable fields copied from the old Rail
+     - `authoredAt = createdAt ?? now()`
+     - `sessionId = undefined`
+2. The same rule for `Template` / `CalendarRule` / `HabitBinding`.
+3. Emit a `migration.v05-revision-model` event so the sync layer can
+   recognize the cutover.
+
+Result: every past date renders identically to v0.4 (because
+`'1970-01-01' <= any date`, every `atDate` lands on that single
+revision). Subsequent edits start producing new revisions.
+
+Cross-device: the first device to run migration pushes the new events
+to sync; pre-v0.5 devices ignore unknown event types (existing
+sync-layer rule), so no data loss; once they upgrade, a replay
+catches them up.
+
+#### Cycle View / Calendar / Tasks rendering impact
+
+- **Cycle View**: column-header templateKey + day-chip color, rail
+  rows' name / color / time / existence — all resolved via
+  `atDate(date)`. Within a 7-day window the shape can mix: e.g. "rail
+  X did not exist on the first three days, then appeared on day four".
+  The render layer hides nonexistent rail rows, not renders them as
+  empty.
+- **Calendar month view**: each cell's tint is
+  `templateAtDate(resolveActiveTemplate(date), date).color`. Color
+  discontinuities mid-month (where the user changed a template's
+  color) are expected.
+- **Tasks list**: the `📅 Wed · Work · Coding` annotation on each row
+  resolves "Work / Coding" via
+  `railAtDate(slot.railId, slot.date)` +
+  `templateAtDate(railRev.templateKey, slot.date)` — every task row
+  shows the rail / template label that was in effect on its slot date,
+  so renaming a rail later won't visually misalign past rows.
+- **Now View / Today Track**: always read today's revision; behavior
+  matches v0.4.
+- **Review heatmap**: cell-level rail label / color resolves on the
+  cell's date, consistent with the task-row behavior.
+
+#### Relationship with §5.3.1 Edit Session
+
+A single batch of edits in the Template Editor or calendar-rules
+drawer shares one sessionId; every revision upsert plus the §10.3
+purge / topup it triggers carries that id. "Undo this editing session"
+becomes:
+
+- New revision (append-style) → delete the revision
+- New revision (same-effectiveFrom replace) → restore the prior
+  payload (the event payload carries the prior snapshot)
+- Tombstone → clear it
+- Task purge / topup → run the §10.3 reverse path
+
+Undo is one-shot and atomic; "half-undo" is not allowed.
+
+#### Open questions (carried into §11.1)
+
+- Should `Line` (Project / Habit) rename / recolor be revisioned too?
+  Currently no — a Project rename intuitively means "this thing has
+  a new label", and showing the old name historically would feel
+  weirder than helpful. Re-evaluate after real usage signal.
+- Default UI value for `effectiveFrom`: v0.5.0 hardcodes "from today";
+  exposing the picker as a Settings preference is parked for the
+  next minor.
+- High-frequency edits (a user dragging a time window 30 times in
+  one Edit Session) and revision-table size: the same-effectiveFrom
+  replace already mitigates; if real usage still bloats, introduce
+  an end-of-session merge that collapses adjacent same-session
+  revisions on the same entity.
 
 ---
 

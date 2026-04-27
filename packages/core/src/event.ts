@@ -66,7 +66,30 @@ export type EventType =
   | 'habit-phase.removed'
   // Habit bindings — habit ↔ rail relationship (§5.5.0; v0.4+)
   | 'habit-binding.upserted'
-  | 'habit-binding.removed';
+  | 'habit-binding.removed'
+  // ERD §10.5 · effective-from revision model (v0.5+)
+  // Per-revision events: payload = full revision row.
+  | 'rail-revision.upserted'
+  | 'rail-revision.removed'
+  | 'template-revision.upserted'
+  | 'template-revision.removed'
+  | 'calendar-rule-revision.upserted'
+  | 'calendar-rule-revision.removed'
+  | 'habit-binding-revision.upserted'
+  | 'habit-binding-revision.removed'
+  // Tombstones — entity-level retirement; identity shell stays so past
+  // revisions remain readable.
+  | 'rail.tombstoned'
+  | 'rail.tombstone-cleared'
+  | 'template.tombstoned'
+  | 'template.tombstone-cleared'
+  | 'calendar-rule.tombstoned'
+  | 'calendar-rule.tombstone-cleared'
+  | 'habit-binding.tombstoned'
+  | 'habit-binding.tombstone-cleared'
+  // One-shot migration marker emitted on first v0.5 boot. Idempotency
+  // guard for the sentinel-revision backfill.
+  | 'migration.v05-revision-model';
 
 export interface AppEvent<T extends EventType = EventType> {
   id: string;

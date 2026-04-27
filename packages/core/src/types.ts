@@ -17,11 +17,45 @@ export type RailColor =
 
 export type TemplateKey = string;
 
+/** ERD §10.5. ISO YYYY-MM-DD. The local-day this revision starts
+ *  applying. Sentinel `'1970-01-01'` is the migration sentinel meaning
+ *  "in effect from before any DayRail data" — guarantees every
+ *  historical date hits the migrated revision. */
+export type EffectiveDate = string;
+
+/** ERD §10.5. The migration sentinel; reads matching against an entity
+ *  in its first lifetime always hit a revision with this `effectiveFrom`. */
+export const REVISION_SENTINEL_DATE: EffectiveDate = '1970-01-01';
+
+/** ERD §10.5. Marker on an entity's identity shell that the entity is
+ *  retired from `effectiveFrom` onward. Past dates still resolve to the
+ *  last revision before `effectiveFrom`. Cleared on resurrect. */
+export interface Tombstone {
+  effectiveFrom: EffectiveDate;
+  /** Wall clock when the tombstone was authored (epoch ms). */
+  at: number;
+  sessionId?: string;
+}
+
 export interface Template {
   key: TemplateKey;
   name: string;
   color?: RailColor;
   isDefault: boolean;
+}
+
+/** ERD §10.5. Versioned snapshot of a Template's mutable fields. The
+ *  identity shell `Template` keeps stable fields (`key` / `isDefault`);
+ *  `name` / `color` move here so editing them produces a new revision
+ *  rather than overwriting in place. */
+export interface TemplateRevision {
+  id: string;
+  templateKey: TemplateKey;
+  effectiveFrom: EffectiveDate;
+  name: string;
+  color?: RailColor;
+  authoredAt: number;
+  sessionId?: string;
 }
 
 export interface Rail {
@@ -39,6 +73,26 @@ export interface Rail {
   // .weekdays narrows per-habit. A rail-level weekday filter was the
   // third overlapping layer and only produced traps (weekdays default
   // dropped into a Restday template → empty intersection → no tasks).
+}
+
+/** ERD §10.5. Versioned snapshot of a Rail's mutable fields. Phase 1
+ *  keeps the legacy `Rail` type intact alongside this so existing reads
+ *  continue to compile; once read paths migrate to `railAtDate`, the
+ *  `Rail` shell can be slimmed down to identity-only fields. */
+export interface RailRevision {
+  id: string;
+  railId: string;
+  effectiveFrom: EffectiveDate;
+  templateKey: TemplateKey;
+  name: string;
+  subtitle?: string;
+  startMinutes: number;
+  durationMinutes: number;
+  color: RailColor;
+  icon?: string;
+  showInCheckin: boolean;
+  authoredAt: number;
+  sessionId?: string;
 }
 
 export interface Cycle {
@@ -190,6 +244,20 @@ export interface HabitBinding {
   createdAt: number;
 }
 
+/** ERD §10.5. Versioned snapshot of a HabitBinding's mutable fields.
+ *  `habitId` / `railId` move here so the same binding identity can
+ *  swap which habit or rail it points at across a cutover date. */
+export interface HabitBindingRevision {
+  id: string;
+  bindingId: string;
+  effectiveFrom: EffectiveDate;
+  habitId: string;
+  railId: string;
+  weekdays?: number[];
+  authoredAt: number;
+  sessionId?: string;
+}
+
 /** A time-segment label on a `kind='habit'` Line. v0.3.3 scope:
  *  entirely user-managed — no preset enum, no auto-advance, no
  *  streak / completion-rate derivation. "Enabled" state for the
@@ -291,6 +359,25 @@ export interface CalendarRule {
     | CalendarRuleDateRange
     | CalendarRuleCycle;
   createdAt: number;
+}
+
+/** ERD §10.5. Versioned snapshot of a CalendarRule's mutable fields.
+ *  `id` / `kind` stay on the identity shell because the rule's nature
+ *  (weekday vs. cycle vs. range) is part of its identity; `value` and
+ *  `priority` move here so editing a weekday rule's `weekdays` array
+ *  or a cycle rule's `mapping` produces a new revision. */
+export interface CalendarRuleRevision {
+  id: string;
+  ruleId: string;
+  effectiveFrom: EffectiveDate;
+  priority: number;
+  value:
+    | CalendarRuleSingleDate
+    | CalendarRuleWeekday
+    | CalendarRuleDateRange
+    | CalendarRuleCycle;
+  authoredAt: number;
+  sessionId?: string;
 }
 
 /** A unit of work within a Line. ERD pre-v0.2.1 called this "Chunk";
