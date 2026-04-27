@@ -20,6 +20,11 @@ import { MarkdownField } from '@/components/MarkdownField';
 import { RAIL_COLOR_HEX, RAIL_COLOR_STEP_4, RAIL_COLOR_STEP_6, RAIL_COLOR_STEP_7 } from '@/components/railColors';
 import { RailPicker } from '@/components/RailPicker';
 import {
+  EffectiveFromPicker,
+  resolveEffectiveFromValue,
+  type EffectiveFromValue,
+} from '@/components/EffectiveFromPicker';
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -629,6 +634,14 @@ function ScheduleList({
   onGoToTemplate: (templateKey: string) => void;
 }) {
   const [formOpen, setFormOpen] = useState(false);
+  // §10.5 Phase 4 · per-section "apply from" picker — affects every
+  // binding upsert / removal triggered from this Schedule section.
+  const [effectiveFromValue, setEffectiveFromValue] =
+    useState<EffectiveFromValue>({ mode: 'today' });
+  const effectiveFrom = useMemo(
+    () => resolveEffectiveFromValue(effectiveFromValue),
+    [effectiveFromValue],
+  );
   const upsertHabitBinding = useStore((s) => s.upsertHabitBinding);
   const removeHabitBinding = useStore((s) => s.removeHabitBinding);
   const openEditSession = useStore((s) => s.openEditSession);
@@ -654,6 +667,7 @@ function ScheduleList({
         ...(opts.weekdays && opts.weekdays.length > 0
           ? { weekdays: opts.weekdays }
           : {}),
+        ...(effectiveFrom && { effectiveFrom }),
       });
       // Materialize immediately so the rhythm strip shows today's /
       // upcoming auto-tasks without requiring a page reload. The
@@ -664,7 +678,7 @@ function ScheduleList({
       });
       setFormOpen(false);
     },
-    [upsertHabitBinding, habit.id],
+    [upsertHabitBinding, habit.id, effectiveFrom],
   );
 
   // ERD §10.3 — config-change purge. A habit schedule edit can
@@ -701,6 +715,7 @@ function ScheduleList({
           habitId: existing.habitId,
           railId: existing.railId,
           ...(weekdays && weekdays.length > 0 ? { weekdays } : {}),
+          ...(effectiveFrom && { effectiveFrom }),
         }, session.id);
         await purgeFutureAutoTasks(
           { habitId: existing.habitId, railId: existing.railId },
@@ -724,6 +739,7 @@ function ScheduleList({
       upsertHabitBinding,
       openEditSession,
       closeEditSession,
+      effectiveFrom,
     ],
   );
 
@@ -751,7 +767,7 @@ function ScheduleList({
 
       const session = await openEditSession('habit-binding-remove');
       try {
-        await removeHabitBinding(bindingId, session.id);
+        await removeHabitBinding(bindingId, session.id, effectiveFrom);
         await purgeFutureAutoTasks(
           { habitId: binding.habitId, railId: binding.railId },
           session.id,
@@ -768,18 +784,25 @@ function ScheduleList({
       removeHabitBinding,
       openEditSession,
       closeEditSession,
+      effectiveFrom,
     ],
   );
 
   return (
     <section aria-label="Habit schedule" className="flex flex-col gap-2">
-      <header className="flex items-baseline justify-between">
+      <header className="flex items-baseline justify-between gap-3">
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
           Schedule
         </span>
-        <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
-          {bindings.length} 条节奏
-        </span>
+        <div className="flex items-center gap-3">
+          <EffectiveFromPicker
+            value={effectiveFromValue}
+            onChange={setEffectiveFromValue}
+          />
+          <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+            {bindings.length} 条节奏
+          </span>
+        </div>
       </header>
       {bindings.length === 0 && !formOpen && (
         <p className="rounded-md bg-surface-1 px-3 py-2.5 text-xs text-ink-tertiary">

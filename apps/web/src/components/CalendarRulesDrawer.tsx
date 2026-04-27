@@ -12,6 +12,11 @@ import {
 } from '@dayrail/core';
 import type { RailColor } from '@/data/sample';
 import { RAIL_COLOR_HEX } from './railColors';
+import {
+  EffectiveFromPicker,
+  resolveEffectiveFromValue,
+  type EffectiveFromValue,
+} from './EffectiveFromPicker';
 
 // ERD §5.4 Advanced Calendar Rules drawer (v0.3 live).
 // Four sections, each with list + create form + in-place edit + delete.
@@ -30,6 +35,16 @@ const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 export function CalendarRulesDrawer({ open, onClose }: Props) {
   const calendarRules = useStore((s) => s.calendarRules);
   const templates = useStore((s) => s.templates);
+
+  // §10.5 Phase 4 · drawer-wide picker. Same primitive as the
+  // Template Editor; every rule edit / removal in this drawer threads
+  // the resolved `effectiveFrom` through to the writer.
+  const [effectiveFromValue, setEffectiveFromValue] =
+    useState<EffectiveFromValue>({ mode: 'today' });
+  const effectiveFrom = useMemo(
+    () => resolveEffectiveFromValue(effectiveFromValue),
+    [effectiveFromValue],
+  );
 
   const templatesList = useMemo(
     () => Object.values(templates).sort((a, b) => a.key.localeCompare(b.key)),
@@ -97,13 +112,33 @@ export function CalendarRulesDrawer({ open, onClose }: Props) {
           优先级：<span className="text-ink-secondary">单日 → 范围 → 循环 → 星期几 → 内置启发</span>。改动即时落库；点规则右侧 ✎ 可原地编辑。
         </div>
 
+        <div className="flex items-center justify-end px-5 pt-3">
+          <EffectiveFromPicker
+            value={effectiveFromValue}
+            onChange={setEffectiveFromValue}
+          />
+        </div>
+
         <div className="mt-4 flex flex-1 flex-col gap-6 overflow-y-auto px-5 pb-6">
-          <SingleDateSection rules={singleDate} templates={templatesList} />
-          <DateRangeSection rules={dateRange} templates={templatesList} />
-          <CycleSection rules={cycle} templates={templatesList} />
+          <SingleDateSection
+            rules={singleDate}
+            templates={templatesList}
+            effectiveFrom={effectiveFrom}
+          />
+          <DateRangeSection
+            rules={dateRange}
+            templates={templatesList}
+            effectiveFrom={effectiveFrom}
+          />
+          <CycleSection
+            rules={cycle}
+            templates={templatesList}
+            effectiveFrom={effectiveFrom}
+          />
           <WeekdaySection
             rules={weekday}
             templates={templatesList}
+            effectiveFrom={effectiveFrom}
           />
         </div>
 
@@ -190,13 +225,19 @@ function TemplateTag({
   );
 }
 
-function RemoveButton({ id }: { id: string }) {
+function RemoveButton({
+  id,
+  effectiveFrom,
+}: {
+  id: string;
+  effectiveFrom: string | undefined;
+}) {
   const removeCalendarRule = useStore((s) => s.removeCalendarRule);
   return (
     <button
       type="button"
       aria-label="Remove"
-      onClick={() => void removeCalendarRule(id)}
+      onClick={() => void removeCalendarRule(id, effectiveFrom)}
       className="rounded-sm p-0.5 text-ink-tertiary transition hover:bg-surface-3 hover:text-ink-primary"
     >
       <X className="h-3 w-3" strokeWidth={1.8} />
@@ -222,9 +263,11 @@ function EditButton({ onClick }: { onClick: () => void }) {
 function SingleDateSection({
   rules,
   templates,
+  effectiveFrom,
 }: {
   rules: CalendarRule[];
   templates: Template[];
+  effectiveFrom: string | undefined;
 }) {
   const [formOpen, setFormOpen] = useState(false);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
@@ -239,7 +282,7 @@ function SingleDateSection({
         <SingleDateForm
           templates={templates}
           onSubmit={async (date, tk) => {
-            await overrideCycleDay(date, tk);
+            await overrideCycleDay(date, tk, undefined, effectiveFrom);
             setFormOpen(false);
           }}
           onCancel={() => setFormOpen(false)}
@@ -260,7 +303,7 @@ function SingleDateSection({
               </span>
               <div className="flex items-center gap-2">
                 <TemplateTag templates={templates} templateKey={v.templateKey} />
-                <RemoveButton id={r.id} />
+                <RemoveButton id={r.id} effectiveFrom={effectiveFrom} />
               </div>
             </div>
           );
@@ -316,9 +359,11 @@ function SingleDateForm({
 function DateRangeSection({
   rules,
   templates,
+  effectiveFrom,
 }: {
   rules: CalendarRule[];
   templates: Template[];
+  effectiveFrom: string | undefined;
 }) {
   // `null` = closed; `'new'` = create form; `ruleId` = edit form for
   // that specific row. Single-slot state keeps the drawer from
@@ -337,7 +382,10 @@ function DateRangeSection({
         <DateRangeForm
           templates={templates}
           onSubmit={async (opts) => {
-            await upsertDateRangeRule(opts);
+            await upsertDateRangeRule({
+              ...opts,
+              ...(effectiveFrom && { effectiveFrom }),
+            });
             setFormMode(null);
           }}
           onCancel={() => setFormMode(null)}
@@ -360,7 +408,11 @@ function DateRangeSection({
                   label: v.label,
                 }}
                 onSubmit={async (opts) => {
-                  await upsertDateRangeRule({ ...opts, id: r.id });
+                  await upsertDateRangeRule({
+                    ...opts,
+                    id: r.id,
+                    ...(effectiveFrom && { effectiveFrom }),
+                  });
                   setFormMode(null);
                 }}
                 onCancel={() => setFormMode(null)}
@@ -385,7 +437,7 @@ function DateRangeSection({
               <div className="flex items-center gap-2">
                 <TemplateTag templates={templates} templateKey={v.templateKey} />
                 <EditButton onClick={() => setFormMode(r.id)} />
-                <RemoveButton id={r.id} />
+                <RemoveButton id={r.id} effectiveFrom={effectiveFrom} />
               </div>
             </div>
           );
@@ -487,9 +539,11 @@ function DateRangeForm({
 function CycleSection({
   rules,
   templates,
+  effectiveFrom,
 }: {
   rules: CalendarRule[];
   templates: Template[];
+  effectiveFrom: string | undefined;
 }) {
   const [formMode, setFormMode] = useState<null | 'new' | string>(null);
   const upsertCycleRule = useStore((s) => s.upsertCycleRule);
@@ -504,7 +558,10 @@ function CycleSection({
         <CycleForm
           templates={templates}
           onSubmit={async (opts) => {
-            await upsertCycleRule(opts);
+            await upsertCycleRule({
+              ...opts,
+              ...(effectiveFrom && { effectiveFrom }),
+            });
             setFormMode(null);
           }}
           onCancel={() => setFormMode(null)}
@@ -526,7 +583,11 @@ function CycleSection({
                   mapping: v.mapping,
                 }}
                 onSubmit={async (opts) => {
-                  await upsertCycleRule({ ...opts, id: r.id });
+                  await upsertCycleRule({
+                    ...opts,
+                    id: r.id,
+                    ...(effectiveFrom && { effectiveFrom }),
+                  });
                   setFormMode(null);
                 }}
                 onCancel={() => setFormMode(null)}
@@ -544,7 +605,7 @@ function CycleSection({
                 </span>
                 <div className="flex items-center gap-1">
                   <EditButton onClick={() => setFormMode(r.id)} />
-                  <RemoveButton id={r.id} />
+                  <RemoveButton id={r.id} effectiveFrom={effectiveFrom} />
                 </div>
               </div>
               <div className="flex flex-wrap gap-1">
@@ -678,9 +739,11 @@ function CycleForm({
 function WeekdaySection({
   rules,
   templates,
+  effectiveFrom,
 }: {
   rules: CalendarRule[];
   templates: Template[];
+  effectiveFrom: string | undefined;
 }) {
   const [formMode, setFormMode] = useState<null | 'new' | string>(null);
   const upsertWeekdayRule = useStore((s) => s.upsertWeekdayRule);
@@ -710,7 +773,7 @@ function WeekdaySection({
         <WeekdayForm
           templates={available}
           onSubmit={async (tk, weekdays) => {
-            await upsertWeekdayRule(tk, weekdays);
+            await upsertWeekdayRule(tk, weekdays, effectiveFrom);
             setFormMode(null);
           }}
           onCancel={() => setFormMode(null)}
@@ -734,7 +797,7 @@ function WeekdaySection({
                   weekdays: v.weekdays,
                 }}
                 onSubmit={async (tk, weekdays) => {
-                  await upsertWeekdayRule(tk, weekdays);
+                  await upsertWeekdayRule(tk, weekdays, effectiveFrom);
                   setFormMode(null);
                 }}
                 onCancel={() => setFormMode(null)}
@@ -757,7 +820,7 @@ function WeekdaySection({
               </div>
               <div className="flex items-center gap-1">
                 <EditButton onClick={() => setFormMode(r.id)} />
-                <RemoveButton id={r.id} />
+                <RemoveButton id={r.id} effectiveFrom={effectiveFrom} />
               </div>
             </div>
           );
