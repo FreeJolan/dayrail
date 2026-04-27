@@ -31,6 +31,11 @@ import { TimelineRuler } from '@/components/TimelineRuler';
 import { RailEditCard } from '@/components/RailEditCard';
 import { GapChip } from '@/components/GapChip';
 import {
+  EffectiveFromPicker,
+  resolveEffectiveFromValue,
+  type EffectiveFromValue,
+} from '@/components/EffectiveFromPicker';
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -138,6 +143,20 @@ export function TemplateEditor() {
     [templates],
   );
 
+  // §10.5 Phase 4 · session-wide "apply edits from" picker. Default
+  // mode is "today" (matches the v0.5.0 hardcoded behavior). When the
+  // user flips it, every subsequent revision write inside this editor
+  // session uses the chosen date as its `effectiveFrom`. Past dates
+  // and any date strictly before the chosen one keep reading the prior
+  // revision; today reads the prior revision too when the user picked
+  // "明天起" or a future date.
+  const [effectiveFromValue, setEffectiveFromValue] =
+    useState<EffectiveFromValue>({ mode: 'today' });
+  const effectiveFrom = useMemo(
+    () => resolveEffectiveFromValue(effectiveFromValue),
+    [effectiveFromValue],
+  );
+
   const [focusRailId, setFocusRailId] = useState<string | undefined>();
   useEffect(() => {
     if (!focusRailId && sortedEditable[0]) {
@@ -161,7 +180,7 @@ export function TemplateEditor() {
 
   const mutate = (id: string, patch: Partial<EditableRail>) => {
     const railPatch = editablePatchToRail(patch);
-    void updateRailAction(id, railPatch, sessionId ?? undefined);
+    void updateRailAction(id, railPatch, sessionId ?? undefined, effectiveFrom);
   };
 
   // Rail deletion triggers ERD §10.3 purge: every habit bound to this
@@ -181,7 +200,7 @@ export function TemplateEditor() {
       );
       if (!ok) return;
     }
-    await deleteRailAction(id, sessionId ?? undefined);
+    await deleteRailAction(id, sessionId ?? undefined, effectiveFrom);
     if (affected.length > 0) {
       await purgeFutureAutoTasksForRail(id, sessionId ?? undefined);
     }
@@ -195,7 +214,7 @@ export function TemplateEditor() {
       id: `${source.id}-dup-${Date.now()}`,
       name: `${source.name} · 副本`,
     };
-    void createRailAction(dup, sessionId ?? undefined);
+    void createRailAction(dup, sessionId ?? undefined, effectiveFrom);
   };
 
   // ---- top-right ⋯ menu handlers (ERD §5.4 E1 / E7) ----
@@ -224,6 +243,7 @@ export function TemplateEditor() {
     await upsertTemplateAction(
       { key: newKey, name, isDefault: false },
       sessionId ?? undefined,
+      effectiveFrom,
     );
     navigate(`/templates/${newKey}`);
   };
@@ -248,6 +268,7 @@ export function TemplateEditor() {
         isDefault: false,
       },
       sessionId ?? undefined,
+      effectiveFrom,
     );
     const stamp = Date.now();
     let i = 0;
@@ -257,7 +278,7 @@ export function TemplateEditor() {
         id: `${source.id}-copy-${stamp}-${i}`,
         templateKey: newKey,
       };
-      await createRailAction(dup, sessionId ?? undefined);
+      await createRailAction(dup, sessionId ?? undefined, effectiveFrom);
       i++;
     }
     navigate(`/templates/${newKey}`);
@@ -270,6 +291,7 @@ export function TemplateEditor() {
     await upsertTemplateAction(
       { ...tpl, color: next as Rail['color'] },
       sessionId ?? undefined,
+      effectiveFrom,
     );
   };
 
@@ -309,7 +331,7 @@ export function TemplateEditor() {
     }
     const msg = `确定删除模板「${currentTemplate.label}」？\n将一并移除它的 ${rails.length} 条 Rail。本次会话内可用「撤销本次编辑」回滚。`;
     if (!window.confirm(msg)) return;
-    await deleteTemplateAction(activeKey, sessionId ?? undefined);
+    await deleteTemplateAction(activeKey, sessionId ?? undefined, effectiveFrom);
     // Hop to another template so the page doesn't try to render the
     // deleted one. Prefer the default, else the first remaining.
     const remaining = templates.filter((t) => t.key !== activeKey);
@@ -330,7 +352,7 @@ export function TemplateEditor() {
       color,
       showInCheckin: true,
     };
-    void createRailAction(rail, sessionId ?? undefined);
+    void createRailAction(rail, sessionId ?? undefined, effectiveFrom);
   };
 
   // Derive the sequence of rows + interleaved gap chips
@@ -374,6 +396,17 @@ export function TemplateEditor() {
       />
 
       <SummaryStrip rails={sortedEditable} />
+
+      {/* §10.5 Phase 4 · "apply edits from" affordance. Default
+          "今天起"; flip to "明天起" or a custom date when the user
+          wants the next batch of edits to leave today's resolution
+          untouched. */}
+      <div className="flex items-center justify-end pt-3">
+        <EffectiveFromPicker
+          value={effectiveFromValue}
+          onChange={setEffectiveFromValue}
+        />
+      </div>
 
       <div className="pt-6">
         <FirstRunBanner />

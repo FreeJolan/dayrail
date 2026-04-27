@@ -127,16 +127,46 @@ export interface DayRailState {
 interface DayRailActions {
   hydrate: () => Promise<void>;
   // --- templates ---
-  upsertTemplate: (tpl: Template, sessionId?: string) => Promise<void>;
+  /** `effectiveFrom` (ERD §10.5) — when provided, the matching
+   *  `template-revision.upserted` event uses this ISO date instead of
+   *  today. Lets the user say "apply this rename starting next
+   *  Monday" while leaving today/yesterday on the prior revision.
+   *  Defaults to today. Only affects the revision write — the legacy
+   *  current-state mirror still flips immediately. */
+  upsertTemplate: (
+    tpl: Template,
+    sessionId?: string,
+    effectiveFrom?: string,
+  ) => Promise<void>;
   /** Delete a Template and cascade its Rails. The caller is responsible
    *  for checking referential integrity (CalendarRule bindings, live
    *  Tasks scheduled on this template's rails) before calling — we
-   *  don't guess what the right user-facing escape hatch is here. */
-  deleteTemplate: (key: TemplateKey, sessionId?: string) => Promise<void>;
+   *  don't guess what the right user-facing escape hatch is here.
+   *  `effectiveFrom` controls the tombstone date (default = today). */
+  deleteTemplate: (
+    key: TemplateKey,
+    sessionId?: string,
+    effectiveFrom?: string,
+  ) => Promise<void>;
   // --- rails ---
-  createRail: (rail: Rail, sessionId?: string) => Promise<void>;
-  updateRail: (id: string, patch: Partial<Rail>, sessionId?: string) => Promise<void>;
-  deleteRail: (id: string, sessionId?: string) => Promise<void>;
+  /** `effectiveFrom` controls the revision's start date (default =
+   *  today; see ERD §10.5 "apply from" semantics). */
+  createRail: (
+    rail: Rail,
+    sessionId?: string,
+    effectiveFrom?: string,
+  ) => Promise<void>;
+  updateRail: (
+    id: string,
+    patch: Partial<Rail>,
+    sessionId?: string,
+    effectiveFrom?: string,
+  ) => Promise<void>;
+  deleteRail: (
+    id: string,
+    sessionId?: string,
+    effectiveFrom?: string,
+  ) => Promise<void>;
   // --- audit for check-in / Pending actions ---
   /** Audit a §5.6 check-in button press. `Task.status` is written by
    *  the caller (updateTask) before this runs — recordSignal only
@@ -199,19 +229,27 @@ interface DayRailActions {
   // --- calendar rules (§5.4 CalendarRule) ---
   /** Write a `single-date` CalendarRule binding `date` to `templateKey`.
    *  Deduplicated by the deterministic id `cr-single-{date}` — flipping
-   *  the same day repeatedly is one row's worth of events, not N. */
+   *  the same day repeatedly is one row's worth of events, not N.
+   *  `effectiveFrom` controls when the revision starts applying
+   *  (default = today). */
   overrideCycleDay: (
     date: string,
     templateKey: TemplateKey,
     sessionId?: string,
+    effectiveFrom?: string,
   ) => Promise<void>;
   /** Remove the single-date override for `date`. No-op if absent. */
-  clearCycleDayOverride: (date: string, sessionId?: string) => Promise<void>;
+  clearCycleDayOverride: (
+    date: string,
+    sessionId?: string,
+    effectiveFrom?: string,
+  ) => Promise<void>;
   /** Upsert a weekday rule (one per template; flipping a template's
    *  coverage replaces the old row). `weekdays` uses 0 = Sunday. */
   upsertWeekdayRule: (
     templateKey: TemplateKey,
     weekdays: number[],
+    effectiveFrom?: string,
   ) => Promise<void>;
   /** Create or update a date-range rule. Pass `id` to update an
    *  existing one in place (keeps row id stable so history / tags
@@ -222,6 +260,7 @@ interface DayRailActions {
     to: string;
     templateKey: TemplateKey;
     label?: string;
+    effectiveFrom?: string;
   }) => Promise<string>;
   /** Create or update a cycle rule. Pass `id` to update in place. */
   upsertCycleRule: (opts: {
@@ -229,10 +268,11 @@ interface DayRailActions {
     cycleLength: number;
     anchor: string;
     mapping: TemplateKey[];
+    effectiveFrom?: string;
   }) => Promise<string>;
   /** Remove any CalendarRule by id (weekday / date-range / cycle /
    *  single-date — caller names the rule explicitly). */
-  removeCalendarRule: (id: string) => Promise<void>;
+  removeCalendarRule: (id: string, effectiveFrom?: string) => Promise<void>;
   // --- custom Cycle records (§5.3 / §9.7; v0.3.2 label-only scope) ---
   /** Upsert a Cycle record by deterministic id `cycle-{startDate}`.
    *  In v0.3.2 every Cycle is 7-day Monday-anchored, so id stability
@@ -265,10 +305,15 @@ interface DayRailActions {
       habitId: string;
       railId: string;
       weekdays?: number[];
+      effectiveFrom?: string;
     },
     sessionId?: string,
   ) => Promise<string>;
-  removeHabitBinding: (id: string, sessionId?: string) => Promise<void>;
+  removeHabitBinding: (
+    id: string,
+    sessionId?: string,
+    effectiveFrom?: string,
+  ) => Promise<void>;
   // --- auto-task materialization (§10.2; v0.4+) ---
   /** Idempotent upsert of an auto-task. No-op when `state.tasks[id]`
    *  already exists — the caller (autoTask.ts materializer) uses
@@ -1198,11 +1243,24 @@ export const useStore = create<DayRailStore>()(
     // dates still resolve to the prior revision via `*AtDate`.
     // ----------------------------------------------------------------
 
+    // §10.5 Phase 4: every emitter takes an optional `effectiveFrom`.
+    // When omitted the revision starts from today (preserving v0.5.0
+    // semantics); when provided, the caller is choosing a future
+    // cutover ("apply this rename starting next Monday") so the
+    // current/today read still resolves to the prior revision.
+    const resolveEffectiveFrom = (override?: string): string =>
+      override ?? toIsoDate();
+
     const emitRailRevision = async (
       rail: Rail,
       sessionId?: string,
+      effectiveFromOverride?: string,
     ): Promise<void> => {
-      const rev = buildRailRevision(rail, toIsoDate(), sessionId);
+      const rev = buildRailRevision(
+        rail,
+        resolveEffectiveFrom(effectiveFromOverride),
+        sessionId,
+      );
       const ev = await appendEvent({
         aggregateId: `rail:${rail.id}`,
         type: 'rail-revision.upserted',
@@ -1215,8 +1273,13 @@ export const useStore = create<DayRailStore>()(
     const emitTemplateRevision = async (
       tpl: Template,
       sessionId?: string,
+      effectiveFromOverride?: string,
     ): Promise<void> => {
-      const rev = buildTemplateRevision(tpl, toIsoDate(), sessionId);
+      const rev = buildTemplateRevision(
+        tpl,
+        resolveEffectiveFrom(effectiveFromOverride),
+        sessionId,
+      );
       const ev = await appendEvent({
         aggregateId: `template:${tpl.key}`,
         type: 'template-revision.upserted',
@@ -1229,8 +1292,13 @@ export const useStore = create<DayRailStore>()(
     const emitCalendarRuleRevision = async (
       rule: CalendarRule,
       sessionId?: string,
+      effectiveFromOverride?: string,
     ): Promise<void> => {
-      const rev = buildCalendarRuleRevision(rule, toIsoDate(), sessionId);
+      const rev = buildCalendarRuleRevision(
+        rule,
+        resolveEffectiveFrom(effectiveFromOverride),
+        sessionId,
+      );
       const ev = await appendEvent({
         aggregateId: `calendar-rule:${rule.id}`,
         type: 'calendar-rule-revision.upserted',
@@ -1243,8 +1311,13 @@ export const useStore = create<DayRailStore>()(
     const emitHabitBindingRevision = async (
       binding: HabitBinding,
       sessionId?: string,
+      effectiveFromOverride?: string,
     ): Promise<void> => {
-      const rev = buildHabitBindingRevision(binding, toIsoDate(), sessionId);
+      const rev = buildHabitBindingRevision(
+        binding,
+        resolveEffectiveFrom(effectiveFromOverride),
+        sessionId,
+      );
       const ev = await appendEvent({
         aggregateId: `habit-binding:${binding.id}`,
         type: 'habit-binding-revision.upserted',
@@ -1257,13 +1330,14 @@ export const useStore = create<DayRailStore>()(
     const emitRailTombstone = async (
       railId: string,
       sessionId?: string,
+      effectiveFromOverride?: string,
     ): Promise<void> => {
       const ev = await appendEvent({
         aggregateId: `rail:${railId}`,
         type: 'rail.tombstoned',
         payload: {
           railId,
-          effectiveFrom: toIsoDate(),
+          effectiveFrom: resolveEffectiveFrom(effectiveFromOverride),
           at: Date.now(),
           ...(sessionId && { sessionId }),
         },
@@ -1275,13 +1349,14 @@ export const useStore = create<DayRailStore>()(
     const emitTemplateTombstone = async (
       key: TemplateKey,
       sessionId?: string,
+      effectiveFromOverride?: string,
     ): Promise<void> => {
       const ev = await appendEvent({
         aggregateId: `template:${key}`,
         type: 'template.tombstoned',
         payload: {
           templateKey: key,
-          effectiveFrom: toIsoDate(),
+          effectiveFrom: resolveEffectiveFrom(effectiveFromOverride),
           at: Date.now(),
           ...(sessionId && { sessionId }),
         },
@@ -1293,13 +1368,14 @@ export const useStore = create<DayRailStore>()(
     const emitCalendarRuleTombstone = async (
       ruleId: string,
       sessionId?: string,
+      effectiveFromOverride?: string,
     ): Promise<void> => {
       const ev = await appendEvent({
         aggregateId: `calendar-rule:${ruleId}`,
         type: 'calendar-rule.tombstoned',
         payload: {
           ruleId,
-          effectiveFrom: toIsoDate(),
+          effectiveFrom: resolveEffectiveFrom(effectiveFromOverride),
           at: Date.now(),
           ...(sessionId && { sessionId }),
         },
@@ -1311,13 +1387,14 @@ export const useStore = create<DayRailStore>()(
     const emitHabitBindingTombstone = async (
       bindingId: string,
       sessionId?: string,
+      effectiveFromOverride?: string,
     ): Promise<void> => {
       const ev = await appendEvent({
         aggregateId: `habit-binding:${bindingId}`,
         type: 'habit-binding.tombstoned',
         payload: {
           bindingId,
-          effectiveFrom: toIsoDate(),
+          effectiveFrom: resolveEffectiveFrom(effectiveFromOverride),
           at: Date.now(),
           ...(sessionId && { sessionId }),
         },
@@ -1620,7 +1697,7 @@ export const useStore = create<DayRailStore>()(
         }
       },
 
-      upsertTemplate: async (tpl, sessionId) => {
+      upsertTemplate: async (tpl, sessionId, effectiveFrom) => {
         const isCreate = !get().templates[tpl.key];
         const event = await appendEvent({
           aggregateId: `template:${tpl.key}`,
@@ -1634,7 +1711,7 @@ export const useStore = create<DayRailStore>()(
         });
         // §10.5 mirror — capture the post-event template state.
         const next = get().templates[tpl.key];
-        if (next) await emitTemplateRevision(next, sessionId);
+        if (next) await emitTemplateRevision(next, sessionId, effectiveFrom);
         // Re-create on top of a tombstone clears the tombstone so future
         // dates see the resurrected template.
         if (get().templateTombstones[tpl.key]) {
@@ -1649,7 +1726,7 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
-      deleteTemplate: async (key, sessionId) => {
+      deleteTemplate: async (key, sessionId, effectiveFrom) => {
         // Delete dependent rails first so replay order matches intent:
         // when a reader rebuilds state the template disappears only
         // after its children. Ambient railInstances / signals for those
@@ -1668,7 +1745,7 @@ export const useStore = create<DayRailStore>()(
           set((draft) => {
             applyEventInPlace(draft, railEvent.type, railEvent.payload);
           });
-          await emitRailTombstone(railId, sessionId);
+          await emitRailTombstone(railId, sessionId, effectiveFrom);
         }
         const event = await appendEvent({
           aggregateId: `template:${key}`,
@@ -1680,11 +1757,11 @@ export const useStore = create<DayRailStore>()(
         set((draft) => {
           applyEventInPlace(draft, event.type, event.payload);
         });
-        await emitTemplateTombstone(key, sessionId);
+        await emitTemplateTombstone(key, sessionId, effectiveFrom);
         afterMutation();
       },
 
-      createRail: async (rail, sessionId) => {
+      createRail: async (rail, sessionId, effectiveFrom) => {
         const event = await appendEvent({
           aggregateId: `rail:${rail.id}`,
           type: 'rail.created',
@@ -1696,7 +1773,7 @@ export const useStore = create<DayRailStore>()(
           applyEventInPlace(draft, event.type, event.payload);
         });
         const next = get().rails[rail.id];
-        if (next) await emitRailRevision(next, sessionId);
+        if (next) await emitRailRevision(next, sessionId, effectiveFrom);
         if (get().railTombstones[rail.id]) {
           const ev = await appendEvent({
             aggregateId: `rail:${rail.id}`,
@@ -1709,7 +1786,7 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
-      updateRail: async (id, patch, sessionId) => {
+      updateRail: async (id, patch, sessionId, effectiveFrom) => {
         const event = await appendEvent({
           aggregateId: `rail:${id}`,
           type: 'rail.updated',
@@ -1721,11 +1798,11 @@ export const useStore = create<DayRailStore>()(
           applyEventInPlace(draft, event.type, event.payload);
         });
         const next = get().rails[id];
-        if (next) await emitRailRevision(next, sessionId);
+        if (next) await emitRailRevision(next, sessionId, effectiveFrom);
         afterMutation();
       },
 
-      deleteRail: async (id, sessionId) => {
+      deleteRail: async (id, sessionId, effectiveFrom) => {
         const event = await appendEvent({
           aggregateId: `rail:${id}`,
           type: 'rail.deleted',
@@ -1736,7 +1813,7 @@ export const useStore = create<DayRailStore>()(
         set((draft) => {
           applyEventInPlace(draft, event.type, event.payload);
         });
-        await emitRailTombstone(id, sessionId);
+        await emitRailTombstone(id, sessionId, effectiveFrom);
         afterMutation();
       },
 
@@ -2089,7 +2166,7 @@ export const useStore = create<DayRailStore>()(
         afterMutation();
       },
 
-      overrideCycleDay: async (date, templateKey, sessionId) => {
+      overrideCycleDay: async (date, templateKey, sessionId, effectiveFrom) => {
         const id = singleDateRuleId(date);
         const payload: CalendarRule = {
           id,
@@ -2112,11 +2189,11 @@ export const useStore = create<DayRailStore>()(
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
         if (sessionId) await touchSession(sessionId);
         const next = get().calendarRules[id];
-        if (next) await emitCalendarRuleRevision(next, sessionId);
+        if (next) await emitCalendarRuleRevision(next, sessionId, effectiveFrom);
         afterMutation();
       },
 
-      clearCycleDayOverride: async (date, sessionId) => {
+      clearCycleDayOverride: async (date, sessionId, effectiveFrom) => {
         const id = singleDateRuleId(date);
         if (!get().calendarRules[id]) return;
         const ev = await appendEvent({
@@ -2127,11 +2204,11 @@ export const useStore = create<DayRailStore>()(
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
         if (sessionId) await touchSession(sessionId);
-        await emitCalendarRuleTombstone(id, sessionId);
+        await emitCalendarRuleTombstone(id, sessionId, effectiveFrom);
         afterMutation();
       },
 
-      upsertWeekdayRule: async (templateKey, weekdays) => {
+      upsertWeekdayRule: async (templateKey, weekdays, effectiveFrom) => {
         // One rule per template — deterministic id lets subsequent
         // edits (coverage shrinks / grows) replace the row in place.
         const id = `cr-weekday-${templateKey}`;
@@ -2149,11 +2226,11 @@ export const useStore = create<DayRailStore>()(
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
         const next = get().calendarRules[id];
-        if (next) await emitCalendarRuleRevision(next);
+        if (next) await emitCalendarRuleRevision(next, undefined, effectiveFrom);
         afterMutation();
       },
 
-      upsertDateRangeRule: async ({ id, from, to, templateKey, label }) => {
+      upsertDateRangeRule: async ({ id, from, to, templateKey, label, effectiveFrom }) => {
         // Reuse the existing id on update so the rule row stays stable
         // (and a later "revision history" view can key off it); mint
         // a fresh ULID on create.
@@ -2174,12 +2251,12 @@ export const useStore = create<DayRailStore>()(
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
         const next = get().calendarRules[ruleId];
-        if (next) await emitCalendarRuleRevision(next);
+        if (next) await emitCalendarRuleRevision(next, undefined, effectiveFrom);
         afterMutation();
         return ruleId;
       },
 
-      upsertCycleRule: async ({ id, cycleLength, anchor, mapping }) => {
+      upsertCycleRule: async ({ id, cycleLength, anchor, mapping, effectiveFrom }) => {
         const ruleId = id ?? ulidLite('cr-cycle');
         const existing = id ? get().calendarRules[id] : undefined;
         const payload: CalendarRule = {
@@ -2196,12 +2273,12 @@ export const useStore = create<DayRailStore>()(
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
         const next = get().calendarRules[ruleId];
-        if (next) await emitCalendarRuleRevision(next);
+        if (next) await emitCalendarRuleRevision(next, undefined, effectiveFrom);
         afterMutation();
         return ruleId;
       },
 
-      removeCalendarRule: async (id) => {
+      removeCalendarRule: async (id, effectiveFrom) => {
         if (!get().calendarRules[id]) return;
         const ev = await appendEvent({
           aggregateId: `calendar-rule:${id}`,
@@ -2209,7 +2286,7 @@ export const useStore = create<DayRailStore>()(
           payload: { id },
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        await emitCalendarRuleTombstone(id);
+        await emitCalendarRuleTombstone(id, undefined, effectiveFrom);
         afterMutation();
       },
 
@@ -2299,7 +2376,9 @@ export const useStore = create<DayRailStore>()(
         if (sessionId) await touchSession(sessionId);
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
         const next = get().habitBindings[id];
-        if (next) await emitHabitBindingRevision(next, sessionId);
+        if (next) {
+          await emitHabitBindingRevision(next, sessionId, opts.effectiveFrom);
+        }
         if (get().habitBindingTombstones[id]) {
           const cleared = await appendEvent({
             aggregateId: `habit-binding:${id}`,
@@ -2315,7 +2394,7 @@ export const useStore = create<DayRailStore>()(
         return id;
       },
 
-      removeHabitBinding: async (id, sessionId) => {
+      removeHabitBinding: async (id, sessionId, effectiveFrom) => {
         if (!get().habitBindings[id]) return;
         const ev = await appendEvent({
           aggregateId: `habit-binding:${id}`,
@@ -2325,7 +2404,7 @@ export const useStore = create<DayRailStore>()(
         });
         if (sessionId) await touchSession(sessionId);
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        await emitHabitBindingTombstone(id, sessionId);
+        await emitHabitBindingTombstone(id, sessionId, effectiveFrom);
         afterMutation();
       },
 
