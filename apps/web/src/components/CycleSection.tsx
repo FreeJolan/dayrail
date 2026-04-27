@@ -52,7 +52,17 @@ interface Props {
   onOpenReflection: (date: string) => void;
   onOverride: (date: string, nextTemplate: TemplateKey) => void;
   onClearOverride: (date: string) => void;
+  /** End-of-slot drop (drag onto cell whitespace). Position is omitted
+   *  → store action assigns no `slotOrder`, leaves the derived sort. */
   onDropTask?: (taskId: string, date: string, railId: string) => void;
+  /** §4.1 v0.4.4 · between-pill drop with explicit insertion position.
+   *  Caller decides same-slot reorder vs cross-slot move-and-place. */
+  onDropTaskAt?: (
+    taskId: string,
+    date: string,
+    railId: string,
+    position: number,
+  ) => void;
   onClearSlot?: (taskId: string) => void;
   onMarkTaskDone?: (taskId: string) => void;
   onUndoTaskDone?: (taskId: string) => void;
@@ -82,6 +92,7 @@ export function CycleSection({
   onOverride,
   onClearOverride,
   onDropTask,
+  onDropTaskAt,
   onClearSlot,
   onMarkTaskDone,
   onUndoTaskDone,
@@ -226,6 +237,10 @@ export function CycleSection({
                         {...(onToggleSubItem && { onToggleSubItem })}
                         {...(onQuickCreate && { onQuickCreate })}
                         {...(lineLookup && { lineLookup })}
+                        {...(onDropTaskAt && {
+                          onDropTaskAt: (taskId: string, position: number) =>
+                            onDropTaskAt(taskId, d.date, rail.id, position),
+                        })}
                       />
                     </td>
                   );

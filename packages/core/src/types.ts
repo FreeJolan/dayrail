@@ -429,6 +429,14 @@ export interface Task {
    *    Mode B, free time    ▸ slot = undefined; AdhocEvent.taskId points back
    *    Unscheduled          ▸ slot = undefined AND no AdhocEvent refers to it. */
   slot?: { cycleId: string; date: string; railId: string };
+  /** §4.1 v0.4.4 · per-slot user-defined ordering. When set on any
+   *  task in a slot, the whole slot sorts by `slotOrder` asc (tasks
+   *  without one fall to the bottom in stable insertion order). When
+   *  no task in the slot has it set, the derived (state → priority →
+   *  insertion) sort applies. New tasks get no `slotOrder`, so the
+   *  legacy behavior is preserved end-to-end until the user drags
+   *  something into a specific position. */
+  slotOrder?: number;
   doneAt?: string;
   /** Stamped when the user moves the task into `deferred`. Helps the
    *  Pending queue sort by "when did it get deferred" for §5.7. */

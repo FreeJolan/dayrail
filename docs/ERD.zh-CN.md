@@ -398,6 +398,7 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
 - **空 Slot**（Template 生效 + 无 task）：虚线 border；hover 转实线。点击 cell 任意处弹 popover，内置 `QuickCreate` 输入框（Enter = 追加一个 pending Task 到当前 `(date, rail)`；指针移出取消）。不再有 `[新建到 Project]` / `[从已有挑选]` 子菜单 —— 对 ~95% 场景过度设计。"从已有挑选"走 Backlog 抽屉；"新建到 Project" 走 Tasks 页。
 - **非空 Slot**（≥ 1 个 task）：
   - 多个 task 垂直堆叠为 pill 列。排序：state rank (`pending < done < deferred < archived`) → priority rank (`P0 < P1 < P2 < 无`) → 稳定插入序。
+  - **用户拖拽排序（v0.4.4）**：在 pill 之间出现 2px 高亮**插入线**，drop 即固定位置。落地为 `Task.slotOrder?: number`：slot 中**任一** task 带 `slotOrder` 时，整 slot 按 `slotOrder` asc 排（未填 = +∞ 落底），完全覆盖上面的派生排序——一旦用户排过，就不再二次猜。无 `slotOrder` 的 slot 仍走派生排序，所以老数据零迁移。同 slot 拖拽 → `reorderTaskInSlot`（不写 schedule 事件）；跨 slot drop 到具体位置 → `scheduleTaskToRail` 顺带 reseat 目的 slot。两者都在 Cycle View Edit Session 下，⤺ 一键回退整批。
   - **每个 pill 自己独立点击** 打开自己的 popover。这个 popover 只承载**"该排期此刻的状态"**操作，动作集合随 task 当前状态变化：
     - `pending` → `[标记完成] · [归档] · [子任务清单（逐项可点击切换）] · [详情] · [打开项目] · [移除排期]`
     - `done` → `[撤销完成] · [详情] · [打开项目] · [移除排期]`（撤销 = `status` 翻回 pending + 清 `doneAt`，走 Edit Session 的 ⤺ 批量撤销路径）
@@ -1824,6 +1825,11 @@ type Task = {
   //   模式 B 自由时间 ─▶ slot = 空，改为 AdhocEvent.taskId 回指
   //   未排 ─▶ slot = 空 且 没有 AdhocEvent 回指
   slot?: { cycleId: string; date: string; railId: string };
+  // v0.4.4 · slot 内用户拖拽排序。某 slot 中任一 task 带 slotOrder 时，
+  // 整 slot 按 slotOrder asc 排（未填 = +∞ 落底）；全部未填则用 §5.3
+  // 描述的派生排序（state → priority → 插入序）。新建 task 不预填 →
+  // 老数据零迁移。
+  slotOrder?: number;
 };
 
 type SubItem = {

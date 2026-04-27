@@ -215,6 +215,24 @@ interface DayRailActions {
     taskId: string,
     slot: { cycleId: string; date: string; railId: string },
     sessionId?: string,
+    /** §4.1 v0.4.4 · optional 0-indexed insertion position within the
+     *  destination slot. When provided, the destination slot's tasks
+     *  are reseated with sequential `slotOrder` values (0..N) so the
+     *  caller's intent ("drop here, between these two") sticks. When
+     *  omitted, the moved task lands at the slot's end with no
+     *  `slotOrder` assigned — preserves the legacy state/priority
+     *  derived sort. */
+    position?: number,
+  ) => Promise<void>;
+  /** §4.1 v0.4.4 · same-slot reorder (no schedule change). Inserts
+   *  `taskId` at `position` within the slot it already occupies and
+   *  reseats every task in that slot to fresh sequential `slotOrder`
+   *  values. No-op when the task is not in the given slot. */
+  reorderTaskInSlot: (
+    taskId: string,
+    slot: { cycleId: string; date: string; railId: string },
+    position: number,
+    sessionId?: string,
   ) => Promise<void>;
   /** Mode B: schedule the task into a free time window. Creates an
    *  AdhocEvent with `taskId` back-reference. Clears `task.slot` (if
@@ -1431,6 +1449,55 @@ export const useStore = create<DayRailStore>()(
       set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
     };
 
+    // §4.1 v0.4.4 · reseat every task in `slot` to fresh sequential
+    // `slotOrder` values, with `taskId` placed at `position`. Shared by
+    // `reorderTaskInSlot` (same-slot drag) and `scheduleTaskToRail`
+    // (cross-slot drop with a position). Called AFTER the schedule
+    // event has committed so `task.slot` reflects the destination.
+    //
+    // Existing slot tasks keep their relative order; only the moved
+    // task's position is interpreted from `position`. All N tasks get
+    // a `task.updated` carrying the new slotOrder so session-level undo
+    // can roll the whole reorder back as one batch.
+    const reseatSlotOrder = async (
+      slot: { cycleId: string; date: string; railId: string },
+      taskId: string,
+      position: number,
+      sessionId: string | undefined,
+    ): Promise<void> => {
+      // Collect every active task currently bound to this slot. Stable
+      // sort by current `slotOrder` (undefined → +Infinity) keeps any
+      // existing user-defined order intact for the non-moved tasks.
+      const inSlot = Object.values(get().tasks).filter(
+        (t) =>
+          t.status !== 'deleted' &&
+          t.slot?.cycleId === slot.cycleId &&
+          t.slot?.date === slot.date &&
+          t.slot?.railId === slot.railId,
+      );
+      inSlot.sort((a, b) => {
+        const ao = a.slotOrder ?? Number.POSITIVE_INFINITY;
+        const bo = b.slotOrder ?? Number.POSITIVE_INFINITY;
+        return ao - bo;
+      });
+      const without = inSlot.filter((t) => t.id !== taskId);
+      const moved = inSlot.find((t) => t.id === taskId);
+      if (!moved) return;
+      const clamped = Math.max(0, Math.min(position, without.length));
+      const next = [...without.slice(0, clamped), moved, ...without.slice(clamped)];
+      for (let i = 0; i < next.length; i++) {
+        const t = next[i]!;
+        if (t.slotOrder === i) continue;
+        const ev = await appendEvent({
+          aggregateId: `task:${t.id}`,
+          type: 'task.updated',
+          payload: { id: t.id, slotOrder: i },
+          sessionId,
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+      }
+    };
+
     // §5.5.6 · internal helper · persist a newly-recorded shift and
     // queue it for the Reason toast. Shared by the reschedule and
     // unschedule emitters so both overdue-mutation paths end with the
@@ -2043,7 +2110,7 @@ export const useStore = create<DayRailStore>()(
 
       // ---- Task scheduling (§5.5.2) ------------------------------
 
-      scheduleTaskToRail: async (taskId, slot, sessionId) => {
+      scheduleTaskToRail: async (taskId, slot, sessionId, position) => {
         // Capture prior binding BEFORE any mutation so the reschedule
         // detection below has a clean "from" to compare against.
         const priorTask = get().tasks[taskId];
@@ -2110,6 +2177,19 @@ export const useStore = create<DayRailStore>()(
           isAutoHabit,
           ...(sessionId && { sessionId }),
         });
+        if (position != null) {
+          await reseatSlotOrder(slot, taskId, position, sessionId);
+        }
+        if (sessionId) await touchSession(sessionId);
+        afterMutation();
+      },
+
+      reorderTaskInSlot: async (taskId, slot, position, sessionId) => {
+        const task = get().tasks[taskId];
+        if (!task?.slot) return;
+        const s = task.slot;
+        if (s.railId !== slot.railId || s.date !== slot.date) return;
+        await reseatSlotOrder(slot, taskId, position, sessionId);
         if (sessionId) await touchSession(sessionId);
         afterMutation();
       },

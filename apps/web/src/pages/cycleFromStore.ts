@@ -185,6 +185,7 @@ export function deriveCycleFromStore(
         milestonePercent: task.milestonePercent,
       }),
       ...(task.priority != null && { priority: task.priority }),
+      ...(task.slotOrder != null && { slotOrder: task.slotOrder }),
     };
     const existing = slotsByKey.get(key);
     if (existing) {
@@ -211,11 +212,25 @@ export function deriveCycleFromStore(
     return 3;
   };
   for (const slot of slotsByKey.values()) {
-    slot.tasks.sort((a, b) => {
-      const byState = STATE_RANK[a.state] - STATE_RANK[b.state];
-      if (byState !== 0) return byState;
-      return priorityRank(a.priority) - priorityRank(b.priority);
-    });
+    // §4.1 v0.4.4 · if any task in the slot carries a user-defined
+    // `slotOrder`, the whole slot sorts by `slotOrder` asc (tasks
+    // without one fall to the bottom) — the user has explicitly
+    // arranged this slot, and we don't second-guess. Otherwise fall
+    // back to the derived state→priority sort.
+    const hasUserOrder = slot.tasks.some((t) => t.slotOrder != null);
+    if (hasUserOrder) {
+      slot.tasks.sort((a, b) => {
+        const ao = a.slotOrder ?? Number.POSITIVE_INFINITY;
+        const bo = b.slotOrder ?? Number.POSITIVE_INFINITY;
+        return ao - bo;
+      });
+    } else {
+      slot.tasks.sort((a, b) => {
+        const byState = STATE_RANK[a.state] - STATE_RANK[b.state];
+        if (byState !== 0) return byState;
+        return priorityRank(a.priority) - priorityRank(b.priority);
+      });
+    }
   }
 
   const slots: CycleSlot[] = [...slotsByKey.values()];

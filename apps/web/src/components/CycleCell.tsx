@@ -1,5 +1,5 @@
 import { clsx } from 'clsx';
-import { forwardRef, useState, type ReactNode } from 'react';
+import { Fragment, forwardRef, useEffect, useState, type ReactNode } from 'react';
 import {
   Archive,
   ArrowUpRight,
@@ -61,6 +61,12 @@ interface Props {
   onToggleSubItem?: (taskId: string, subItemId: string) => void;
   onQuickCreate?: (date: string, railId: string, title: string) => void;
   lineLookup?: (taskId: string) => { name: string; color?: RailColor } | undefined;
+  /** §4.1 v0.4.4 · per-slot reorder. Fires when a task pill is dropped
+   *  ON another pill (between-pill insertion). `position` is the
+   *  0-indexed insertion point in the destination slot. The td-level
+   *  drop (`CycleSection`'s onDropTask) still handles end-of-slot
+   *  drops without a position. */
+  onDropTaskAt?: (taskId: string, position: number) => void;
 }
 
 export function CycleCell({
@@ -79,7 +85,26 @@ export function CycleCell({
   onToggleSubItem,
   onQuickCreate,
   lineLookup,
+  onDropTaskAt,
 }: Props) {
+  // Insertion-line index for the drag-hover state. `null` = no
+  // preview line; otherwise the line draws ABOVE the pill at this
+  // index (so `tasks.length` means "below the last pill").
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+
+  // Wipe the line on dragend / drop anywhere (mirrors the per-cell
+  // hover-drop pattern in CycleSection).
+  useEffect(() => {
+    if (!onDropTaskAt) return;
+    const clear = () => setHoverIndex(null);
+    window.addEventListener('dragend', clear);
+    window.addEventListener('drop', clear, true);
+    return () => {
+      window.removeEventListener('dragend', clear);
+      window.removeEventListener('drop', clear, true);
+    };
+  }, [onDropTaskAt]);
+
   if (tasks.length === 0) {
     return (
       <EmptyCell
@@ -92,36 +117,59 @@ export function CycleCell({
   }
   return (
     <div className="group/cell relative flex h-full min-h-[44px] flex-col gap-1 rounded-sm bg-surface-1 px-1 py-1 transition hover:bg-surface-2">
-      {tasks.map((t) => (
-        <TaskPill
-          key={t.taskId}
-          task={t}
-          color={color}
-          line={lineLookup?.(t.taskId)}
-          {...(onClearTask && { onClear: () => onClearTask(t.taskId) })}
-          {...(onMarkTaskDone && {
-            onMarkDone: () => onMarkTaskDone(t.taskId),
-          })}
-          {...(onUndoTaskDone && {
-            onUndoDone: () => onUndoTaskDone(t.taskId),
-          })}
-          {...(onArchiveTask && {
-            onArchive: () => onArchiveTask(t.taskId),
-          })}
-          {...(onUnarchiveTask && {
-            onUnarchive: () => onUnarchiveTask(t.taskId),
-          })}
-          {...(onOpenTaskDetail && {
-            onOpenDetail: () => onOpenTaskDetail(t.taskId),
-          })}
-          {...(onOpenTaskProject && {
-            onOpenProject: () => onOpenTaskProject(t.taskId),
-          })}
-          {...(onToggleSubItem && {
-            onToggleSubItem: (subItemId: string) =>
-              onToggleSubItem(t.taskId, subItemId),
-          })}
-        />
+      {tasks.map((t, i) => (
+        <Fragment key={t.taskId}>
+          {onDropTaskAt && (
+            <PillDropZone
+              edge="top"
+              active={hoverIndex === i}
+              onHover={() => setHoverIndex(i)}
+              onDrop={(taskId) => {
+                setHoverIndex(null);
+                onDropTaskAt(taskId, i);
+              }}
+            />
+          )}
+          <TaskPill
+            task={t}
+            color={color}
+            line={lineLookup?.(t.taskId)}
+            {...(onClearTask && { onClear: () => onClearTask(t.taskId) })}
+            {...(onMarkTaskDone && {
+              onMarkDone: () => onMarkTaskDone(t.taskId),
+            })}
+            {...(onUndoTaskDone && {
+              onUndoDone: () => onUndoTaskDone(t.taskId),
+            })}
+            {...(onArchiveTask && {
+              onArchive: () => onArchiveTask(t.taskId),
+            })}
+            {...(onUnarchiveTask && {
+              onUnarchive: () => onUnarchiveTask(t.taskId),
+            })}
+            {...(onOpenTaskDetail && {
+              onOpenDetail: () => onOpenTaskDetail(t.taskId),
+            })}
+            {...(onOpenTaskProject && {
+              onOpenProject: () => onOpenTaskProject(t.taskId),
+            })}
+            {...(onToggleSubItem && {
+              onToggleSubItem: (subItemId: string) =>
+                onToggleSubItem(t.taskId, subItemId),
+            })}
+          />
+          {onDropTaskAt && i === tasks.length - 1 && (
+            <PillDropZone
+              edge="bottom"
+              active={hoverIndex === tasks.length}
+              onHover={() => setHoverIndex(tasks.length)}
+              onDrop={(taskId) => {
+                setHoverIndex(null);
+                onDropTaskAt(taskId, tasks.length);
+              }}
+            />
+          )}
+        </Fragment>
       ))}
       {onQuickCreate && (
         <CellAddBar
@@ -132,6 +180,46 @@ export function CycleCell({
         />
       )}
     </div>
+  );
+}
+
+// Slim drop-target wedge between pills. Renders as a 4px-tall hit
+// area that thickens to a 2px insertion line when active. Catches
+// the drop and reports the gap index up to CycleCell.
+function PillDropZone({
+  edge,
+  active,
+  onHover,
+  onDrop,
+}: {
+  edge: 'top' | 'bottom';
+  active: boolean;
+  onHover: () => void;
+  onDrop: (taskId: string) => void;
+}) {
+  return (
+    <div
+      onDragOver={(e) => {
+        if (!Array.from(e.dataTransfer.types).includes(TASK_DRAG_MIME)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'move';
+        onHover();
+      }}
+      onDrop={(e) => {
+        const taskId = e.dataTransfer.getData(TASK_DRAG_MIME);
+        if (!taskId) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onDrop(taskId);
+      }}
+      className={clsx(
+        'h-1 -my-0.5 w-full rounded-full transition',
+        active ? 'bg-cta' : 'bg-transparent',
+      )}
+      aria-hidden
+      data-edge={edge}
+    />
   );
 }
 

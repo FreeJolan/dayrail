@@ -64,6 +64,7 @@ export function CycleView() {
   const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
   const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
   const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
+  const reorderTaskInSlot = useStore((s) => s.reorderTaskInSlot);
   const unscheduleTask = useStore((s) => s.unscheduleTask);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
   const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
@@ -267,6 +268,34 @@ export function CycleView() {
       );
     },
     [scheduleTaskToRail, sessionId, tasks],
+  );
+
+  const handleDropTaskAt = useCallback(
+    (taskId: string, date: string, railId: string, position: number) => {
+      // Distinguish same-slot reorder from cross-slot move-and-place.
+      // Same-slot: pure reorder (no schedule event). Cross-slot:
+      // scheduleTaskToRail does the slot move AND reseats the
+      // destination in one Edit-Session batch.
+      const existing = tasks[taskId]?.slot;
+      const sameSlot =
+        existing && existing.date === date && existing.railId === railId;
+      if (sameSlot) {
+        void reorderTaskInSlot(
+          taskId,
+          { cycleId: existing!.cycleId, date, railId },
+          position,
+          sessionId ?? undefined,
+        );
+        return;
+      }
+      void scheduleTaskToRail(
+        taskId,
+        { cycleId: `cycle-${date}`, date, railId },
+        sessionId ?? undefined,
+        position,
+      );
+    },
+    [reorderTaskInSlot, scheduleTaskToRail, sessionId, tasks],
   );
 
   const handleClearSlot = useCallback(
@@ -482,6 +511,7 @@ export function CycleView() {
                 onOverride={overrideDay}
                 onClearOverride={clearOverride}
                 onDropTask={handleDropTask}
+                onDropTaskAt={handleDropTaskAt}
                 onClearSlot={handleClearSlot}
                 onMarkTaskDone={handleMarkTaskDone}
                 onUndoTaskDone={handleUndoTaskDone}
