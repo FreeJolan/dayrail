@@ -16,6 +16,8 @@ import {
   type Line,
 } from '@dayrail/core';
 import { type ReviewScopeData } from '@/data/sampleReview';
+import { MarkdownView } from '@/components/MarkdownField';
+import { NoteHoverPopover } from '@/components/NoteHoverPopover';
 import { RhythmHeatmap } from '@/components/RhythmHeatmap';
 import { ReflectionCard } from '@/components/ReflectionCard';
 import { ShiftTagBars } from '@/components/ShiftTagBars';
@@ -638,23 +640,88 @@ function ReflectionLog({ dates }: { dates: string[] }) {
       ) : (
         <ul className="flex flex-col divide-y divide-hairline/40">
           {entries.map(({ date, reflection }) => (
-            <li key={date}>
-              <Link
-                to={`/review/day/${date}`}
-                className="flex items-baseline justify-between gap-3 rounded-sm px-2 py-2 transition hover:bg-surface-1"
-              >
-                <span className="font-mono text-xs tabular-nums text-ink-secondary">
-                  {date} · {WEEKDAY_LABELS[isoWeekday(date)] ?? ''}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-xs text-ink-tertiary">
-                  {previewLine(reflection.content)}
-                </span>
-              </Link>
-            </li>
+            <ReflectionLogRow
+              key={date}
+              date={date}
+              reflection={reflection}
+            />
           ))}
         </ul>
       )}
     </section>
+  );
+}
+
+// One reflection-log row · §5.8. Two affordances on the same date:
+//   • Hover the date label → HoverCard previews the full Markdown.
+//   • Click the chevron at right → row expands inline, embedding the
+//     same MarkdownView so users can read without losing scope context.
+//   • Click "open ↗" → deep-link to `/review/day/<date>` for editing.
+// Hover serves "quick peek without leaving"; expand serves "I want to
+// keep reading several at once". Both are read-only here — editing
+// stays anchored in the day-scope card.
+function ReflectionLogRow({
+  date,
+  reflection,
+}: {
+  date: string;
+  reflection: DailyReflection;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const weekday = WEEKDAY_LABELS[isoWeekday(date)] ?? '';
+  return (
+    <li className="flex flex-col">
+      <div className="flex items-baseline gap-3 rounded-sm px-2 py-2 transition hover:bg-surface-1">
+        <NoteHoverPopover
+          note={reflection.content}
+          side="right"
+          align="start"
+          maxWidth={420}
+          maxHeight={360}
+          header={
+            <>
+              <span>{date}</span>
+              <span>·</span>
+              <span>{weekday}</span>
+            </>
+          }
+        >
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            aria-label={expanded ? '收起' : '展开'}
+            className="flex items-baseline gap-2 text-left"
+          >
+            <ChevronRight
+              aria-hidden
+              className={clsx(
+                'h-3 w-3 self-center text-ink-tertiary transition-transform',
+                expanded && 'rotate-90',
+              )}
+              strokeWidth={1.8}
+            />
+            <span className="font-mono text-xs tabular-nums text-ink-secondary">
+              {date} · {weekday}
+            </span>
+          </button>
+        </NoteHoverPopover>
+        <span className="min-w-0 flex-1 truncate text-xs text-ink-tertiary">
+          {previewLine(reflection.content)}
+        </span>
+        <Link
+          to={`/review/day/${date}`}
+          className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:text-ink-primary"
+        >
+          open ↗
+        </Link>
+      </div>
+      {expanded && (
+        <div className="rounded-sm bg-surface-1/60 px-6 py-3">
+          <MarkdownView source={reflection.content} />
+        </div>
+      )}
+    </li>
   );
 }
 

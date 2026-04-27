@@ -292,22 +292,25 @@ function SectionMiniHeader({
               </div>
             </th>
             {days.map((d) => (
-              <th key={d.date} className="px-1 text-left align-middle">
-                <div className="flex items-center gap-1">
-                  <div className="min-w-0 flex-1">
-                    <DayCellButton
-                      day={d}
-                      isToday={d.date === todayISO}
-                      templateChoices={templateChoices}
-                      onOverride={(tpl) => onOverride(d.date, tpl)}
-                      onClearOverride={() => onClearOverride(d.date)}
-                    />
-                  </div>
-                  <ReflectionChip
-                    hasContent={reflectedDates.has(d.date)}
-                    onClick={() => onOpenReflection(d.date)}
-                  />
-                </div>
+              <th
+                key={d.date}
+                className="relative px-1 text-left align-middle"
+              >
+                <DayCellButton
+                  day={d}
+                  isToday={d.date === todayISO}
+                  templateChoices={templateChoices}
+                  onOverride={(tpl) => onOverride(d.date, tpl)}
+                  onClearOverride={() => onClearOverride(d.date)}
+                />
+                {/* Chip overlays the cell's top-right corner so the
+                    DayCellButton keeps its full column width (header
+                    column-edges stay aligned with body cells below).
+                    Chip is a sibling button — no nested-button a11y. */}
+                <ReflectionChip
+                  hasContent={reflectedDates.has(d.date)}
+                  onClick={() => onOpenReflection(d.date)}
+                />
               </th>
             ))}
           </tr>
@@ -483,8 +486,11 @@ function RailRowLabel({
 
 // Per-day reflection deep-link · §4.1 entry. Filled when the date has
 // content; outlined otherwise. Click → parent navigates to
-// /review/day/<date> where the actual editor lives. Sized to share the
-// 180px column without crowding the day-cell template-switch button.
+// /review/day/<date> where the actual editor lives.
+//
+// Positioned absolutely at the cell's top-right corner so the
+// DayCellButton (template-switch trigger) keeps its full column width,
+// preserving column-edge alignment with the body cells below.
 function ReflectionChip({
   hasContent,
   onClick,
@@ -499,13 +505,13 @@ function ReflectionChip({
       aria-label={hasContent ? '查看 / 编辑今日复盘' : '写一段今日复盘'}
       title={hasContent ? '今日复盘 · 已写' : '今日复盘'}
       className={clsx(
-        'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm transition',
+        'absolute right-0.5 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-sm bg-surface-1 transition',
         hasContent
           ? 'text-ink-secondary hover:bg-surface-2 hover:text-ink-primary'
           : 'text-ink-tertiary/60 hover:bg-surface-2 hover:text-ink-secondary',
       )}
     >
-      <NotebookPen className="h-3.5 w-3.5" strokeWidth={hasContent ? 2 : 1.6} />
+      <NotebookPen className="h-3 w-3" strokeWidth={hasContent ? 2 : 1.6} />
     </button>
   );
 }
