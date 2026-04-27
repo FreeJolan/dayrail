@@ -27,7 +27,12 @@ import { EditSessionIndicator } from '@/components/EditSessionIndicator';
 import { RailColorPopover } from '@/components/RailColorPopover';
 import { TemplateTabs } from '@/components/TemplateTabs';
 import { SummaryStrip } from '@/components/SummaryStrip';
-import { TimelineRuler } from '@/components/TimelineRuler';
+import {
+  TIMELINE_RULER_COL,
+  TimelineRulerAddCell,
+  TimelineRulerGapCell,
+  TimelineRulerRailCell,
+} from '@/components/TimelineRuler';
 import { RailEditCard } from '@/components/RailEditCard';
 import { GapChip } from '@/components/GapChip';
 import {
@@ -412,43 +417,96 @@ export function TemplateEditor() {
         <FirstRunBanner />
       </div>
 
-      {/* Body: left ruler + right main */}
-      <div className="flex gap-6 pt-6 pb-16">
-        <TimelineRuler
-          rails={sortedEditable}
-          summary={summary}
-          focusRailId={focusRailId}
-        />
+      {/* Body: 2-column grid pairing each rail card with its time
+          strip on the left. CSS Grid auto-sizes each row by the
+          taller of the two cells, so the ruler stays locked to the
+          card height regardless of content (notes, multi-line names
+          etc.). Replaces the prior fixed-pixel time axis whose dot
+          positions diverged from the right column once cards had
+          natural heights. */}
+      <div
+        className="grid gap-x-6 gap-y-2 pt-6 pb-16"
+        style={{ gridTemplateColumns: `${TIMELINE_RULER_COL} minmax(0, 1fr)` }}
+      >
+        {rows.map((row) =>
+          row.kind === 'rail' ? (
+            <RailRow
+              key={row.rail.id}
+              rail={row.rail}
+              focused={row.rail.id === focusRailId}
+              onFocus={() => setFocusRailId(row.rail.id)}
+              siblings={sortedEditable}
+              onChange={(patch) => mutate(row.rail.id, patch)}
+              onDelete={() => {
+                void del(row.rail.id);
+              }}
+              onDuplicate={() => duplicate(row.rail.id)}
+            />
+          ) : (
+            <GapRow
+              key={row.key}
+              startMin={row.startMin}
+              endMin={row.endMin}
+              onFill={() => fillGap(row.startMin, row.endMin)}
+            />
+          ),
+        )}
 
-        <section className="flex min-w-0 flex-1 flex-col gap-2">
-          {rows.map((row) =>
-            row.kind === 'rail' ? (
-              <RailEditCard
-                key={row.rail.id}
-                rail={row.rail}
-                siblings={sortedEditable}
-                focused={row.rail.id === focusRailId}
-                onFocus={() => setFocusRailId(row.rail.id)}
-                onChange={(patch) => mutate(row.rail.id, patch)}
-                onDelete={() => {
-                  void del(row.rail.id);
-                }}
-                onDuplicate={() => duplicate(row.rail.id)}
-              />
-            ) : (
-              <GapChip
-                key={row.key}
-                startMin={row.startMin}
-                endMin={row.endMin}
-                onFill={() => fillGap(row.startMin, row.endMin)}
-              />
-            ),
-          )}
-
-          <AddRailRow onAdd={() => fillGap(summary.lastMin, summary.lastMin + 30)} />
-        </section>
+        <TimelineRulerAddCell />
+        <AddRailRow onAdd={() => fillGap(summary.lastMin, summary.lastMin + 30)} />
       </div>
     </div>
+  );
+}
+
+// Grid-row helpers — each component yields two siblings in source
+// order so they fall into the parent grid's left/right columns.
+// React.Fragment is the right tool but inlining as discrete <>...</>
+// would hide the key on the rail variant; named components keep
+// each row keyed cleanly.
+function RailRow(props: {
+  rail: EditableRail;
+  focused: boolean;
+  onFocus: () => void;
+  siblings: EditableRail[];
+  onChange: (patch: Partial<EditableRail>) => void;
+  onDelete: () => void;
+  onDuplicate: () => void;
+}): JSX.Element {
+  return (
+    <>
+      <TimelineRulerRailCell
+        rail={props.rail}
+        focused={props.focused}
+        onFocus={props.onFocus}
+      />
+      <RailEditCard
+        rail={props.rail}
+        siblings={props.siblings}
+        focused={props.focused}
+        onFocus={props.onFocus}
+        onChange={props.onChange}
+        onDelete={props.onDelete}
+        onDuplicate={props.onDuplicate}
+      />
+    </>
+  );
+}
+
+function GapRow(props: {
+  startMin: number;
+  endMin: number;
+  onFill: () => void;
+}): JSX.Element {
+  return (
+    <>
+      <TimelineRulerGapCell />
+      <GapChip
+        startMin={props.startMin}
+        endMin={props.endMin}
+        onFill={props.onFill}
+      />
+    </>
   );
 }
 
