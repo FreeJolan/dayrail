@@ -17,7 +17,6 @@ import {
 } from '@dayrail/core';
 import { type ReviewScopeData } from '@/data/sampleReview';
 import { MarkdownView } from '@/components/MarkdownField';
-import { NoteHoverPopover } from '@/components/NoteHoverPopover';
 import { RhythmHeatmap } from '@/components/RhythmHeatmap';
 import { ReflectionCard } from '@/components/ReflectionCard';
 import { ShiftTagBars } from '@/components/ShiftTagBars';
@@ -652,14 +651,12 @@ function ReflectionLog({ dates }: { dates: string[] }) {
   );
 }
 
-// One reflection-log row · §5.8. Two affordances on the same date:
-//   • Hover the date label → HoverCard previews the full Markdown.
-//   • Click the chevron at right → row expands inline, embedding the
-//     same MarkdownView so users can read without losing scope context.
-//   • Click "open ↗" → deep-link to `/review/day/<date>` for editing.
-// Hover serves "quick peek without leaving"; expand serves "I want to
-// keep reading several at once". Both are read-only here — editing
-// stays anchored in the day-scope card.
+// One reflection-log row · §5.8.
+//   • Click the date / chevron → row expands inline, embedding the
+//     full MarkdownView so users can keep reading without leaving scope.
+//   • Right-side `open ↗` deep-links to `/review/day/<date>` for editing.
+// Editing stays anchored in the day-scope card; this surface is
+// strictly a reader.
 function ReflectionLogRow({
   date,
   reflection,
@@ -672,40 +669,25 @@ function ReflectionLogRow({
   return (
     <li className="flex flex-col">
       <div className="flex items-baseline gap-3 rounded-sm px-2 py-2 transition hover:bg-surface-1">
-        <NoteHoverPopover
-          note={reflection.content}
-          side="right"
-          align="start"
-          maxWidth={420}
-          maxHeight={360}
-          header={
-            <>
-              <span>{date}</span>
-              <span>·</span>
-              <span>{weekday}</span>
-            </>
-          }
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          aria-label={expanded ? '收起' : '展开'}
+          className="flex items-baseline gap-2 text-left"
         >
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            aria-expanded={expanded}
-            aria-label={expanded ? '收起' : '展开'}
-            className="flex items-baseline gap-2 text-left"
-          >
-            <ChevronRight
-              aria-hidden
-              className={clsx(
-                'h-3 w-3 self-center text-ink-tertiary transition-transform',
-                expanded && 'rotate-90',
-              )}
-              strokeWidth={1.8}
-            />
-            <span className="font-mono text-xs tabular-nums text-ink-secondary">
-              {date} · {weekday}
-            </span>
-          </button>
-        </NoteHoverPopover>
+          <ChevronRight
+            aria-hidden
+            className={clsx(
+              'h-3 w-3 self-center text-ink-tertiary transition-transform',
+              expanded && 'rotate-90',
+            )}
+            strokeWidth={1.8}
+          />
+          <span className="font-mono text-xs tabular-nums text-ink-secondary">
+            {date} · {weekday}
+          </span>
+        </button>
         <span className="min-w-0 flex-1 truncate text-xs text-ink-tertiary">
           {previewLine(reflection.content)}
         </span>
