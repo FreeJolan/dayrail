@@ -15,6 +15,11 @@
 
 import { useStore, resolveTemplateForDate, type DayRailState } from './store';
 import { toIsoDate, toIsoDateTime } from './today';
+import {
+  habitBindingsActiveOn,
+  railAtDate,
+  railFromRevision,
+} from './revisions';
 import type { Rail, Task } from './types';
 
 // ------------------------------------------------------------------
@@ -72,51 +77,63 @@ export interface MaterializeRange {
 /** Pure materializer core. Same logic as `materializeAutoTasks` but
  *  takes the state slice + upsert dispatcher as parameters so unit
  *  tests can drive it without a real store / DB. Runtime callers go
- *  through `materializeAutoTasks` below. */
+ *  through `materializeAutoTasks` below.
+ *
+ *  Phase 2: walks `habitBindingsActiveOn(date)` per date and resolves
+ *  each rail / template via revisions. Past dates that pre-date a
+ *  config change land on the prior revision automatically — past
+ *  cycles materialized later (user comes back from a long absence)
+ *  see the historically correct day-shape, not whatever's in store
+ *  today. */
 export async function materializeAutoTasksImpl(
   state: Pick<
     DayRailState,
-    'habitBindings' | 'rails' | 'lines' | 'templates' | 'calendarRules'
+    | 'lines'
+    | 'templates'
+    | 'calendarRules'
+    | 'calendarRuleRevisions'
+    | 'calendarRuleTombstones'
+    | 'habitBindings'
+    | 'habitBindingRevisions'
+    | 'habitBindingTombstones'
+    | 'rails'
+    | 'railRevisions'
+    | 'railTombstones'
   >,
   upsert: (task: Task) => Promise<void>,
   range: MaterializeRange,
 ): Promise<void> {
-  const bindings = Object.values(state.habitBindings);
-  if (bindings.length === 0) return;
+  for (const date of iterDates(range.startDate, range.endDate)) {
+    const tplKey = resolveTemplateForDate(state, date, () => null);
+    if (!tplKey) continue;
+    const dow = new Date(`${date}T00:00:00`).getDay();
 
-  // Group bindings by habitId for clean iteration.
-  const byHabit = new Map<string, typeof bindings>();
-  for (const b of bindings) {
-    const list = byHabit.get(b.habitId) ?? [];
-    list.push(b);
-    byHabit.set(b.habitId, list);
-  }
+    for (const { bindingId, revision: bRev } of habitBindingsActiveOn(
+      state,
+      date,
+    )) {
+      const habit = state.lines[bRev.habitId];
+      if (!habit || habit.status !== 'active') continue;
+      if (bRev.weekdays && !bRev.weekdays.includes(dow)) continue;
 
-  for (const [habitId, habitBindings] of byHabit) {
-    const habit = state.lines[habitId];
-    if (!habit || habit.status !== 'active') continue;
+      const rRev = railAtDate(state, bRev.railId, date);
+      if (!rRev) continue;
+      if (rRev.templateKey !== tplKey) continue;
 
-    for (const date of iterDates(range.startDate, range.endDate)) {
-      const tplKey = resolveTemplateForDate(state, date, () => null);
-      if (!tplKey) continue;
-      const dow = new Date(`${date}T00:00:00`).getDay();
+      // ERD §10.3 "未物化的过去 cycle 不因配置变更而补": don't
+      // retroactively populate dates before the binding existed.
+      // Compare at DATE level, not ms — a binding created at 15:00
+      // should still cover today's 09:00 rail. Use the identity-shell
+      // `createdAt`, not the revision's `authoredAt`, since the latter
+      // shifts every time the binding is re-revised.
+      const bindingShell = state.habitBindings[bindingId];
+      if (!bindingShell) continue;
+      const createdDate = toIsoDate(new Date(bindingShell.createdAt));
+      if (date < createdDate) continue;
 
-      for (const binding of habitBindings) {
-        const rail = state.rails[binding.railId];
-        if (!rail) continue;
-        if (rail.templateKey !== tplKey) continue;
-        if (binding.weekdays && !binding.weekdays.includes(dow)) continue;
-
-        // ERD §10.3 "未物化的过去 cycle 不因配置变更而补": don't
-        // retroactively populate dates before the binding existed.
-        // Compare at DATE level, not ms — a binding created at 15:00
-        // should still cover today's 09:00 rail.
-        const createdDate = toIsoDate(new Date(binding.createdAt));
-        if (date < createdDate) continue;
-
-        const task: Task = buildAutoTask(habit.id, habit.name, rail, date);
-        await upsert(task);
-      }
+      const rail = railFromRevision(rRev);
+      const task: Task = buildAutoTask(habit.id, habit.name, rail, date);
+      await upsert(task);
     }
   }
 }
@@ -183,17 +200,17 @@ function buildAutoTask(
 // ------------------------------------------------------------------
 
 export function autoTaskPlannedWindow(
-  state: Pick<DayRailState, 'rails'>,
+  state: Pick<DayRailState, 'railRevisions' | 'railTombstones'>,
   task: Task,
 ): { plannedStart: string; plannedEnd: string } | null {
   if (!task.slot) return null;
-  const rail = state.rails[task.slot.railId];
-  if (!rail) return null;
+  const rev = railAtDate(state, task.slot.railId, task.slot.date);
+  if (!rev) return null;
   return {
-    plannedStart: toIsoDateTime(task.slot.date, rail.startMinutes),
+    plannedStart: toIsoDateTime(task.slot.date, rev.startMinutes),
     plannedEnd: toIsoDateTime(
       task.slot.date,
-      rail.startMinutes + rail.durationMinutes,
+      rev.startMinutes + rev.durationMinutes,
     ),
   };
 }
@@ -249,7 +266,10 @@ export interface PurgeScope {
  *  > now` guarantees we never rewrite something the user might already
  *  have acted on (past or currently-firing slot). */
 export function findAffectedFutureAutoTasks(
-  state: Pick<DayRailState, 'tasks' | 'rails'>,
+  state: Pick<
+    DayRailState,
+    'tasks' | 'rails' | 'railRevisions' | 'railTombstones'
+  >,
   scope: PurgeScope,
   now: Date = new Date(),
 ): Task[] {
@@ -276,7 +296,14 @@ export function findAffectedFutureAutoTasks(
  *  time / templateKey is about to change — it needs a single total
  *  to show in the confirm dialog. */
 export function findAffectedFutureAutoTasksForRail(
-  state: Pick<DayRailState, 'tasks' | 'rails' | 'habitBindings'>,
+  state: Pick<
+    DayRailState,
+    | 'tasks'
+    | 'rails'
+    | 'habitBindings'
+    | 'railRevisions'
+    | 'railTombstones'
+  >,
   railId: string,
   now: Date = new Date(),
 ): Task[] {

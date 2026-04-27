@@ -18,6 +18,7 @@ import type {
   CalendarRuleRevision,
   EffectiveDate,
   HabitBindingRevision,
+  Rail,
   RailRevision,
   TemplateKey,
   TemplateRevision,
@@ -144,6 +145,25 @@ export function calendarRuleRevisionsActiveOn(
     if (rev) out.push({ ruleId, revision: rev });
   }
   return out;
+}
+
+/** Project a `RailRevision` back into the legacy `Rail` shape so existing
+ *  selectors and UI code that consume `Rail` keep working without
+ *  caring whether the data came from the legacy mirror or the revision
+ *  table. The revision carries every field the legacy `Rail` shape has
+ *  (plus a few of its own — `effectiveFrom`, `authoredAt`, etc.). */
+export function railFromRevision(rev: RailRevision): Rail {
+  return {
+    id: rev.railId,
+    templateKey: rev.templateKey,
+    name: rev.name,
+    ...(rev.subtitle != null && { subtitle: rev.subtitle }),
+    startMinutes: rev.startMinutes,
+    durationMinutes: rev.durationMinutes,
+    color: rev.color,
+    ...(rev.icon != null && { icon: rev.icon }),
+    showInCheckin: rev.showInCheckin,
+  };
 }
 
 /** Every habit binding with an active revision on `date`. */

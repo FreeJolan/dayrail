@@ -41,10 +41,14 @@ export function TodayTrack() {
   const today = toIsoDate(now.asDate);
 
   const rails = useStore((s) => s.rails);
+  const railRevisions = useStore((s) => s.railRevisions);
+  const railTombstones = useStore((s) => s.railTombstones);
   const tasks = useStore((s) => s.tasks);
   const lines = useStore((s) => s.lines);
   const templates = useStore((s) => s.templates);
   const calendarRules = useStore((s) => s.calendarRules);
+  const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
+  const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
   const shifts = useStore((s) => s.shifts);
   const updateTask = useStore((s) => s.updateTask);
 
@@ -68,8 +72,30 @@ export function TodayTrack() {
 
   const timelineRows = useMemo<TimelineRow[]>(
     () =>
-      selectTodayTimeline({ rails, tasks, templates, calendarRules }, today),
-    [rails, tasks, templates, calendarRules, today],
+      selectTodayTimeline(
+        {
+          rails,
+          railRevisions,
+          railTombstones,
+          tasks,
+          templates,
+          calendarRules,
+          calendarRuleRevisions,
+          calendarRuleTombstones,
+        },
+        today,
+      ),
+    [
+      rails,
+      railRevisions,
+      railTombstones,
+      tasks,
+      templates,
+      calendarRules,
+      calendarRuleRevisions,
+      calendarRuleTombstones,
+      today,
+    ],
   );
 
   // Per-task UI state. Every task on every rail gets its own row — no
@@ -134,10 +160,11 @@ export function TodayTrack() {
 
   const checkinQueue = useMemo<CheckInEntry[]>(
     () =>
-      selectCheckinQueue({ tasks, rails }, now.asDate).map((row) =>
-        carriedRowToCheckInEntry(row),
-      ),
-    [tasks, rails, now.asDate],
+      selectCheckinQueue(
+        { tasks, railRevisions, railTombstones },
+        now.asDate,
+      ).map((row) => carriedRowToCheckInEntry(row)),
+    [tasks, railRevisions, railTombstones, now.asDate],
   );
 
   // Reset today: sweep every Task carrying a today-slot and push it

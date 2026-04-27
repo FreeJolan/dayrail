@@ -52,7 +52,8 @@ interface PendingRow {
 }
 
 export function Pending() {
-  const rails = useStore((s) => s.rails);
+  const railRevisions = useStore((s) => s.railRevisions);
+  const railTombstones = useStore((s) => s.railTombstones);
   const tasks = useStore((s) => s.tasks);
   const lines = useStore((s) => s.lines);
   const shifts = useStore((s) => s.shifts);
@@ -65,10 +66,11 @@ export function Pending() {
 
   const rows = useMemo<PendingRow[]>(() => {
     const now = new Date();
-    return selectPendingQueue({ tasks, rails }, now).map(
-      (r) => adaptRow(r, shifts, now),
-    );
-  }, [tasks, rails, shifts]);
+    return selectPendingQueue(
+      { tasks, railRevisions, railTombstones },
+      now,
+    ).map((r) => adaptRow(r, shifts, now));
+  }, [tasks, railRevisions, railTombstones, shifts]);
 
   const summary = useMemo(
     () => ({
