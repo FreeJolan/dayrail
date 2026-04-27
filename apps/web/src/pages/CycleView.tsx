@@ -64,7 +64,7 @@ export function CycleView() {
   const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
   const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
   const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
-  const reorderTaskInSlot = useStore((s) => s.reorderTaskInSlot);
+  const setSlotTaskOrder = useStore((s) => s.setSlotTaskOrder);
   const unscheduleTask = useStore((s) => s.unscheduleTask);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
   const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
@@ -271,31 +271,29 @@ export function CycleView() {
   );
 
   const handleDropTaskAt = useCallback(
-    (taskId: string, date: string, railId: string, position: number) => {
-      // Distinguish same-slot reorder from cross-slot move-and-place.
-      // Same-slot: pure reorder (no schedule event). Cross-slot:
-      // scheduleTaskToRail does the slot move AND reseats the
-      // destination in one Edit-Session batch.
+    async (
+      taskId: string,
+      date: string,
+      railId: string,
+      orderedTaskIds: string[],
+    ) => {
+      // Same-slot reorder: just persist the new order.
+      // Cross-slot: schedule first (so the dragged task's `slot`
+      // points at the destination), then persist the order.
       const existing = tasks[taskId]?.slot;
       const sameSlot =
         existing && existing.date === date && existing.railId === railId;
-      if (sameSlot) {
-        void reorderTaskInSlot(
-          taskId,
-          { cycleId: existing!.cycleId, date, railId },
-          position,
-          sessionId ?? undefined,
-        );
-        return;
+      const slot = {
+        cycleId: existing?.cycleId ?? `cycle-${date}`,
+        date,
+        railId,
+      };
+      if (!sameSlot) {
+        await scheduleTaskToRail(taskId, slot, sessionId ?? undefined);
       }
-      void scheduleTaskToRail(
-        taskId,
-        { cycleId: `cycle-${date}`, date, railId },
-        sessionId ?? undefined,
-        position,
-      );
+      await setSlotTaskOrder(slot, orderedTaskIds, sessionId ?? undefined);
     },
-    [reorderTaskInSlot, scheduleTaskToRail, sessionId, tasks],
+    [scheduleTaskToRail, setSlotTaskOrder, sessionId, tasks],
   );
 
   const handleClearSlot = useCallback(

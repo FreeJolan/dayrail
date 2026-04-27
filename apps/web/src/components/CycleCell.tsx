@@ -62,11 +62,14 @@ interface Props {
   onQuickCreate?: (date: string, railId: string, title: string) => void;
   lineLookup?: (taskId: string) => { name: string; color?: RailColor } | undefined;
   /** §4.1 v0.4.4 · per-slot reorder. Fires when a task pill is dropped
-   *  ON another pill (between-pill insertion). `position` is the
-   *  0-indexed insertion point in the destination slot. The td-level
-   *  drop (`CycleSection`'s onDropTask) still handles end-of-slot
-   *  drops without a position. */
-  onDropTaskAt?: (taskId: string, position: number) => void;
+   *  on a between-pill insertion line. The callback receives the
+   *  **final desired visual order** for the destination slot — the UI
+   *  is the only layer that knows the slot's current visual order,
+   *  so we resolve the drop position into a concrete ordered list
+   *  here rather than asking the store to guess. The td-level drop
+   *  (`CycleSection`'s onDropTask) handles end-of-slot drops without
+   *  a position (legacy append behavior). */
+  onDropTaskAt?: (taskId: string, orderedTaskIds: string[]) => void;
 }
 
 export function CycleCell({
@@ -124,9 +127,10 @@ export function CycleCell({
               edge="top"
               active={hoverIndex === i}
               onHover={() => setHoverIndex(i)}
-              onDrop={(taskId) => {
+              onDrop={(draggedId) => {
                 setHoverIndex(null);
-                onDropTaskAt(taskId, i);
+                const ordered = computeOrderedIds(tasks, draggedId, i);
+                onDropTaskAt(draggedId, ordered);
               }}
             />
           )}
@@ -163,9 +167,14 @@ export function CycleCell({
               edge="bottom"
               active={hoverIndex === tasks.length}
               onHover={() => setHoverIndex(tasks.length)}
-              onDrop={(taskId) => {
+              onDrop={(draggedId) => {
                 setHoverIndex(null);
-                onDropTaskAt(taskId, tasks.length);
+                const ordered = computeOrderedIds(
+                  tasks,
+                  draggedId,
+                  tasks.length,
+                );
+                onDropTaskAt(draggedId, ordered);
               }}
             />
           )}
@@ -181,6 +190,26 @@ export function CycleCell({
       )}
     </div>
   );
+}
+
+// Resolve a drop into the destination slot's final visual order.
+// Handles both same-slot reorder (dragged task already in `tasks`,
+// remove + reinsert with index-shift compensation) and cross-slot
+// drop (dragged task absent, plain insert at clamped position).
+function computeOrderedIds(
+  tasks: SlotTaskSummary[],
+  draggedId: string,
+  position: number,
+): string[] {
+  const ids = tasks.map((t) => t.taskId);
+  const fromIdx = ids.indexOf(draggedId);
+  // Same-slot: removing the dragged task shifts every later index
+  // down by 1, so a gap that pointed past the source needs to follow.
+  let to = position;
+  if (fromIdx >= 0 && fromIdx < to) to -= 1;
+  const without = ids.filter((id) => id !== draggedId);
+  const clamped = Math.max(0, Math.min(to, without.length));
+  return [...without.slice(0, clamped), draggedId, ...without.slice(clamped)];
 }
 
 // Slim drop-target wedge between pills. Renders as a 4px-tall hit
