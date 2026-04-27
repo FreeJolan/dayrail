@@ -119,6 +119,13 @@ These stories act as a design touchstone — any new feature should plug natural
 - **Shift**: A record of a `pending → *` transition on a RailInstance. v0.2 keeps two types: `defer` (Later; lands in Pending) and `archive` (no more scheduling). May optionally carry tags from a global shared library (see §5.7). Within-day postponing is handled by Cycle-View drag; `swap / resize / replace` are deferred to v0.3.
 - **Signal**: Lightweight check-in at a Rail boundary — named after the railway signal at each crossing: it lights up, it doesn't command. `continue` / `adjust` / `skip`.
 - **Ad-hoc Event**: A one-off time block not belonging to any template. Higher priority than template resolution. Optionally attached to a Line.
+- **DailyReflection (v0.4.3+)**: One hand-written Markdown blob per calendar date — the user's space for journaling, retrospection, mood, or any free-form note about that day.
+  - **Keyed by date**: `date` (`YYYY-MM-DD`, natural day per `Track.tz`) is the primary key; at most one row per day. An empty string means "not written" (`reflection.cleared` on the event log).
+  - **Orthogonal to Rail / Task / Habit**: does not feed the heatmap, does not affect Project progress, triggers no scheduling side effects — purely a container for "what I want to say about today." Intentionally absent from the Mermaid diagram to keep it noise-free.
+  - **Any date is editable**: not restricted to "today." Past dates (so users can fill in yesterday) and future dates (leave a note for an upcoming day) are both allowed.
+  - **Two entry points share one record**: (1) a "Today Reflection" card at the bottom of Today Track, hard-wired to the current date; (2) a collapsible block at the bottom of `/review/day/:anchor`, usable to revisit or edit any date. Both surfaces sync through the event log so the two views stay live-consistent.
+  - **Storage**: event-sourced + materialized table (`reflection.upserted { date, content }` / `reflection.cleared { date }`, aggregateId = date). Snapshot gains `reflections: Record<date, DailyReflection>`; participates in session-level undo and cross-device replay just like Habit / Task.
+  - **Not in scope**: revision history (the event log is the history), AI summarization, templates/prompts, cross-day search (revisit in v0.5+), word-count caps.
 - **Line (internal container type · never in UI copy)**: DayRail's only multi-Rail / Task grouping concept, forming a continuum. `Line` exists only in types / schema / event log — UI views / menus / copy always show the concrete shape per `kind`: `Project` / `Habit` / `Tag` (formerly "Group").
   - **Three states**: `status: 'active' | 'archived' | 'deleted'`. `archived` is a user-intentional terminal state (restorable); `deleted` is a soft delete (visible in Trash, restorable; hard delete only via an explicit "permanently delete" confirmation).
   - **Inbox is a built-in singleton Line**: `id = 'line-inbox'`, `kind = 'project'`, `isDefault: true`, undeletable and uneditable. Every task the user creates without picking a Project lands here (see §5.5.1).
@@ -350,6 +357,8 @@ Keyboard: `1` / `2` / `3` select the corresponding chip; `u` = undo; `Esc` = clo
 
 **Task-detail editing** (v0.4 add): clicking a RailCard opens the `TaskDetailDrawer` (same component as §5.5) for inline edits of note / sub-items / milestone / schedule. **For auto-tasks**, the edit permissions follow §5.5.0 "Auto-task editability" — title / schedule / milestone are read-only; note / sub-items stay editable. Clicking a bare rail (no carrying Task) does nothing. Inline badges on the RailCard (「N/M 子任务」, "has notes") let the user scan the state without opening the drawer.
 
+**Today Reflection card** (v0.4.3 add · see §4.1 DailyReflection): a single card pinned to the **bottom** of the page, titled `今日复盘 / Today Reflection`, with the date as subtitle. The card body reuses `MarkdownField` (same component used by Project / Habit notes): auto-grow, Markdown rendering, write-on-blur into the event log; an empty body emits `reflection.cleared`. **Bottom placement is intentional** — reflection is what the user does *after* scanning today, so it must not crowd the main timeline. The card is **hard-wired to today** (no date switcher); to edit other dates use `/review/day/:anchor`. It shares the same record as the Review · Day surface, so writes from either side propagate live.
+
 ### 5.3 Cycle View (planning mode)
 
 For **forward planning** and **overview**. Organized around the **Cycle** — by default 7 days, but **extendable for long-holiday scenarios** (the next Cycle defaults to running from the day after through the next Sunday).
@@ -377,6 +386,7 @@ Core rule: **however many Templates this Cycle actually uses, that's how many se
   - Leftmost cell is a `[color strip] TEMPLATE · N days` label (template name + day count).
   - Each remaining cell is one day this Template is active on, showing weekday abbreviation + day number (`Mon 12` / `Tue 13` / …). Today's cell gets a primary step 2 background + 2px primary step 9 top strip; overridden days (`calendar-rule.upserted`) get a small dot to the right of the date. **One stacked section per Template the Cycle actually uses**; days belonging to other Templates live in those sections, never duplicated here.
   - This row **is** the sole CycleDay template-switch entry (there is no separate top-level DAYS block anymore). Clicking a date cell opens a popover listing every template the user has created, each row as `radio + Template color bar + name`, with `+ New template` at the bottom. Selecting one emits `calendar-rule.upserted` (`kind: 'single-date'`, id deduplicated via `cr-single-{date}` so flipping the same day repeatedly updates in place); if the day is currently overridden, the popover grows a `Restore default` footer that emits `calendar-rule.removed` and falls back to §5.4's weekday heuristic. Switching makes every section's mini-header and cells redraw immediately (the day disappears from the old section and appears in the new one).
+  - **A reflection chip sits next to each date cell** (v0.4.3+, §4.1 DailyReflection deep-link entry): `NotebookPen` icon, **filled ink-secondary** when the date already has a reflection, **outlined ink-tertiary** otherwise. Click → `navigate('/review/day/<date>')` so the Review · Day card owns the actual read/write. Cycle View intentionally does NOT embed an editor — keeping the editor surfaces to two (Today Track + Review · Day) prevents a "same content writable from three places" truth pollution. The chip is a **sibling** of the date-cell button, not nested, so it never steals the template-switch popover trigger.
   - **Weekends are no longer specially tinted** — whether a day is a restday is entirely determined by the Template the user chose for it. Stitch's Sat/Sun tertiary tinting is explicitly rejected.
 - **Section body grid**: rows = each Rail in this Template; columns = the days this Template is active on (already fixed by the section mini-header above). Left column (≈ 160px wide) shows `[4px Rail own-color bar] Mono time range 08:00–12:00 + small Rail name`. Each cell aligns with that Rail's Slot for that day.
 - **Orphan-task guard on template switch**: if N tasks are already bound to this day's Rails under the old template (`task.slot.date === this day`) and the new template has no Rails with matching ids, flipping would silently orphan them — `task.slot` still points at a Rail that no longer renders on this day, so they reappear only if the user flips back. So the switch is gated: N = 0 → flip silently; N > 0 → small confirm `Switching to restday will remove the N tasks already scheduled on this day; you can drag them back from Backlog later · Continue / Cancel`. Continue issues `task.unscheduled` for all N tasks (slot → undefined) — they fall back into the Backlog drawer — before `calendar-rule.upserted` is written. "Restore default" honors the same guard when the heuristic-picked template lacks the Rails currently holding tasks.
@@ -1052,6 +1062,8 @@ Pending is the *complete* set of "awaiting a decision"; §5.6's check-in strip i
   - Observe: patterns in the period
   - Review: structured weekly / monthly report
   - All AI runs only when explicitly triggered or enabled.
+- **Daily Reflection block** (v0.4.3+ · see §4.1 DailyReflection): rendered **only in day scope**, as the final waterfall section, titled `今日复盘 / Daily Reflection`. Reuses `MarkdownField` and shares the underlying record with the Today Track bottom card; the key difference is that **the anchor follows the URL** (`/review/day/:anchor`), so the user can revisit or backfill **any date** (past / present / future).
+- **Reflection log section (Cycle / Month scope · v0.4.3+)**: when scope ≠ day, the waterfall ends with `复盘记录 / Reflection log` — a **pure navigation section**. It lists the dates in the current scope that already have a reflection, one row each (`YYYY-MM-DD · Wd · first-line preview`), and each row deep-links to `/review/day/<date>`. An empty scope shows one muted line ("no reflection in this period yet"). **No content expansion, no summarization** here — aggregation is deferred to v0.5+; this section only answers "which days were written, take me there to read or write."
 
 ### 5.9 Settings
 
@@ -1930,6 +1942,23 @@ type AdhocEvent = {
 // endDate — the next phase's startDate implicitly closes the prior.
 // "Current phase" = the phase with `startDate <= today` and the
 // largest startDate.
+
+// DailyReflection (v0.4.3+). One hand-written Markdown blob per date.
+// See §4.1 for full semantics.
+// Primary key = date (natural day per `Track.tz`). An empty content
+// is "not written" (event-log: reflection.cleared; the materialized
+// row is removed).
+// Events:
+//   reflection.upserted  payload = { date: 'YYYY-MM-DD', content: string }
+//   reflection.cleared   payload = { date: 'YYYY-MM-DD' }
+//   Both carry aggregateId = date. HLC last-writer-wins, same as every
+//   other entity.
+type DailyReflection = {
+  date: string;       // YYYY-MM-DD, primary key
+  content: string;    // raw user input, rendered as Markdown (no transform beyond sanitize)
+  updatedAt: number;  // wall-clock of the latest event (epoch ms)
+};
+
 type HabitPhase = {
   id: string;        // ULID
   lineId: string;    // parent Line (must be kind='habit')

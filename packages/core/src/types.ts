@@ -274,6 +274,21 @@ export interface HabitPhase {
   createdAt: number;
 }
 
+/** ERD §4.1 / §10.4. One hand-written Markdown blob per calendar
+ *  date — the user's free-form journal / retrospection / mood note.
+ *  Keyed by `date` (YYYY-MM-DD); at most one row per day. Empty content
+ *  means "not written" — the materializer drops the row and the event
+ *  log carries `reflection.cleared`. Does not feed the heatmap, Project
+ *  progress, or any scheduling side effect. */
+export interface DailyReflection {
+  /** YYYY-MM-DD, primary key (natural day per `Track.tz`). */
+  date: string;
+  /** Raw Markdown source — rendered as-is, no transform beyond sanitize. */
+  content: string;
+  /** Wall clock of the latest event that wrote this row (epoch ms). */
+  updatedAt: number;
+}
+
 /** A one-off time block that overlays the Track. Either ad-hoc input
  *  (user scheduled "dentist appt" for tomorrow 14:30-16:00) or the
  *  backing record for §5.5.2 Mode-B task scheduling (`taskId` refers

@@ -1,6 +1,6 @@
 import { clsx } from 'clsx';
 import { useEffect, useState } from 'react';
-import { Check, ChevronDown } from 'lucide-react';
+import { Check, ChevronDown, NotebookPen } from 'lucide-react';
 import type { TaskPriority } from '@dayrail/core';
 import {
   type CycleDay,
@@ -42,6 +42,14 @@ interface Props {
   slotsByKey: Map<string, CycleSlot>; // key = `${railId}|${date}`
   todayISO: string;
   templateChoices: TemplateChoice[];
+  /** Dates in this section's `days` slice that already have a written
+   *  Daily Reflection (§4.1). Drives the filled vs outlined chip — a
+   *  Set keeps the per-day lookup O(1). */
+  reflectedDates: ReadonlySet<string>;
+  /** Open the Daily Reflection editor for a specific date. Cycle View
+   *  delegates the deep-link to the parent so we don't import
+   *  react-router here. */
+  onOpenReflection: (date: string) => void;
   onOverride: (date: string, nextTemplate: TemplateKey) => void;
   onClearOverride: (date: string) => void;
   onDropTask?: (taskId: string, date: string, railId: string) => void;
@@ -69,6 +77,8 @@ export function CycleSection({
   slotsByKey,
   todayISO,
   templateChoices,
+  reflectedDates,
+  onOpenReflection,
   onOverride,
   onClearOverride,
   onDropTask,
@@ -127,13 +137,15 @@ export function CycleSection({
           stripColor={stripColor}
           todayISO={todayISO}
           templateChoices={templateChoices}
+          reflectedDates={reflectedDates}
+          onOpenReflection={onOpenReflection}
           onOverride={onOverride}
           onClearOverride={onClearOverride}
         />
 
         <table className="table-fixed border-separate border-spacing-0">
           <colgroup>
-            <col className="w-[140px]" />
+            <col className="w-[220px]" />
             {days.map((d) => (
               <col key={d.date} className="w-[180px]" />
             ))}
@@ -238,6 +250,8 @@ function SectionMiniHeader({
   stripColor,
   todayISO,
   templateChoices,
+  reflectedDates,
+  onOpenReflection,
   onOverride,
   onClearOverride,
 }: {
@@ -246,6 +260,8 @@ function SectionMiniHeader({
   stripColor: string;
   todayISO: string;
   templateChoices: TemplateChoice[];
+  reflectedDates: ReadonlySet<string>;
+  onOpenReflection: (date: string) => void;
   onOverride: (date: string, nextTemplate: TemplateKey) => void;
   onClearOverride: (date: string) => void;
 }) {
@@ -253,7 +269,7 @@ function SectionMiniHeader({
     <div className="flex min-h-[48px] items-center gap-0 border-b border-transparent py-2">
       <table className="table-fixed border-separate border-spacing-0">
         <colgroup>
-          <col className="w-[140px]" />
+          <col className="w-[220px]" />
           {days.map((d) => (
             <col key={d.date} className="w-[180px]" />
           ))}
@@ -261,16 +277,16 @@ function SectionMiniHeader({
         <thead>
           <tr>
             <th className="pr-3 text-left align-middle">
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 items-center gap-2">
                 <span
                   aria-hidden
-                  className="h-3 w-[3px] rounded-sm"
+                  className="h-3 w-[3px] shrink-0 rounded-sm"
                   style={{ background: stripColor }}
                 />
-                <span className="font-mono text-2xs uppercase tracking-widest text-ink-primary">
+                <span className="min-w-0 truncate font-mono text-2xs uppercase tracking-widest text-ink-primary">
                   {templateLabel}
                 </span>
-                <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                <span className="shrink-0 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
                   · {days.length} days
                 </span>
               </div>
@@ -280,9 +296,11 @@ function SectionMiniHeader({
                 <DayCellButton
                   day={d}
                   isToday={d.date === todayISO}
+                  hasReflection={reflectedDates.has(d.date)}
                   templateChoices={templateChoices}
                   onOverride={(tpl) => onOverride(d.date, tpl)}
                   onClearOverride={() => onClearOverride(d.date)}
+                  onOpenReflection={() => onOpenReflection(d.date)}
                 />
               </th>
             ))}
@@ -296,15 +314,19 @@ function SectionMiniHeader({
 function DayCellButton({
   day,
   isToday,
+  hasReflection,
   templateChoices,
   onOverride,
   onClearOverride,
+  onOpenReflection,
 }: {
   day: CycleDay;
   isToday: boolean;
+  hasReflection: boolean;
   templateChoices: TemplateChoice[];
   onOverride: (tpl: TemplateKey) => void;
   onClearOverride: () => void;
+  onOpenReflection: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const { weekday, dayNum } = formatDayLabel(day);
@@ -341,6 +363,17 @@ function DayCellButton({
               aria-hidden
               title="overridden from the weekday default"
               className="h-1 w-1 rounded-full bg-cta"
+            />
+          )}
+          {/* Reflection-state indicator — purely visual; opening the
+              editor goes through the popover entry below so this stays
+              part of the day-cell's natural left-aligned content and
+              doesn't shift column geometry. */}
+          {hasReflection && (
+            <NotebookPen
+              aria-label="今日复盘 · 已写"
+              className="ml-1 h-3 w-3 text-ink-secondary"
+              strokeWidth={2}
             />
           )}
           <ChevronDown
@@ -404,6 +437,21 @@ function DayCellButton({
             </button>
           </>
         )}
+        <div className="mx-3 my-1 h-px bg-surface-3" />
+        <button
+          type="button"
+          onClick={() => {
+            onOpenReflection();
+            setOpen(false);
+          }}
+          className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          <NotebookPen className="h-3.5 w-3.5" strokeWidth={1.8} />
+          <span className="flex-1">{hasReflection ? '查看复盘' : '写复盘'}</span>
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            ↗
+          </span>
+        </button>
       </PopoverContent>
     </Popover>
   );
@@ -440,7 +488,7 @@ function RailRowLabel({
         <span className="truncate text-sm text-ink-primary">
           {rail.name}
         </span>
-        <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+        <span className="truncate font-mono text-2xs tabular-nums text-ink-tertiary">
           {fmtHHMM(rail.startMin)} → {fmtHHMM(rail.endMin)}
         </span>
       </span>
@@ -456,3 +504,4 @@ function RailRowLabel({
     </div>
   );
 }
+

@@ -119,6 +119,13 @@ DayRail 面向这样一类人：
 - **Shift（变道）**：对当天 Rail 实例 `pending` → 终态转移的附加记录。v0.2 保留两类：`defer`（以后再说，落 Pending）和 `archive`（归档，不再排期）。可选附带原因标签（全局共享标签库，详见 §5.7）。"时内推移"由 Cycle View 拖拽承担；`swap / resize / replace` 留到 v0.3 重评。
 - **Signal（信号）**：Rail 边界的轻量级提醒。名字取自铁路边的信号灯 —— 到点亮一下，不命令你做什么。三个选项：`继续` / `调整` / `跳过`。
 - **Ad-hoc Event（临时事件）**：不属于任何模板的一次性时间块。优先级高于任何 Template 解析结果。可选关联 Line。
+- **DailyReflection（每日复盘 · v0.4.3 起）**：一天一条的手写 Markdown，用户在当天写完日志、复盘、心情等任意自由文本。
+  - **键 = 日期**：`date` 是主键（`YYYY-MM-DD`，自然日 = `Track.tz` 当日），一天最多一条；空字符串视同"未写"（事件流上是 `reflection.cleared`）。
+  - **正交于 Rail / Task / Habit**：不参与 heatmap、不参与 Project 进度、不触发任何调度副作用 —— 纯粹是"今天我想说点什么"的容器。Mermaid 概念图不画它（避免噪音）。
+  - **任何日期都可写**：不限"今天"。过去日（治愈"昨天忘了写"）、未来日（提前给某天留计划备注）都允许。
+  - **入口两处共享一份数据**：(1) Today Track 页底部的"今日复盘"卡，hard-wired 到当天；(2) `/review/day/:anchor` 底部折叠区，可回看/编辑任意日期。两处通过事件流同步，实时一致。
+  - **存储**：事件流 + 物化表（`reflection.upserted { date, content }` / `reflection.cleared { date }`，aggregateId = date）。Snapshot 增加 `reflections: Record<date, DailyReflection>`，参与 session-level undo 与跨设备 replay，与 Habit / Task 一致。
+  - **不做**：版本历史（事件流即历史）、AI 总结、模板/提示词、跨日搜索（v0.5+ 再评估）、字数限制。
 - **Line（内部容器类型 · UI 永远不用这个词）**：DayRail 唯一的"多 Rail / Task 分组"概念，呈现为一个连续谱。`Line` 只出现在 types / schema / event log 里 —— UI 视图 / 菜单 / 文案始终按 `kind` 展示具体形态：`Project` / `Habit` / `Tag（原 Group）`。
   - **状态三分**：`status: 'active' | 'archived' | 'deleted'`。`archived` 是用户手动归档的终态（可恢复）；`deleted` 是软删除（进回收站，可恢复；二次确认才能硬删）
   - **Inbox 是内置单例 Line**：`id = 'line-inbox'`、`kind = 'project'`、`isDefault: true`、不可删不可改色。所有"用户没挑 Project 的 task"默认落在这里（详见 §5.5.1）
@@ -350,6 +357,8 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
 
 **任务详情编辑**（v0.4 新增）：RailCard 上点击对应 rail 行 → 打开 TaskDetailDrawer（沿用 §5.5 那一个组件），可就地改备注 / 子任务 / 里程碑 / 排期。**对 habit 的 auto-task**，编辑权限按 §5.5.0 "Auto-task 的编辑性" 表 —— title / schedule / milestone 只读，note / subItems 可改。rail 上无承载 Task 时（空 rail）点击无响应。RailCard 还在行内展示「N/M 子任务」「有备注」这些小徽标，不用开抽屉就能一眼扫到。
 
+**今日复盘卡**（v0.4.3 新增 · 见 §4.1 DailyReflection）：页面**最底部**单卡，标题 `今日复盘`，副标题日期。卡内复用 `MarkdownField`（与 Project / Habit 备注同款），auto-grow、Markdown 渲染、blur 即写入事件流；空内容触发 `reflection.cleared`。**位置刻意压在最底**：复盘是 Today Track 看完今天后才做的事，不抢主时间线注意力。**hard-wired 到当天**（不带日期切换 UI）；想编辑别的日期请去 `/review/day/:anchor`。和 Review · Day 的同一字段共享真值，写完任意一处另一处实时刷新。
+
 ### 5.3 Cycle View（周期视图 / 规划模式）
 
 用于**提前规划**和**整体考察**。以 **Cycle** 为单位 —— 默认一个 Cycle 是 7 天，但在长节假日等场景可以延长（下一个 Cycle 自动从次日起算、默认延展到下一个 Sunday）。
@@ -377,6 +386,7 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
   - 左端一格 `[色条] TEMPLATE · N days`（Template 名 + 天数）。
   - 右侧每一"当前 Template 命中的天"各占一格，显示星期缩写 + 日期数字（`Mon 12` / `Tue 13` / …）；今天那一格底色 primary step 2 + 顶部 2px primary step 9 标识条；被覆盖的天（`calendar-rule.upserted`）在日期右侧挂一枚小点。**一个 Cycle 里用了几个模板就堆几段，每段只画自己命中的天**；不命中的天属于另一段，不在本 section 重复。
   - 这一排**就是** CycleDay 模板切换入口（唯一入口 —— 顶部不再单独挂 DAYS 区块）：点任意日期格 → popover 列出所有已创建模板，每项 `radio + Template 色条 + 名称`，末尾 `+ 新建模板`。选中 → 写 `calendar-rule.upserted`（`kind: 'single-date'`、id 按 `cr-single-{date}` 去重，同一日反复切换就是 `update`）；当前已有覆盖时 popover 末尾多一条 `恢复默认` → 写 `calendar-rule.removed`，回到 §5.4 CalendarRule 的 weekday 启发。切换后各 section 的 mini-header / cell 立即重绘（旧 section 该列消失、新 section 多出该列）。
+  - **每个日期格右侧贴一枚 reflection chip**（v0.4.3+，§4.1 DailyReflection 入口）：`NotebookPen` 小图标，**该日已写复盘** → 实色 ink-secondary；**未写** → 描线 ink-tertiary。点击 → `navigate('/review/day/<date>')`，由 Review · Day 卡承担读写（Cycle View 不内嵌编辑器，避免"同一份内容三处可写"的真值污染）。chip 与日期格按钮**并排**（不嵌套），不抢模板切换的 popover 触发区。
   - **周末不再特别着色** —— 是不是 restday 完全由用户给那一天选的 Template 决定；Stitch 的 Sat/Sun tertiary 染色明确废弃。
 - **Section 主体 grid**：行 = 该 Template 的每条 Rail；列 = section mini-header 上已经定下来的"本 Template 命中的那几天"。左栏独立列（≈ 160px 宽）：`[4px Rail 自色条] Mono 时段 08:00–12:00 + 小号 Rail 名`。Cell 对齐该 Rail 在该日的 Slot 内容。
 - **切换模板时处理 orphan task**：如果当天的旧模板下已有 N 个 task 被排到具体 Rail 上（`task.slot.date === 该日`），而新模板里没有这些 Rail，直接切会让它们"隐身"（slot 还指着旧 Rail，但 cell 不再渲染）。所以切换前拦一层：N = 0 时直接切；N > 0 时弹一个小 confirm —— `切换到 restday 会把这一天的 N 个已排任务移出，可以随时从 Backlog 拖回来 · 继续 / 取消`。Continue 后一次性把这 N 个 task 走 `task.unscheduled`（slot → undefined），它们自动回到 Backlog drawer；然后才写 `calendar-rule.upserted`。"恢复默认"同理——如果当前 override 下的 template 里有已排 task 而默认启发的 template 没有对应 rail，也走这个确认流程。
@@ -977,6 +987,8 @@ Pending 是"等待决定"的**全集**；§5.6 check-in 条是它"近 24h 这一
   - 观察（Observe）：本周出现的模式
   - 复盘（Review）：结构化周报 / 月报
   - 所有 AI 分析必须由用户主动触发或已显式启用
+- **每日复盘文本块**（v0.4.3 起 · 见 §4.1 DailyReflection）：**仅 day scope** 显示，瀑布最末尾一节，标题 `今日复盘 / Daily Reflection`。卡内复用 `MarkdownField`，与 Today Track 底部那张卡读写同一字段；这里的关键差别是 **anchor 跟随 URL**（`/review/day/:anchor`），因此可直接回看/补写**任意日期**（过去/今天/未来）。
+- **复盘记录段（Cycle / Month scope · v0.4.3 起）**：当 scope ≠ day 时，瀑布末尾改渲染 `复盘记录 / Reflection log` —— 一个**纯导航段**：列出本 scope 范围内已写复盘的日期，每行 = `YYYY-MM-DD · Wd · 首行预览`，点击跳转 `/review/day/<date>`。空 scope 显示一行 muted "本周期未写复盘"。**不展开内容、不做摘要**（聚合范式留到 v0.5+），这里只承担"哪些天写过、点进去看/写"的入口职责。
 
 ### 5.9 Settings
 
@@ -1764,6 +1776,20 @@ type AdhocEvent = {
 // "当前 phase" = 关联到该 Line 的 phase 里 startDate <= today 的那条
 // 里 startDate 最大者。没有 endDate —— 下一 phase 的 startDate 就是
 // 上一 phase 的隐式结束。
+
+// DailyReflection（v0.4.3+）：每天一条手写 Markdown，详见 §4.1。
+// 主键 = date，自然天 = `Track.tz` 当日。空 content 视同未写
+// （事件流上是 reflection.cleared，物化层不存这一行）。
+// 事件：
+//   reflection.upserted  payload = { date: 'YYYY-MM-DD', content: string }
+//   reflection.cleared   payload = { date: 'YYYY-MM-DD' }
+//   两类事件 aggregateId = date。HLC 决定后写者胜，与其它实体一致。
+type DailyReflection = {
+  date: string;       // YYYY-MM-DD，主键
+  content: string;    // 用户原文，按 Markdown 渲染；不做 sanitize 之外的转换
+  updatedAt: number;  // 末次写入的事件 wall-clock（epoch ms）
+};
+
 type HabitPhase = {
   id: string;        // ULID
   lineId: string;    // 所属 habit-kind Line

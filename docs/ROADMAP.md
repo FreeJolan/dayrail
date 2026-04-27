@@ -148,6 +148,43 @@ revision、>= 该日的用新 revision）、tombstone 截止生效。
   `react-error-boundary` 包一下主 `<main>` 并给个"重载 / 清空数据"
   逃生口。
 
+### 数据安全 / 弹性 · 对外发布前应当补（按性价比排序）
+
+> 触发条件：从"自用 beta"扩到任何额外用户之前。自用阶段单事件概率
+> 低，但月级累积概率不可忽略 —— 真正的兜底是 §7 同步通道（远端副本
+> 不依赖 OPFS 完整性），那个上线前下面四项是性价比最高的护栏。
+> 现实诱因：多 tab 锁竞态、浏览器/标签崩溃在写中段、强退、OPFS 配额
+> 耗尽、Chrome OPFS 自身 bug（2024-2025 期间 Chromium issue tracker
+> 有数例）。
+
+1. **Single-tab guard** —— `BroadcastChannel` 心跳，第二个 tab 落地
+   时显示"已在另一个标签打开，关闭它再来"软门。**挡掉最大单一原因**
+   （OPFS sync access handle 文件级独占锁的竞态），几十行代码。
+2. **启动时 `PRAGMA integrity_check`** + 坏库时跳"从备份/snapshot
+   恢复"页 —— 让 corruption 不再表现为"白屏 + console 报错"。
+   可与上面的 Error boundary 项合并实现。
+3. **定时自动备份 · 正式能力**（不只是后台兜底，做成 Settings →
+   高级里**用户可见可配置**的功能）：
+   - **频率可选**：关闭 / 每天 / 每周 / 每月 / 自定义间隔（最少 1 天）。
+     默认开启 = 每周。
+   - **目的地两路**：
+     - **OPFS 第二个文件**（与主库分开 → 主库坏不连累备份），滚动
+       保留最近 N 份（N 可配，默认 4）。
+     - 可选的**自动下载到本地 Downloads**（每次生成新备份就触发
+       `<a download>`），把"忘了手动导出"那类风险消掉。
+   - **Settings UI**：开关 + 频率 picker + retention 数 + 上次备份时间
+     戳 + `立即备份一次` 按钮 + 备份列表（OPFS 内的可单点恢复 / 删除）。
+   - **触发器**：app 启动后比对 `lastBackupAt` vs 当前频率，过期则
+     在 idle callback 里跑一次（避开主写路径，复用现有 Backup 导出
+     管线）。
+   - **失败处理**：备份失败 toast + 写一条 `backup.failed` 事件，下次
+     启动重试；连续 3 次失败弹一条不可忽略的 banner。
+4. **同步通道**（ERD §7）—— 真正的远端兜底，但工作量大；上面三项
+   是同步上线前的最后一道防线。
+
+实现一项就上一道，不必一次做齐。Issue 触发：作者拿到第二例
+SQLITE_CORRUPT 报告。
+
 ### 明确不做 · 自用 scope 内没价值
 
 - ❌ §6 AI 集成（OpenRouter 真调用 / 流式 / fallback 链）· 真想要再接
@@ -167,6 +204,10 @@ revision、>= 该日的用新 revision）、tombstone 截止生效。
   换设备 / 浏览器崩都可能丢
 - 唯一保险：Settings → 高级 → **定期导出 JSON** 到电脑本地
 - 导入是**整体覆盖**，不是合并 —— 用"从备份恢复"的心智用它
+- **`SQLITE_CORRUPT` 复盘**：dev 模式撞过一次。我们这边没有破坏性 schema
+  改动 —— 诱因在浏览器侧（HMR 撞写、强退、多 tab 锁竞态、OPFS bug）。
+  恢复路径：DevTools → Application → OPFS → 删 `dayrail` → 刷新重建。
+  对外发布前的护栏方案见上方"数据安全 / 弹性"停车场条目。
 
 ### 会炸的边界
 

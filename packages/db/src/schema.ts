@@ -252,6 +252,16 @@ export const calendarRules = sqliteTable('calendar_rules', {
 });
 
 
+// DailyReflection (§4.1 / §10.4; v0.4.3+). One hand-written Markdown
+// blob per calendar date — keyed by date so writes are upsert-by-date.
+// Empty content is represented in the event log as `reflection.cleared`
+// and the materializer drops the row entirely.
+export const dailyReflections = sqliteTable('daily_reflections', {
+  date: text('date').primaryKey(), // YYYY-MM-DD
+  content: text('content').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+
 export const adhocEvents = sqliteTable(
   'adhoc_events',
   {
@@ -438,6 +448,12 @@ CREATE TABLE IF NOT EXISTS calendar_rules (
   created_at INTEGER NOT NULL
 );
 
+
+CREATE TABLE IF NOT EXISTS daily_reflections (
+  date TEXT PRIMARY KEY,
+  content TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS adhoc_events (
   id TEXT PRIMARY KEY,
