@@ -6,11 +6,14 @@ import {
 } from '../today';
 import type {
   CalendarRule,
+  CalendarRuleRevision,
   CalendarRuleWeekday,
   Rail,
+  RailRevision,
   Task,
   Template,
 } from '../types';
+import { REVISION_SENTINEL_DATE } from '../types';
 
 // selectTodayTimeline / selectCheckinQueue / selectPendingQueue feed
 // three different surfaces (today timeline, top-of-Today-Track strip,
@@ -75,6 +78,80 @@ function byKey<T extends { key: string }>(items: T[]): Record<string, T> {
   return Object.fromEntries(items.map((i) => [i.key, i]));
 }
 
+/** Build the §10.5 revision tables that match a set of legacy entities,
+ *  using `effectiveFrom = '1970-01-01'` so every test date hits them.
+ *  Mirrors what the v0.5 sentinel migration would produce. */
+function railRevisionsFor(rails: Rail[]): Record<string, RailRevision[]> {
+  return Object.fromEntries(
+    rails.map((r) => [
+      r.id,
+      [
+        {
+          id: `rev-rail-${r.id}-sentinel`,
+          railId: r.id,
+          effectiveFrom: REVISION_SENTINEL_DATE,
+          templateKey: r.templateKey,
+          name: r.name,
+          ...(r.subtitle != null && { subtitle: r.subtitle }),
+          startMinutes: r.startMinutes,
+          durationMinutes: r.durationMinutes,
+          color: r.color,
+          ...(r.icon != null && { icon: r.icon }),
+          showInCheckin: r.showInCheckin,
+          authoredAt: 0,
+        } satisfies RailRevision,
+      ],
+    ]),
+  );
+}
+
+function calendarRuleRevisionsFor(
+  rules: CalendarRule[],
+): Record<string, CalendarRuleRevision[]> {
+  return Object.fromEntries(
+    rules.map((r) => [
+      r.id,
+      [
+        {
+          id: `rev-calrule-${r.id}-sentinel`,
+          ruleId: r.id,
+          effectiveFrom: REVISION_SENTINEL_DATE,
+          priority: r.priority,
+          value: r.value,
+          authoredAt: 0,
+        } satisfies CalendarRuleRevision,
+      ],
+    ]),
+  );
+}
+
+/** Augment a legacy-style test fixture with synthesized revision tables
+ *  + empty tombstone maps, matching what the v0.5 migration would
+ *  produce on existing data. */
+function withRevisions<
+  S extends {
+    rails?: Record<string, Rail>;
+    calendarRules?: Record<string, CalendarRule>;
+  },
+>(
+  state: S,
+): S & {
+  railRevisions: Record<string, RailRevision[]>;
+  railTombstones: Record<string, never>;
+  calendarRuleRevisions: Record<string, CalendarRuleRevision[]>;
+  calendarRuleTombstones: Record<string, never>;
+} {
+  return {
+    ...state,
+    railRevisions: railRevisionsFor(Object.values(state.rails ?? {})),
+    railTombstones: {},
+    calendarRuleRevisions: calendarRuleRevisionsFor(
+      Object.values(state.calendarRules ?? {}),
+    ),
+    calendarRuleTombstones: {},
+  };
+}
+
 describe('selectTodayTimeline', () => {
   it('includes rails whose template matches today (no task required)', () => {
     const workdayRail = rail({ id: 'r-work', templateKey: 'workday' });
@@ -89,7 +166,7 @@ describe('selectTodayTimeline', () => {
       ]),
     };
     // TODAY_ISO is a Sunday → restday.
-    const rows = selectTodayTimeline(state, TODAY_ISO);
+    const rows = selectTodayTimeline(withRevisions(state), TODAY_ISO);
     expect(rows.map((r) => r.rail.id)).toEqual(['r-rest']);
     expect(rows[0]?.tasks).toEqual([]); // bare rail, no tasks
   });
@@ -112,7 +189,7 @@ describe('selectTodayTimeline', () => {
         weekdayRule('restday', [0, 6]),
       ]),
     };
-    const rows = selectTodayTimeline(state, TODAY_ISO);
+    const rows = selectTodayTimeline(withRevisions(state), TODAY_ISO);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.rail.id).toBe('r-work');
     expect(rows[0]?.tasks.map((t) => t.id)).toEqual(['t1']);
@@ -130,7 +207,7 @@ describe('selectTodayTimeline', () => {
       templates: byKey([template('workday')]),
       calendarRules: mapById([weekdayRule('workday', [0, 1, 2, 3, 4, 5, 6])]),
     };
-    const rows = selectTodayTimeline(state, TODAY_ISO);
+    const rows = selectTodayTimeline(withRevisions(state), TODAY_ISO);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.tasks.map((t) => t.id)).toEqual([
       'pending',
@@ -154,7 +231,7 @@ describe('selectTodayTimeline', () => {
       templates: byKey([template('workday')]),
       calendarRules: mapById([weekdayRule('workday', [0, 1, 2, 3, 4, 5, 6])]),
     };
-    const rows = selectTodayTimeline(state, TODAY_ISO);
+    const rows = selectTodayTimeline(withRevisions(state), TODAY_ISO);
     expect(rows[0]?.tasks).toEqual([]);
   });
 
@@ -175,7 +252,7 @@ describe('selectTodayTimeline', () => {
       templates: byKey([template('workday')]),
       calendarRules: mapById([weekdayRule('workday', [0, 1, 2, 3, 4, 5, 6])]),
     };
-    const rows = selectTodayTimeline(state, TODAY_ISO);
+    const rows = selectTodayTimeline(withRevisions(state), TODAY_ISO);
     expect(rows.map((r) => r.rail.id)).toEqual(['morning', 'evening']);
   });
 });
@@ -192,7 +269,7 @@ describe('selectCheckinQueue', () => {
     // Rail ended at 09:00 today; now is 12:00 → 3h ago.
     const t = task({ id: 't1', railId: 'r1', date: TODAY_ISO });
     const state = { rails: mapById([r]), tasks: mapById([t]) };
-    const rows = selectCheckinQueue(state, NOW);
+    const rows = selectCheckinQueue(withRevisions(state), NOW);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.task.id).toBe('t1');
   });
@@ -206,7 +283,7 @@ describe('selectCheckinQueue', () => {
     });
     const t = task({ id: 't1', railId: 'future', date: TODAY_ISO });
     const state = { rails: mapById([future]), tasks: mapById([t]) };
-    const rows = selectCheckinQueue(state, NOW);
+    const rows = selectCheckinQueue(withRevisions(state), NOW);
     expect(rows).toEqual([]);
   });
 
@@ -214,7 +291,7 @@ describe('selectCheckinQueue', () => {
     // Rail was yesterday morning, well beyond the 24 h check-in strip.
     const t = task({ id: 't1', railId: 'r1', date: '2026-04-18' });
     const state = { rails: mapById([r]), tasks: mapById([t]) };
-    const rows = selectCheckinQueue(state, NOW);
+    const rows = selectCheckinQueue(withRevisions(state), NOW);
     expect(rows).toEqual([]);
   });
 
@@ -228,7 +305,7 @@ describe('selectCheckinQueue', () => {
     });
     const t = task({ id: 't1', railId: 'r1', date: TODAY_ISO });
     const state = { rails: mapById([silent]), tasks: mapById([t]) };
-    const rows = selectCheckinQueue(state, NOW);
+    const rows = selectCheckinQueue(withRevisions(state), NOW);
     expect(rows).toEqual([]);
   });
 
@@ -242,7 +319,7 @@ describe('selectCheckinQueue', () => {
     for (const s of terminalStatuses) {
       const t = task({ id: 't1', railId: 'r1', date: TODAY_ISO, status: s });
       const state = { rails: mapById([r]), tasks: mapById([t]) };
-      const rows = selectCheckinQueue(state, NOW);
+      const rows = selectCheckinQueue(withRevisions(state), NOW);
       expect(rows, `status=${s}`).toEqual([]);
     }
   });
@@ -261,7 +338,7 @@ describe('selectPendingQueue', () => {
     // still deserves a decision.
     const t = task({ id: 't1', railId: 'r1', date: '2026-04-15' });
     const state = { rails: mapById([r]), tasks: mapById([t]) };
-    const rows = selectPendingQueue(state, NOW);
+    const rows = selectPendingQueue(withRevisions(state), NOW);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.task.id).toBe('t1');
   });
@@ -269,7 +346,7 @@ describe('selectPendingQueue', () => {
   it('drops future-pending tasks (window has not ended)', () => {
     const t = task({ id: 't1', railId: 'r1', date: '2026-04-30' });
     const state = { rails: mapById([r]), tasks: mapById([t]) };
-    const rows = selectPendingQueue(state, NOW);
+    const rows = selectPendingQueue(withRevisions(state), NOW);
     expect(rows).toEqual([]);
   });
 
@@ -290,7 +367,7 @@ describe('selectPendingQueue', () => {
       rails: mapById([r]),
       tasks: mapById([futureDeferred, pastDeferred]),
     };
-    const rows = selectPendingQueue(state, NOW);
+    const rows = selectPendingQueue(withRevisions(state), NOW);
     expect(rows.map((r) => r.task.id).sort()).toEqual(['future', 'past']);
   });
 
@@ -304,7 +381,7 @@ describe('selectPendingQueue', () => {
       // no slot — user deferred an Inbox task without scheduling
     };
     const state = { rails: mapById([r]), tasks: mapById([inboxDeferred]) };
-    const rows = selectPendingQueue(state, NOW);
+    const rows = selectPendingQueue(withRevisions(state), NOW);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.task.id).toBe('inbox-deferred');
     expect(rows[0]?.rail).toBeUndefined();
@@ -315,7 +392,7 @@ describe('selectPendingQueue', () => {
     for (const s of closedStatuses) {
       const t = task({ id: 't1', railId: 'r1', date: '2026-04-15', status: s });
       const state = { rails: mapById([r]), tasks: mapById([t]) };
-      const rows = selectPendingQueue(state, NOW);
+      const rows = selectPendingQueue(withRevisions(state), NOW);
       expect(rows, `status=${s}`).toEqual([]);
     }
   });

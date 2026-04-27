@@ -45,6 +45,8 @@ export function Calendar() {
   const tasks = useStore((s) => s.tasks);
   const rails = useStore((s) => s.rails);
   const calendarRules = useStore((s) => s.calendarRules);
+  const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
+  const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
   const adhocEvents = useStore((s) => s.adhocEvents);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
   const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
@@ -129,7 +131,15 @@ export function Calendar() {
   const handleClearOverride = useCallback(
     (date: string) => {
       const target =
-        pickTemplateForDate({ templates, calendarRules: {} }, date) ?? '';
+        pickTemplateForDate(
+          {
+            templates,
+            calendarRules: {},
+            calendarRuleRevisions: {},
+            calendarRuleTombstones: {},
+          },
+          date,
+        ) ?? '';
       void applyTemplateSwitch(date, target, () =>
         clearCycleDayOverride(date),
       );
@@ -178,7 +188,12 @@ export function Calendar() {
         {cells.map((cell) => {
           const templateKey =
             pickTemplateForDate(
-              { templates, calendarRules },
+              {
+                templates,
+                calendarRules,
+                calendarRuleRevisions,
+                calendarRuleTombstones,
+              },
               cell.date,
             ) ?? null;
           const overridden = Boolean(

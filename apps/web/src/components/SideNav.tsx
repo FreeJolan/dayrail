@@ -90,10 +90,11 @@ export function SideNav(_props: SideNavProps) {
   // reference-equality short-circuit kicks in instead of comparing a
   // freshly-built array every tick.
   const tasks = useStore((s) => s.tasks);
-  const rails = useStore((s) => s.rails);
+  const railRevisions = useStore((s) => s.railRevisions);
+  const railTombstones = useStore((s) => s.railTombstones);
   const pendingCount = useMemo(
-    () => selectPendingQueue({ tasks, rails }).length,
-    [tasks, rails],
+    () => selectPendingQueue({ tasks, railRevisions, railTombstones }).length,
+    [tasks, railRevisions, railTombstones],
   );
 
   return (

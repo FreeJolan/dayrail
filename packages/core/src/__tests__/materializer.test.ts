@@ -2,13 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { materializeAutoTasksImpl } from '../autoTask';
 import type {
   CalendarRule,
+  CalendarRuleRevision,
   CalendarRuleWeekday,
   HabitBinding,
+  HabitBindingRevision,
   Line,
   Rail,
+  RailRevision,
   Task,
   Template,
 } from '../types';
+import { REVISION_SENTINEL_DATE } from '../types';
 
 // The materializer is the destructive forward path: bugs here either
 // spam the store with phantom tasks or silently skip days the user
@@ -74,6 +78,82 @@ function mapById<T extends { id: string }>(items: T[]): Record<string, T> {
   return Object.fromEntries(items.map((i) => [i.id, i]));
 }
 
+/** Mirror what the v0.5 sentinel migration produces. Tests build legacy
+ *  fixtures and pass them through `withRevisions` so the date-aware
+ *  selectors find a revision for every test date (`'1970-01-01' <= D`). */
+function withRevisions<
+  S extends {
+    rails?: Record<string, Rail>;
+    calendarRules?: Record<string, CalendarRule>;
+    habitBindings?: Record<string, HabitBinding>;
+  },
+>(
+  state: S,
+): S & {
+  railRevisions: Record<string, RailRevision[]>;
+  railTombstones: Record<string, never>;
+  calendarRuleRevisions: Record<string, CalendarRuleRevision[]>;
+  calendarRuleTombstones: Record<string, never>;
+  habitBindingRevisions: Record<string, HabitBindingRevision[]>;
+  habitBindingTombstones: Record<string, never>;
+} {
+  const railRevs: Record<string, RailRevision[]> = {};
+  for (const r of Object.values(state.rails ?? {})) {
+    railRevs[r.id] = [
+      {
+        id: `rev-rail-${r.id}-sentinel`,
+        railId: r.id,
+        effectiveFrom: REVISION_SENTINEL_DATE,
+        templateKey: r.templateKey,
+        name: r.name,
+        ...(r.subtitle != null && { subtitle: r.subtitle }),
+        startMinutes: r.startMinutes,
+        durationMinutes: r.durationMinutes,
+        color: r.color,
+        ...(r.icon != null && { icon: r.icon }),
+        showInCheckin: r.showInCheckin,
+        authoredAt: 0,
+      } satisfies RailRevision,
+    ];
+  }
+  const ruleRevs: Record<string, CalendarRuleRevision[]> = {};
+  for (const cr of Object.values(state.calendarRules ?? {})) {
+    ruleRevs[cr.id] = [
+      {
+        id: `rev-calrule-${cr.id}-sentinel`,
+        ruleId: cr.id,
+        effectiveFrom: REVISION_SENTINEL_DATE,
+        priority: cr.priority,
+        value: cr.value,
+        authoredAt: 0,
+      } satisfies CalendarRuleRevision,
+    ];
+  }
+  const bindingRevs: Record<string, HabitBindingRevision[]> = {};
+  for (const b of Object.values(state.habitBindings ?? {})) {
+    bindingRevs[b.id] = [
+      {
+        id: `rev-binding-${b.id}-sentinel`,
+        bindingId: b.id,
+        effectiveFrom: REVISION_SENTINEL_DATE,
+        habitId: b.habitId,
+        railId: b.railId,
+        ...(b.weekdays != null && { weekdays: [...b.weekdays] }),
+        authoredAt: b.createdAt,
+      } satisfies HabitBindingRevision,
+    ];
+  }
+  return {
+    ...state,
+    railRevisions: railRevs,
+    railTombstones: {},
+    calendarRuleRevisions: ruleRevs,
+    calendarRuleTombstones: {},
+    habitBindingRevisions: bindingRevs,
+    habitBindingTombstones: {},
+  };
+}
+
 interface Recorder {
   calls: Task[];
   upsert: (task: Task) => Promise<void>;
@@ -99,7 +179,7 @@ describe('materializeAutoTasksImpl', () => {
       calendarRules: mapById([weekdayRule('workday', [1, 2, 3, 4, 5])]),
     };
     const rec = makeRecorder();
-    await materializeAutoTasksImpl(state, rec.upsert, {
+    await materializeAutoTasksImpl(withRevisions(state), rec.upsert, {
       startDate: MON,
       endDate: SUN,
     });
@@ -128,7 +208,7 @@ describe('materializeAutoTasksImpl', () => {
       ]),
     };
     const rec = makeRecorder();
-    await materializeAutoTasksImpl(state, rec.upsert, {
+    await materializeAutoTasksImpl(withRevisions(state), rec.upsert, {
       startDate: '2026-04-18', // Sat
       endDate: '2026-04-19', // Sun
     });
@@ -148,7 +228,7 @@ describe('materializeAutoTasksImpl', () => {
       calendarRules: mapById([weekdayRule('workday', [1, 2, 3, 4, 5])]),
     };
     const rec = makeRecorder();
-    await materializeAutoTasksImpl(state, rec.upsert, {
+    await materializeAutoTasksImpl(withRevisions(state), rec.upsert, {
       startDate: MON,
       endDate: SUN,
     });
@@ -173,7 +253,7 @@ describe('materializeAutoTasksImpl', () => {
       calendarRules: mapById([weekdayRule('workday', [1, 2, 3, 4, 5])]),
     };
     const rec = makeRecorder();
-    await materializeAutoTasksImpl(state, rec.upsert, {
+    await materializeAutoTasksImpl(withRevisions(state), rec.upsert, {
       startDate: MON,
       endDate: SUN,
     });
@@ -194,7 +274,7 @@ describe('materializeAutoTasksImpl', () => {
       calendarRules: mapById([weekdayRule('workday', [1, 2, 3, 4, 5])]),
     };
     const rec = makeRecorder();
-    await materializeAutoTasksImpl(state, rec.upsert, {
+    await materializeAutoTasksImpl(withRevisions(state), rec.upsert, {
       startDate: MON,
       endDate: SUN,
     });
@@ -214,7 +294,7 @@ describe('materializeAutoTasksImpl', () => {
       calendarRules: mapById([weekdayRule('workday', [1, 2, 3, 4, 5])]),
     };
     const rec = makeRecorder();
-    await materializeAutoTasksImpl(state, rec.upsert, {
+    await materializeAutoTasksImpl(withRevisions(state), rec.upsert, {
       startDate: MON,
       endDate: SUN,
     });
@@ -241,7 +321,7 @@ describe('materializeAutoTasksImpl', () => {
       ]),
     };
     const rec = makeRecorder();
-    await materializeAutoTasksImpl(state, rec.upsert, {
+    await materializeAutoTasksImpl(withRevisions(state), rec.upsert, {
       startDate: MON,
       endDate: SUN,
     });
@@ -265,7 +345,7 @@ describe('materializeAutoTasksImpl', () => {
       calendarRules: mapById([weekdayRule('workday', [1, 2, 3, 4, 5])]),
     };
     const rec = makeRecorder();
-    await materializeAutoTasksImpl(state, rec.upsert, {
+    await materializeAutoTasksImpl(withRevisions(state), rec.upsert, {
       startDate: MON,
       endDate: SUN,
     });
@@ -283,10 +363,197 @@ describe('materializeAutoTasksImpl', () => {
       calendarRules: {}, // no rule for 'custom'
     };
     const rec = makeRecorder();
-    await materializeAutoTasksImpl(state, rec.upsert, {
+    await materializeAutoTasksImpl(withRevisions(state), rec.upsert, {
       startDate: MON,
       endDate: SUN,
     });
     expect(rec.calls).toEqual([]);
+  });
+});
+
+// ------------------------------------------------------------------
+// §10.5 effective-from freeze guarantee.
+//
+// The proof point: a rail change that lands mid-window creates a new
+// revision with `effectiveFrom = D2`. Materializing across D2 must
+// produce auto-tasks whose rail/template/binding fields come from the
+// OLD revision for dates < D2 and the NEW revision from D2 onward.
+// Slots are pinned to the rail's stable id (the identity shell), so
+// downstream consumers re-render via `railAtDate(slot.date)` and see
+// the historically-correct rail every time.
+// ------------------------------------------------------------------
+
+describe('materializer · revision-frozen past', () => {
+  it('respects rail revisions when crossing a cutover date', async () => {
+    // Setup: workday rail "rA" lives at 09:00–10:00 on rev1
+    // (effective '1970-01-01' through 2026-04-15), then changes to
+    // 14:00–15:00 from 2026-04-15 onward. Materialize the full
+    // Mon–Fri window 2026-04-13 .. 2026-04-17. Expectation: tasks on
+    // 04-13 / 04-14 carry no time annotation directly (slot only) —
+    // we validate by re-resolving the rail per slot date.
+
+    const rail: Rail = {
+      id: 'rA',
+      templateKey: 'workday',
+      name: 'Coding',
+      startMinutes: 9 * 60,
+      durationMinutes: 60,
+      color: 'indigo',
+      showInCheckin: true,
+    };
+    const baseState = withRevisions({
+      templates: byKey([makeTemplate('workday')]),
+      rails: mapById([rail]),
+      lines: mapById([makeHabit({ id: 'h1' })]),
+      habitBindings: mapById([makeBinding({ habitId: 'h1', railId: 'rA' })]),
+      calendarRules: mapById([weekdayRule('workday', [1, 2, 3, 4, 5])]),
+    });
+
+    // Layer in the post-cutover rev (effectiveFrom = 2026-04-15).
+    const rev2: RailRevision = {
+      id: 'rev-rail-rA-2026-04-15',
+      railId: 'rA',
+      effectiveFrom: '2026-04-15',
+      templateKey: 'workday',
+      name: 'Coding (afternoon)',
+      startMinutes: 14 * 60,
+      durationMinutes: 60,
+      color: 'indigo',
+      showInCheckin: true,
+      authoredAt: 0,
+    };
+    baseState.railRevisions['rA']!.push(rev2);
+
+    const rec = makeRecorder();
+    await materializeAutoTasksImpl(baseState, rec.upsert, {
+      startDate: '2026-04-13', // Mon
+      endDate: '2026-04-17', // Fri
+    });
+    expect(rec.calls.map((t) => t.slot!.date)).toEqual([
+      '2026-04-13',
+      '2026-04-14',
+      '2026-04-15',
+      '2026-04-16',
+      '2026-04-17',
+    ]);
+
+    // The auto-tasks themselves carry only `slot` — re-resolve the
+    // rail per slot date to confirm the time is the historically
+    // correct one.
+    const { railAtDate } = await import('../revisions');
+    const rA0413 = railAtDate(baseState, 'rA', '2026-04-13');
+    const rA0415 = railAtDate(baseState, 'rA', '2026-04-15');
+    expect(rA0413?.startMinutes).toBe(9 * 60);
+    expect(rA0413?.name).toBe('Coding');
+    expect(rA0415?.startMinutes).toBe(14 * 60);
+    expect(rA0415?.name).toBe('Coding (afternoon)');
+  });
+
+  it('materializes nothing on a date before any revision exists', async () => {
+    // Rail's first revision is 2026-04-15 (no sentinel). The window
+    // starts 2026-04-13 — those days should resolve to undefined and
+    // produce zero tasks.
+    const rail: Rail = {
+      id: 'rA',
+      templateKey: 'workday',
+      name: 'Coding',
+      startMinutes: 9 * 60,
+      durationMinutes: 60,
+      color: 'indigo',
+      showInCheckin: true,
+    };
+    const state = {
+      templates: byKey([makeTemplate('workday')]),
+      rails: mapById([rail]),
+      lines: mapById([makeHabit({ id: 'h1' })]),
+      habitBindings: mapById([makeBinding({ habitId: 'h1', railId: 'rA' })]),
+      calendarRules: mapById([weekdayRule('workday', [1, 2, 3, 4, 5])]),
+      railRevisions: {
+        rA: [
+          {
+            id: 'rev-rail-rA-2026-04-15',
+            railId: 'rA',
+            effectiveFrom: '2026-04-15',
+            templateKey: 'workday',
+            name: 'Coding',
+            startMinutes: 9 * 60,
+            durationMinutes: 60,
+            color: 'indigo' as const,
+            showInCheckin: true,
+            authoredAt: 0,
+          } satisfies RailRevision,
+        ],
+      },
+      railTombstones: {},
+      calendarRuleRevisions: {
+        'cr-weekday-workday': [
+          {
+            id: 'rev-calrule-cr-weekday-workday-sentinel',
+            ruleId: 'cr-weekday-workday',
+            effectiveFrom: REVISION_SENTINEL_DATE,
+            priority: 10,
+            value: { templateKey: 'workday', weekdays: [1, 2, 3, 4, 5] },
+            authoredAt: 0,
+          } satisfies CalendarRuleRevision,
+        ],
+      },
+      calendarRuleTombstones: {},
+      habitBindingRevisions: {
+        'bind-h1-rA': [
+          {
+            id: 'rev-binding-bind-h1-rA-sentinel',
+            bindingId: 'bind-h1-rA',
+            effectiveFrom: REVISION_SENTINEL_DATE,
+            habitId: 'h1',
+            railId: 'rA',
+            authoredAt: Date.parse('2026-04-01'),
+          } satisfies HabitBindingRevision,
+        ],
+      },
+      habitBindingTombstones: {},
+    };
+    const rec = makeRecorder();
+    await materializeAutoTasksImpl(state, rec.upsert, {
+      startDate: '2026-04-13', // Mon
+      endDate: '2026-04-17', // Fri
+    });
+    // 04-13 / 04-14 land before the rail's first revision → skipped.
+    expect(rec.calls.map((t) => t.slot!.date)).toEqual([
+      '2026-04-15',
+      '2026-04-16',
+      '2026-04-17',
+    ]);
+  });
+
+  it('respects rail tombstones — dates on/after retire produce no tasks', async () => {
+    const rail: Rail = {
+      id: 'rA',
+      templateKey: 'workday',
+      name: 'Coding',
+      startMinutes: 9 * 60,
+      durationMinutes: 60,
+      color: 'indigo',
+      showInCheckin: true,
+    };
+    const baseState = withRevisions({
+      templates: byKey([makeTemplate('workday')]),
+      rails: mapById([rail]),
+      lines: mapById([makeHabit({ id: 'h1' })]),
+      habitBindings: mapById([makeBinding({ habitId: 'h1', railId: 'rA' })]),
+      calendarRules: mapById([weekdayRule('workday', [1, 2, 3, 4, 5])]),
+    });
+    baseState.railTombstones = {
+      rA: { effectiveFrom: '2026-04-15', at: 0 },
+    } as typeof baseState.railTombstones;
+
+    const rec = makeRecorder();
+    await materializeAutoTasksImpl(baseState, rec.upsert, {
+      startDate: '2026-04-13',
+      endDate: '2026-04-17',
+    });
+    expect(rec.calls.map((t) => t.slot!.date)).toEqual([
+      '2026-04-13',
+      '2026-04-14',
+    ]);
   });
 });

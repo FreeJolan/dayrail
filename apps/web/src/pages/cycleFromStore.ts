@@ -48,7 +48,13 @@ export function startOfWeekMonday(d: Date = new Date()): Date {
  *    Mon–Fri → `workday` / first builtIn / first Template
  *    Sat / Sun → `restday` / first builtIn / first Template */
 export function pickTemplateForDate(
-  state: Pick<DayRailState, 'templates' | 'calendarRules'>,
+  state: Pick<
+    DayRailState,
+    | 'templates'
+    | 'calendarRules'
+    | 'calendarRuleRevisions'
+    | 'calendarRuleTombstones'
+  >,
   date: string,
 ): TemplateKey | null {
   return resolveTemplateForDate(state, date, (d) =>
@@ -84,7 +90,13 @@ export interface DerivedCycle {
 export function deriveCycleFromStore(
   state: Pick<
     DayRailState,
-    'templates' | 'rails' | 'tasks' | 'lines' | 'calendarRules'
+    | 'templates'
+    | 'rails'
+    | 'tasks'
+    | 'lines'
+    | 'calendarRules'
+    | 'calendarRuleRevisions'
+    | 'calendarRuleTombstones'
   >,
   startDate: Date,
 ): DerivedCycle {

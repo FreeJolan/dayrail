@@ -44,6 +44,8 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
   const railsMap = useStore((s) => s.rails);
   const templatesMap = useStore((s) => s.templates);
   const calendarRules = useStore((s) => s.calendarRules);
+  const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
+  const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
   const adhocsMap = useStore((s) => s.adhocEvents);
   const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
   const scheduleTaskFreeTime = useStore((s) => s.scheduleTaskFreeTime);
@@ -72,8 +74,23 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
   const [endMin, setEndMin] = useState(initialStart + initialDuration);
 
   const resolvedTemplateKey = useMemo(
-    () => pickTemplateForDate({ templates: templatesMap, calendarRules }, date),
-    [templatesMap, calendarRules, date],
+    () =>
+      pickTemplateForDate(
+        {
+          templates: templatesMap,
+          calendarRules,
+          calendarRuleRevisions,
+          calendarRuleTombstones,
+        },
+        date,
+      ),
+    [
+      templatesMap,
+      calendarRules,
+      calendarRuleRevisions,
+      calendarRuleTombstones,
+      date,
+    ],
   );
 
   const allRails = useMemo(

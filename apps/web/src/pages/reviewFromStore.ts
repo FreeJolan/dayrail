@@ -46,6 +46,8 @@ export function deriveReviewData(
     | 'tasks'
     | 'templates'
     | 'calendarRules'
+    | 'calendarRuleRevisions'
+    | 'calendarRuleTombstones'
     | 'shifts'
     | 'adhocEvents'
     | 'habitBindings'

@@ -3,7 +3,8 @@ import {
   findAffectedFutureAutoTasks,
   findAffectedFutureAutoTasksForRail,
 } from '../autoTask';
-import type { HabitBinding, Rail, Task } from '../types';
+import type { HabitBinding, Rail, RailRevision, Task } from '../types';
+import { REVISION_SENTINEL_DATE } from '../types';
 
 // §10.3 is the destructive path: it decides which auto-tasks get
 // hard-deleted when a rail / binding edit lands. Missing a case means
@@ -66,6 +67,41 @@ function mapById<T extends { id: string }>(items: T[]): Record<string, T> {
   return Object.fromEntries(items.map((i) => [i.id, i]));
 }
 
+/** Mirror what the v0.5 sentinel migration produces — see today.test
+ *  / materializer.test for the full version. autoTask uses the rail
+ *  half + tombstones; bindings here remain on the legacy `state.rails
+ *  / state.habitBindings` shape since `findAffectedFutureAutoTasks*`
+ *  reads bindings directly. */
+function withRevisions<
+  S extends { rails?: Record<string, Rail> },
+>(
+  state: S,
+): S & {
+  railRevisions: Record<string, RailRevision[]>;
+  railTombstones: Record<string, never>;
+} {
+  const railRevs: Record<string, RailRevision[]> = {};
+  for (const r of Object.values(state.rails ?? {})) {
+    railRevs[r.id] = [
+      {
+        id: `rev-rail-${r.id}-sentinel`,
+        railId: r.id,
+        effectiveFrom: REVISION_SENTINEL_DATE,
+        templateKey: r.templateKey,
+        name: r.name,
+        ...(r.subtitle != null && { subtitle: r.subtitle }),
+        startMinutes: r.startMinutes,
+        durationMinutes: r.durationMinutes,
+        color: r.color,
+        ...(r.icon != null && { icon: r.icon }),
+        showInCheckin: r.showInCheckin,
+        authoredAt: 0,
+      } satisfies RailRevision,
+    ];
+  }
+  return { ...state, railRevisions: railRevs, railTombstones: {} };
+}
+
 describe('findAffectedFutureAutoTasks', () => {
   const r = rail({ id: 'r1' });
   const rails = mapById([r]);
@@ -79,7 +115,7 @@ describe('findAffectedFutureAutoTasks', () => {
       source: 'auto-habit',
     });
     const state = { rails, tasks: mapById([t]) };
-    const got = findAffectedFutureAutoTasks(state, { habitId: 'h1' }, NOW);
+    const got = findAffectedFutureAutoTasks(withRevisions(state), { habitId: 'h1' }, NOW);
     expect(got).toHaveLength(1);
     expect(got[0]?.id).toBe(t.id);
   });
@@ -101,7 +137,7 @@ describe('findAffectedFutureAutoTasks', () => {
       source: 'auto-habit',
     });
     const state = { rails, tasks: mapById([past, today]) };
-    const got = findAffectedFutureAutoTasks(state, { habitId: 'h1' }, NOW);
+    const got = findAffectedFutureAutoTasks(withRevisions(state), { habitId: 'h1' }, NOW);
     expect(got).toHaveLength(0);
   });
 
@@ -131,7 +167,7 @@ describe('findAffectedFutureAutoTasks', () => {
       status: 'archived',
     });
     const state = { rails, tasks: mapById([done, deferred, archived]) };
-    const got = findAffectedFutureAutoTasks(state, { habitId: 'h1' }, NOW);
+    const got = findAffectedFutureAutoTasks(withRevisions(state), { habitId: 'h1' }, NOW);
     expect(got).toEqual([]);
   });
 
@@ -151,7 +187,7 @@ describe('findAffectedFutureAutoTasks', () => {
       source: 'auto-habit',
     });
     const state = { rails, tasks: mapById([handwritten, auto]) };
-    const got = findAffectedFutureAutoTasks(state, { habitId: 'h1' }, NOW);
+    const got = findAffectedFutureAutoTasks(withRevisions(state), { habitId: 'h1' }, NOW);
     expect(got.map((t) => t.id)).toEqual(['task-auto-h1-2026-04-26']);
   });
 
@@ -171,7 +207,7 @@ describe('findAffectedFutureAutoTasks', () => {
       source: 'auto-habit',
     });
     const state = { rails, tasks: mapById([otherHabit, ownHabit]) };
-    const got = findAffectedFutureAutoTasks(state, { habitId: 'h1' }, NOW);
+    const got = findAffectedFutureAutoTasks(withRevisions(state), { habitId: 'h1' }, NOW);
     expect(got.map((t) => t.id)).toEqual(['task-auto-h1-2026-04-25']);
   });
 
@@ -197,7 +233,7 @@ describe('findAffectedFutureAutoTasks', () => {
       tasks: mapById([onA, onB]),
     };
     const got = findAffectedFutureAutoTasks(
-      state,
+      withRevisions(state),
       { habitId: 'h1', railId: 'rA' },
       NOW,
     );
@@ -221,7 +257,7 @@ describe('findAffectedFutureAutoTasks', () => {
       source: 'auto-habit',
     });
     const state = { rails, tasks: mapById([noSlot, danglingRail]) };
-    const got = findAffectedFutureAutoTasks(state, { habitId: 'h1' }, NOW);
+    const got = findAffectedFutureAutoTasks(withRevisions(state), { habitId: 'h1' }, NOW);
     expect(got).toEqual([]);
   });
 
@@ -235,7 +271,7 @@ describe('findAffectedFutureAutoTasks', () => {
       status: 'deleted',
     });
     const state = { rails, tasks: mapById([deleted]) };
-    const got = findAffectedFutureAutoTasks(state, { habitId: 'h1' }, NOW);
+    const got = findAffectedFutureAutoTasks(withRevisions(state), { habitId: 'h1' }, NOW);
     expect(got).toEqual([]);
   });
 });
@@ -277,7 +313,7 @@ describe('findAffectedFutureAutoTasksForRail', () => {
       tasks: mapById([h1OnR1, h2OnR1, h3OnR2]),
       habitBindings,
     };
-    const got = findAffectedFutureAutoTasksForRail(state, 'r1', NOW);
+    const got = findAffectedFutureAutoTasksForRail(withRevisions(state), 'r1', NOW);
     expect(got.map((t) => t.id).sort()).toEqual(['h1OnR1', 'h2OnR1']);
   });
 
@@ -294,7 +330,7 @@ describe('findAffectedFutureAutoTasksForRail', () => {
       tasks: mapById([t]),
       habitBindings: {},
     };
-    const got = findAffectedFutureAutoTasksForRail(state, 'r1', NOW);
+    const got = findAffectedFutureAutoTasksForRail(withRevisions(state), 'r1', NOW);
     expect(got).toEqual([]);
   });
 
@@ -318,7 +354,7 @@ describe('findAffectedFutureAutoTasksForRail', () => {
       tasks: mapById([t]),
       habitBindings,
     };
-    const got = findAffectedFutureAutoTasksForRail(state, 'r1', NOW);
+    const got = findAffectedFutureAutoTasksForRail(withRevisions(state), 'r1', NOW);
     // The Set-based habitId collapse dedupes h1, so the task is
     // returned exactly once even though two bindings point here.
     expect(got).toHaveLength(1);

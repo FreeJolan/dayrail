@@ -13,6 +13,7 @@
 // and join Rail for the planned window.
 
 import { type DayRailState, resolveTemplateForDate } from './store';
+import { railAtDate, railFromRevision, railsActiveOn } from './revisions';
 import type { Rail, Task } from './types';
 
 export function toIsoDate(d: Date = new Date()): string {
@@ -32,10 +33,16 @@ export function toIsoDateTime(date: string, minutesSinceMidnight: number): strin
 // Active-template resolution.
 // ------------------------------------------------------------------
 
-/** Pick the template whose rails should drive today. Walks CalendarRules
- *  first, then falls back to the first built-in template. */
+/** Pick the template whose rails should drive today. Walks CalendarRule
+ *  revisions first, then falls back to the first built-in template. */
 export function selectActiveTemplateKey(
-  state: Pick<DayRailState, 'templates' | 'calendarRules'>,
+  state: Pick<
+    DayRailState,
+    | 'templates'
+    | 'calendarRules'
+    | 'calendarRuleRevisions'
+    | 'calendarRuleTombstones'
+  >,
   date: string = toIsoDate(),
 ): string | null {
   const fallback = (): string | null => {
@@ -88,9 +95,13 @@ export type RailBoundTaskRow = Required<CarriedTaskRow>;
  *  whose planned window ended within the last 24 h and whose
  *  `Task.status = 'pending'`. Rails with `showInCheckin=false` are
  *  excluded. Bare rails (no Task on `(date, railId)`) do NOT surface —
- *  the v0.4 rule is "needs marking" is a Task-level concept (§5.6). */
+ *  the v0.4 rule is "needs marking" is a Task-level concept (§5.6).
+ *
+ *  Phase 2: rail data resolves via `railAtDate(slot.date)` so an
+ *  overdue task on Tuesday shows the time/name the rail had on
+ *  Tuesday, not whatever the user set later. */
 export function selectCheckinQueue(
-  state: Pick<DayRailState, 'tasks' | 'rails'>,
+  state: Pick<DayRailState, 'tasks' | 'railRevisions' | 'railTombstones'>,
   now: Date = new Date(),
 ): RailBoundTaskRow[] {
   const nowMs = now.getTime();
@@ -99,9 +110,10 @@ export function selectCheckinQueue(
   for (const task of Object.values(state.tasks)) {
     if (task.status !== 'pending') continue;
     if (!task.slot) continue;
-    const rail = state.rails[task.slot.railId];
-    if (!rail) continue;
-    if (!rail.showInCheckin) continue;
+    const rev = railAtDate(state, task.slot.railId, task.slot.date);
+    if (!rev) continue;
+    if (!rev.showInCheckin) continue;
+    const rail = railFromRevision(rev);
     const { start, end } = plannedWindow(rail, task.slot.date);
     const endMs = Date.parse(end);
     if (Number.isNaN(endMs)) continue;
@@ -118,9 +130,13 @@ export function selectCheckinQueue(
  *  2. `pending` Tasks with a slot whose planned window ended (any
  *     age — the check-in strip shows the last 24 h subset).
  *  Future-pending slot tasks, terminal `done / archived / deleted`,
- *  and pending slot-less tasks are excluded. */
+ *  and pending slot-less tasks are excluded.
+ *
+ *  Phase 2: rail data resolves via `railAtDate(slot.date)` so the row
+ *  shows the rail's appearance on the slot's date, not the current
+ *  one. */
 export function selectPendingQueue(
-  state: Pick<DayRailState, 'tasks' | 'rails'>,
+  state: Pick<DayRailState, 'tasks' | 'railRevisions' | 'railTombstones'>,
   now: Date = new Date(),
 ): CarriedTaskRow[] {
   const nowMs = now.getTime();
@@ -128,8 +144,9 @@ export function selectPendingQueue(
   for (const task of Object.values(state.tasks)) {
     if (task.status !== 'pending' && task.status !== 'deferred') continue;
     if (task.slot) {
-      const rail = state.rails[task.slot.railId];
-      if (!rail) continue;
+      const rev = railAtDate(state, task.slot.railId, task.slot.date);
+      if (!rev) continue;
+      const rail = railFromRevision(rev);
       const { start, end } = plannedWindow(rail, task.slot.date);
       if (task.status === 'pending') {
         const endMs = Date.parse(end);
@@ -173,7 +190,17 @@ export interface TimelineRow {
  *        be visible today even though the rail wouldn't fire normally.
  *  Cell state is derived by the caller from `row.task?.status`. */
 export function selectTodayTimeline(
-  state: Pick<DayRailState, 'rails' | 'tasks' | 'templates' | 'calendarRules'>,
+  state: Pick<
+    DayRailState,
+    | 'rails'
+    | 'tasks'
+    | 'templates'
+    | 'calendarRules'
+    | 'calendarRuleRevisions'
+    | 'calendarRuleTombstones'
+    | 'railRevisions'
+    | 'railTombstones'
+  >,
   date: string,
 ): TimelineRow[] {
   const activeTemplate = selectActiveTemplateKey(state, date);
@@ -194,28 +221,35 @@ export function selectTodayTimeline(
     taskRailIds.add(t.slot.railId);
   }
 
-  // Build the set of rail ids to render:
-  const railIds = new Set<string>();
-  for (const rail of Object.values(state.rails)) {
-    if (activeTemplate && rail.templateKey === activeTemplate) {
-      railIds.add(rail.id); // (a)
+  // §10.5 Phase 2 · resolve rails via `railsActiveOn(date)` so the
+  // timeline reflects each rail's appearance on `date` rather than
+  // its current-state mirror. (a) takes the rails whose date-effective
+  // templateKey matches today's template; (b) folds in any rail
+  // referenced by a task slot, even if its template differs (carries
+  // the user's explicit park-on-this-rail intent).
+  const railsByDate = new Map<string, Rail>();
+  for (const { railId, revision } of railsActiveOn(state, date)) {
+    if (activeTemplate && revision.templateKey === activeTemplate) {
+      railsByDate.set(railId, railFromRevision(revision));
     }
   }
-  for (const id of taskRailIds) railIds.add(id); // (b)
+  for (const railId of taskRailIds) {
+    if (railsByDate.has(railId)) continue;
+    const rev = railAtDate(state, railId, date);
+    if (rev) railsByDate.set(railId, railFromRevision(rev));
+  }
 
   const rows: TimelineRow[] = [];
-  for (const railId of railIds) {
-    const rail = state.rails[railId];
-    if (!rail) continue;
+  for (const [railId, rail] of railsByDate) {
     const { start, end } = plannedWindow(rail, date);
     // Per-slot sort: pending first, then in-progress/done/deferred,
     // archived last. Within a group, preserve insertion order.
-    const bucket = tasksByKey.get(`${rail.id}|${date}`) ?? [];
+    const bucket = tasksByKey.get(`${railId}|${date}`) ?? [];
     const tasks = [...bucket].sort(
       (a, b) => taskStatusRank(a) - taskStatusRank(b),
     );
     rows.push({
-      key: `${rail.id}|${date}`,
+      key: `${railId}|${date}`,
       rail,
       date,
       plannedStart: start,

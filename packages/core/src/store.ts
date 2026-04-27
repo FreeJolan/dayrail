@@ -66,6 +66,7 @@ import {
 import { toIsoDate } from './today';
 import { detectReschedule } from './reschedule';
 import { detectUnschedule } from './unschedule';
+import { calendarRuleRevisionsActiveOn } from './revisions';
 
 // ------------------------------------------------------------------
 // Store shape.
@@ -755,6 +756,105 @@ function makeSentinelHabitBindingRevision(
   };
 }
 
+// ------------------------------------------------------------------
+// Phase 2 · runtime revision builders. Used by every legacy writer
+// that mutates a versioned entity. The id schema
+// `rev-{kind}-{entityId}-{effectiveFrom}` makes same-day re-edits
+// replace in place (one revision per (entity, effectiveFrom)) — the
+// reducer's upsertRevisionInArray handles the dedup by id.
+//
+// Sentinel revisions from the migration use `-sentinel` suffix instead
+// of an effectiveFrom, so they coexist with runtime revisions for the
+// same entity without collision.
+// ------------------------------------------------------------------
+
+function railRevisionId(railId: string, effectiveFrom: string): string {
+  return `rev-rail-${railId}-${effectiveFrom}`;
+}
+function templateRevisionId(key: TemplateKey, effectiveFrom: string): string {
+  return `rev-template-${key}-${effectiveFrom}`;
+}
+function calendarRuleRevisionId(ruleId: string, effectiveFrom: string): string {
+  return `rev-calrule-${ruleId}-${effectiveFrom}`;
+}
+function habitBindingRevisionId(
+  bindingId: string,
+  effectiveFrom: string,
+): string {
+  return `rev-binding-${bindingId}-${effectiveFrom}`;
+}
+
+function buildRailRevision(
+  rail: Rail,
+  effectiveFrom: string,
+  sessionId?: string,
+): RailRevision {
+  return {
+    id: railRevisionId(rail.id, effectiveFrom),
+    railId: rail.id,
+    effectiveFrom,
+    templateKey: rail.templateKey,
+    name: rail.name,
+    ...(rail.subtitle != null && { subtitle: rail.subtitle }),
+    startMinutes: rail.startMinutes,
+    durationMinutes: rail.durationMinutes,
+    color: rail.color,
+    ...(rail.icon != null && { icon: rail.icon }),
+    showInCheckin: rail.showInCheckin,
+    authoredAt: Date.now(),
+    ...(sessionId && { sessionId }),
+  };
+}
+
+function buildTemplateRevision(
+  tpl: Template,
+  effectiveFrom: string,
+  sessionId?: string,
+): TemplateRevision {
+  return {
+    id: templateRevisionId(tpl.key, effectiveFrom),
+    templateKey: tpl.key,
+    effectiveFrom,
+    name: tpl.name,
+    ...(tpl.color != null && { color: tpl.color }),
+    authoredAt: Date.now(),
+    ...(sessionId && { sessionId }),
+  };
+}
+
+function buildCalendarRuleRevision(
+  rule: CalendarRule,
+  effectiveFrom: string,
+  sessionId?: string,
+): CalendarRuleRevision {
+  return {
+    id: calendarRuleRevisionId(rule.id, effectiveFrom),
+    ruleId: rule.id,
+    effectiveFrom,
+    priority: rule.priority,
+    value: rule.value,
+    authoredAt: Date.now(),
+    ...(sessionId && { sessionId }),
+  };
+}
+
+function buildHabitBindingRevision(
+  binding: HabitBinding,
+  effectiveFrom: string,
+  sessionId?: string,
+): HabitBindingRevision {
+  return {
+    id: habitBindingRevisionId(binding.id, effectiveFrom),
+    bindingId: binding.id,
+    effectiveFrom,
+    habitId: binding.habitId,
+    railId: binding.railId,
+    ...(binding.weekdays != null && { weekdays: [...binding.weekdays] }),
+    authoredAt: Date.now(),
+    ...(sessionId && { sessionId }),
+  };
+}
+
 type RevisionAppendInput = {
   aggregateId: string;
   payload: Record<string, unknown>;
@@ -1017,21 +1117,44 @@ export function calendarRuleTemplate(
 }
 
 /** Resolve the active Template for `date` by walking every
- *  CalendarRule in priority-desc order; returns the first match.
- *  Falls back to the caller-provided heuristic only if no rule
- *  matches. Ties in `priority` are broken by `createdAt` desc
- *  (newer rule wins) — the typical user mental model. */
+ *  CalendarRule revision active on that date in priority-desc order;
+ *  returns the first match. Falls back to the caller-provided
+ *  heuristic only if no revision matches. Ties in `priority` are
+ *  broken by the shell's `createdAt` desc (newer rule wins) — the
+ *  typical user mental model.
+ *
+ *  Phase 2: this now reads from the §10.5 revision tables, not the
+ *  legacy `calendarRules` mirror. Past dates land on prior revisions
+ *  via `calendarRuleAtDate` / `calendarRuleRevisionsActiveOn`. The
+ *  legacy mirror is still consulted to find the rule's `kind` (which
+ *  lives on the identity shell) and `createdAt` (used as a tie-break);
+ *  edits never change those, so reading them off the shell is correct. */
 export function resolveTemplateForDate(
-  state: Pick<DayRailState, 'calendarRules'>,
+  state: Pick<
+    DayRailState,
+    'calendarRules' | 'calendarRuleRevisions' | 'calendarRuleTombstones'
+  >,
   date: string,
   heuristic: (date: string) => TemplateKey | null,
 ): TemplateKey | null {
-  const rules = Object.values(state.calendarRules);
-  if (rules.length > 0) {
-    const sorted = [...rules].sort(
-      (a, b) => b.priority - a.priority || b.createdAt - a.createdAt,
+  const active = calendarRuleRevisionsActiveOn(state, date);
+  if (active.length > 0) {
+    type Slot = { rule: CalendarRule; rev: CalendarRuleRevision };
+    const slots: Slot[] = [];
+    for (const { ruleId, revision } of active) {
+      const shell = state.calendarRules[ruleId];
+      if (!shell) continue;
+      slots.push({
+        rule: { ...shell, priority: revision.priority, value: revision.value },
+        rev: revision,
+      });
+    }
+    const sorted = slots.sort(
+      (a, b) =>
+        b.rev.priority - a.rev.priority ||
+        b.rule.createdAt - a.rule.createdAt,
     );
-    for (const rule of sorted) {
+    for (const { rule } of sorted) {
       if (!calendarRuleApplies(rule, date)) continue;
       const tpl = calendarRuleTemplate(rule, date);
       if (tpl) return tpl;
@@ -1058,6 +1181,149 @@ export const useStore = create<DayRailStore>()(
           /* eventCount */ 0,
         );
       }
+    };
+
+    // ----------------------------------------------------------------
+    // §10.5 Phase 2 · revision mirror helpers. Every legacy writer that
+    // mutates a versioned entity calls one of these immediately after
+    // applying its legacy event. The mirror writes the matching
+    // `*-revision.upserted` (effectiveFrom = today) so the revision
+    // history stays in lock-step with the current-state mirror.
+    //
+    // Same-day re-edits collapse into one revision because the id is
+    // deterministic (`rev-{kind}-{entityId}-{effectiveFrom}`); the
+    // reducer's upsertRevisionInArray dedups by id.
+    //
+    // Tombstones use the same path with `effectiveFrom = today`; past
+    // dates still resolve to the prior revision via `*AtDate`.
+    // ----------------------------------------------------------------
+
+    const emitRailRevision = async (
+      rail: Rail,
+      sessionId?: string,
+    ): Promise<void> => {
+      const rev = buildRailRevision(rail, toIsoDate(), sessionId);
+      const ev = await appendEvent({
+        aggregateId: `rail:${rail.id}`,
+        type: 'rail-revision.upserted',
+        payload: rev as unknown as Record<string, unknown>,
+        ...(sessionId && { sessionId }),
+      });
+      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+    };
+
+    const emitTemplateRevision = async (
+      tpl: Template,
+      sessionId?: string,
+    ): Promise<void> => {
+      const rev = buildTemplateRevision(tpl, toIsoDate(), sessionId);
+      const ev = await appendEvent({
+        aggregateId: `template:${tpl.key}`,
+        type: 'template-revision.upserted',
+        payload: rev as unknown as Record<string, unknown>,
+        ...(sessionId && { sessionId }),
+      });
+      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+    };
+
+    const emitCalendarRuleRevision = async (
+      rule: CalendarRule,
+      sessionId?: string,
+    ): Promise<void> => {
+      const rev = buildCalendarRuleRevision(rule, toIsoDate(), sessionId);
+      const ev = await appendEvent({
+        aggregateId: `calendar-rule:${rule.id}`,
+        type: 'calendar-rule-revision.upserted',
+        payload: rev as unknown as Record<string, unknown>,
+        ...(sessionId && { sessionId }),
+      });
+      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+    };
+
+    const emitHabitBindingRevision = async (
+      binding: HabitBinding,
+      sessionId?: string,
+    ): Promise<void> => {
+      const rev = buildHabitBindingRevision(binding, toIsoDate(), sessionId);
+      const ev = await appendEvent({
+        aggregateId: `habit-binding:${binding.id}`,
+        type: 'habit-binding-revision.upserted',
+        payload: rev as unknown as Record<string, unknown>,
+        ...(sessionId && { sessionId }),
+      });
+      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+    };
+
+    const emitRailTombstone = async (
+      railId: string,
+      sessionId?: string,
+    ): Promise<void> => {
+      const ev = await appendEvent({
+        aggregateId: `rail:${railId}`,
+        type: 'rail.tombstoned',
+        payload: {
+          railId,
+          effectiveFrom: toIsoDate(),
+          at: Date.now(),
+          ...(sessionId && { sessionId }),
+        },
+        ...(sessionId && { sessionId }),
+      });
+      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+    };
+
+    const emitTemplateTombstone = async (
+      key: TemplateKey,
+      sessionId?: string,
+    ): Promise<void> => {
+      const ev = await appendEvent({
+        aggregateId: `template:${key}`,
+        type: 'template.tombstoned',
+        payload: {
+          templateKey: key,
+          effectiveFrom: toIsoDate(),
+          at: Date.now(),
+          ...(sessionId && { sessionId }),
+        },
+        ...(sessionId && { sessionId }),
+      });
+      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+    };
+
+    const emitCalendarRuleTombstone = async (
+      ruleId: string,
+      sessionId?: string,
+    ): Promise<void> => {
+      const ev = await appendEvent({
+        aggregateId: `calendar-rule:${ruleId}`,
+        type: 'calendar-rule.tombstoned',
+        payload: {
+          ruleId,
+          effectiveFrom: toIsoDate(),
+          at: Date.now(),
+          ...(sessionId && { sessionId }),
+        },
+        ...(sessionId && { sessionId }),
+      });
+      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+    };
+
+    const emitHabitBindingTombstone = async (
+      bindingId: string,
+      sessionId?: string,
+    ): Promise<void> => {
+      const ev = await appendEvent({
+        aggregateId: `habit-binding:${bindingId}`,
+        type: 'habit-binding.tombstoned',
+        payload: {
+          bindingId,
+          effectiveFrom: toIsoDate(),
+          at: Date.now(),
+          ...(sessionId && { sessionId }),
+        },
+        ...(sessionId && { sessionId }),
+      });
+      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
     };
 
     // §5.5.6 · internal helper · persist a newly-recorded shift and
@@ -1366,6 +1632,20 @@ export const useStore = create<DayRailStore>()(
         set((draft) => {
           applyEventInPlace(draft, event.type, event.payload);
         });
+        // §10.5 mirror — capture the post-event template state.
+        const next = get().templates[tpl.key];
+        if (next) await emitTemplateRevision(next, sessionId);
+        // Re-create on top of a tombstone clears the tombstone so future
+        // dates see the resurrected template.
+        if (get().templateTombstones[tpl.key]) {
+          const ev = await appendEvent({
+            aggregateId: `template:${tpl.key}`,
+            type: 'template.tombstone-cleared',
+            payload: { templateKey: tpl.key },
+            ...(sessionId && { sessionId }),
+          });
+          set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        }
         afterMutation();
       },
 
@@ -1388,6 +1668,7 @@ export const useStore = create<DayRailStore>()(
           set((draft) => {
             applyEventInPlace(draft, railEvent.type, railEvent.payload);
           });
+          await emitRailTombstone(railId, sessionId);
         }
         const event = await appendEvent({
           aggregateId: `template:${key}`,
@@ -1399,6 +1680,7 @@ export const useStore = create<DayRailStore>()(
         set((draft) => {
           applyEventInPlace(draft, event.type, event.payload);
         });
+        await emitTemplateTombstone(key, sessionId);
         afterMutation();
       },
 
@@ -1413,6 +1695,17 @@ export const useStore = create<DayRailStore>()(
         set((draft) => {
           applyEventInPlace(draft, event.type, event.payload);
         });
+        const next = get().rails[rail.id];
+        if (next) await emitRailRevision(next, sessionId);
+        if (get().railTombstones[rail.id]) {
+          const ev = await appendEvent({
+            aggregateId: `rail:${rail.id}`,
+            type: 'rail.tombstone-cleared',
+            payload: { railId: rail.id },
+            ...(sessionId && { sessionId }),
+          });
+          set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        }
         afterMutation();
       },
 
@@ -1427,6 +1720,8 @@ export const useStore = create<DayRailStore>()(
         set((draft) => {
           applyEventInPlace(draft, event.type, event.payload);
         });
+        const next = get().rails[id];
+        if (next) await emitRailRevision(next, sessionId);
         afterMutation();
       },
 
@@ -1441,6 +1736,7 @@ export const useStore = create<DayRailStore>()(
         set((draft) => {
           applyEventInPlace(draft, event.type, event.payload);
         });
+        await emitRailTombstone(id, sessionId);
         afterMutation();
       },
 
@@ -1815,6 +2111,8 @@ export const useStore = create<DayRailStore>()(
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
         if (sessionId) await touchSession(sessionId);
+        const next = get().calendarRules[id];
+        if (next) await emitCalendarRuleRevision(next, sessionId);
         afterMutation();
       },
 
@@ -1829,6 +2127,7 @@ export const useStore = create<DayRailStore>()(
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
         if (sessionId) await touchSession(sessionId);
+        await emitCalendarRuleTombstone(id, sessionId);
         afterMutation();
       },
 
@@ -1849,6 +2148,8 @@ export const useStore = create<DayRailStore>()(
           payload: payload as unknown as Record<string, unknown>,
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        const next = get().calendarRules[id];
+        if (next) await emitCalendarRuleRevision(next);
         afterMutation();
       },
 
@@ -1872,6 +2173,8 @@ export const useStore = create<DayRailStore>()(
           payload: payload as unknown as Record<string, unknown>,
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        const next = get().calendarRules[ruleId];
+        if (next) await emitCalendarRuleRevision(next);
         afterMutation();
         return ruleId;
       },
@@ -1892,6 +2195,8 @@ export const useStore = create<DayRailStore>()(
           payload: payload as unknown as Record<string, unknown>,
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        const next = get().calendarRules[ruleId];
+        if (next) await emitCalendarRuleRevision(next);
         afterMutation();
         return ruleId;
       },
@@ -1904,6 +2209,7 @@ export const useStore = create<DayRailStore>()(
           payload: { id },
         });
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        await emitCalendarRuleTombstone(id);
         afterMutation();
       },
 
@@ -1992,6 +2298,19 @@ export const useStore = create<DayRailStore>()(
         });
         if (sessionId) await touchSession(sessionId);
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        const next = get().habitBindings[id];
+        if (next) await emitHabitBindingRevision(next, sessionId);
+        if (get().habitBindingTombstones[id]) {
+          const cleared = await appendEvent({
+            aggregateId: `habit-binding:${id}`,
+            type: 'habit-binding.tombstone-cleared',
+            payload: { bindingId: id },
+            ...(sessionId && { sessionId }),
+          });
+          set((draft) =>
+            applyEventInPlace(draft, cleared.type, cleared.payload),
+          );
+        }
         afterMutation();
         return id;
       },
@@ -2006,6 +2325,7 @@ export const useStore = create<DayRailStore>()(
         });
         if (sessionId) await touchSession(sessionId);
         set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+        await emitHabitBindingTombstone(id, sessionId);
         afterMutation();
       },
 

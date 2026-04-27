@@ -107,6 +107,8 @@ export function Review() {
   const tasks = useStore((s) => s.tasks);
   const templates = useStore((s) => s.templates);
   const calendarRules = useStore((s) => s.calendarRules);
+  const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
+  const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
   const shifts = useStore((s) => s.shifts);
   const adhocEvents = useStore((s) => s.adhocEvents);
   const lines = useStore((s) => s.lines);
@@ -127,11 +129,23 @@ export function Review() {
       tasks,
       templates,
       calendarRules,
+      calendarRuleRevisions,
+      calendarRuleTombstones,
       shifts,
       adhocEvents,
       habitBindings,
     }),
-    [rails, tasks, templates, calendarRules, shifts, adhocEvents, habitBindings],
+    [
+      rails,
+      tasks,
+      templates,
+      calendarRules,
+      calendarRuleRevisions,
+      calendarRuleTombstones,
+      shifts,
+      adhocEvents,
+      habitBindings,
+    ],
   );
 
   const data = useMemo<ReviewScopeData>(

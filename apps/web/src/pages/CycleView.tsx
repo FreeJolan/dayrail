@@ -58,6 +58,8 @@ export function CycleView() {
   const tasks = useStore((s) => s.tasks);
   const lines = useStore((s) => s.lines);
   const calendarRules = useStore((s) => s.calendarRules);
+  const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
+  const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
   const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
   const unscheduleTask = useStore((s) => s.unscheduleTask);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
@@ -107,10 +109,27 @@ export function CycleView() {
   const { cycle, railsByTemplate } = useMemo(
     () =>
       deriveCycleFromStore(
-        { templates, rails, tasks, lines, calendarRules },
+        {
+          templates,
+          rails,
+          tasks,
+          lines,
+          calendarRules,
+          calendarRuleRevisions,
+          calendarRuleTombstones,
+        },
         weekStart,
       ),
-    [templates, rails, tasks, lines, calendarRules, weekStart],
+    [
+      templates,
+      rails,
+      tasks,
+      lines,
+      calendarRules,
+      calendarRuleRevisions,
+      calendarRuleTombstones,
+      weekStart,
+    ],
   );
 
   const todayISO = toIsoDate(new Date());
@@ -168,7 +187,15 @@ export function CycleView() {
       // Resolve the heuristic pick (no rules) so orphan detection
       // runs against the template this day will fall back to.
       const target =
-        pickTemplateForDate({ templates, calendarRules: {} }, date) ?? '';
+        pickTemplateForDate(
+          {
+            templates,
+            calendarRules: {},
+            calendarRuleRevisions: {},
+            calendarRuleTombstones: {},
+          },
+          date,
+        ) ?? '';
       void applyTemplateSwitch(date, target, () =>
         clearCycleDayOverride(date, sessionId ?? undefined),
       );
