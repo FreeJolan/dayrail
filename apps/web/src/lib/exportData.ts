@@ -12,7 +12,12 @@ export interface ExportBundle {
   gitSha: string;
   exportedAt: string; // ISO
   /** Schema version of the state payload itself. Bump when the shape
-   *  of any map changes so old bundles can be rejected / migrated. */
+   *  of any map changes so old bundles can be rejected / migrated.
+   *  v1 → v1 with v0.5 additive fields: the §10.5 revision tables and
+   *  identity-shell tombstones are present when produced by v0.5+;
+   *  absent in older bundles. Importer treats them as optional so v0.4
+   *  bundles still round-trip cleanly (the v0.5 sentinel migration
+   *  will backfill revisions on first boot post-import). */
   schemaVersion: 1;
   state: {
     templates: unknown;
@@ -26,6 +31,16 @@ export interface ExportBundle {
     cycles: unknown;
     habitPhases: unknown;
     habitBindings: unknown;
+    // §10.5 revision tables (v0.5+; optional on read for back-compat).
+    railRevisions?: unknown;
+    templateRevisions?: unknown;
+    calendarRuleRevisions?: unknown;
+    habitBindingRevisions?: unknown;
+    railTombstones?: unknown;
+    templateTombstones?: unknown;
+    calendarRuleTombstones?: unknown;
+    habitBindingTombstones?: unknown;
+    v05MigrationApplied?: unknown;
   };
 }
 
@@ -49,6 +64,20 @@ export function exportLocalData(): void {
       cycles: s.cycles,
       habitPhases: s.habitPhases,
       habitBindings: s.habitBindings,
+      // §10.5 — preserve every future-dated revision + tombstone so
+      // an export/import round-trip doesn't silently lose them. The
+      // sentinel migration would re-build the today-and-back baseline
+      // from the legacy mirrors, but it can't recover any forward
+      // cutovers the user already authored.
+      railRevisions: s.railRevisions,
+      templateRevisions: s.templateRevisions,
+      calendarRuleRevisions: s.calendarRuleRevisions,
+      habitBindingRevisions: s.habitBindingRevisions,
+      railTombstones: s.railTombstones,
+      templateTombstones: s.templateTombstones,
+      calendarRuleTombstones: s.calendarRuleTombstones,
+      habitBindingTombstones: s.habitBindingTombstones,
+      v05MigrationApplied: s.v05MigrationApplied,
     },
   };
   const json = JSON.stringify(bundle, null, 2);
