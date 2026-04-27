@@ -1515,6 +1515,11 @@ for binding in habitBindings:
 
 两类都走同一条规则处理。
 
+> **v0.5 起这里说的"改"指的是写入一条新 revision**（§10.5）。Rail / HabitBinding 不再原地 mutate；
+> 写路径产生 `rail-revision.upserted` / `habit-binding-revision.upserted`（旧的 `rail.updated`
+> 仅在 v0.4 数据上过渡期保留）。purge 窗口的下界改为 `max(today, effectiveFrom)` ——
+> 早于新 revision 生效日的"过去 + 今天部分"读旧 revision，自然不被波及。
+
 **0. 保存前 confirm**（仅当改动会影响某个 habit 的未来 auto-task 时）：
 
 ```
@@ -1554,42 +1559,39 @@ for binding in habitBindings:
 
 type TemplateKey = string; // MVP 内置 'workday' | 'restday'，可扩展
 
+// v0.5 起 Rail / Template / CalendarRule / HabitBinding 拆成"身份 + 一串 effective-from
+// revision"。下方的 Rail / Template / CalendarRule / HabitBinding 类型只保留**身份字段**
+// （id、createdAt、tombstone），所有可变字段挪到对应的 *Revision 类型上。完整 revision schema
+// + 读写 / 物化 / 迁移规则见 §10.5。
+
 type Rail = {
   id: string;
-  name: string;
-  startMinutes: number; // 0-1439
-  durationMinutes: number;
-  color: string;        // Radix scale step 9 的 token 名（见 §9.6）
-  icon?: string;
-  showInCheckin: boolean;      // true = 打开 App 时浮出 check-in 条（§5.6）；false = 静默走完，不进 check-in 条、也不进Pending 队列
-  templateKey: TemplateKey; // 所属模板
-  // v0.4: `defaultLineId` 字段移除。原本承担"habit 绑定 + Project 默认 Line"两职责,前者由 HabitBinding 承担,后者在没有真 Line picker 的前提下从未工作,一并删干净。
-  // v0.4 二次清理: `recurrence` 字段也移除。Template + CalendarRule
-  // 决定 rail 属于哪些日期,HabitBinding.weekdays 做 per-habit 窄化。
-  // rail 级 weekday 过滤是第三层冗余过滤,只制造 trap(weekdays 默认
-  // 扔进 Restday 模板 → 交集为空 → 永不生成 task)。如需某条 rail
-  // 只在部分天生效,新建一个专用模板 + binding.weekdays 即可。
+  createdAt: number;
+  // v0.5: 删除 = tombstone（不直接从 store 移除），过去仍能读到末次 revision。
+  tombstone?: { effectiveFrom: string; at: number; sessionId?: string };
 };
 
 // v0.4 新增: habit 与 rail 的关系实体(见 §5.5.0 / §10.2)
+// v0.5: 改名为身份壳 —— `habitId` / `railId` 也下沉到 revision，因为用户可能想让
+// "同一个 binding"在某个时间点改换绑定的 rail。完整字段在 HabitBindingRevision（§10.5）。
 type HabitBinding = {
   id: string;
-  habitId: string;   // 指向 Line.id (kind='habit')
-  railId: string;    // 指向 Rail.id
-  // 可选的 weekdays 过滤器(0=日 ... 6=六)。与 rail 所在模板的生效
-  // 日期求交集: 当天物化一条 auto-task iff 模板当天生效 AND
-  // (weekdays 未设 OR 当天 dayOfWeek ∈ weekdays)。
-  weekdays?: number[];
-  createdAt: number; // epoch ms
+  habitId: string;   // 指向 Line.id (kind='habit') —— v0.5 起视为冗余索引（与 latest revision 同步），
+                     // 真值以 latest HabitBindingRevision.habitId 为准。
+  createdAt: number;
+  tombstone?: { effectiveFrom: string; at: number; sessionId?: string };
 };
 
+// v0.5: Template 拆为身份壳 + TemplateRevision（§10.5）。`key` / `isDefault` 留在身份壳，
+// 因为 key 是稳定标识、isDefault 决定是否可删（语义不变）；name / color 是用户可改的展示属性，
+// 挪到 revision。
 type Template = {
   key: TemplateKey;
-  name: string;
   isDefault: boolean;
-  color?: string;   // Radix scale token（与 Rail 共用色板，§9.6）。
-                    // 用于 Cycle View 列头 tint、Template Editor tab 色条、Calendar 日期格底色、模板切换动画。
-                    // 内置：`workday` 默认 'slate'；`restday` 默认 'sage'。
+  createdAt: number;
+  // 内置模板（workday / restday）的 createdAt 设为 sentinel，用户自定义模板取实际创建时间。
+  // 内置模板不允许 tombstone（§5.4 已约定"内置模板禁用删除"）。
+  tombstone?: { effectiveFrom: string; at: number; sessionId?: string };
 };
 
 type Cycle = {
@@ -1620,7 +1622,18 @@ type Track = {
   templateKey?: TemplateKey;
 };
 
+// v0.5: CalendarRule 拆为身份壳 + CalendarRuleRevision（§10.5）。`id` / `kind` 是稳定身份，
+// `value` / `priority` 挪到 revision —— 用户在抽屉里 in-place 编辑 weekday 规则的 weekdays 数组、
+// 调 cycle 规则的 mapping，不再原地覆盖，而是写一条新 revision。
 type CalendarRule = {
+  id: string;
+  kind: 'weekday' | 'cycle' | 'date-range' | 'single-date';
+  createdAt: number;
+  tombstone?: { effectiveFrom: string; at: number; sessionId?: string };
+};
+
+// v0.4 留作参考：原 CalendarRule 的"扁平形态"（v0.5 拆字段后保持兼容读路径用）
+type CalendarRuleFlatV04 = {
   id: string;
   kind: 'weekday' | 'cycle' | 'date-range' | 'single-date';
   // Typed `value` per kind (v0.3 全部生效)：
@@ -1816,6 +1829,306 @@ type SyncedSettings = {
   signalDefaults?: Record<string, unknown>;
   updatedAt: string;
 };
+```
+
+### 10.5 Effective-from revision 模型（v0.5 起）
+
+#### 动机
+
+v0.4 之前，Rail / Template / CalendarRule / HabitBinding 都是**当前态实体**。
+用户在 Template Editor 里改一条 rail 的时段、颜色、归属模板，或在日历规则
+抽屉里调一条循环规则，会立即覆盖单一一份字段值。任何读路径在求解
+"日期 D 的 day-shape"时拿到的都是当下的字段值 —— 后果是已经过去的日期
+在历史 Cycle View 中会**跟随当前配置回溯重绘**。
+
+beta 的实测反馈是这条行为违反直觉：用户调整 rail 是为了"以后这样过"，不是
+"以前其实是这样过的"。已经物化的 `Task` 因为带着冻结的 `slot` 字段不会被
+改写（参见 §10.3 / `purgeFutureAutoTasks`），但其周围的画面（rail 行的颜色 /
+时段 / 名字 / 是否存在；day chip 的 Workday/Restday 类型）仍随当前态漂移。
+
+§10.5 引入 **effective-from revision 模型**：把以上四类实体拆成"身份壳 +
+一串带生效起始日的 revision"，所有读路径按目标日期求解 active revision。
+"过去 = 冻结"由数据层保证，不依赖任何 UI 兜底。
+
+#### 适用范围
+
+| 实体 | 身份字段 | 移到 revision 的字段 |
+|---|---|---|
+| `Rail` | `id` / `createdAt` / `tombstone?` | `name` / `startMinutes` / `durationMinutes` / `color` / `icon` / `showInCheckin` / `templateKey` |
+| `Template` | `key` / `isDefault` / `createdAt` / `tombstone?` | `name` / `color` |
+| `CalendarRule` | `id` / `kind` / `createdAt` / `tombstone?` | `value`（typed per kind）/ `priority` |
+| `HabitBinding` | `id` / `createdAt` / `tombstone?` | `habitId` / `railId` / `weekdays` |
+
+**不进入版本化**（已具备别的冻结手段或语义上不需要）：
+- `Slot` —— 复合键含 `date`，本身就按日期分桶
+- `RailInstance` —— 同上，按 `date` + `railId` 分桶
+- `Task` —— `slot` 字段冻结排期决策；其余字段（title / status / note）属于工作单元
+  的可变内容，按 §10.1 走单一真源
+- `Line`（Project / Habit / Tag）—— 重命名 / 改色 默认即时生效。需要"按日 line label"
+  的回溯展示先列入 §11.2 待评，不在 §10.5 范围
+- `HabitPhase` —— 已是按 `startDate` 锚定的"自版本化"实体
+- `AdhocEvent` —— 一次性，按 `date` 已自冻结
+
+#### Revision 类型定义
+
+```ts
+type EffectiveDate = string; // 'YYYY-MM-DD'，按当地日切；不带时区。
+                             //  Sentinel `'1970-01-01'` 表示"自远古生效"，迁移时使用。
+
+type RailRevision = {
+  id: string;            // ULID
+  railId: string;        // 指向身份壳 Rail.id
+  effectiveFrom: EffectiveDate;
+  // mutable fields（与 v0.4 Rail 的可变字段一一对应）
+  name: string;
+  startMinutes: number;
+  durationMinutes: number;
+  color: string;
+  icon?: string;
+  showInCheckin: boolean;
+  templateKey: TemplateKey;
+  // 簿记
+  authoredAt: number;    // epoch ms，写入时刻
+  sessionId?: string;    // 编辑会话归属（§5.3.1）
+};
+
+type TemplateRevision = {
+  id: string;
+  templateKey: TemplateKey;
+  effectiveFrom: EffectiveDate;
+  name: string;
+  color?: string;
+  authoredAt: number;
+  sessionId?: string;
+};
+
+type CalendarRuleRevision = {
+  id: string;
+  ruleId: string;        // 指向身份壳 CalendarRule.id
+  effectiveFrom: EffectiveDate;
+  // typed per kind —— 与 §10.4 CalendarRuleFlatV04.value 同形
+  value: unknown;
+  priority: number;      // 多数情况下同 kind 内固定（single-date 100 / date-range 50 /
+                         //  cycle 30 / weekday 10），revision 仍带这个字段以兼容未来
+                         //  按日期改优先级的需求。
+  authoredAt: number;
+  sessionId?: string;
+};
+
+type HabitBindingRevision = {
+  id: string;
+  bindingId: string;     // 指向身份壳 HabitBinding.id
+  effectiveFrom: EffectiveDate;
+  habitId: string;       // 指向 Line.id（kind='habit'）
+  railId: string;        // 指向 Rail.id
+  weekdays?: number[];   // 0=日 ... 6=六；undefined = 不窄化
+  authoredAt: number;
+  sessionId?: string;
+};
+```
+
+每类 revision 在 store 里是一份 `Record<entityId, Revision[]>`（按
+`effectiveFrom asc` 维持有序），或者一份扁平表 + entityId 索引；
+具体实现细节交给 store 层。
+
+#### 读语义：`atDate`
+
+```ts
+function railAtDate(state, railId, date): RailRevision | undefined {
+  const rail = state.rails[railId];
+  if (!rail) return undefined;
+  if (rail.tombstone && date >= rail.tombstone.effectiveFrom) return undefined;
+  const revs = state.railRevisions[railId] ?? [];
+  // 找最大的 r.effectiveFrom <= date
+  let pick;
+  for (const r of revs) {
+    if (r.effectiveFrom <= date) pick = r;
+    else break;
+  }
+  return pick;
+}
+```
+
+四类实体共享同一形 selector：`templateAtDate(key, date)` /
+`calendarRuleRevisionsActiveOn(date)` / `habitBindingsActiveOn(date)`。
+`activeOn(date)` 返回当日所有处于"已生效且未 tombstone"状态的实体的最新 revision。
+
+**对 caller 的统一约定**：
+
+- 任何"按日期渲染"的组件读 `atDate(date)`；返回 `undefined` 当作"该实体当日不存在"。
+- "今天 / 未来"的 caller 一律传 `today` 或目标日期，绝不直接读身份壳上的字段。
+- "rail 当前态"这种全局概念不再存在。最接近的是
+  `railAtDate(today)` —— 表达的是"今天这条 rail 的样子"。
+
+#### 写语义：`upsertRevision`
+
+每次用户编辑都走"封档旧 rev + 开新 rev"路径：
+
+1. **默认 `effectiveFrom = today`**（local-day）—— 用户编辑后立即生效给
+   今天和未来；过去日期读不到这条新 revision，因此渲染不变。
+2. 若已有同 `(entityId, effectiveFrom)` 的 revision，**原地替换**（不新增一行）。
+   这覆盖"用户在 Edit Session 里来回拖时段"的高频场景，避免 revision 数量爆炸。
+3. 否则**追加**新 revision，旧 revision 不动 —— 它仍承担
+   `[oldFrom, newFrom)` 的历史读路径。
+4. 写入事件：`rail-revision.upserted` / `template-revision.upserted` /
+   `calendar-rule-revision.upserted` / `habit-binding-revision.upserted`，
+   payload = 完整新 revision。
+
+**`effectiveFrom` 的可选项（UI 层）**：
+
+- 默认：今天起
+- 备选：明天起 / 自定义未来日期
+- 高级（power-user，默认隐藏）："修改最近一条 revision"路径 —— 直接编辑
+  当前已激活的那条 revision（同 id 替换），等价于"我就是想改过去也一起改"。
+  Template Editor / 日历抽屉里以折叠的 inline 选项呈现，不进默认按钮。
+
+#### 删除语义：tombstone
+
+身份壳上的 `tombstone: { effectiveFrom, at, sessionId? }` 表示"自该日起该实体不再存在"。
+- 过去日期 (`date < tombstone.effectiveFrom`) 仍按 `atDate` 找到末次 revision，正常渲染。
+- 当日及未来 (`date >= tombstone.effectiveFrom`) `atDate` 返回 `undefined`，
+  render 视为"不存在"。
+- 撤销 = 清掉 `tombstone`。
+- 内置模板 (`isDefault: true`) 不允许 tombstone（沿用 §5.4 既有约束）。
+
+#### 新建语义
+
+新建 = 写身份壳 + 第一条 revision（`effectiveFrom = today` 或用户选定起始日）。
+过去日期上 `atDate` 自然返回 `undefined` —— 实体在过去**不存在**，过去 Cycle View
+不会出现一条空 rail 行。
+
+#### 物化算法（更新 §10.2）
+
+```
+materialize(startDate, endDate):
+  for date in [startDate .. endDate]:
+    templateKeyForDate = resolveActiveTemplate(date)
+      // 内部走 calendarRuleRevisionsActiveOn(date) → priority desc → 第一匹配
+
+    for binding in habitBindingsActiveOn(date):
+      bRev = bindingAtDate(binding.id, date)
+      rRev = railAtDate(bRev.railId, date)
+      habit = lines[bRev.habitId]
+      if !habit or habit.status != 'active' or !rRev: continue
+      if rRev.templateKey != templateKeyForDate: continue
+      if bRev.weekdays && !bRev.weekdays.includes(dayOfWeek(date)): continue
+      if date < dateOf(binding.createdAt): continue
+
+      upsert Task {
+        id: `task-auto-${habit.id}-${date}`,
+        lineId: habit.id,
+        title: habit.name,
+        slot: { cycleId: cycleIdOf(date), date, railId: bRev.railId },
+        status: 'pending',
+        source: 'auto-habit',
+      }
+    mark (habit.id, cycleId) as materialized for cycles fully inside [startDate, endDate]
+```
+
+要点：
+- `templateKeyForDate` / `rRev.templateKey` 都是按日期求出来的；过去日期自然走旧 revision。
+- 已物化标记 `(habitId, cycleId)` 仍由身份级 `habitId` 索引，跨 binding revision 共享。
+- `binding.createdAt` 仍是身份壳上的时间戳，用于"不回填 binding 创建前的历史日期"
+  这条不变式（即使 binding 后来切换过 `railId` 也不破坏）。
+
+#### §10.3 在 v0.5 下的扩展
+
+§10.3 的 purge 规则在 revision 模型下保持形状不变，但触发面拓宽：
+
+| 触发改动 | 等价 revision 操作 | purge 范围 |
+|---|---|---|
+| 改 rail 时段 / 模板 / 颜色 | `rail-revision.upserted` (effectiveFrom = D) | 该 rail 上 `plannedStart >= D 且 status='pending'` 的 auto-task |
+| 删除 rail | `rail.tombstone` (effectiveFrom = D) | 该 rail 上 `date >= D` 的所有 future pending auto-task **和** 手工 task 的 `slot` 解绑 |
+| 改 / 删 calendar rule | `calendar-rule-revision.upserted` 或 `tombstone` | 受影响日期窗口内 templateKey 切换导致命中状态变化的 auto-task |
+| 改 habit binding（railId / weekdays） | `habit-binding-revision.upserted` | 该 binding 上不再命中的未来日期 purge；新命中的日期补齐 |
+
+**关键差异**：purge 下界从 v0.4 的 `now()` 改为 `max(now, effectiveFrom)`。
+若用户选了"明天起" / "下周一起"，今天剩下的 auto-task 也不会被惊动 ——
+今天读旧 revision，仍命中旧配置。
+
+**手工 task 的解绑**（v0.5 新增）：删除 rail（tombstone）后，所有
+`slot.railId === railId 且 slot.date >= effectiveFrom` 的手工 task 把 `slot` 清空，
+转为"未排期"。task 内容（title / note / subItems）保留。事件：`task.unscheduled`，
+带相同 sessionId。Reschedule shift（§5.5.6）按一次"已过期前的取消排期"判断 ——
+仅当 `slot.date < today` 时不触发（因为该 slot.date 必 >= effectiveFrom >= today，
+不会落入"已过期解绑"）。
+
+#### 事件日志
+
+新增一组事件类型（兼容 §7 同步）：
+
+- `rail-revision.upserted` / `rail-revision.removed`
+- `template-revision.upserted` / `template-revision.removed`
+- `calendar-rule-revision.upserted` / `calendar-rule-revision.removed`
+- `habit-binding-revision.upserted` / `habit-binding-revision.removed`
+- `rail.tombstoned` / `rail.tombstone-cleared`
+- `template.tombstoned` / `template.tombstone-cleared`
+- `calendar-rule.tombstoned` / `calendar-rule.tombstone-cleared`
+- `habit-binding.tombstoned` / `habit-binding.tombstone-cleared`
+
+旧的 `rail.updated` / `calendar-rule.upserted` / `calendar-rule.removed` /
+`habit-binding.upserted` / `habit-binding.removed` 等事件**仍允许在事件日志里
+出现**，对应迁移期 / 旧设备同步进来的数据。读端按下方迁移规则 normalize 成
+身份壳 + 单 revision。
+
+#### 数据迁移（首次启动 v0.5）
+
+按 beta 兼容政策（不做破坏性迁移、不静默改写语义）执行 idempotent 迁移：
+
+1. 对每个 `Rail`（v0.4 形态）：
+   - 创建身份壳 `Rail` 保留 `id`，`createdAt = now() if missing`。
+   - 创建一条 `RailRevision`：
+     - `effectiveFrom = '1970-01-01'`（sentinel "自远古"，保证所有历史日期都能命中）
+     - 全部可变字段从旧 Rail 复制
+     - `authoredAt = createdAt ?? now()`
+     - `sessionId = undefined`
+2. 同样规则迁移 `Template` / `CalendarRule` / `HabitBinding`。
+3. 触发一条 `migration.v05-revision-model` 事件供同步端识别。
+
+迁移结果：所有过去日期上的渲染输出与 v0.4 完全一致（因为 `'1970-01-01' <= 任何 date`，
+所有 `atDate` 都命中那唯一一条 revision）。后续编辑才开始产生新的 revision。
+
+跨设备：第一台设备执行迁移并把新事件推到同步通道；尚未升级到 v0.5 的设备
+会忽略未知事件类型（同步层既有规则），不会丢数据；升级后再 replay。
+
+#### Cycle View / Calendar / Tasks 渲染影响
+
+- **Cycle View**：列头 templateKey + day chip 颜色、rail 行的名字 / 颜色 /
+  时段 / 是否出现 —— 全部按 `atDate(date)` 求解。同一窗口 7 天里可能出现
+  "前三天某 rail 不存在 / 后四天该 rail 已新增"的混合形态，渲染层需要把"该日不存在"
+  的 rail 行收掉而不是渲染空行。
+- **Calendar 月视图**：日期格底色 = `templateAtDate(resolveActiveTemplate(date), date).color`，
+  同一月内可能出现配色断点（用户在月中改了模板色），符合预期。
+- **Tasks 视图**：task 行右侧 `📅 周三 · 工作 · 编码` 的"工作 / 编码"两段标签由
+  `railAtDate(slot.railId, slot.date)` + `templateAtDate(railRev.templateKey, slot.date)`
+  解出 —— 即任意 task 行展示的 rail / template 标签是它**当时**的样子，不会因为
+  rail 后来改名而错位。
+- **Now View / Today Track**：永远读 `today` 的 revision，行为与 v0.4 一致。
+- **Review 热力图**：cell 上的 rail 标签 / 颜色按 cell 日期解，与 task 行一致。
+
+#### 与 §5.3.1 Edit Session 的关系
+
+Template Editor / 日历规则抽屉的一次集中编辑共享同一个 sessionId；产生的
+若干 revision upsert + 由此触发的 §10.3 purge / topup 全部带上同一个 id。
+"撤销本次编辑"的实现：
+
+- revision upsert（追加型） → 删除该 revision
+- revision upsert（同 effectiveFrom 替换型） → 还原前一份内容（事件 payload 自带 prev snapshot）
+- tombstone → 清掉
+- task purge / topup → 走 §10.3 既有反向流程
+
+撤销是一次性的、原子的；不允许"撤销一半"。
+
+#### 开放问题（落到 §11.1）
+
+- `Line`（Project / Habit）的重命名 / 改色是否需要 revision？当前不做 ——
+  Project 名称变更直观属于"这件事换了称呼"，过去仍叫旧名是反直觉的。但需要
+  实测一段时间后再确认是否要扩展到 §10.5 范围。
+- `effectiveFrom` 的 UI 默认值：v0.5.0 先按"今天起"硬编码，下沉到 settings 下一版再考虑暴露。
+- 高频编辑场景（用户在 Edit Session 里来回调 30 次时段）的 revision 表大小：
+  同 effectiveFrom 替换策略已减压；如果实测仍臃肿，可以引入 "session 收尾合并"
+  把同一 session 的相邻 revision 合并成一条。
+
 ```
 
 ***
