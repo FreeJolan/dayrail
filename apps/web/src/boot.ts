@@ -149,22 +149,42 @@ async function preflight(): Promise<void> {
 /** Write the imported bundle's state as a snapshot in the (fresh,
  *  empty) DB. Hydrate below will then read the snapshot as if it were
  *  a legitimate saved-state — no event replay needed. Bundle shape
- *  matches SnapshotPayload one-to-one. */
+ *  matches SnapshotPayload one-to-one.
+ *
+ *  §10.5 revision tables are optional on the bundle: v0.4 exports
+ *  don't carry them; v0.5+ exports do. Either way, hydrate's
+ *  sentinel-revision migration backfills any missing revisions on
+ *  the first boot after the snapshot loads, preserving the "past =
+ *  frozen" guarantee. */
 async function writeImportedSnapshot(bundle: ExportBundle): Promise<void> {
-  const state = bundle.state as Record<string, Record<string, unknown>>;
+  const state = bundle.state as Record<string, unknown>;
+  const asMap = (v: unknown): Record<string, unknown> =>
+    v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
   await writeSnapshot(
     {
-      templates: state.templates ?? {},
-      rails: state.rails ?? {},
-      signals: state.signals ?? {},
-      shifts: state.shifts ?? {},
-      lines: state.lines ?? {},
-      tasks: state.tasks ?? {},
-      adhocEvents: state.adhocEvents ?? {},
-      calendarRules: state.calendarRules ?? {},
-      cycles: state.cycles ?? {},
-      habitPhases: state.habitPhases ?? {},
-      habitBindings: state.habitBindings ?? {},
+      templates: asMap(state.templates),
+      rails: asMap(state.rails),
+      signals: asMap(state.signals),
+      shifts: asMap(state.shifts),
+      lines: asMap(state.lines),
+      tasks: asMap(state.tasks),
+      adhocEvents: asMap(state.adhocEvents),
+      calendarRules: asMap(state.calendarRules),
+      cycles: asMap(state.cycles),
+      habitPhases: asMap(state.habitPhases),
+      habitBindings: asMap(state.habitBindings),
+      // §10.5 — round-trip the revision tables when the bundle was
+      // produced by v0.5+. Older bundles fall through with empty maps;
+      // the sentinel migration will rebuild a baseline.
+      railRevisions: asMap(state.railRevisions) as Record<string, never>,
+      templateRevisions: asMap(state.templateRevisions) as Record<string, never>,
+      calendarRuleRevisions: asMap(state.calendarRuleRevisions) as Record<string, never>,
+      habitBindingRevisions: asMap(state.habitBindingRevisions) as Record<string, never>,
+      railTombstones: asMap(state.railTombstones) as Record<string, never>,
+      templateTombstones: asMap(state.templateTombstones) as Record<string, never>,
+      calendarRuleTombstones: asMap(state.calendarRuleTombstones) as Record<string, never>,
+      habitBindingTombstones: asMap(state.habitBindingTombstones) as Record<string, never>,
+      v05MigrationApplied: state.v05MigrationApplied === true,
     },
     currentClock(),
     /* eventCount */ 0,

@@ -1,6 +1,6 @@
 # DayRail · 当前状态 & 后续迭代
 
-> 最后整理：2026-04-19
+> 最后整理：2026-04-27
 > 本文档与 `ERD.*.md` 分工：ERD 是设计意图 + 历史决策链（append-only
 > 记录），本文档是**当下状态快照** + **待办停车场** + **迭代注记**。
 > 每次大迭代开始前读这里拿到起点，结束后更新这里。
@@ -9,7 +9,7 @@
 
 ## 定位
 
-DayRail v0.4 · **单设备 · 自用 MVP**。
+DayRail v0.5 · **单设备 · 自用 MVP**。
 
 不做多设备同步、不做对外发布、不做移动端适配、不做 AI 上线。所有工作
 围绕"作者一个人每天用得爽"展开。这个定位会持续，除非作者本人另行决
@@ -17,7 +17,7 @@ DayRail v0.4 · **单设备 · 自用 MVP**。
 
 ---
 
-## ✅ 已落地（v0.4 · 可用）
+## ✅ 已落地（v0.5 · 可用）
 
 ### 数据模型（§10）
 
@@ -31,6 +31,55 @@ DayRail v0.4 · **单设备 · 自用 MVP**。
 - `Rail.recurrence` **已移除** —— Template + CalendarRule + Binding.weekdays 三层足够
 - `Rail.defaultLineId` **已移除** —— 让位给 HabitBinding
 - `RailInstance` 概念在 v0.4 不存在；历史表在 schema 中早已清理
+
+### §10.5 effective-from revision 模型（v0.5 ·已落地）
+
+> "改 rail 之后过去日期完全不变" 的实装。设计动机 + schema + 读写
+> 语义见 ERD §10.5。
+
+- 每类版本化实体（Rail / Template / CalendarRule / HabitBinding）拆为
+  **身份壳 + revision 链**。身份壳保留 `id` / `createdAt` / 可选
+  `tombstone`；可变字段（name / time / color / templateKey / value /
+  weekdays …）挪到对应的 `*Revision` 行。
+- **读路径** —— `railAtDate(state, railId, date)` /
+  `templateAtDate` / `calendarRuleAtDate` / `habitBindingAtDate` /
+  `*ActiveOn(date)`。每个读路径选 `effectiveFrom <= date` 的最新
+  revision；遇到 tombstone 在 `>= effectiveFrom` 上返回 undefined。
+- **写路径** —— 每次 mutation 写一条新 revision。同 `(entityId,
+  effectiveFrom)` 自动按 id (`rev-{kind}-{entityId}-{effectiveFrom}`)
+  替换，不爆 row。删除 = 写 tombstone；新建在 tombstoned 实体上自动
+  清 tombstone。
+- **首次启动迁移** —— `migration.v05-revision-model` 事件 + 每个旧
+  实体一条 `effectiveFrom='1970-01-01'` 的 sentinel revision。所有
+  历史 read 命中 sentinel，渲染与 v0.4 完全一致。Idempotent。
+- **核心选择器全部 revision-based** —— `resolveTemplateForDate` /
+  materializer / `selectActiveTemplateKey` / `selectTodayTimeline` /
+  `selectCheckinQueue` / `selectPendingQueue` /
+  `autoTaskPlannedWindow` / `findAffectedFutureAutoTasks` 全走
+  `*AtDate(slot.date)` —— 过去 task 行的 rail label / time / color
+  按 slot 当日 revision 解析。
+- **UI surfaces** —— Cycle View（railsByTemplate 按日期 build）/
+  Review heatmap（rails 按窗口内出现日 build）/ Tasks list（rail
+  label per slot.date）/ Today Track + Pending（per slot.date）/
+  Reason toast displayName 全部用 revision 选择器。
+- **"应用日期" picker** (§10.5 Phase 4) —— `EffectiveFromPicker`
+  primitive (今天起 / 明天起 / 自定义日期…) 接到 Template Editor /
+  Calendar Rules drawer / Habit binding。每次写都把选中的
+  `effectiveFrom` 透传给对应的 writer；今天 / 过去日期还按旧 revision
+  解析，新 revision 从指定日开始生效。
+- 13 个 writer 接受 `effectiveFrom?: string`：upsertTemplate /
+  deleteTemplate / createRail / updateRail / deleteRail /
+  overrideCycleDay / clearCycleDayOverride / upsertWeekdayRule /
+  upsertDateRangeRule / upsertCycleRule / removeCalendarRule /
+  upsertHabitBinding / removeHabitBinding。
+
+未做（v0.5.1+）：
+- Power-user 模式 "edit the most recent revision in place" —— 默认
+  路径覆盖 99% 用例，留作开放问题。
+- 同 session 相邻 revision 合并 —— 实测 revision 表大小后再决定。
+- 旧 mutable 字段彻底从身份壳类型上移除 —— 代码层去 v0.6 整理；
+  当前 `state.rails`/`state.templates` 等 mirror 仍在维护，作为
+  current-state 便利访问 + 历史事件 replay 的兼容层。
 
 ### 核心界面
 
@@ -59,17 +108,22 @@ DayRail v0.4 · **单设备 · 自用 MVP**。
 
 ### 测试
 
-3 个 suite · 35 个 case（`pnpm test` 从 repo 根跑）：
+6 个 suite · 65 个 case（`pnpm test` 从 repo 根跑）：
 
 ```
 packages/core/src/__tests__/
 ├── autoTask.test.ts      · 11 case · §10.3 purge selectors
+├── materializer.test.ts  · 12 case · auto-task 生成路径 + §10.5 freeze
+├── reschedule.test.ts    ·  8 case · §5.5.6 reschedule 触发规则
+├── revisions.test.ts     · 12 case · §10.5 atDate 选择器
 ├── today.test.ts         · 15 case · timeline / check-in / pending
-└── materializer.test.ts  ·  9 case · auto-task 生成路径
+└── unschedule.test.ts    ·  7 case · §5.5.6 unschedule 触发规则
 ```
 
 覆盖重点：多任务排序、状态过滤、时间窗口、binding × template × weekdays
-三层交集、`binding.createdAt` 日期 floor。
+三层交集、`binding.createdAt` 日期 floor、§10.5 跨 cutover 的 freeze
+（rail 改 effectiveFrom='YYYY-MM-DD' 后，物化窗口 < 该日的 task 用旧
+revision、>= 该日的用新 revision）、tombstone 截止生效。
 
 ---
 
