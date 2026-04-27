@@ -1,5 +1,5 @@
 import { clsx } from 'clsx';
-import { Fragment, forwardRef, useEffect, useState, type ReactNode } from 'react';
+import { forwardRef, useEffect, useState, type ReactNode } from 'react';
 import {
   Archive,
   ArrowUpRight,
@@ -121,19 +121,31 @@ export function CycleCell({
   return (
     <div className="group/cell relative flex h-full min-h-[44px] flex-col gap-1 rounded-sm bg-surface-1 px-1 py-1 transition hover:bg-surface-2">
       {tasks.map((t, i) => (
-        <Fragment key={t.taskId}>
-          {onDropTaskAt && (
-            <PillDropZone
-              edge="top"
-              active={hoverIndex === i}
-              onHover={() => setHoverIndex(i)}
-              onDrop={(draggedId) => {
-                setHoverIndex(null);
-                const ordered = computeOrderedIds(tasks, draggedId, i);
-                onDropTaskAt(draggedId, ordered);
-              }}
-            />
-          )}
+        <PillRow
+          key={t.taskId}
+          dropEnabled={!!onDropTaskAt}
+          insertEdge={
+            hoverIndex === i
+              ? 'top'
+              : hoverIndex === i + 1
+                ? 'bottom'
+                : null
+          }
+          onDragOverHalf={(half) => {
+            const idx = half === 'top' ? i : i + 1;
+            if (hoverIndex !== idx) setHoverIndex(idx);
+          }}
+          onDropHalf={(draggedId, half) => {
+            setHoverIndex(null);
+            const idx = half === 'top' ? i : i + 1;
+            const ordered = computeOrderedIds(tasks, draggedId, idx);
+            // No-op if the drop reproduces the current order — avoids
+            // burning an Edit-Session change-count entry for nothing.
+            const currentIds = tasks.map((x) => x.taskId);
+            if (sameOrder(currentIds, ordered)) return;
+            onDropTaskAt?.(draggedId, ordered);
+          }}
+        >
           <TaskPill
             task={t}
             color={color}
@@ -162,23 +174,7 @@ export function CycleCell({
                 onToggleSubItem(t.taskId, subItemId),
             })}
           />
-          {onDropTaskAt && i === tasks.length - 1 && (
-            <PillDropZone
-              edge="bottom"
-              active={hoverIndex === tasks.length}
-              onHover={() => setHoverIndex(tasks.length)}
-              onDrop={(draggedId) => {
-                setHoverIndex(null);
-                const ordered = computeOrderedIds(
-                  tasks,
-                  draggedId,
-                  tasks.length,
-                );
-                onDropTaskAt(draggedId, ordered);
-              }}
-            />
-          )}
-        </Fragment>
+        </PillRow>
       ))}
       {onQuickCreate && (
         <CellAddBar
@@ -190,6 +186,12 @@ export function CycleCell({
       )}
     </div>
   );
+}
+
+function sameOrder(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 // Resolve a drop into the destination slot's final visual order.
@@ -212,43 +214,65 @@ function computeOrderedIds(
   return [...without.slice(0, clamped), draggedId, ...without.slice(clamped)];
 }
 
-// Slim drop-target wedge between pills. Renders as a 4px-tall hit
-// area that thickens to a 2px insertion line when active. Catches
-// the drop and reports the gap index up to CycleCell.
-function PillDropZone({
-  edge,
-  active,
-  onHover,
-  onDrop,
+// Wraps a TaskPill with a full-height drop target. The cursor's Y
+// within the row's bounding rect decides whether the drop lands above
+// or below the pill, which gives us a pill-sized hit area instead of
+// a 4px-thin gap. A 2px highlighted bar renders on the appropriate
+// edge during dragover. stopPropagation keeps the drop from bubbling
+// to the `<td>` (whose handler runs the legacy append path).
+function PillRow({
+  dropEnabled,
+  insertEdge,
+  onDragOverHalf,
+  onDropHalf,
+  children,
 }: {
-  edge: 'top' | 'bottom';
-  active: boolean;
-  onHover: () => void;
-  onDrop: (taskId: string) => void;
+  dropEnabled: boolean;
+  insertEdge: 'top' | 'bottom' | null;
+  onDragOverHalf: (half: 'top' | 'bottom') => void;
+  onDropHalf: (taskId: string, half: 'top' | 'bottom') => void;
+  children: ReactNode;
 }) {
+  const handlers = dropEnabled
+    ? {
+        onDragOver: (e: React.DragEvent<HTMLDivElement>) => {
+          if (!Array.from(e.dataTransfer.types).includes(TASK_DRAG_MIME)) return;
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = 'move';
+          const rect = e.currentTarget.getBoundingClientRect();
+          const half: 'top' | 'bottom' =
+            e.clientY - rect.top < rect.height / 2 ? 'top' : 'bottom';
+          onDragOverHalf(half);
+        },
+        onDrop: (e: React.DragEvent<HTMLDivElement>) => {
+          const taskId = e.dataTransfer.getData(TASK_DRAG_MIME);
+          if (!taskId) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const rect = e.currentTarget.getBoundingClientRect();
+          const half: 'top' | 'bottom' =
+            e.clientY - rect.top < rect.height / 2 ? 'top' : 'bottom';
+          onDropHalf(taskId, half);
+        },
+      }
+    : {};
   return (
-    <div
-      onDragOver={(e) => {
-        if (!Array.from(e.dataTransfer.types).includes(TASK_DRAG_MIME)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        e.dataTransfer.dropEffect = 'move';
-        onHover();
-      }}
-      onDrop={(e) => {
-        const taskId = e.dataTransfer.getData(TASK_DRAG_MIME);
-        if (!taskId) return;
-        e.preventDefault();
-        e.stopPropagation();
-        onDrop(taskId);
-      }}
-      className={clsx(
-        'h-1 -my-0.5 w-full rounded-full transition',
-        active ? 'bg-cta' : 'bg-transparent',
+    <div className="relative" {...handlers}>
+      {insertEdge === 'top' && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute -top-0.5 left-1 right-1 h-0.5 rounded-full bg-cta"
+        />
       )}
-      aria-hidden
-      data-edge={edge}
-    />
+      {children}
+      {insertEdge === 'bottom' && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute -bottom-0.5 left-1 right-1 h-0.5 rounded-full bg-cta"
+        />
+      )}
+    </div>
   );
 }
 
