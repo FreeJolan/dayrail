@@ -35,17 +35,22 @@ import {
 } from './snapshot';
 import {
   INBOX_LINE_ID,
+  REVISION_SENTINEL_DATE,
   type AdhocEvent,
   type CalendarRule,
   type CalendarRuleCycle,
   type CalendarRuleDateRange,
+  type CalendarRuleRevision,
   type CalendarRuleSingleDate,
   type CalendarRuleWeekday,
   type Cycle,
+  type HabitBinding,
+  type HabitBindingRevision,
   type HabitPhase,
   type Line,
   type Rail,
   type RailColor,
+  type RailRevision,
   type ReschedulePayload,
   type Shift,
   type ShiftType,
@@ -54,8 +59,9 @@ import {
   type Task,
   type Template,
   type TemplateKey,
+  type TemplateRevision,
+  type Tombstone,
   type UnschedulePayload,
-  type HabitBinding,
 } from './types';
 import { toIsoDate } from './today';
 import { detectReschedule } from './reschedule';
@@ -80,6 +86,33 @@ export interface DayRailState {
   habitPhases: Record<string, HabitPhase>;
   /** §5.5.0 v0.4 · habit ↔ rail bindings. Keyed on binding id. */
   habitBindings: Record<string, HabitBinding>;
+  // ----------------------------------------------------------------
+  // ERD §10.5 · effective-from revision tables. Phase 1 lands these
+  // alongside the legacy tables: writers keep updating both, readers
+  // can opt in to the date-aware selectors in `revisions.ts`. Phase 2
+  // will switch reads, Phase 3 will narrow the legacy tables to
+  // identity-only fields.
+  //
+  // Each map is keyed by the parent entity id (or templateKey for
+  // templates) and holds an ordered array of revisions, sorted ASC by
+  // `effectiveFrom`. Reducer-side ordering is enforced on insert.
+  // ----------------------------------------------------------------
+  railRevisions: Record<string, RailRevision[]>;
+  templateRevisions: Record<TemplateKey, TemplateRevision[]>;
+  calendarRuleRevisions: Record<string, CalendarRuleRevision[]>;
+  habitBindingRevisions: Record<string, HabitBindingRevision[]>;
+  /** Identity-shell tombstones — present when the entity was retired
+   *  on or after `effectiveFrom`. Past dates still resolve to the
+   *  last revision; today / future treat the entity as nonexistent. */
+  railTombstones: Record<string, Tombstone>;
+  templateTombstones: Record<TemplateKey, Tombstone>;
+  calendarRuleTombstones: Record<string, Tombstone>;
+  habitBindingTombstones: Record<string, Tombstone>;
+  /** True once the v0.5 sentinel-revision migration has run (whether
+   *  by emitting `migration.v05-revision-model` on this device or by
+   *  replaying that event from a sibling device). Phase 1 uses this
+   *  flag to short-circuit the migration scanner on subsequent boots. */
+  v05MigrationApplied: boolean;
   sessions: Record<string, EditSession>;
   /** §5.5.6 · ephemeral queue for the overdue-shift Reason toast. Set by
    *  `scheduleTaskToRail` / `scheduleTaskFreeTime` (type='reschedule')
@@ -282,6 +315,15 @@ type ReducerState = Pick<
   | 'cycles'
   | 'habitPhases'
   | 'habitBindings'
+  | 'railRevisions'
+  | 'templateRevisions'
+  | 'calendarRuleRevisions'
+  | 'habitBindingRevisions'
+  | 'railTombstones'
+  | 'templateTombstones'
+  | 'calendarRuleTombstones'
+  | 'habitBindingTombstones'
+  | 'v05MigrationApplied'
 >;
 
 // Narrowed local types matching exactly the event payloads the Template
@@ -305,6 +347,28 @@ interface SignalPayload {
   actedAt: string;
   response: SignalResponse;
   surface: Signal['surface'];
+}
+
+/** Upsert a revision into a sorted array (`effectiveFrom asc`), keyed
+ *  by `id`. If a revision with the same id exists, replace in place;
+ *  otherwise insert at the position that keeps the array sorted.
+ *  Reused by all four revision event types. */
+function upsertRevisionInArray<
+  R extends { id: string; effectiveFrom: string },
+>(arr: R[] | undefined, rev: R): R[] {
+  const next = arr ? arr.filter((r) => r.id !== rev.id) : [];
+  let inserted = false;
+  for (let i = 0; i < next.length; i++) {
+    const probe = next[i];
+    if (!probe) continue;
+    if (probe.effectiveFrom > rev.effectiveFrom) {
+      next.splice(i, 0, rev);
+      inserted = true;
+      break;
+    }
+  }
+  if (!inserted) next.push(rev);
+  return next;
 }
 
 function applyEventInPlace(
@@ -488,10 +552,287 @@ function applyEventInPlace(
       delete state.habitBindings[id];
       break;
     }
+    // ----------------------------------------------------------------
+    // ERD §10.5 · revision events. Payload = full revision row.
+    // ----------------------------------------------------------------
+    case 'rail-revision.upserted': {
+      const rev = payload as unknown as RailRevision;
+      state.railRevisions[rev.railId] = upsertRevisionInArray(
+        state.railRevisions[rev.railId],
+        rev,
+      );
+      break;
+    }
+    case 'rail-revision.removed': {
+      const p = payload as { id: string; railId: string };
+      const list = state.railRevisions[p.railId];
+      if (!list) break;
+      state.railRevisions[p.railId] = list.filter((r) => r.id !== p.id);
+      break;
+    }
+    case 'template-revision.upserted': {
+      const rev = payload as unknown as TemplateRevision;
+      state.templateRevisions[rev.templateKey] = upsertRevisionInArray(
+        state.templateRevisions[rev.templateKey],
+        rev,
+      );
+      break;
+    }
+    case 'template-revision.removed': {
+      const p = payload as { id: string; templateKey: TemplateKey };
+      const list = state.templateRevisions[p.templateKey];
+      if (!list) break;
+      state.templateRevisions[p.templateKey] = list.filter((r) => r.id !== p.id);
+      break;
+    }
+    case 'calendar-rule-revision.upserted': {
+      const rev = payload as unknown as CalendarRuleRevision;
+      state.calendarRuleRevisions[rev.ruleId] = upsertRevisionInArray(
+        state.calendarRuleRevisions[rev.ruleId],
+        rev,
+      );
+      break;
+    }
+    case 'calendar-rule-revision.removed': {
+      const p = payload as { id: string; ruleId: string };
+      const list = state.calendarRuleRevisions[p.ruleId];
+      if (!list) break;
+      state.calendarRuleRevisions[p.ruleId] = list.filter((r) => r.id !== p.id);
+      break;
+    }
+    case 'habit-binding-revision.upserted': {
+      const rev = payload as unknown as HabitBindingRevision;
+      state.habitBindingRevisions[rev.bindingId] = upsertRevisionInArray(
+        state.habitBindingRevisions[rev.bindingId],
+        rev,
+      );
+      break;
+    }
+    case 'habit-binding-revision.removed': {
+      const p = payload as { id: string; bindingId: string };
+      const list = state.habitBindingRevisions[p.bindingId];
+      if (!list) break;
+      state.habitBindingRevisions[p.bindingId] = list.filter(
+        (r) => r.id !== p.id,
+      );
+      break;
+    }
+    // ----------------------------------------------------------------
+    // ERD §10.5 · tombstone events. Payload carries the parent id and
+    // the Tombstone fields.
+    // ----------------------------------------------------------------
+    case 'rail.tombstoned': {
+      const p = payload as unknown as Tombstone & { railId: string };
+      state.railTombstones[p.railId] = {
+        effectiveFrom: p.effectiveFrom,
+        at: p.at,
+        ...(p.sessionId && { sessionId: p.sessionId }),
+      };
+      break;
+    }
+    case 'rail.tombstone-cleared': {
+      const id = (payload as { railId: string }).railId;
+      delete state.railTombstones[id];
+      break;
+    }
+    case 'template.tombstoned': {
+      const p = payload as unknown as Tombstone & { templateKey: TemplateKey };
+      state.templateTombstones[p.templateKey] = {
+        effectiveFrom: p.effectiveFrom,
+        at: p.at,
+        ...(p.sessionId && { sessionId: p.sessionId }),
+      };
+      break;
+    }
+    case 'template.tombstone-cleared': {
+      const key = (payload as { templateKey: TemplateKey }).templateKey;
+      delete state.templateTombstones[key];
+      break;
+    }
+    case 'calendar-rule.tombstoned': {
+      const p = payload as unknown as Tombstone & { ruleId: string };
+      state.calendarRuleTombstones[p.ruleId] = {
+        effectiveFrom: p.effectiveFrom,
+        at: p.at,
+        ...(p.sessionId && { sessionId: p.sessionId }),
+      };
+      break;
+    }
+    case 'calendar-rule.tombstone-cleared': {
+      const id = (payload as { ruleId: string }).ruleId;
+      delete state.calendarRuleTombstones[id];
+      break;
+    }
+    case 'habit-binding.tombstoned': {
+      const p = payload as unknown as Tombstone & { bindingId: string };
+      state.habitBindingTombstones[p.bindingId] = {
+        effectiveFrom: p.effectiveFrom,
+        at: p.at,
+        ...(p.sessionId && { sessionId: p.sessionId }),
+      };
+      break;
+    }
+    case 'habit-binding.tombstone-cleared': {
+      const id = (payload as { bindingId: string }).bindingId;
+      delete state.habitBindingTombstones[id];
+      break;
+    }
+    case 'migration.v05-revision-model': {
+      state.v05MigrationApplied = true;
+      break;
+    }
     default:
       // Unknown event types are no-ops in this store slice.
       break;
   }
+}
+
+// ------------------------------------------------------------------
+// ERD §10.5 · sentinel-revision migration.
+//
+// First v0.5 boot scans the legacy current-state tables and writes a
+// single `*-revision.upserted` event per entity with `effectiveFrom =
+// '1970-01-01'` so every historical date resolves to that revision.
+// Idempotent: if `state.v05MigrationApplied` is already true (the
+// marker event has been replayed), the scan is skipped. The scan is
+// also self-healing — entities that landed without a revision (legacy
+// writers created them, sync replay surfaced them) get backfilled on
+// the next hydrate.
+// ------------------------------------------------------------------
+
+function makeSentinelRailRevision(rail: Rail): RailRevision {
+  return {
+    id: `rev-rail-${rail.id}-sentinel`,
+    railId: rail.id,
+    effectiveFrom: REVISION_SENTINEL_DATE,
+    templateKey: rail.templateKey,
+    name: rail.name,
+    ...(rail.subtitle != null && { subtitle: rail.subtitle }),
+    startMinutes: rail.startMinutes,
+    durationMinutes: rail.durationMinutes,
+    color: rail.color,
+    ...(rail.icon != null && { icon: rail.icon }),
+    showInCheckin: rail.showInCheckin,
+    authoredAt: 0,
+  };
+}
+
+function makeSentinelTemplateRevision(tpl: Template): TemplateRevision {
+  return {
+    id: `rev-template-${tpl.key}-sentinel`,
+    templateKey: tpl.key,
+    effectiveFrom: REVISION_SENTINEL_DATE,
+    name: tpl.name,
+    ...(tpl.color != null && { color: tpl.color }),
+    authoredAt: 0,
+  };
+}
+
+function makeSentinelCalendarRuleRevision(
+  rule: CalendarRule,
+): CalendarRuleRevision {
+  return {
+    id: `rev-calrule-${rule.id}-sentinel`,
+    ruleId: rule.id,
+    effectiveFrom: REVISION_SENTINEL_DATE,
+    priority: rule.priority,
+    value: rule.value,
+    authoredAt: 0,
+  };
+}
+
+function makeSentinelHabitBindingRevision(
+  binding: HabitBinding,
+): HabitBindingRevision {
+  return {
+    id: `rev-binding-${binding.id}-sentinel`,
+    bindingId: binding.id,
+    effectiveFrom: REVISION_SENTINEL_DATE,
+    habitId: binding.habitId,
+    railId: binding.railId,
+    ...(binding.weekdays != null && { weekdays: [...binding.weekdays] }),
+    authoredAt: binding.createdAt,
+  };
+}
+
+type RevisionAppendInput = {
+  aggregateId: string;
+  payload: Record<string, unknown>;
+};
+
+async function emitMigrationEvent(
+  type:
+    | 'rail-revision.upserted'
+    | 'template-revision.upserted'
+    | 'calendar-rule-revision.upserted'
+    | 'habit-binding-revision.upserted'
+    | 'migration.v05-revision-model',
+  input: RevisionAppendInput,
+): Promise<void> {
+  const ev = await appendEvent({
+    aggregateId: input.aggregateId,
+    type,
+    payload: input.payload,
+  });
+  useStore.setState((draft) => {
+    applyEventInPlace(draft, ev.type, ev.payload);
+  });
+}
+
+async function runV05RevisionMigration(): Promise<void> {
+  const state = useStore.getState();
+  if (state.v05MigrationApplied) return;
+
+  for (const rail of Object.values(state.rails)) {
+    if ((state.railRevisions[rail.id]?.length ?? 0) > 0) continue;
+    await emitMigrationEvent('rail-revision.upserted', {
+      aggregateId: `rail:${rail.id}`,
+      payload: makeSentinelRailRevision(rail) as unknown as Record<
+        string,
+        unknown
+      >,
+    });
+  }
+
+  for (const tpl of Object.values(state.templates)) {
+    if ((state.templateRevisions[tpl.key]?.length ?? 0) > 0) continue;
+    await emitMigrationEvent('template-revision.upserted', {
+      aggregateId: `template:${tpl.key}`,
+      payload: makeSentinelTemplateRevision(tpl) as unknown as Record<
+        string,
+        unknown
+      >,
+    });
+  }
+
+  for (const rule of Object.values(state.calendarRules)) {
+    if ((state.calendarRuleRevisions[rule.id]?.length ?? 0) > 0) continue;
+    await emitMigrationEvent('calendar-rule-revision.upserted', {
+      aggregateId: `calendar-rule:${rule.id}`,
+      payload: makeSentinelCalendarRuleRevision(rule) as unknown as Record<
+        string,
+        unknown
+      >,
+    });
+  }
+
+  for (const binding of Object.values(state.habitBindings)) {
+    if ((state.habitBindingRevisions[binding.id]?.length ?? 0) > 0) continue;
+    await emitMigrationEvent('habit-binding-revision.upserted', {
+      aggregateId: `habit-binding:${binding.id}`,
+      payload: makeSentinelHabitBindingRevision(binding) as unknown as Record<
+        string,
+        unknown
+      >,
+    });
+  }
+
+  // Always emit the marker — even on a fully empty database — so the
+  // next boot short-circuits without re-scanning.
+  await emitMigrationEvent('migration.v05-revision-model', {
+    aggregateId: 'migration:v05',
+    payload: { appliedAt: Date.now() },
+  });
 }
 
 // ------------------------------------------------------------------
@@ -513,6 +854,15 @@ type SnapshotPayload = Pick<
   | 'cycles'
   | 'habitPhases'
   | 'habitBindings'
+  | 'railRevisions'
+  | 'templateRevisions'
+  | 'calendarRuleRevisions'
+  | 'habitBindingRevisions'
+  | 'railTombstones'
+  | 'templateTombstones'
+  | 'calendarRuleTombstones'
+  | 'habitBindingTombstones'
+  | 'v05MigrationApplied'
 >;
 
 function emptyReducerState(): ReducerState {
@@ -528,6 +878,15 @@ function emptyReducerState(): ReducerState {
     cycles: {},
     habitPhases: {},
     habitBindings: {},
+    railRevisions: {},
+    templateRevisions: {},
+    calendarRuleRevisions: {},
+    habitBindingRevisions: {},
+    railTombstones: {},
+    templateTombstones: {},
+    calendarRuleTombstones: {},
+    habitBindingTombstones: {},
+    v05MigrationApplied: false,
   };
 }
 
@@ -544,6 +903,15 @@ function snapshotFromState(s: DayRailState): SnapshotPayload {
     cycles: s.cycles,
     habitPhases: s.habitPhases,
     habitBindings: s.habitBindings,
+    railRevisions: s.railRevisions,
+    templateRevisions: s.templateRevisions,
+    calendarRuleRevisions: s.calendarRuleRevisions,
+    habitBindingRevisions: s.habitBindingRevisions,
+    railTombstones: s.railTombstones,
+    templateTombstones: s.templateTombstones,
+    calendarRuleTombstones: s.calendarRuleTombstones,
+    habitBindingTombstones: s.habitBindingTombstones,
+    v05MigrationApplied: s.v05MigrationApplied,
   };
 }
 
@@ -845,6 +1213,15 @@ export const useStore = create<DayRailStore>()(
       cycles: {},
       habitPhases: {},
       habitBindings: {},
+      railRevisions: {},
+      templateRevisions: {},
+      calendarRuleRevisions: {},
+      habitBindingRevisions: {},
+      railTombstones: {},
+      templateTombstones: {},
+      calendarRuleTombstones: {},
+      habitBindingTombstones: {},
+      v05MigrationApplied: false,
       sessions: {},
       pendingShiftPrompt: null,
 
@@ -879,6 +1256,33 @@ export const useStore = create<DayRailStore>()(
               reducerState.habitBindings = {
                 ...(snap.state.habitBindings ?? {}),
               };
+              // §10.5 · revision tables — snapshots written before v0.5
+              // omit these; coalesce to {} so reducer cases find an
+              // array slot when they need one.
+              reducerState.railRevisions = { ...(snap.state.railRevisions ?? {}) };
+              reducerState.templateRevisions = {
+                ...(snap.state.templateRevisions ?? {}),
+              };
+              reducerState.calendarRuleRevisions = {
+                ...(snap.state.calendarRuleRevisions ?? {}),
+              };
+              reducerState.habitBindingRevisions = {
+                ...(snap.state.habitBindingRevisions ?? {}),
+              };
+              reducerState.railTombstones = {
+                ...(snap.state.railTombstones ?? {}),
+              };
+              reducerState.templateTombstones = {
+                ...(snap.state.templateTombstones ?? {}),
+              };
+              reducerState.calendarRuleTombstones = {
+                ...(snap.state.calendarRuleTombstones ?? {}),
+              };
+              reducerState.habitBindingTombstones = {
+                ...(snap.state.habitBindingTombstones ?? {}),
+              };
+              reducerState.v05MigrationApplied =
+                snap.state.v05MigrationApplied ?? false;
             }
             for (const ev of events) {
               applyEventInPlace(reducerState, ev.type, ev.payload);
@@ -894,12 +1298,26 @@ export const useStore = create<DayRailStore>()(
             draft.cycles = reducerState.cycles;
             draft.habitPhases = reducerState.habitPhases;
             draft.habitBindings = reducerState.habitBindings;
+            draft.railRevisions = reducerState.railRevisions;
+            draft.templateRevisions = reducerState.templateRevisions;
+            draft.calendarRuleRevisions = reducerState.calendarRuleRevisions;
+            draft.habitBindingRevisions = reducerState.habitBindingRevisions;
+            draft.railTombstones = reducerState.railTombstones;
+            draft.templateTombstones = reducerState.templateTombstones;
+            draft.calendarRuleTombstones = reducerState.calendarRuleTombstones;
+            draft.habitBindingTombstones = reducerState.habitBindingTombstones;
+            draft.v05MigrationApplied = reducerState.v05MigrationApplied;
             for (const s of recovered) {
               if (!s.closed) draft.sessions[s.id] = s;
             }
             draft.ready = true;
           });
           resetUnsnapshotted(events.length);
+
+          // §10.5 · run the sentinel-revision migration once per
+          // device/dataset. Idempotent: backs off if the marker event
+          // was already replayed (e.g. from a sibling device).
+          await runV05RevisionMigration();
 
           // 4. Arm visibilitychange → snapshot if there are pending
           //    events. HMR may call hydrate more than once; clean up
