@@ -104,6 +104,8 @@ export function Review() {
   );
 
   const rails = useStore((s) => s.rails);
+  const railRevisions = useStore((s) => s.railRevisions);
+  const railTombstones = useStore((s) => s.railTombstones);
   const tasks = useStore((s) => s.tasks);
   const templates = useStore((s) => s.templates);
   const calendarRules = useStore((s) => s.calendarRules);
@@ -126,6 +128,8 @@ export function Review() {
   const stateSlice = useMemo(
     () => ({
       rails,
+      railRevisions,
+      railTombstones,
       tasks,
       templates,
       calendarRules,
@@ -137,6 +141,8 @@ export function Review() {
     }),
     [
       rails,
+      railRevisions,
+      railTombstones,
       tasks,
       templates,
       calendarRules,

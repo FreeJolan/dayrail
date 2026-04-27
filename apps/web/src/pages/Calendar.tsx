@@ -44,6 +44,8 @@ export function Calendar() {
   const templates = useStore((s) => s.templates);
   const tasks = useStore((s) => s.tasks);
   const rails = useStore((s) => s.rails);
+  const railRevisions = useStore((s) => s.railRevisions);
+  const railTombstones = useStore((s) => s.railTombstones);
   const calendarRules = useStore((s) => s.calendarRules);
   const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
   const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
@@ -102,7 +104,7 @@ export function Calendar() {
       apply: () => Promise<void>,
     ) => {
       const orphans = findOrphanTasksForTemplateSwitch(
-        { tasks, rails },
+        { tasks, rails, railRevisions, railTombstones },
         date,
         nextTemplateKey,
       );
@@ -116,7 +118,7 @@ export function Calendar() {
       }
       await apply();
     },
-    [tasks, rails, templates, unscheduleTask],
+    [tasks, rails, railRevisions, railTombstones, templates, unscheduleTask],
   );
 
   const handleOverride = useCallback(
