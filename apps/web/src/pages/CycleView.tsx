@@ -64,6 +64,7 @@ export function CycleView() {
   const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
   const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
   const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
+  const setSlotTaskOrder = useStore((s) => s.setSlotTaskOrder);
   const unscheduleTask = useStore((s) => s.unscheduleTask);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
   const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
@@ -267,6 +268,32 @@ export function CycleView() {
       );
     },
     [scheduleTaskToRail, sessionId, tasks],
+  );
+
+  const handleDropTaskAt = useCallback(
+    async (
+      taskId: string,
+      date: string,
+      railId: string,
+      orderedTaskIds: string[],
+    ) => {
+      // Same-slot reorder: just persist the new order.
+      // Cross-slot: schedule first (so the dragged task's `slot`
+      // points at the destination), then persist the order.
+      const existing = tasks[taskId]?.slot;
+      const sameSlot =
+        existing && existing.date === date && existing.railId === railId;
+      const slot = {
+        cycleId: existing?.cycleId ?? `cycle-${date}`,
+        date,
+        railId,
+      };
+      if (!sameSlot) {
+        await scheduleTaskToRail(taskId, slot, sessionId ?? undefined);
+      }
+      await setSlotTaskOrder(slot, orderedTaskIds, sessionId ?? undefined);
+    },
+    [scheduleTaskToRail, setSlotTaskOrder, sessionId, tasks],
   );
 
   const handleClearSlot = useCallback(
@@ -482,6 +509,7 @@ export function CycleView() {
                 onOverride={overrideDay}
                 onClearOverride={clearOverride}
                 onDropTask={handleDropTask}
+                onDropTaskAt={handleDropTaskAt}
                 onClearSlot={handleClearSlot}
                 onMarkTaskDone={handleMarkTaskDone}
                 onUndoTaskDone={handleUndoTaskDone}

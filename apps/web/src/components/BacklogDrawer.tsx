@@ -4,12 +4,14 @@ import {
   ArrowUpRight,
   Check,
   ChevronDown,
+  ChevronRight,
+  ChevronsDownUp,
   PanelRightClose,
   PanelRightOpen,
   Plus,
   Search,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { INBOX_LINE_ID, useStore, type Line, type Task } from '@dayrail/core';
@@ -44,6 +46,17 @@ export function BacklogDrawer({ open, onToggle }: Props) {
   const [query, setQuery] = useState('');
   const [adding, setAdding] = useState(false);
   const [groupBy, setGroupBy] = useState<BacklogGroupBy>('none');
+  // Per-group collapse state. Lives in component state (not store) —
+  // backlog is a session-scoped tool surface; on next open the user
+  // gets a fresh fully-expanded view, which fits the "no hidden
+  // state" stance. Keys re-namespace by groupBy so flipping mode
+  // doesn't leak collapse from one dimension to another.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  // Reset whenever the grouping dimension changes — same key string
+  // can mean different things across modes.
+  useEffect(() => {
+    setCollapsed(new Set());
+  }, [groupBy]);
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
@@ -209,10 +222,39 @@ export function BacklogDrawer({ open, onToggle }: Props) {
           </div>
 
           <div className="flex items-center gap-1.5 px-4 pb-3">
-            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            <span className="shrink-0 whitespace-nowrap font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
               分组
             </span>
-            <GroupBySwitch value={groupBy} onChange={setGroupBy} />
+            <div className="min-w-0 shrink">
+              <GroupBySwitch value={groupBy} onChange={setGroupBy} />
+            </div>
+            {groupBy !== 'none' && groups.length > 0 && (() => {
+              const allCollapsed = groups.every((g) => collapsed.has(g.key));
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCollapsed(
+                      allCollapsed
+                        ? new Set()
+                        : new Set(groups.map((g) => g.key)),
+                    );
+                  }}
+                  aria-label={allCollapsed ? '展开全部' : '折叠全部'}
+                  title={allCollapsed ? '展开全部' : '折叠全部'}
+                  className="ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+                >
+                  {allCollapsed ? (
+                    <ChevronsDownUp
+                      className="h-3.5 w-3.5 rotate-180"
+                      strokeWidth={1.8}
+                    />
+                  ) : (
+                    <ChevronsDownUp className="h-3.5 w-3.5" strokeWidth={1.8} />
+                  )}
+                </button>
+              );
+            })()}
           </div>
 
           {filtered.length === 0 ? (
@@ -236,30 +278,60 @@ export function BacklogDrawer({ open, onToggle }: Props) {
             </ul>
           ) : (
             <div className="flex-1 overflow-y-auto px-2">
-              {groups.map((g) => (
-                <section key={g.key} className="pb-2 pt-1">
-                  <div className="flex items-baseline gap-2 px-2 pb-1 pt-1">
-                    <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-                      {g.label}
-                    </span>
-                    <span className="font-mono text-2xs tabular-nums text-ink-tertiary/70">
-                      {g.items.length}
-                    </span>
-                  </div>
-                  <ul className="flex flex-col">
-                    {g.items.map((task) => (
-                      <li key={task.id} className="px-2 py-1">
-                        <BacklogCard
-                          task={task}
-                          projectName={linesMap[task.lineId]?.name}
-                          projectColor={linesMap[task.lineId]?.color}
-                          onOpen={() => setDetailTaskId(task.id)}
+              {groups.map((g) => {
+                const isCollapsed = collapsed.has(g.key);
+                return (
+                  <section key={g.key} className="pb-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCollapsed((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(g.key)) next.delete(g.key);
+                          else next.add(g.key);
+                          return next;
+                        });
+                      }}
+                      aria-expanded={!isCollapsed}
+                      className="flex w-full items-baseline gap-2 rounded-sm px-2 pb-1 pt-1 text-left transition hover:bg-surface-2"
+                    >
+                      {isCollapsed ? (
+                        <ChevronRight
+                          aria-hidden
+                          className="h-3 w-3 self-center text-ink-tertiary"
+                          strokeWidth={1.8}
                         />
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              ))}
+                      ) : (
+                        <ChevronDown
+                          aria-hidden
+                          className="h-3 w-3 self-center text-ink-tertiary"
+                          strokeWidth={1.8}
+                        />
+                      )}
+                      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                        {g.label}
+                      </span>
+                      <span className="font-mono text-2xs tabular-nums text-ink-tertiary/70">
+                        {g.items.length}
+                      </span>
+                    </button>
+                    {!isCollapsed && (
+                      <ul className="flex flex-col">
+                        {g.items.map((task) => (
+                          <li key={task.id} className="px-2 py-1">
+                            <BacklogCard
+                              task={task}
+                              projectName={linesMap[task.lineId]?.name}
+                              projectColor={linesMap[task.lineId]?.color}
+                              onOpen={() => setDetailTaskId(task.id)}
+                            />
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                );
+              })}
             </div>
           )}
 

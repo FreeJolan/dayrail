@@ -1,5 +1,11 @@
 import { clsx } from 'clsx';
-import { forwardRef, useState, type ReactNode } from 'react';
+import {
+  forwardRef,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   Archive,
   ArrowUpRight,
@@ -61,6 +67,15 @@ interface Props {
   onToggleSubItem?: (taskId: string, subItemId: string) => void;
   onQuickCreate?: (date: string, railId: string, title: string) => void;
   lineLookup?: (taskId: string) => { name: string; color?: RailColor } | undefined;
+  /** §4.1 v0.4.4 · per-slot reorder. Fires when a task pill is dropped
+   *  on a between-pill insertion line. The callback receives the
+   *  **final desired visual order** for the destination slot — the UI
+   *  is the only layer that knows the slot's current visual order,
+   *  so we resolve the drop position into a concrete ordered list
+   *  here rather than asking the store to guess. The td-level drop
+   *  (`CycleSection`'s onDropTask) handles end-of-slot drops without
+   *  a position (legacy append behavior). */
+  onDropTaskAt?: (taskId: string, orderedTaskIds: string[]) => void;
 }
 
 export function CycleCell({
@@ -79,7 +94,44 @@ export function CycleCell({
   onToggleSubItem,
   onQuickCreate,
   lineLookup,
+  onDropTaskAt,
 }: Props) {
+  // Insertion-line index for the drag-hover state. `null` = no
+  // preview line; otherwise the line draws ABOVE the pill at this
+  // index (so `tasks.length` means "below the last pill").
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+
+  // Wipe the line on dragend / drop anywhere (mirrors the per-cell
+  // hover-drop pattern in CycleSection).
+  useEffect(() => {
+    if (!onDropTaskAt) return;
+    const clear = () => setHoverIndex(null);
+    window.addEventListener('dragend', clear);
+    window.addEventListener('drop', clear, true);
+    return () => {
+      window.removeEventListener('dragend', clear);
+      window.removeEventListener('drop', clear, true);
+    };
+  }, [onDropTaskAt]);
+
+  // Wrapper-owned drag-over / drop. Owning the whole cell rectangle
+  // (not per-pill slices) means the 4px flex `gap-1` gutters between
+  // pills are valid hit areas too — drops there used to leak to the
+  // `<td>` handler, which short-circuited same-rail/date as a no-op
+  // ("the drop did nothing"). cursor Y vs each pill's bounding rect
+  // picks the insertion gap.
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const computeIndexFromY = (clientY: number): number => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return tasks.length;
+    const pills = wrapper.querySelectorAll<HTMLElement>('[data-pill-row]');
+    for (let i = 0; i < pills.length; i++) {
+      const rect = pills[i]!.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) return i;
+    }
+    return tasks.length;
+  };
+
   if (tasks.length === 0) {
     return (
       <EmptyCell
@@ -91,37 +143,81 @@ export function CycleCell({
     );
   }
   return (
-    <div className="group/cell relative flex h-full min-h-[44px] flex-col gap-1 rounded-sm bg-surface-1 px-1 py-1 transition hover:bg-surface-2">
-      {tasks.map((t) => (
-        <TaskPill
+    <div
+      ref={wrapperRef}
+      onDragOver={
+        onDropTaskAt
+          ? (e) => {
+              if (
+                !Array.from(e.dataTransfer.types).includes(TASK_DRAG_MIME)
+              )
+                return;
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = 'move';
+              const idx = computeIndexFromY(e.clientY);
+              if (hoverIndex !== idx) setHoverIndex(idx);
+            }
+          : undefined
+      }
+      onDrop={
+        onDropTaskAt
+          ? (e) => {
+              const taskId = e.dataTransfer.getData(TASK_DRAG_MIME);
+              if (!taskId) return;
+              e.preventDefault();
+              e.stopPropagation();
+              const idx = computeIndexFromY(e.clientY);
+              setHoverIndex(null);
+              const ordered = computeOrderedIds(tasks, taskId, idx);
+              const currentIds = tasks.map((x) => x.taskId);
+              if (sameOrder(currentIds, ordered)) return;
+              onDropTaskAt(taskId, ordered);
+            }
+          : undefined
+      }
+      className="group/cell relative flex h-full min-h-[44px] flex-col gap-1 rounded-sm bg-surface-1 px-1 py-1 transition hover:bg-surface-2"
+    >
+      {tasks.map((t, i) => (
+        <PillRow
           key={t.taskId}
-          task={t}
-          color={color}
-          line={lineLookup?.(t.taskId)}
-          {...(onClearTask && { onClear: () => onClearTask(t.taskId) })}
-          {...(onMarkTaskDone && {
-            onMarkDone: () => onMarkTaskDone(t.taskId),
-          })}
-          {...(onUndoTaskDone && {
-            onUndoDone: () => onUndoTaskDone(t.taskId),
-          })}
-          {...(onArchiveTask && {
-            onArchive: () => onArchiveTask(t.taskId),
-          })}
-          {...(onUnarchiveTask && {
-            onUnarchive: () => onUnarchiveTask(t.taskId),
-          })}
-          {...(onOpenTaskDetail && {
-            onOpenDetail: () => onOpenTaskDetail(t.taskId),
-          })}
-          {...(onOpenTaskProject && {
-            onOpenProject: () => onOpenTaskProject(t.taskId),
-          })}
-          {...(onToggleSubItem && {
-            onToggleSubItem: (subItemId: string) =>
-              onToggleSubItem(t.taskId, subItemId),
-          })}
-        />
+          insertEdge={
+            hoverIndex === i
+              ? 'top'
+              : hoverIndex === i + 1
+                ? 'bottom'
+                : null
+          }
+        >
+          <TaskPill
+            task={t}
+            color={color}
+            line={lineLookup?.(t.taskId)}
+            {...(onClearTask && { onClear: () => onClearTask(t.taskId) })}
+            {...(onMarkTaskDone && {
+              onMarkDone: () => onMarkTaskDone(t.taskId),
+            })}
+            {...(onUndoTaskDone && {
+              onUndoDone: () => onUndoTaskDone(t.taskId),
+            })}
+            {...(onArchiveTask && {
+              onArchive: () => onArchiveTask(t.taskId),
+            })}
+            {...(onUnarchiveTask && {
+              onUnarchive: () => onUnarchiveTask(t.taskId),
+            })}
+            {...(onOpenTaskDetail && {
+              onOpenDetail: () => onOpenTaskDetail(t.taskId),
+            })}
+            {...(onOpenTaskProject && {
+              onOpenProject: () => onOpenTaskProject(t.taskId),
+            })}
+            {...(onToggleSubItem && {
+              onToggleSubItem: (subItemId: string) =>
+                onToggleSubItem(t.taskId, subItemId),
+            })}
+          />
+        </PillRow>
       ))}
       {onQuickCreate && (
         <CellAddBar
@@ -129,6 +225,63 @@ export function CycleCell({
           railId={railId}
           railName={railName}
           onQuickCreate={onQuickCreate}
+        />
+      )}
+    </div>
+  );
+}
+
+function sameOrder(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+// Resolve a drop into the destination slot's final visual order.
+// Handles both same-slot reorder (dragged task already in `tasks`,
+// remove + reinsert with index-shift compensation) and cross-slot
+// drop (dragged task absent, plain insert at clamped position).
+function computeOrderedIds(
+  tasks: SlotTaskSummary[],
+  draggedId: string,
+  position: number,
+): string[] {
+  const ids = tasks.map((t) => t.taskId);
+  const fromIdx = ids.indexOf(draggedId);
+  // Same-slot: removing the dragged task shifts every later index
+  // down by 1, so a gap that pointed past the source needs to follow.
+  let to = position;
+  if (fromIdx >= 0 && fromIdx < to) to -= 1;
+  const without = ids.filter((id) => id !== draggedId);
+  const clamped = Math.max(0, Math.min(to, without.length));
+  return [...without.slice(0, clamped), draggedId, ...without.slice(clamped)];
+}
+
+// Passive pill-row renderer. The CycleCell wrapper owns drag-over /
+// drop (so the gap-1 gutters between pills count as valid hit areas
+// too). PillRow's only job is to render the 2px insertion bar on the
+// matching edge when the cell-wrapper says so, and to mark itself
+// with `data-pill-row` for the wrapper's cursor-Y → index lookup.
+function PillRow({
+  insertEdge,
+  children,
+}: {
+  insertEdge: 'top' | 'bottom' | null;
+  children: ReactNode;
+}) {
+  return (
+    <div className="relative" data-pill-row>
+      {insertEdge === 'top' && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute -top-0.5 left-1 right-1 h-0.5 rounded-full bg-cta"
+        />
+      )}
+      {children}
+      {insertEdge === 'bottom' && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute -bottom-0.5 left-1 right-1 h-0.5 rounded-full bg-cta"
         />
       )}
     </div>

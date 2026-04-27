@@ -216,6 +216,24 @@ interface DayRailActions {
     slot: { cycleId: string; date: string; railId: string },
     sessionId?: string,
   ) => Promise<void>;
+  /** §4.1 v0.4.4 · write the user-defined order for one slot. The
+   *  caller passes the **final desired visual order** as an array of
+   *  task ids; this action assigns `slotOrder = 0..N-1` to each.
+   *
+   *  Why an explicit ordered list rather than `(taskId, position)`?
+   *  The store has no way to compute the slot's current visual order
+   *  without duplicating the cycleFromStore sort (state → priority →
+   *  insertion). The UI already knows the visual order, so the
+   *  cleanest API is "tell me the new order, I'll persist it."
+   *
+   *  All N writes share `sessionId` so session-level ⤺ Undo rolls
+   *  the whole reorder back as one batch. Tasks already at the right
+   *  index are skipped (no redundant events). */
+  setSlotTaskOrder: (
+    slot: { cycleId: string; date: string; railId: string },
+    orderedTaskIds: string[],
+    sessionId?: string,
+  ) => Promise<void>;
   /** Mode B: schedule the task into a free time window. Creates an
    *  AdhocEvent with `taskId` back-reference. Clears `task.slot` (if
    *  previously Rail-bound) so the two modes stay mutually exclusive. */
@@ -1431,6 +1449,32 @@ export const useStore = create<DayRailStore>()(
       set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
     };
 
+    // §4.1 v0.4.4 · persist the caller-supplied visual order for a
+    // slot. Writes `slotOrder = 0..N-1` to the listed tasks, skipping
+    // any task that's already at its target index so no redundant
+    // `task.updated` events fire. The caller is the source of truth
+    // for what order the user just intended — the store doesn't try
+    // to merge with prior state (a no-op same-position drag is
+    // legitimately just a no-op).
+    const persistSlotOrder = async (
+      orderedTaskIds: string[],
+      sessionId: string | undefined,
+    ): Promise<void> => {
+      for (let i = 0; i < orderedTaskIds.length; i++) {
+        const id = orderedTaskIds[i]!;
+        const t = get().tasks[id];
+        if (!t || t.status === 'deleted') continue;
+        if (t.slotOrder === i) continue;
+        const ev = await appendEvent({
+          aggregateId: `task:${id}`,
+          type: 'task.updated',
+          payload: { id, slotOrder: i },
+          sessionId,
+        });
+        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
+      }
+    };
+
     // §5.5.6 · internal helper · persist a newly-recorded shift and
     // queue it for the Reason toast. Shared by the reschedule and
     // unschedule emitters so both overdue-mutation paths end with the
@@ -2110,6 +2154,18 @@ export const useStore = create<DayRailStore>()(
           isAutoHabit,
           ...(sessionId && { sessionId }),
         });
+        if (sessionId) await touchSession(sessionId);
+        afterMutation();
+      },
+
+      setSlotTaskOrder: async (slot, orderedTaskIds, sessionId) => {
+        // The caller (CycleCell drag handler) already filtered to
+        // tasks bound to this slot. We don't re-validate `slot` here
+        // beyond it being part of the action signature for clarity
+        // and future-proofing if a debugger / event-trace ever wants
+        // to know which slot a reorder belonged to.
+        void slot;
+        await persistSlotOrder(orderedTaskIds, sessionId);
         if (sessionId) await touchSession(sessionId);
         afterMutation();
       },

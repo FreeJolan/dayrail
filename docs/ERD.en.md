@@ -398,6 +398,7 @@ Cells don't have a single popover for the whole `(date, rail)` tuple. Each task 
 - **Empty Slot** (Template active, no task): dashed border placeholder; hover turns solid. Clicking anywhere in the cell opens a compact popover with an inline `QuickCreate` input (Enter = append a new pending Task to the current `(date, rail)`; pointer-out-of-cell = cancel). No `[New Task in Project]` / `[Pick existing Task]` sub-menu — that was over-engineered for the ~95% case. Pick existing lives in the Backlog drawer; new-in-project lives on the Tasks page.
 - **Filled Slot** (1+ tasks):
   - Tasks render as a vertical stack of pills, sorted by: state rank (`pending < done < deferred < archived`) → priority rank (`P0 < P1 < P2 < unset`) → stable insertion order.
+  - **User-controlled drag ordering (v0.4.4)**: a 2px highlighted **insertion line** appears between pills on dragover; the drop fixes the position. Backed by `Task.slotOrder?: number` — when **any** task in a slot carries `slotOrder`, the whole slot sorts by `slotOrder` asc (tasks without one fall to the bottom in stable insertion order), entirely overriding the derived sort above. Once the user has arranged a slot, the system never second-guesses. Slots where no task has `slotOrder` keep using the derived sort, so legacy data needs zero migration. Same-slot drags fire `reorderTaskInSlot` (no schedule event); cross-slot drops at a specific position fire `scheduleTaskToRail` with a `position` arg that reseats the destination slot. Both run under the Cycle View Edit Session, so ⤺ Undo rolls the whole batch back.
   - **Each pill is its own click target** with its own popover. The popover is strictly a **status-on-this-occurrence** surface — the actions change depending on the task's current state:
     - `pending` → `[Mark done] · [Archive] · [Sub-items checklist with per-row toggle] · [Detail] · [Open project] · [Remove scheduling]`
     - `done` → `[Undo done] · [Detail] · [Open project] · [Remove scheduling]` (the undo flips `status` → pending + clears `doneAt`, routed through the Edit Session so the ⤺ button can take it back with the rest of the batch)
@@ -1993,6 +1994,13 @@ type Task = {
   //   Mode B, free time    ─▶ slot = empty; an AdhocEvent.taskId points back
   //   Unscheduled          ─▶ slot = empty AND no AdhocEvent references the task
   slot?: { cycleId: string; date: string; railId: string };
+  // v0.4.4 · per-slot user-defined ordering. When any task in a slot
+  // carries `slotOrder`, the whole slot sorts by `slotOrder` asc (tasks
+  // without one fall to the bottom in stable insertion order); when no
+  // task in the slot has it, the §5.3 derived sort (state → priority →
+  // insertion) applies. New tasks get no `slotOrder`, so legacy data
+  // needs zero migration.
+  slotOrder?: number;
 };
 
 type SubItem = {
