@@ -7,6 +7,7 @@
 // ranges; the derivation is the same.
 
 import type { DayRailState, Task } from '@dayrail/core';
+import { railAtDate, railsActiveOn } from '@dayrail/core';
 import type {
   HeatmapRow,
   HeatmapState,
@@ -43,6 +44,8 @@ export function deriveReviewData(
   state: Pick<
     DayRailState,
     | 'rails'
+    | 'railRevisions'
+    | 'railTombstones'
     | 'tasks'
     | 'templates'
     | 'calendarRules'
@@ -104,27 +107,48 @@ export function deriveReviewData(
           .map((b) => b.railId),
       )
     : null;
-  const rails = Object.values(state.rails).filter(
-    (r) => !railIdsForHabit || railIdsForHabit.has(r.id),
-  );
+
+  // §10.5 Phase 3 · iterate every rail-id that's active on any date
+  // in the window via railsActiveOn(date), then resolve the rail's
+  // revision per date when checking templateKey. Past dates respect
+  // historical revisions (rail times / templateKey at that date),
+  // not the current-state mirror.
+  type RailRowSeed = {
+    railId: string;
+    representativeRevision: ReturnType<typeof railAtDate>;
+    templateKeyForLabel: string;
+  };
+  const railSeeds = new Map<string, RailRowSeed>();
+  for (const date of dates) {
+    for (const { railId, revision } of railsActiveOn(state, date)) {
+      if (railIdsForHabit && !railIdsForHabit.has(railId)) continue;
+      if (railSeeds.has(railId)) continue;
+      railSeeds.set(railId, {
+        railId,
+        representativeRevision: revision,
+        templateKeyForLabel: revision.templateKey,
+      });
+    }
+  }
   const rows: HeatmapRow[] = [];
   let totalSlots = 0;
   let totalDone = 0;
 
-  for (const rail of rails) {
+  for (const seed of railSeeds.values()) {
     const byDate: Record<string, HeatmapState> = {};
     let frequency = 0; // how many dates this rail applied to
 
     for (const date of dates) {
       const templateKey = templateByDate.get(date);
-      const applies = templateKey === rail.templateKey;
+      const railRev = railAtDate(state, seed.railId, date);
+      const applies = railRev != null && templateKey === railRev.templateKey;
       if (!applies) {
         byDate[date] = 'empty';
         continue;
       }
       frequency++;
 
-      const key = `${rail.id}|${date}`;
+      const key = `${seed.railId}|${date}`;
       const task = taskByKey.get(key);
 
       let cell: HeatmapState;
@@ -145,7 +169,7 @@ export function deriveReviewData(
         // otherwise be `unmarked`.
         if (
           cell === 'unmarked' &&
-          shiftedFromKey.has(`${rail.id}|${date}`)
+          shiftedFromKey.has(`${seed.railId}|${date}`)
         ) {
           cell = 'shifted';
         }
@@ -158,13 +182,15 @@ export function deriveReviewData(
     }
 
     if (frequency === 0) continue; // rail never applied in range
-    const tpl = state.templates[rail.templateKey];
+    const repRev = seed.representativeRevision;
+    if (!repRev) continue;
+    const tpl = state.templates[seed.templateKeyForLabel];
     rows.push({
-      railId: rail.id,
-      railName: rail.name,
-      color: rail.color as RailColor,
-      templateKey: rail.templateKey,
-      templateName: tpl?.name ?? rail.templateKey,
+      railId: seed.railId,
+      railName: repRev.name,
+      color: repRev.color as RailColor,
+      templateKey: seed.templateKeyForLabel,
+      templateName: tpl?.name ?? seed.templateKeyForLabel,
       byDate,
     });
   }
@@ -186,9 +212,9 @@ export function deriveReviewData(
     if (tb !== ta) return tb - ta;
     if (a.templateKey !== b.templateKey)
       return a.templateKey.localeCompare(b.templateKey);
-    const ra = state.rails[a.railId];
-    const rb = state.rails[b.railId];
-    return (ra?.startMinutes ?? 0) - (rb?.startMinutes ?? 0);
+    const sa = railSeeds.get(a.railId)?.representativeRevision?.startMinutes ?? 0;
+    const sb = railSeeds.get(b.railId)?.representativeRevision?.startMinutes ?? 0;
+    return sa - sb;
   });
 
   const shiftTags = aggregateShiftTags(state, dates);

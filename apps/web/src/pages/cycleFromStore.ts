@@ -8,10 +8,14 @@
 
 import type {
   DayRailState,
-  Rail,
+  RailRevision,
   Task,
 } from '@dayrail/core';
-import { resolveTemplateForDate, singleDateRuleId } from '@dayrail/core';
+import {
+  railsActiveOn,
+  resolveTemplateForDate,
+  singleDateRuleId,
+} from '@dayrail/core';
 import type {
   CycleDay,
   CycleSlot,
@@ -97,6 +101,8 @@ export function deriveCycleFromStore(
     | 'calendarRules'
     | 'calendarRuleRevisions'
     | 'calendarRuleTombstones'
+    | 'railRevisions'
+    | 'railTombstones'
   >,
   startDate: Date,
 ): DerivedCycle {
@@ -116,13 +122,27 @@ export function deriveCycleFromStore(
   const startIso = days[0]!.date;
   const endIso = days[6]!.date;
 
-  // Rails grouped by template — CycleSection reads `railsForDay(day)`
-  // which hits this map by the day's templateKey.
+  // §10.5 Phase 3 · resolve rails per-date via `railsActiveOn(date)`
+  // so past Cycle Views render rails with their historical appearance.
+  // For each (templateKey, railId) pair, use the FIRST day in the
+  // cycle on which the rail is active under that template — past
+  // cycles whose start dates predate any later edit lock to the
+  // earlier revision; current / future cycles pick up new revisions
+  // from their start date forward. Per-cell rendering still resolves
+  // through `task.slot.date`, so any mid-cycle rail change reads the
+  // right revision at the cell level too.
   const railsByTemplate: Record<string, EditableRail[]> = {};
-  for (const rail of Object.values(state.rails)) {
-    const list = railsByTemplate[rail.templateKey] ?? [];
-    list.push(railToEditable(rail));
-    railsByTemplate[rail.templateKey] = list;
+  const seen = new Set<string>();
+  for (const day of days) {
+    for (const { railId, revision } of railsActiveOn(state, day.date)) {
+      if (revision.templateKey !== day.templateKey) continue;
+      const dedupe = `${day.templateKey}|${railId}`;
+      if (seen.has(dedupe)) continue;
+      seen.add(dedupe);
+      const list = railsByTemplate[day.templateKey] ?? [];
+      list.push(railRevisionToEditable(revision));
+      railsByTemplate[day.templateKey] = list;
+    }
   }
   for (const key of Object.keys(railsByTemplate)) {
     railsByTemplate[key]!.sort((a, b) => a.startMin - b.startMin);
@@ -217,16 +237,16 @@ export function deriveCycleFromStore(
   return { cycle, railsByTemplate };
 }
 
-function railToEditable(rail: Rail): EditableRail {
-  const endMin = rail.startMinutes + rail.durationMinutes;
+function railRevisionToEditable(rev: RailRevision): EditableRail {
+  const endMin = rev.startMinutes + rev.durationMinutes;
   return {
-    id: rail.id,
-    name: rail.name,
-    subtitle: rail.subtitle,
-    startMin: rail.startMinutes,
+    id: rev.railId,
+    name: rev.name,
+    subtitle: rev.subtitle,
+    startMin: rev.startMinutes,
     endMin,
-    color: rail.color as RailColor,
-    showInCheckin: rail.showInCheckin,
+    color: rev.color as RailColor,
+    showInCheckin: rev.showInCheckin,
   };
 }
 
@@ -266,17 +286,23 @@ function computeTopLines(
  *  that does NOT belong to the new template — they'd still carry
  *  slot metadata, but no Cycle cell would render them. Callers
  *  (`CycleView`'s override handler) use this to gate the switch
- *  behind a small confirmation + batch `task.unscheduled`. */
+ *  behind a small confirmation + batch `task.unscheduled`.
+ *
+ *  Phase 3: resolves "rails belonging to nextTemplateKey on this date"
+ *  via the revision tables, so an override on a past date checks
+ *  against the rail roster as it existed on that date. */
 export function findOrphanTasksForTemplateSwitch(
-  state: Pick<DayRailState, 'tasks' | 'rails'>,
+  state: Pick<
+    DayRailState,
+    'tasks' | 'rails' | 'railRevisions' | 'railTombstones'
+  >,
   date: string,
   nextTemplateKey: string,
 ): Task[] {
-  const nextRailIds = new Set(
-    Object.values(state.rails)
-      .filter((r) => r.templateKey === nextTemplateKey)
-      .map((r) => r.id),
-  );
+  const nextRailIds = new Set<string>();
+  for (const { railId, revision } of railsActiveOn(state, date)) {
+    if (revision.templateKey === nextTemplateKey) nextRailIds.add(railId);
+  }
   return Object.values(state.tasks).filter((t) => {
     if (t.status === 'archived' || t.status === 'deleted') return false;
     if (!t.slot) return false;

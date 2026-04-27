@@ -542,9 +542,9 @@ describe('materializer · revision-frozen past', () => {
       habitBindings: mapById([makeBinding({ habitId: 'h1', railId: 'rA' })]),
       calendarRules: mapById([weekdayRule('workday', [1, 2, 3, 4, 5])]),
     });
-    baseState.railTombstones = {
+    (baseState.railTombstones as Record<string, { effectiveFrom: string; at: number }>) = {
       rA: { effectiveFrom: '2026-04-15', at: 0 },
-    } as typeof baseState.railTombstones;
+    };
 
     const rec = makeRecorder();
     await materializeAutoTasksImpl(baseState, rec.upsert, {

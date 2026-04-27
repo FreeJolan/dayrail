@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { MoreHorizontal } from 'lucide-react';
 import {
+  railAtDate,
   selectCheckinQueue,
   selectTodayTimeline,
   toIsoDate,
@@ -123,15 +124,21 @@ export function TodayTrack() {
     (taskId: string, action: CheckInAction) => {
       const task = tasks[taskId];
       if (!task) return;
-      const rail = task.slot ? rails[task.slot.railId] : undefined;
+      const railRev = task.slot
+        ? railAtDate(
+            { railRevisions, railTombstones },
+            task.slot.railId,
+            task.slot.date,
+          )
+        : undefined;
       fire({
         taskId,
-        ...(rail && { railId: rail.id }),
-        displayName: rail?.name ?? task.title,
+        ...(railRev && { railId: railRev.railId }),
+        displayName: railRev?.name ?? task.title,
         action,
       });
     },
-    [tasks, rails, fire],
+    [tasks, railRevisions, railTombstones, fire],
   );
 
   // Settled task → pending. No Reason toast — this is the "undo, I

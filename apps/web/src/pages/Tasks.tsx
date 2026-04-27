@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import {
   INBOX_LINE_ID,
+  railAtDate,
   selectCurrentHabitPhase,
   selectHabitPhasesByLine,
   useStore,
@@ -2417,17 +2418,24 @@ function ScheduleInfo({ task }: { task: Task }) {
   //   Mode B — an active AdhocEvent with `taskId = task.id`:
   //              render "date · HH:MM–HH:MM"
   //   Neither → "— 未排期".
-  const rails = useStore((s) => s.rails);
+  // §10.5 Phase 3 · the rail label resolves via railAtDate(slot.date)
+  // so a past slot shows the rail's name as it was on that date.
+  const railRevisions = useStore((s) => s.railRevisions);
+  const railTombstones = useStore((s) => s.railTombstones);
   const adhocs = useStore((s) => s.adhocEvents);
 
   if (task.slot) {
-    const rail = rails[task.slot.railId];
+    const rev = railAtDate(
+      { railRevisions, railTombstones },
+      task.slot.railId,
+      task.slot.date,
+    );
     return (
       <span className="inline-flex items-center gap-1 font-mono text-2xs tabular-nums text-ink-secondary">
         <CalendarIcon className="h-2.5 w-2.5" strokeWidth={1.8} />
         {task.slot.date.slice(5)}
         <span className="text-ink-tertiary">·</span>
-        {rail?.name ?? task.slot.railId}
+        {rev?.name ?? task.slot.railId}
       </span>
     );
   }

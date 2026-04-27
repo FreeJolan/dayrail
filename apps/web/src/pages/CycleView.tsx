@@ -9,6 +9,7 @@ import {
 import {
   INBOX_LINE_ID,
   materializeAutoTasksForCycle,
+  railAtDate,
   useStore,
   type EditSession,
 } from '@dayrail/core';
@@ -55,6 +56,8 @@ export function CycleView() {
 
   const templates = useStore((s) => s.templates);
   const rails = useStore((s) => s.rails);
+  const railRevisions = useStore((s) => s.railRevisions);
+  const railTombstones = useStore((s) => s.railTombstones);
   const tasks = useStore((s) => s.tasks);
   const lines = useStore((s) => s.lines);
   const calendarRules = useStore((s) => s.calendarRules);
@@ -112,6 +115,8 @@ export function CycleView() {
         {
           templates,
           rails,
+          railRevisions,
+          railTombstones,
           tasks,
           lines,
           calendarRules,
@@ -123,6 +128,8 @@ export function CycleView() {
     [
       templates,
       rails,
+      railRevisions,
+      railTombstones,
       tasks,
       lines,
       calendarRules,
@@ -155,7 +162,7 @@ export function CycleView() {
       apply: () => Promise<void>,
     ) => {
       const orphans = findOrphanTasksForTemplateSwitch(
-        { tasks, rails },
+        { tasks, rails, railRevisions, railTombstones },
         date,
         nextTemplateKey,
       );
@@ -170,7 +177,7 @@ export function CycleView() {
       }
       await apply();
     },
-    [tasks, rails, templates, unscheduleTask, sessionId],
+    [tasks, rails, railRevisions, railTombstones, templates, unscheduleTask, sessionId],
   );
 
   const overrideDay = useCallback(
@@ -257,16 +264,22 @@ export function CycleView() {
     (taskId: string) => {
       const task = tasks[taskId];
       if (!task) return;
-      const rail = task.slot ? rails[task.slot.railId] : undefined;
+      const railRev = task.slot
+        ? railAtDate(
+            { railRevisions, railTombstones },
+            task.slot.railId,
+            task.slot.date,
+          )
+        : undefined;
       fire({
         taskId,
-        ...(rail && { railId: rail.id }),
-        displayName: rail?.name ?? task.title,
+        ...(railRev && { railId: railRev.railId }),
+        displayName: railRev?.name ?? task.title,
         ...(sessionId && { sessionId }),
         action: 'done',
       });
     },
-    [tasks, rails, fire, sessionId],
+    [tasks, railRevisions, railTombstones, fire, sessionId],
   );
 
   const handleSetTaskPriority = useCallback(
