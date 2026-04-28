@@ -1195,6 +1195,23 @@ DayRail **不运营账号后端**。没有 DayRail 登录、没有托管的用�
 3. `beforeunload` 期间 `fetch(..., { keepalive: true })`（best-effort；正确性兜底不靠这条 —— 真正的正确性保证在**另一台设备**的启动闸门）。
 4. Settings → 同步 里的 **立即同步** 按钮（手动）。
 
+**拉取触发**（v0.6.1 · 2026-04-28 补）
+
+仅靠启动闸门有两类场景兜不住：① 用户开着 tab 一整天，期间另一台设备推过新版本；② 用户首次在新设备 Connect Google Drive，而 Drive 上已经有别的设备写过数据。两个补充触发器分别对应这两个洞，复用启动闸门的四分支决策表，但 UI 改成**非阻塞 modal 浮层**而不是全屏 splash。
+
+1. **可见性探测**（visibility probe）—— `visibilitychange === 'visible'`（tab 切回前台 / 解锁屏幕）。**5 秒节流**，避免快速切 tab 抖动时反复打 Drive。只在已连接同步的设备上触发；尊重你设的 `启动时同步` 选择（"自动拉取最新"在这里同样生效）。结果分支：
+   - `equal` / `no-remote` → 静默，无 UI。
+   - `linear-lead` + 记住的选择是 `自动拉取` → 短暂浮层 `正在拉取最新数据…`，随后 OPFS reset + reload（与启动闸门的自动拉路径完全一致）。
+   - `linear-lead` + 记住的选择是 `每次问我` → modal 确认卡（沿用启动闸门的 LinearConfirmPanel）。
+   - `diverged` → modal 冲突卡（沿用启动闸门的 DivergedPanel）。
+   - `offline` → 顶栏 `⚠ 同步离线` 指示灯闪一下；不弹 modal。
+
+2. **连接探测**（connect probe）—— 在 Settings → Connect Google Drive 流程里，`connectDrive()` resolve 之后**立即**触发。补的洞是："新设备启用同步前还没经过 BootGate，首次 push 会在不知远端有数据的情况下覆盖远端"。两分支：
+   - **远端没有 canonical 主文件**（这个 Google 账号下第一台设备）→ 静默推一次本地当前 state 作初始 snapshot，把 `lastPulledSnapshotId` 设为这次新生成的 snapshotId，之后的 lineage 才有 baseline。
+   - **远端已有 canonical**（你正在接入第二/更后的设备）→ 弹 modal 三选一对话框：`拉取云端（推荐）` / `用本地覆盖云端` / `取消连接`。"取消"会调 `disconnectDrive()` revoke 刚发的 token、不动数据。"覆盖"在 push 之前先把远端 bundle 下载到 Downloads（`dayrail-remote-conflict-{ts}.json`），与启动闸门冲突卡的可反悔语义一致。**对话框是 modal，用户必须在三个里挑一个才能进主界面** —— 否则正好回到这个触发器要避免的那个失败模式。
+
+两个 probe 的 modal 浮层 UI 集中在一个新组件 `<RuntimeSyncDialog />`，与 `<App />` 同级挂载。启动闸门保留 splash 形态因为它必须**在** React 路由挂载之前跑；运行时 probe 是**之后**触发，因此用非阻塞浮层即可、视觉打断也更轻。
+
 **启动闸门**（load-bearing UX）
 
 React 主路由（`App.tsx`）在闸门 resolve 之前**不挂载**。闸门期间屏幕上只有一个极简 splash（`DayRail` logo + `正在同步…` + spinner）。这是抵御"我已经在旧数据上操作了，事后才被告知"这一失败模式的核心保证。

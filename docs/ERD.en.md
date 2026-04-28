@@ -1269,6 +1269,23 @@ Steady-state UX: **connect once, never see a Google sign-in page again** for the
 3. `beforeunload` with `fetch(..., { keepalive: true })` (best-effort; not relied upon for correctness — the boot gate of the *other* device is the real correctness guarantee).
 4. Manual **立即同步** button in Settings → 同步.
 
+**Pull triggers** (v0.6.1 · added 2026-04-28)
+
+The boot gate alone is insufficient when the user keeps the tab open for hours and another device pushes meanwhile, or when the user first connects a new device that already has data on Drive. Two extra triggers fix both cases; both reuse the boot-gate four-branch decision table but render their dialog as a non-blocking modal overlay instead of a full-screen splash.
+
+1. **Visibility probe** — `visibilitychange === 'visible'` (tab returns to foreground / device wakes from screen lock). 5-second throttle so rapid tab-switching doesn't spam Drive. Only fires when sync is connected; respects the remembered `启动时同步` choice exactly like the boot gate (so the user's "always pull latest" preference applies here too). Outcome handling:
+   - `equal` / `no-remote` → silent, no UI.
+   - `linear-lead` + remembered `auto-pull` → brief overlay `正在拉取最新数据…` then OPFS reset + reload (same path as boot-gate auto-pull).
+   - `linear-lead` + remembered `ask` → modal confirm card (the linear-lead panel from boot gate, repurposed).
+   - `diverged` → modal conflict card (the diverged panel from boot gate, repurposed).
+   - `offline` → top-bar `⚠ 同步离线` indicator flashes once; no modal.
+
+2. **Connect probe** — fires inside the Settings → Connect Google Drive flow, immediately after `connectDrive()` resolves. Closes the gap where a brand-new device that has not yet booted with Drive enabled would otherwise overwrite the existing remote on its first push. Two branches:
+   - **No canonical on Drive** (first-ever device for this Google account) → silent initial push of current local state. `lastPulledSnapshotId` is set from the new push so subsequent diffs are coherent.
+   - **Canonical exists** (this is the second / later device) → modal dialog with three buttons: `拉取云端（推荐）` / `用本地覆盖云端` / `取消连接`. Cancel revokes the just-granted token via `disconnectDrive()`. Overwrite forces a push that downloads the remote bundle to Downloads first as `dayrail-remote-conflict-{ts}.json`, mirroring the boot-gate conflict card's reversibility property. **Until the user picks one of the three, the user cannot start editing — the dialog is modal**, otherwise we'd be back in the very failure mode this trigger exists to prevent.
+
+The modal-overlay UI for both probes lives in a new top-level `<RuntimeSyncDialog />` mounted alongside `<App />`. The boot gate keeps its splash form because it must run *before* React routes mount; the runtime probes run *after* mount, so a non-blocking overlay is sufficient and less jarring.
+
 **Boot gate** — load-bearing UX
 
 The React tree (`App.tsx` main routes) does **not mount** until the boot gate resolves. While the gate is pending, a minimal splash (`DayRail` logo + `正在同步…` + spinner) is the only thing on screen. This is the load-bearing guarantee against the "I edited stale data and only found out afterwards" failure mode.

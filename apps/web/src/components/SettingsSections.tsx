@@ -40,7 +40,9 @@ import {
 } from '@/lib/sync/driveAuth';
 import {
   applyRemoteBundle,
+  downloadRemoteAsBackup,
   fetchRemoteBundle,
+  forcePushOverridingRemote,
   runManualPush,
 } from '@/lib/sync/syncController';
 import {
@@ -175,21 +177,107 @@ function SyncStatusCard({ connected }: { connected: boolean }) {
   );
 }
 
+type ConnectPhase =
+  | { kind: 'idle' }
+  | { kind: 'authorizing' }
+  | { kind: 'probing' }
+  | { kind: 'remote-exists'; remote: RemoteMeta }
+  | { kind: 'pulling' }
+  | { kind: 'pushing' }
+  | { kind: 'pushing-initial' };
+
 function ConnectDrivePanel() {
-  const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<ConnectPhase>({ kind: 'idle' });
   const [err, setErr] = useState<string | null>(null);
+
   const onConnect = async () => {
-    setBusy(true);
     setErr(null);
+    setPhase({ kind: 'authorizing' });
     try {
       await connectDrive();
       syncStore.setConnected(true);
+      setPhase({ kind: 'probing' });
+      const remote = await getRemoteMeta();
+      if (!remote) {
+        // No canonical on Drive — first device for this Google
+        // account. Push current local state as the initial snapshot
+        // so subsequent diffs have a baseline. forcePushOverridingRemote
+        // is the right primitive: no parent + creates canonical +
+        // sets lastPulledSnapshotId.
+        setPhase({ kind: 'pushing-initial' });
+        await forcePushOverridingRemote();
+        setPhase({ kind: 'idle' });
+        return;
+      }
+      setPhase({ kind: 'remote-exists', remote });
     } catch (e) {
       setErr((e as Error).message);
-    } finally {
-      setBusy(false);
+      setPhase({ kind: 'idle' });
     }
   };
+
+  const onPullRemote = async () => {
+    if (phase.kind !== 'remote-exists') return;
+    const remote = phase.remote;
+    setPhase({ kind: 'pulling' });
+    setErr(null);
+    try {
+      const bundle = await fetchRemoteBundle(remote);
+      await applyRemoteBundle(bundle); // reloads
+    } catch (e) {
+      setErr((e as Error).message);
+      setPhase({ kind: 'remote-exists', remote });
+    }
+  };
+
+  const onOverwriteRemote = async () => {
+    if (phase.kind !== 'remote-exists') return;
+    const remote = phase.remote;
+    setErr(null);
+    try {
+      // Reversibility: download remote first, then overwrite.
+      // Mirrors the boot-gate diverged path.
+      await downloadRemoteAsBackup(remote);
+      await new Promise((r) => setTimeout(r, 400));
+      setPhase({ kind: 'pushing' });
+      await forcePushOverridingRemote();
+      setPhase({ kind: 'idle' });
+    } catch (e) {
+      setErr((e as Error).message);
+      setPhase({ kind: 'remote-exists', remote });
+    }
+  };
+
+  const onCancel = async () => {
+    setErr(null);
+    try {
+      await disconnectDrive();
+      syncStore.setConnected(false);
+    } finally {
+      setPhase({ kind: 'idle' });
+    }
+  };
+
+  const busy =
+    phase.kind === 'authorizing' ||
+    phase.kind === 'probing' ||
+    phase.kind === 'pulling' ||
+    phase.kind === 'pushing' ||
+    phase.kind === 'pushing-initial';
+
+  const buttonLabel = (() => {
+    switch (phase.kind) {
+      case 'authorizing':
+        return '正在打开 Google 同意页…';
+      case 'probing':
+        return '正在检查云端…';
+      case 'pushing-initial':
+        return '正在创建初始快照…';
+      default:
+        return '连接 Google Drive';
+    }
+  })();
+
   return (
     <div className="flex flex-col gap-3 pt-4">
       <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
@@ -198,14 +286,12 @@ function ConnectDrivePanel() {
       <button
         type="button"
         onClick={onConnect}
-        disabled={busy}
+        disabled={busy || phase.kind === 'remote-exists'}
         className="flex items-start gap-3 self-start rounded-md border border-dashed border-ink-tertiary/40 px-4 py-3 text-left transition hover:border-ink-secondary hover:bg-surface-1 disabled:opacity-50"
       >
         <Cloud className="mt-0.5 h-4 w-4 text-ink-secondary" strokeWidth={1.6} />
         <div className="flex flex-col">
-          <span className="text-sm font-medium text-ink-primary">
-            {busy ? '正在打开 Google 同意页…' : '连接 Google Drive'}
-          </span>
+          <span className="text-sm font-medium text-ink-primary">{buttonLabel}</span>
           <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
             OAuth · 一次同意 · 之后静默续期
           </span>
@@ -219,6 +305,104 @@ function ConnectDrivePanel() {
       <p className="text-2xs text-ink-tertiary">
         其它后端（iCloud / WebDAV）尚未支持，见 ERD §7.6 停车列表。
       </p>
+
+      {phase.kind === 'remote-exists' && (
+        <ConnectChoiceModal
+          remote={phase.remote}
+          onPull={onPullRemote}
+          onOverwrite={onOverwriteRemote}
+          onCancel={onCancel}
+        />
+      )}
+      {(phase.kind === 'pulling' || phase.kind === 'pushing') && (
+        <ConnectStatusModal
+          text={
+            phase.kind === 'pulling'
+              ? '正在拉取云端数据…'
+              : '正在覆盖远端…'
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+function ConnectChoiceModal({
+  remote,
+  onPull,
+  onOverwrite,
+  onCancel,
+}: {
+  remote: RemoteMeta;
+  onPull: () => void;
+  onOverwrite: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-modal
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-ink-primary/40 px-6 backdrop-blur-sm"
+    >
+      <div className="w-full max-w-lg rounded-md bg-surface-0 px-5 py-5 shadow-xl">
+        <div className="flex flex-col gap-1">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            云端已有 DayRail 数据
+          </span>
+          <p className="text-sm text-ink-primary">
+            来自{' '}
+            <span className="text-ink-secondary">{remote.deviceLabel ?? '另一台设备'}</span>
+            ，最近编辑：
+            <span className="text-ink-secondary"> {fmtAbsoluteIso(remote.modifiedTime)}</span>
+            。
+          </p>
+          <p className="text-2xs text-ink-tertiary">
+            选择如何处理。在做出选择前 DayRail 不会动你的本地数据。
+          </p>
+        </div>
+        <div className="mt-4 flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={onPull}
+            autoFocus
+            className="rounded-md bg-ink-primary px-3 py-2 text-xs font-medium text-surface-0 transition hover:brightness-95"
+          >
+            拉取云端（推荐 · 把云端数据当本地）
+          </button>
+          <button
+            type="button"
+            onClick={onOverwrite}
+            className="rounded-md bg-surface-2 px-3 py-2 text-xs font-medium text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary"
+          >
+            用本地覆盖云端（先把云端下载留底）
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-md px-3 py-2 text-xs font-medium text-ink-tertiary transition hover:text-ink-secondary"
+          >
+            取消连接
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConnectStatusModal({ text }: { text: string }) {
+  return (
+    <div
+      role="dialog"
+      aria-modal
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-ink-primary/40 px-6 backdrop-blur-sm"
+    >
+      <div className="flex w-full max-w-md items-center gap-3 rounded-md bg-surface-0 px-5 py-5 shadow-xl">
+        <span
+          aria-hidden
+          className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-ink-tertiary border-t-transparent"
+        />
+        <span className="text-sm text-ink-secondary">{text}</span>
+      </div>
     </div>
   );
 }

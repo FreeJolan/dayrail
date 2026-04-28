@@ -6,6 +6,7 @@ import { injectThemeTokens } from './lib/themeTokens';
 import { initTheme } from './lib/theme';
 import { resetLocalData } from './lib/resetLocalData';
 import { BootGate } from './lib/sync/BootGate';
+import { RuntimeSyncDialog } from './lib/sync/RuntimeSyncDialog';
 import { startSyncBackgroundLoop } from './lib/sync/syncController';
 import './index.css';
 
@@ -37,6 +38,7 @@ boot()
       <React.StrictMode>
         <BootGate>
           <App />
+          <RuntimeSyncDialog />
         </BootGate>
       </React.StrictMode>,
     );
