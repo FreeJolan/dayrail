@@ -102,13 +102,23 @@ export default defineConfig({
     // `cross-origin-resource-policy: cross-origin` — Google Fonts does
     // this by default, so our only CDN use case is covered.
     headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
+      // `same-origin-allow-popups` (not `same-origin`) so the Google
+      // Identity Services consent popup can postMessage its result
+      // back to us. Both values still satisfy cross-origin isolation
+      // when paired with COEP=require-corp, so sqlite-wasm's OPFS VFS
+      // keeps working — only the popup-isolation behaviour differs.
+      'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
   },
   preview: {
     headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
+      // `same-origin-allow-popups` (not `same-origin`) so the Google
+      // Identity Services consent popup can postMessage its result
+      // back to us. Both values still satisfy cross-origin isolation
+      // when paired with COEP=require-corp, so sqlite-wasm's OPFS VFS
+      // keeps working — only the popup-isolation behaviour differs.
+      'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
   },

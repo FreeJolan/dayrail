@@ -109,6 +109,101 @@ everything.
 
 ---
 
+## Google Drive sync (v0.6 · `feat/sync-drive`)
+
+Optional, off by default. Settings → 同步 → Connect Google Drive runs a
+one-time OAuth consent flow; from then on the device pushes a snapshot
+to **the user's own** Google account hidden `appdata` folder (no other
+app can see it) on a 60s debounce, on tab close, and on demand. On
+every cold start the boot gate probes the remote and either silently
+pulls the latest, asks before pulling, or shows a forced conflict card
+if both sides have unsynced edits. ERD §7.6 has the full design.
+
+### Privacy boundary
+
+Each user's sync data lives in **their own** Google Drive `appdata`,
+not the deployer's. The OAuth Client ID is an authentication
+credential, not a storage destination — DayRail holds no user data on
+any server, and the deployer (whoever owns the GCP project) cannot
+see file contents, filenames, or even the email addresses of users
+who connected. Only DayRail (this OAuth client, running inside the
+user's browser, with that user's explicit consent) can read that
+user's `appdata`.
+
+What the deployer **can** see in the GCP console: aggregate API call
+counts, quota usage, and an anonymous count of users who have
+authorized the client. What the deployer **cannot** see: file
+contents, filenames, user identities.
+
+### Setup tiers
+
+DayRail has no shared backend — every deployment supplies its own
+OAuth client. There are two tiers depending on how widely the build
+is shared.
+
+**Tier 1 · Self-use / small private group** (default, this repo's
+current shape):
+
+1. Google Cloud Console → create / pick a project.
+2. APIs & Services → OAuth consent screen → User type: **External**,
+   Publishing status: **Testing**. App name "DayRail", support email =
+   yours. Save.
+3. Same screen → **Test users** → add the Google accounts that will
+   use this build (yourself, plus up to 100 others). Anyone not on
+   this list cannot connect.
+4. APIs & Services → Library → enable **Google Drive API**.
+5. APIs & Services → Credentials → Create OAuth Client ID, type
+   "Web application", Authorized JavaScript origins:
+   `http://localhost:5173`, `http://localhost:4173`,
+   `https://<your-vercel-url>`. No redirect URI needed (GIS token
+   client uses postMessage).
+6. Copy the Client ID into `apps/web/.env.local`:
+   `VITE_GOOGLE_OAUTH_CLIENT_ID=...apps.googleusercontent.com`
+7. `pnpm dev` (or `pnpm build`) — the var is baked at build time.
+
+Each test user, on first connect, sees one consent screen ("DayRail
+wants to see and manage its own configuration data in your Google
+Drive"), picks their account, accepts. From then on, no Google
+sign-in page for the lifetime of the browser-account session — token
+refresh is silent (~hourly, hidden iframe).
+
+**Tier 2 · Public release** (only if you ever ship this beyond your
+test-user list — current ROADMAP says you do not):
+
+To remove the 100-user cap and the "Google hasn't verified this app"
+warning, the OAuth consent screen must be moved to **Publishing
+status: In production**. Because Drive API counts as a "sensitive"
+scope, this triggers Google's OAuth verification review:
+
+- Provide a **homepage URL** + **privacy policy URL** + **terms of
+  service URL** for DayRail.
+- Add a 30s screen recording showing where in the app the scope is
+  used and why it's necessary.
+- Submit for review. Google takes 2–6 weeks; usually one round of
+  follow-up emails.
+- We deliberately picked `drive.appdata` (the lightest sensitive
+  scope), not `drive.file` or full Drive, so verification is the
+  simpler track — no CASA security assessment required.
+
+Until verification clears, public users would see an "Advanced →
+Continue anyway" warning page during consent. Acceptable for a beta
+of a few friends; not acceptable for a real public launch. Reopen
+this section before flipping to In production.
+
+### Steady-state UX
+
+Connect once, then never see a Google sign-in page again for the
+lifetime of the browser-account session. Token refresh is silent
+(~hourly, hidden iframe). Two devices on the same Google account
+share the same `appdata` folder automatically — no passphrase, no
+recovery code, no per-device pairing step.
+
+**Parked** for v0.6 (intentional, see ERD §7.6): end-to-end encryption,
+Yjs CRDT runtime merge, encrypted append-only event log, recovery
+codes, dual-write E2E migration, iCloud / WebDAV backends.
+
+---
+
 ## Keyboard shortcuts
 
 - `?` · cheatsheet overlay

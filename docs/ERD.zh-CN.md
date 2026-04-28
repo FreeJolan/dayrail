@@ -1148,6 +1148,121 @@ DayRail **不运营账号后端**。没有 DayRail 登录、没有托管的用�
 
 **修改密码短语** 复用同一套机制：用新密钥开一条新的加密流；旧密钥流在双写期间仍是主流；后台任务按批用新密钥重新加密历史、带持久化游标；默认 Wi-Fi；游标到头后指针切换，旧密钥流进入 7 天宽限期。我们**刻意不提供**更简单的"只换密钥壳"捷径 —— 所有涉及密钥材料变更的路径走同一套代码，换来的是清晰和前向保密（一旦宽限期结束，被泄露的旧密钥无法解密新流）。
 
+### 7.6 v0.6 实施说明 — Google Drive · "云快照冗余"层
+
+> 状态：2026-04-28 设计已锁定，v0.6 ship。沿用 §7.1 / §7.3（Drive 入口）；§7.2 因不引入 passphrase 而简化；§7.4 Yjs / §7.5 加密事件日志 / §7.5 恢复码 / §7.2.1 三档同步开关 **显式停车**——这些机制是为多用户、多账号、并发编辑设计的，DayRail 当前还没有那种压力。v0.6 ship 的是"快照冗余"层，足以支撑 1 个用户、2 台设备、错时切换的场景（白天工作电脑 → 晚上个人电脑，同一个 Google 账号）。
+
+**同步单元 · `ExportBundle`**
+
+直接复用 `apps/web/src/lib/exportData.ts` 现有的 snapshot bundle 作为传输单元。**Data layer 零改动；`schemaVersion` 不升级**。现有的 `importLocalData` 路径（`sessionStorage` 暂存 → OPFS reset → reload）就是规范的"应用远端"路径。Bundle 顶层新增三个**可选**字段（read 时全部 `?`，v0.4 / v0.5 老 bundle 仍能往返）：
+
+- `deviceId` —— 单浏览器单 OPFS 实例的稳定 ID，首次启用同步时生成。
+- `deviceLabel` —— UA 推断默认值（`"Chrome on macOS"` / `"Edge on Windows"` 等），用户可在 Settings → 同步 改名。
+- `parentSnapshotId` —— 这份 bundle 是基于哪个 `snapshotId` 写出来的。冲突检测的核心字段（见下方"启动闸门"）。
+
+第四个字段 `snapshotId`（UUID，上传时生成）让消费者无需 diff 整个 bundle 即可比较 lineage。
+
+**后端 · Google Drive `appdata`**
+
+- Scope：`https://www.googleapis.com/auth/drive.appdata` —— 用户自己 Google 账号下、仅本应用可见的隐藏空间。其他应用看不到这些文件，用户在 Drive UI 里也看不到。
+- 认证：Google Identity Services token client（`google.accounts.oauth2.initTokenClient`）。**纯浏览器 OAuth，无 DayRail 服务端**（与 §7.1 "无账号后端"原则一致）。Access token 会话级（约 1h），通过静默续期（`prompt: ''`）刷新；**永不**把 refresh token 落盘。
+
+**Auth 生命周期**（用于回答"每次同步都要 OAuth 吗？"这个高频问题）：
+
+| 层级 | 频率 | UX |
+| --- | --- | --- |
+| **首次连接** | 每台设备一次 | 完整的 Google 同意页（选账号 + 授权 appData scope）。Settings → 同步 → `连接 Google Drive` 触发。 |
+| **Access token 续期** | 使用中约每 1h 一次 | `tokenClient.requestAccessToken({ prompt: '' })` 在隐藏 iframe 里走用户已有的 Google 会话 —— **静默，无 UI**。controller 懒触发：只在某次同步发现内存里的 token 过期或临期（< 5 min 剩余）时才换一次。 |
+| **每次同步**（push / pull / 启动闸门探测） | 每次调用 | 直接用内存里的 access token；遇到 `401` 或临期就静默续一次再重试。**不弹同意页**，不打断用户。 |
+
+静默续期的前提：浏览器在该 Google 账号下仍有有效会话（用户登过 Gmail / 任何 Google 服务即可，会话期通常很长），且浏览器没有阻断 GIS 的 iframe（Safari ITP 边界 —— DayRail 自己不是被嵌入的 iframe，走标准流程不受影响）。静默续期失败时，controller 会让其落到**启动闸门的"离线分支"**（splash → `离线 · 使用本地数据` + `重新连接 Google`）；用户点一次按钮、走一遍完整 OAuth 同意页、然后又回到静默续期节奏。
+
+会强制重新走同意页的情形（罕见、非稳态）：
+1. 用户在该浏览器主动登出了 Google 账号。
+2. 用户在 Google 账号权限页主动 revoke 了 DayRail 的授权。
+3. Google 会话真的过期（浏览器长期不用 / 隐身窗口结束）。
+
+稳态体感：**连接一次，之后该浏览器-账号会话存续期间，永远不会再看到 Google 登录页**。
+- `appdata` 内文件结构：
+  - `dayrail-snapshot.json` —— 规范的"最新"文件，每次推送覆盖。
+  - `history/dayrail-snapshot-{yyyymmdd-hhmmss}-{deviceLabel}.json` —— 滚动历史，**保留最近 14 份**（按 `modifiedTime` 最旧者淘汰）。
+- 两个 surface 都进 Settings → 同步 → 备份历史，每行一键 恢复 / 删除 / 下载。
+
+**推送触发**
+
+1. 任何事件日志写入后 **debounce 60 秒**（idle 窗口，让上传避开主交互路径）。
+2. `visibilitychange === 'hidden'` 与 `pagehide`（best-effort）。
+3. `beforeunload` 期间 `fetch(..., { keepalive: true })`（best-effort；正确性兜底不靠这条 —— 真正的正确性保证在**另一台设备**的启动闸门）。
+4. Settings → 同步 里的 **立即同步** 按钮（手动）。
+
+**启动闸门**（load-bearing UX）
+
+React 主路由（`App.tsx`）在闸门 resolve 之前**不挂载**。闸门期间屏幕上只有一个极简 splash（`DayRail` logo + `正在同步…` + spinner）。这是抵御"我已经在旧数据上操作了，事后才被告知"这一失败模式的核心保证。
+
+每次冷启动的时序：
+
+1. 拉远端 `appdata/dayrail-snapshot.json` 元数据，**软超时 1.5 s**（超过则 splash 切到 `正在拉取最新数据…`），**硬超时 3.5 s**（超过则进入"离线分支"）。
+2. 比较远端 `snapshotId` vs 本地 `lastPulledSnapshotId`，分四个分支：
+
+| 远端 vs 本地 | 行为 |
+| --- | --- |
+| 相等 | 立即挂载，无 UI 中断。 |
+| 远端较新 **且** 本地无未同步改动（线性领先） | 按"记住的启动同步选择"执行；默认是**静默 pull-and-replace 后挂载**。如果用户曾经选过 `每次问我`，则在 splash 上叠一张非阻塞确认卡：`拉取最新`（默认聚焦）/ `优先用本地（仅本次）`。 |
+| 远端较新 **且** 本地有未同步改动（`parentSnapshotId` ≠ 远端 `snapshotId`，已分叉） | **强制弹冲突卡片**，无视记住的选择。详见下方"冲突 UX"。 |
+| 远端不可达（离线 / OAuth 失效 / Drive 5xx） | splash 切到 `离线 · 使用本地数据`，提供 `重试` / `继续使用本地` 两个按钮。继续后挂载主 UI，并在顶栏挂一条红色 `⚠ 未同步` 条，直到下一次成功往返。 |
+
+**"记住我的选择" UX**（仅出现在线性领先分支）
+
+闸门确认卡里的三选一 radio：
+
+- ◉ **每次都拉取最新**（推荐 · 默认）
+- ○ **每次问我**
+- ○ **优先用本地（仅本次）** —— **故意不可记忆**。选这个会让本地 fork 留在原地，于是**下次**冷启动会落到分叉分支、强制冲突卡片。我们**刻意不让**"优先用本地"被持久化 —— 持久化它就等于无限期静默覆盖远端，正好就是用户自己点出来要避开的那种失败模式（"不想在旧数据上操作完才被告知"）。
+
+只有前两个 radio 配 `[✓] 记住我的选择` 复选框。持久化的值会反映在 Settings → 同步 → **启动时同步**，可以随时改回 `每次问我`。
+
+**冲突 UX**（分叉分支）
+
+卡片左右并排展示 `本地 (最近编辑 HH:mm:ss · 当前设备)` 与 `云端 (最近编辑 HH:mm:ss · {远端 deviceLabel})`。三个动作：
+
+- **保留远端、把本地导出留底** —— 先调 `exportLocalData()` 把本地下载到 Downloads（文件名 `dayrail-local-conflict-{ts}.json`），再拉远端覆盖。
+- **覆盖远端** —— **强制**先把远端 bundle 下载到 `dayrail-remote-conflict-{ts}.json`，再 push。一键反悔，几乎零成本。2026-04-28 用户确认。
+- **取消** —— splash 留着；用户可以想想；不动数据；关掉 tab 即可。
+
+冲突卡片**永远不会**被记住的选择吞掉；这是 load-bearing 的安全属性。
+
+**顶栏同步指示**——复用现有顶栏外壳的非阻塞条：
+
+- `⟳ 同步中`
+- `✓ 已同步 · 2m ago · 工作 Mac`
+- `⚠ 未同步 · 3 改动`（启动闸门走了"离线分支"时也展示这条）
+
+点击进入 Settings → 同步。
+
+**Settings → 同步 接线**（替换 v0.4 占位 UI）
+
+- 连接 / 断开 Google 账号（GIS authorize）。
+- 设备名行 —— UA 推断默认值，可编辑。
+- 启动时同步 —— radio：拉取最新 / 每次问我。
+- 最近一次同步时间 + **立即同步** 按钮。
+- 设备列表 —— 从历史 snapshot 元数据读取（最近 14 份历史文件里出现过的所有不同 `deviceLabel`）。
+- 备份历史 —— 14 行，一键 恢复 / 删除 / 下载。
+
+**v0.6 显式不做加密**
+
+`appdata` scope 在用户自己 Google 账号下、对 OAuth client（DayRail）私有 —— 其他应用看不到这些文件。再加一层 passphrase 就要带上恢复码 UX、忘了 passphrase 的逃生口、多设备 prompt 协调 —— 所有这些都是为了抵御一个边际威胁模型（"Google Drive 运营方读取 appdata"），对自用 beta 来说性价比极低。等用户范围扩出"单一用户"再重开。
+
+**v0.6 不上 Yjs 的理由**
+
+用户的真实工作流是**错时切换**（白天工作机、晚上个人机），不是并发编辑。`parentSnapshotId` + 强制冲突卡片足以显式、可见地处理"忘了关另一台 tab"那种边界情形 —— 卡片里会写明肇事设备的 `deviceLabel`。CRDT 的红利只有在并发编辑成为稳态时才兑现，DayRail 还没到那一步。Yjs / HLC merge / 加密事件日志依然挂在 §7.4 / §7.5 路线上；等 DayRail 扩出"单一用户"时再重开。
+
+**v0.6 重新确认停车（不实现）**
+
+- §7.2.1 三档 `{仅数据 / 仅设置 / 全部}` 开关 —— v0.6 把 `ExportBundle` 携带的所有内容都同步。
+- §7.3 Google Drive 之外的后端（iCloud / WebDAV / Dropbox）。
+- §7.4 Yjs CRDT + HLC 合并（用于运行时事件）。
+- §7.5 加密 append-only 事件日志 + "500 个事件 或 14 天" 快照节奏 + 零知识 passphrase + 恢复码 UX + 双写 E2E 迁移。
+
 ***
 
 ## 8. 设计原则（工程层）

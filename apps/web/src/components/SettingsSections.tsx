@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { clsx } from 'clsx';
 import {
   Archive,
@@ -33,6 +33,36 @@ import {
   subscribeUpgradePref,
   type UpgradePref,
 } from '@/lib/upgradePref';
+import {
+  connectDrive,
+  disconnectDrive,
+  isDriveConnected,
+} from '@/lib/sync/driveAuth';
+import {
+  applyRemoteBundle,
+  fetchRemoteBundle,
+  runManualPush,
+} from '@/lib/sync/syncController';
+import {
+  deleteHistoryEntry,
+  downloadBundleById,
+  getRemoteMeta,
+  getRemoteSummary,
+  listHistory,
+  type HistoryEntry,
+  type RemoteMeta,
+} from '@/lib/sync/driveBackend';
+import {
+  getBootSyncChoice,
+  getDeviceLabel,
+  getDirtyCount,
+  getLastPulledSnapshotId,
+  setBootSyncChoice,
+  setDeviceLabel,
+  type BootSyncChoice,
+} from '@/lib/sync/identity';
+import { syncStore, useSyncStatus } from '@/lib/sync/syncStore';
+import { downloadBundleAs } from '@/lib/exportData';
 
 // ============ Appearance ============
 
@@ -86,105 +116,34 @@ export function AppearanceSection() {
 
 // ============ Sync ============
 
-type SyncBackend = 'none' | 'google-drive' | 'icloud' | 'webdav';
-
-const BACKEND_LABEL: Record<SyncBackend, string> = {
-  none: '未连接',
-  'google-drive': 'Google Drive',
-  icloud: 'iCloud Drive',
-  webdav: 'WebDAV',
-};
-
 export function SyncSection() {
-  const [backend, setBackend] = useState<SyncBackend>('none');
-
+  const status = useSyncStatus();
   return (
     <SettingsSectionShell
       overline="Sync"
       title="同步"
-      description="DayRail 无账号。数据以加密事件日志形式存到你选的后端；没连时也完全可用。详见 §9.x / §12 roadmap。"
+      description="DayRail 无账号。Google Drive 同步把整份数据放到你自己 Google 账号下的隐藏空间（appdata），其它应用看不到；详见 ERD §7.6。"
     >
-      <SyncStatusCard backend={backend} onDisconnect={() => setBackend('none')} />
-
-      {backend === 'none' && (
-        <div className="flex flex-col gap-2 pt-6">
-          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-            连接后端
-          </span>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-            <BackendCard
-              icon={<Cloud className="h-4 w-4" strokeWidth={1.6} />}
-              title="Google Drive"
-              note="OAuth · 免费账户足够"
-              onClick={() => setBackend('google-drive')}
-            />
-            <BackendCard
-              icon={<Cloud className="h-4 w-4" strokeWidth={1.6} />}
-              title="iCloud Drive"
-              note="v0.9 支持"
-              onClick={() => setBackend('icloud')}
-              disabled
-            />
-            <BackendCard
-              icon={<Cloud className="h-4 w-4" strokeWidth={1.6} />}
-              title="WebDAV"
-              note="v0.9 支持 · 自有服务器"
-              onClick={() => setBackend('webdav')}
-              disabled
-            />
-          </div>
-        </div>
-      )}
-
-      {backend !== 'none' && (
-        <div className="flex flex-col pt-2">
-          <Row
-            label="密码短语"
-            description="本地加密所有事件日志。短语不上传到任何后端；丢失则历史不可恢复。"
-            control={
-              <button
-                type="button"
-                className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-              >
-                重新输入
-              </button>
-            }
-          />
-          <Row
-            label="冲突日志"
-            description="两台设备同时编辑时的冲突记录。CRDT 会自动合并大多数情况，人工仲裁仅在类型冲突时出现。"
-            control={
-              <button
-                type="button"
-                className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-              >
-                0 条冲突 · 查看日志
-              </button>
-            }
-          />
-          <Row
-            label="其它设备"
-            description="已通过密码短语接入的设备列表。"
-            control={
-              <span className="font-mono text-xs tabular-nums text-ink-tertiary">
-                仅此 1 台
-              </span>
-            }
-          />
-        </div>
-      )}
+      <SyncStatusCard connected={status.connected} />
+      {!status.connected && <ConnectDrivePanel />}
+      {status.connected && <ConnectedSyncControls />}
     </SettingsSectionShell>
   );
 }
 
-function SyncStatusCard({
-  backend,
-  onDisconnect,
-}: {
-  backend: SyncBackend;
-  onDisconnect: () => void;
-}) {
-  const connected = backend !== 'none';
+function SyncStatusCard({ connected }: { connected: boolean }) {
+  const status = useSyncStatus();
+  const lastText = (() => {
+    if (status.phase.kind === 'syncing') return '正在同步…';
+    if (status.phase.kind === 'error') return `同步失败：${status.phase.message}`;
+    if (status.phase.kind === 'offline') return status.phase.message;
+    if (status.dirtyCount > 0) return `本地有 ${status.dirtyCount} 处改动尚未推送`;
+    if (status.lastSync) {
+      return `最近一次同步 · ${fmtRelativeMs(Date.now() - status.lastSync.at)} · ${status.lastSync.label}`;
+    }
+    if (connected) return '已连接，等待第一次同步';
+    return 'DayRail 目前只存在本设备。';
+  })();
   return (
     <div
       className={clsx(
@@ -195,7 +154,9 @@ function SyncStatusCard({
       <span
         className={clsx(
           'flex h-9 w-9 shrink-0 items-center justify-center rounded-md',
-          connected ? 'bg-ink-primary text-surface-0' : 'bg-surface-2 text-ink-tertiary',
+          connected
+            ? 'bg-ink-primary text-surface-0'
+            : 'bg-surface-2 text-ink-tertiary',
         )}
       >
         {connected ? (
@@ -206,60 +167,634 @@ function SyncStatusCard({
       </span>
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="text-sm font-medium text-ink-primary">
-          {BACKEND_LABEL[backend]}
+          {connected ? 'Google Drive · appdata' : '未连接'}
         </span>
-        <span className="text-xs text-ink-tertiary">
-          {connected
-            ? '最近一次同步 · 2 min ago'
-            : 'DayRail 目前只存在本设备。数据永不丢失；但也无法跨设备查看。'}
-        </span>
+        <span className="text-xs text-ink-tertiary">{lastText}</span>
       </div>
-      {connected && (
+    </div>
+  );
+}
+
+function ConnectDrivePanel() {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const onConnect = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await connectDrive();
+      syncStore.setConnected(true);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-3 pt-4">
+      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+        连接后端
+      </span>
+      <button
+        type="button"
+        onClick={onConnect}
+        disabled={busy}
+        className="flex items-start gap-3 self-start rounded-md border border-dashed border-ink-tertiary/40 px-4 py-3 text-left transition hover:border-ink-secondary hover:bg-surface-1 disabled:opacity-50"
+      >
+        <Cloud className="mt-0.5 h-4 w-4 text-ink-secondary" strokeWidth={1.6} />
+        <div className="flex flex-col">
+          <span className="text-sm font-medium text-ink-primary">
+            {busy ? '正在打开 Google 同意页…' : '连接 Google Drive'}
+          </span>
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            OAuth · 一次同意 · 之后静默续期
+          </span>
+        </div>
+      </button>
+      {err && (
+        <p className="rounded-sm bg-surface-1 px-3 py-2 text-2xs text-warn">
+          {err}
+        </p>
+      )}
+      <p className="text-2xs text-ink-tertiary">
+        其它后端（iCloud / WebDAV）尚未支持，见 ERD §7.6 停车列表。
+      </p>
+    </div>
+  );
+}
+
+function ConnectedSyncControls() {
+  return (
+    <div className="flex flex-col pt-4">
+      <RemoteStatePanel />
+      <DeviceLabelRow />
+      <BootSyncChoiceRow />
+      <SyncNowRow />
+      <DisconnectRow />
+      <BackupHistoryRow />
+    </div>
+  );
+}
+
+// Settings → 同步 → 远端状态. Side-by-side comparison of "what
+// Drive actually holds" vs "what this device thinks Drive holds",
+// plus a derived verdict line that names the next sync action.
+// Reads Drive metadata (no body fetch) on mount + on manual refresh
+// + after every successful sync (via syncStore subscription).
+function RemoteStatePanel() {
+  const status = useSyncStatus();
+  const [remote, setRemote] = useState<RemoteMeta | null>(null);
+  const [summary, setSummary] = useState<{
+    canonicalPresent: boolean;
+    historyCount: number;
+    totalSizeBytes: number;
+  } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [lastFetchAt, setLastFetchAt] = useState<number | null>(null);
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const [m, s] = await Promise.all([getRemoteMeta(), getRemoteSummary()]);
+      setRemote(m);
+      setSummary(s);
+      setLastFetchAt(Date.now());
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchAll();
+  }, [fetchAll]);
+
+  // Auto-refresh after a successful round-trip — `lastSync.at`
+  // changes only when sync just completed.
+  const lastSyncAt = status.lastSync?.at ?? 0;
+  useEffect(() => {
+    if (lastSyncAt > 0) void fetchAll();
+  }, [lastSyncAt, fetchAll]);
+
+  const localLastPulled = getLastPulledSnapshotId();
+  const localDirty = status.dirtyCount;
+  const verdict = deriveVerdict(remote, localLastPulled, localDirty);
+
+  return (
+    <div className="flex flex-col gap-3 border-b border-surface-2 px-1 pb-5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-col">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            远端状态
+          </span>
+          <span className="text-2xs text-ink-tertiary">
+            {lastFetchAt
+              ? `读取于 ${fmtRelativeMs(Date.now() - lastFetchAt)}`
+              : '尚未读取'}
+            {loading && ' · 读取中…'}
+          </span>
+        </div>
         <button
           type="button"
-          onClick={onDisconnect}
-          className="shrink-0 rounded-md px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary"
+          onClick={() => void fetchAll()}
+          disabled={loading}
+          className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary disabled:opacity-50"
         >
-          断开
+          {loading ? '读取中…' : '刷新'}
         </button>
+      </div>
+
+      {err && (
+        <p className="rounded-sm bg-surface-1 px-3 py-2 text-2xs text-warn">
+          读取失败：{err}
+        </p>
+      )}
+
+      <VerdictBanner verdict={verdict} />
+
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <KvBlock title="远端 · canonical">
+          {!remote ? (
+            <KvLine k="状态" v="远端尚无主文件（首次推送后出现）" />
+          ) : (
+            <>
+              <KvLine k="文件" v="dayrail-snapshot.json" mono />
+              <KvLine k="修改时间" v={fmtAbsoluteIso(remote.modifiedTime)} />
+              <KvLine k="snapshotId" v={shortId(remote.snapshotId)} mono title={remote.snapshotId} />
+              {remote.parentSnapshotId && (
+                <KvLine
+                  k="parent"
+                  v={shortId(remote.parentSnapshotId)}
+                  mono
+                  title={remote.parentSnapshotId}
+                />
+              )}
+              <KvLine k="写入设备" v={remote.deviceLabel ?? '未知'} />
+              <KvLine
+                k="大小"
+                v={remote.sizeBytes !== undefined ? fmtBytes(remote.sizeBytes) : '—'}
+              />
+            </>
+          )}
+        </KvBlock>
+        <KvBlock title="本地 · lineage">
+          <KvLine
+            k="lastPulledSnapshotId"
+            v={localLastPulled ? shortId(localLastPulled) : '—'}
+            mono
+            title={localLastPulled ?? undefined}
+          />
+          <KvLine k="未推送改动" v={`${localDirty} 处`} />
+          <KvLine
+            k="最近同步"
+            v={
+              status.lastSync
+                ? `${fmtRelativeMs(Date.now() - status.lastSync.at)} · ${status.lastSync.label}`
+                : '尚未同步'
+            }
+          />
+          <KvLine k="本机设备名" v={status.deviceLabel} />
+        </KvBlock>
+      </div>
+
+      {summary && (
+        <div className="flex items-center justify-between rounded-sm bg-surface-1 px-3 py-2 text-2xs text-ink-secondary">
+          <span>
+            历史快照：<span className="font-mono">{summary.historyCount} / 14</span>
+            {!summary.canonicalPresent && ' · 主文件缺失'}
+          </span>
+          <span>
+            合计大小：<span className="font-mono">{fmtBytes(summary.totalSizeBytes)}</span>
+          </span>
+        </div>
       )}
     </div>
   );
 }
 
-function BackendCard({
-  icon,
-  title,
-  note,
-  onClick,
-  disabled,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  note: string;
-  onClick: () => void;
-  disabled?: boolean;
-}) {
+type Verdict =
+  | { kind: 'no-remote' }
+  | { kind: 'in-sync' }
+  | { kind: 'local-ahead'; n: number }
+  | { kind: 'remote-ahead'; remoteDevice: string }
+  | { kind: 'diverged'; remoteDevice: string }
+  | { kind: 'unknown' };
+
+function deriveVerdict(
+  remote: RemoteMeta | null,
+  localLastPulled: string | null,
+  localDirty: number,
+): Verdict {
+  if (!remote) return { kind: 'no-remote' };
+  if (!remote.snapshotId) return { kind: 'unknown' };
+  const equal = remote.snapshotId === localLastPulled;
+  if (equal && localDirty === 0) return { kind: 'in-sync' };
+  if (equal && localDirty > 0) return { kind: 'local-ahead', n: localDirty };
+  if (!equal && localDirty === 0)
+    return { kind: 'remote-ahead', remoteDevice: remote.deviceLabel ?? '另一台设备' };
+  return { kind: 'diverged', remoteDevice: remote.deviceLabel ?? '另一台设备' };
+}
+
+function VerdictBanner({ verdict }: { verdict: Verdict }) {
+  const { tone, dot, text } = (() => {
+    switch (verdict.kind) {
+      case 'no-remote':
+        return {
+          tone: 'idle',
+          dot: 'bg-ink-tertiary',
+          text: '远端尚无主文件 · 第一次推送后会创建',
+        };
+      case 'in-sync':
+        return { tone: 'ok', dot: 'bg-ink-secondary', text: '✓ 本地与远端一致' };
+      case 'local-ahead':
+        return {
+          tone: 'pending',
+          dot: 'bg-warn/70',
+          text: `本地领先 ${verdict.n} 处 · 下次同步会推送`,
+        };
+      case 'remote-ahead':
+        return {
+          tone: 'pending',
+          dot: 'bg-warn/70',
+          text: `远端较新 · 来自 ${verdict.remoteDevice} · 下次启动会拉取`,
+        };
+      case 'diverged':
+        return {
+          tone: 'warn',
+          dot: 'bg-warn',
+          text: `⚠ 已分叉 · 本地有未推送改动，且远端来自 ${verdict.remoteDevice} · 下次启动会弹冲突卡片`,
+        };
+      case 'unknown':
+        return {
+          tone: 'idle',
+          dot: 'bg-ink-tertiary',
+          text: '远端文件存在但缺 lineage 元数据（可能是旧版本写的，下次推送后会自动修正）',
+        };
+    }
+  })();
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
+    <div
       className={clsx(
-        'flex flex-col items-start gap-2 rounded-md border border-dashed px-4 py-3 text-left transition',
-        disabled
-          ? 'cursor-not-allowed border-ink-tertiary/20 text-ink-tertiary/50'
-          : 'border-ink-tertiary/40 text-ink-primary hover:border-ink-secondary hover:bg-surface-1',
+        'flex items-center gap-2 rounded-sm px-3 py-2 text-xs',
+        tone === 'ok' && 'bg-surface-1 text-ink-primary',
+        tone === 'pending' && 'bg-surface-1 text-ink-secondary',
+        tone === 'warn' && 'bg-warn/10 text-ink-primary',
+        tone === 'idle' && 'bg-surface-1 text-ink-tertiary',
       )}
     >
-      <span className="text-ink-secondary">{icon}</span>
-      <span className="text-sm font-medium">{title}</span>
-      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-        {note}
-      </span>
-    </button>
+      <span aria-hidden className={clsx('h-1.5 w-1.5 shrink-0 rounded-full', dot)} />
+      <span>{text}</span>
+    </div>
   );
 }
+
+function KvBlock({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-sm bg-surface-1 px-3 py-2.5">
+      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+        {title}
+      </span>
+      <div className="flex flex-col gap-0.5">{children}</div>
+    </div>
+  );
+}
+
+function KvLine({
+  k,
+  v,
+  mono,
+  title,
+}: {
+  k: string;
+  v: string;
+  mono?: boolean;
+  title?: string;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="text-2xs text-ink-tertiary">{k}</span>
+      <span
+        className={clsx(
+          'truncate text-right text-xs',
+          mono ? 'font-mono text-ink-secondary' : 'text-ink-primary',
+        )}
+        title={title}
+      >
+        {v}
+      </span>
+    </div>
+  );
+}
+
+function shortId(id: string): string {
+  if (!id) return '—';
+  return id.length > 12 ? `${id.slice(0, 8)}…` : id;
+}
+
+function fmtBytes(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function DeviceLabelRow() {
+  const [label, setLabel] = useState(() => getDeviceLabel());
+  const persist = (next: string) => {
+    setLabel(next);
+    setDeviceLabel(next);
+    syncStore.setDeviceLabel(next || getDeviceLabel());
+  };
+  return (
+    <Row
+      label="设备名"
+      description="显示给其它设备看的标签（默认按 UA 推断）。"
+      control={
+        <TextField
+          value={label}
+          onChange={persist}
+          placeholder={getDeviceLabel()}
+        />
+      }
+    />
+  );
+}
+
+function BootSyncChoiceRow() {
+  const [choice, setChoice] = useState<BootSyncChoice>(() => getBootSyncChoice());
+  const persist = (next: BootSyncChoice) => {
+    setChoice(next);
+    setBootSyncChoice(next);
+  };
+  return (
+    <Row
+      label="启动时同步"
+      description="冷启动时如果云端较新（且本地无未同步改动）的处理方式。本地有未同步改动时永远会显式弹冲突卡片。"
+      control={
+        <Segmented
+          value={choice}
+          onChange={persist}
+          options={[
+            { key: 'auto-pull', label: '自动拉取最新' },
+            { key: 'ask', label: '每次问我' },
+          ]}
+        />
+      }
+    />
+  );
+}
+
+function SyncNowRow() {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const onClick = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await runManualPush();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Row
+      label="立即同步"
+      description="手动触发一次 push（在 60s debounce 之外）。"
+      control={
+        <div className="flex flex-col items-end gap-1">
+          <button
+            type="button"
+            onClick={onClick}
+            disabled={busy}
+            className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary disabled:opacity-50"
+          >
+            {busy ? '同步中…' : '立即同步'}
+          </button>
+          {err && (
+            <span className="font-mono text-2xs text-warn">{err}</span>
+          )}
+        </div>
+      }
+    />
+  );
+}
+
+function DisconnectRow() {
+  const [busy, setBusy] = useState(false);
+  const onClick = async () => {
+    if (!window.confirm('断开 Google Drive 连接？\n\n本地数据不受影响。')) return;
+    setBusy(true);
+    try {
+      await disconnectDrive();
+      syncStore.setConnected(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Row
+      label="断开连接"
+      description="撤销 OAuth 授权。本地数据保留；下次同步前需要重新授权。"
+      control={
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={busy}
+          className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary disabled:opacity-50"
+        >
+          {busy ? '断开中…' : '断开'}
+        </button>
+      }
+    />
+  );
+}
+
+function BackupHistoryRow() {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState<HistoryEntry[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const refresh = async () => {
+    setErr(null);
+    try {
+      const list = await listHistory();
+      setItems(list);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+  useEffect(() => {
+    if (open && items === null) void refresh();
+  }, [open, items]);
+  return (
+    <div className="flex flex-col">
+      <Row
+        label="备份历史"
+        description={`Drive 上滚动保留最近 14 份历史快照（按设备 + 时间命名）。`}
+        control={
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            {open ? '收起' : '展开'}
+          </button>
+        }
+      />
+      {open && (
+        <div className="flex flex-col gap-2 px-1 pb-3">
+          {err && (
+            <p className="rounded-sm bg-surface-1 px-3 py-2 text-2xs text-warn">{err}</p>
+          )}
+          {items === null && (
+            <p className="text-2xs text-ink-tertiary">读取中…</p>
+          )}
+          {items && items.length === 0 && (
+            <p className="text-2xs text-ink-tertiary">暂无历史。第一次推送后会出现。</p>
+          )}
+          {items && items.length > 0 && (
+            <ul className="flex flex-col gap-1.5">
+              {items.map((it) => (
+                <BackupHistoryItem key={it.fileId} entry={it} onMutated={refresh} />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BackupHistoryItem({
+  entry,
+  onMutated,
+}: {
+  entry: HistoryEntry;
+  onMutated: () => void;
+}) {
+  const [busy, setBusy] = useState<null | 'restore' | 'download' | 'delete'>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const onRestore = async () => {
+    if (
+      !window.confirm(
+        `从这份历史快照恢复？\n\n会覆盖本地当前数据（建议先点"下载"留底）。`,
+      )
+    )
+      return;
+    setBusy('restore');
+    setErr(null);
+    try {
+      const bundle = await downloadBundleById(entry.fileId);
+      await applyRemoteBundle(bundle);
+    } catch (e) {
+      setErr((e as Error).message);
+      setBusy(null);
+    }
+  };
+  const onDownload = async () => {
+    setBusy('download');
+    setErr(null);
+    try {
+      const bundle = await downloadBundleById(entry.fileId);
+      downloadBundleAs(bundle, entry.filename);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const onDelete = async () => {
+    if (!window.confirm(`删除这份历史快照？\n\n不会影响主文件。`)) return;
+    setBusy('delete');
+    setErr(null);
+    try {
+      await deleteHistoryEntry(entry.fileId);
+      onMutated();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <li className="flex flex-col gap-1 rounded-sm bg-surface-1 px-3 py-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-col">
+          <span className="text-xs text-ink-primary">
+            {entry.deviceLabel || '设备'} · {fmtAbsoluteIso(entry.modifiedTime)}
+          </span>
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            {entry.filename}
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={onRestore}
+            disabled={busy !== null}
+            className="rounded-sm bg-surface-2 px-2 py-1 text-2xs font-medium text-ink-secondary hover:bg-surface-3 hover:text-ink-primary disabled:opacity-50"
+          >
+            恢复
+          </button>
+          <button
+            type="button"
+            onClick={onDownload}
+            disabled={busy !== null}
+            className="rounded-sm bg-surface-2 px-2 py-1 text-2xs font-medium text-ink-secondary hover:bg-surface-3 hover:text-ink-primary disabled:opacity-50"
+          >
+            下载
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={busy !== null}
+            className="rounded-sm bg-surface-2 px-2 py-1 text-2xs font-medium text-ink-secondary hover:bg-warn hover:text-surface-0 disabled:opacity-50"
+          >
+            删除
+          </button>
+        </div>
+      </div>
+      {err && (
+        <p className="font-mono text-2xs text-warn">{err}</p>
+      )}
+    </li>
+  );
+}
+
+function fmtRelativeMs(ms: number): string {
+  if (ms < 60_000) return '刚才';
+  const min = Math.round(ms / 60_000);
+  if (min < 60) return `${min} 分钟前`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr} 小时前`;
+  const day = Math.round(hr / 24);
+  return `${day} 天前`;
+}
+
+function fmtAbsoluteIso(iso: string): string {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString();
+  } catch {
+    return iso;
+  }
+}
+
+// (Re-export to keep one source of truth for SyncSection consumers; the
+// real driveAuth check still gates connection.)
+void isDriveConnected;
+void fetchRemoteBundle; // referenced by the conflict-card path
 
 // ============ AI ============
 

@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { selectPendingQueue, useStore } from '@dayrail/core';
+import { useSyncStatus } from '@/lib/sync/syncStore';
 
 // Left sticky rail nav. Default expanded (labels visible) to teach
 // first-time users what each icon means; collapsible to icon-only for
@@ -165,9 +166,71 @@ export function SideNav(_props: SideNavProps) {
         </button>
       </div>
 
+      <SyncIndicator collapsed={collapsed} />
       <BrandFooter collapsed={collapsed} />
     </aside>
   );
+}
+
+function SyncIndicator({ collapsed }: { collapsed: boolean }) {
+  const navigate = useNavigate();
+  const status = useSyncStatus();
+  const { dot, label, tone } = describeSyncStatus(status);
+  return (
+    <button
+      type="button"
+      onClick={() => navigate('/settings/sync')}
+      title={collapsed ? label : undefined}
+      className={clsx(
+        'group relative flex h-7 items-center rounded-md text-ink-tertiary transition hover:bg-surface-1 hover:text-ink-secondary',
+        collapsed ? 'mx-3 justify-center' : 'mx-3 gap-2 px-2',
+      )}
+    >
+      <span
+        aria-hidden
+        className={clsx(
+          'inline-block h-1.5 w-1.5 shrink-0 rounded-full',
+          dot,
+          tone === 'syncing' && 'animate-pulse',
+        )}
+      />
+      {!collapsed && (
+        <span className="truncate text-2xs uppercase tracking-widest">
+          {label}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function describeSyncStatus(status: ReturnType<typeof useSyncStatus>): {
+  dot: string;
+  label: string;
+  tone: 'idle' | 'syncing' | 'warn' | 'ok';
+} {
+  if (!status.connected) {
+    return { dot: 'bg-ink-tertiary/40', label: 'Local only', tone: 'idle' };
+  }
+  if (status.phase.kind === 'syncing') {
+    return { dot: 'bg-ink-secondary', label: '同步中', tone: 'syncing' };
+  }
+  if (status.phase.kind === 'error') {
+    return { dot: 'bg-warn', label: '同步失败', tone: 'warn' };
+  }
+  if (status.phase.kind === 'offline') {
+    return { dot: 'bg-warn/70', label: '离线', tone: 'warn' };
+  }
+  if (status.dirtyCount > 0) {
+    return {
+      dot: 'bg-warn/70',
+      label: `未同步 · ${status.dirtyCount}`,
+      tone: 'warn',
+    };
+  }
+  if (status.lastSync) {
+    return { dot: 'bg-ink-secondary/70', label: '已同步', tone: 'ok' };
+  }
+  return { dot: 'bg-ink-tertiary/40', label: '已连接', tone: 'idle' };
 }
 
 // ---------- sub-parts ----------

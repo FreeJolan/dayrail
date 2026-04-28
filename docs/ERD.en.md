@@ -1222,6 +1222,121 @@ A user who initially disabled E2E and later enables it needs all historical even
 
 **Passphrase change** reuses the same machinery: the new key opens a new encrypted stream; the old-key stream stays canonical during dual-write; a background task re-encrypts history task-by-task against the new key with a persistent cursor; Wi-Fi default; once the cursor reaches head, the pointer flips and the old-key stream enters the 7-day grace period. We explicitly **do not** ship a shortcut "rewrap keys only" path — keeping one code path for key-material transitions buys clarity and forward secrecy (a compromised old key cannot decrypt the new stream once grace expires).
 
+### 7.6 v0.6 implementation note — Google Drive · "snapshot redundancy" tier
+
+> Status: design locked 2026-04-28. Ships in v0.6. Sections §7.1 / §7.3 (Drive entry) are honoured as-is; §7.2 device onboarding simplifies because there is no passphrase; §7.4 Yjs / §7.5 encrypted event log / §7.5 recovery codes / §7.2.1 three-mode switch are **explicitly parked** — they defend against multi-user, multi-account, concurrent-edit pressure that DayRail does not yet face. v0.6 ships the snapshot-redundancy tier sufficient for one user, two devices, temporal handoff (work laptop in the day → personal laptop in the evening, single Google account).
+
+**Sync unit · `ExportBundle`**
+
+The existing snapshot bundle from `apps/web/src/lib/exportData.ts` is the on-the-wire unit. Zero data-layer change; `schemaVersion` does not bump. The existing `importLocalData` path (`sessionStorage` stash → OPFS reset → reload) becomes the canonical "apply remote" path. The bundle gains three optional top-level fields, all `?` on read so v0.4 / v0.5 bundles still round-trip:
+
+- `deviceId` — stable per browser-OPFS instance; generated on first sync enable.
+- `deviceLabel` — UA-derived default (`"Chrome on macOS"`, `"Edge on Windows"`); user-renamable in Settings → 同步.
+- `parentSnapshotId` — the `snapshotId` this bundle was authored on top of. Load-bearing for conflict detection (see "Boot gate" below).
+
+A fourth field `snapshotId` (UUID, generated at upload time) is added so consumers can compare lineage without diffing the whole bundle.
+
+**Backend · Google Drive `appdata`**
+
+- Scope: `https://www.googleapis.com/auth/drive.appdata` — hidden, app-only space under the user's own Google account. Other apps cannot see these files; the user does not see them in Drive UI either.
+- Auth: Google Identity Services token client (`google.accounts.oauth2.initTokenClient`). Pure browser OAuth, no DayRail server (consistent with §7.1 "no account backend"). Access tokens are session-scoped (~1h) and refreshed via silent re-auth (`prompt: ''`); no refresh token is ever persisted to disk.
+
+**Auth lifecycle** (load-bearing for the "is OAuth required every sync?" question):
+
+| Layer | Frequency | UX |
+| --- | --- | --- |
+| **Initial connect** | Once per device | Full Google consent page (account chooser + appData scope grant). Triggered by Settings → 同步 → `连接 Google Drive`. |
+| **Access-token refresh** | ~hourly during use | `tokenClient.requestAccessToken({ prompt: '' })` runs in a hidden iframe against the user's existing Google session — **silent, no UI**. The controller calls this lazily: only when a sync attempt finds the cached token expired or about to expire (< 5 min remaining). |
+| **Each sync** (push / pull / boot-gate probe) | Per call | Reuse the in-memory access token directly; on `401` or near-expiry, refresh once and retry. **No consent page**, no user interaction. |
+
+Prerequisites for silent refresh: the browser still holds a Google session for that account (long-lived if the user is signed into Gmail / any Google property), and the browser is not blocking the GIS iframe (Safari ITP edge case — DayRail itself is not embedded, so the standard flow works). When silent refresh fails, the controller surfaces it as the **boot-gate offline branch** (splash → `离线 · 使用本地数据` + `重新连接 Google`); the user clicks once, walks the full OAuth flow once, and returns to the silent-refresh cadence.
+
+Cases that force re-consent (rare, not the steady state):
+1. User signed out of Google in this browser.
+2. User revoked DayRail's authorization from Google's account-permissions page.
+3. Google session genuinely expired (browser unused for very long stretches; private/incognito session ended).
+
+Steady-state UX: **connect once, never see a Google sign-in page again** for the lifetime of that browser-account session.
+- File layout in `appdata`:
+  - `dayrail-snapshot.json` — canonical "latest"; overwritten on every push.
+  - `history/dayrail-snapshot-{yyyymmdd-hhmmss}-{deviceLabel}.json` — rolling history; **14 most-recent retained** (older pruned by oldest `modifiedTime`).
+- Both surfaces appear in Settings → 同步 → 备份历史 with one-click 恢复 / 删除 / 下载 actions.
+
+**Push triggers**
+
+1. Debounced **60 s** after any event-log write (idle window keeps the upload off the main interaction path).
+2. `visibilitychange === 'hidden'` and `pagehide` (best-effort).
+3. `beforeunload` with `fetch(..., { keepalive: true })` (best-effort; not relied upon for correctness — the boot gate of the *other* device is the real correctness guarantee).
+4. Manual **立即同步** button in Settings → 同步.
+
+**Boot gate** — load-bearing UX
+
+The React tree (`App.tsx` main routes) does **not mount** until the boot gate resolves. While the gate is pending, a minimal splash (`DayRail` logo + `正在同步…` + spinner) is the only thing on screen. This is the load-bearing guarantee against the "I edited stale data and only found out afterwards" failure mode.
+
+Sequence on every cold start:
+
+1. Probe remote `appdata/dayrail-snapshot.json` meta with **1.5 s soft timeout** (splash flips to `正在拉取最新数据…` if exceeded) and **3.5 s hard timeout** (drop to offline branch).
+2. Compare remote `snapshotId` vs local `lastPulledSnapshotId`. Four branches:
+
+| Remote vs local | Action |
+| --- | --- |
+| Equal | Mount immediately. No UI interruption. |
+| Remote ahead **and** local has no unsynced writes (linear lead) | Apply the remembered "boot-sync choice"; default is **silent pull-and-replace then mount**. If user previously chose `每次问我`, show a non-blocking confirm card on top of splash with `拉取最新` (default focused) / `优先用本地（仅本次）`. |
+| Remote ahead **and** local has unsynced writes (`parentSnapshotId` ≠ remote `snapshotId` — diverged) | **Forced conflict card**, ignores the remembered choice. See *Conflict UX* below. |
+| Remote unreachable (offline / OAuth lapsed / Drive 5xx) | Splash flips to `离线 · 使用本地数据` with `重试` / `继续使用本地` buttons. Continuing mounts the app and pins a red `⚠ 未同步` strip in the top bar until the next successful round-trip. |
+
+**"Remember my choice" UX** (only on the linear-lead branch)
+
+Three-radio chooser inside the boot-gate confirm card:
+
+- ◉ **每次都拉取最新** (recommended · default)
+- ○ **每次问我**
+- ○ **优先用本地（仅本次）** — non-memoizable on purpose. Choosing this leaves the local fork in place, so the *next* boot lands on the diverged branch and forces the conflict card. We deliberately do **not** let "prefer local" persist; persisting it would silently override remote indefinitely — exactly the failure mode the user flagged ("I don't want to operate on stale data and find out after").
+
+Only the first two options carry a `[✓] 记住我的选择` checkbox. The persisted value surfaces in Settings → 同步 → **启动时同步** with a free path back to `每次问我`.
+
+**Conflict UX** (diverged branch)
+
+Card lists `本地 (last edited HH:mm:ss · this device)` and `云端 (last edited HH:mm:ss · {remote deviceLabel})` side-by-side. Three actions:
+
+- **保留远端、把本地导出留底** — runs `exportLocalData()` to Downloads first (filename `dayrail-local-conflict-{ts}.json`), then pulls remote and replaces.
+- **覆盖远端** — **forced**: before pushing, the controller first downloads the remote bundle to `dayrail-remote-conflict-{ts}.json`. One-click reversal, near-zero cost. Confirmed user choice 2026-04-28.
+- **取消** — leaves the splash up; user can think; no data moves; navigating away closes the tab.
+
+Conflict cards are **never silenced** by the remembered choice; this is the load-bearing safety property.
+
+**Top-bar sync indicator** — non-blocking strip in the existing top-bar shell:
+
+- `⟳ 同步中`
+- `✓ 已同步 · 2m ago · 工作 Mac`
+- `⚠ 未同步 · 3 改动` (also shown when boot gate landed in the offline branch)
+
+Click opens Settings → 同步.
+
+**Settings → 同步 wiring** (replaces the v0.4 placeholder UI)
+
+- Connect / disconnect Google account (GIS authorize).
+- Device label row — UA-derived default, editable.
+- 启动时同步 — radio: 拉取最新 / 每次问我.
+- Last sync timestamp + **立即同步** button.
+- Devices list — read from history snapshot meta (every distinct `deviceLabel` seen in the last 14 history files).
+- 备份历史 list — 14 rows, 一键恢复 / 删除 / 下载.
+
+**Encryption: explicitly skipped in v0.6**
+
+`appdata` scope is private to the OAuth client (DayRail) under the user's own Google account; no other app sees these files. A passphrase layer would add a recovery-code UX, a forgot-passphrase escape hatch, and per-device prompt orchestration — all to defend against a threat model (Google Drive operator reading appdata) that is not the marginal risk for a self-use beta. Reopen when scope expands beyond a single user.
+
+**Why not Yjs in v0.6**
+
+The user's actual workflow is **temporal handoff** (work-machine in the day, personal-machine in the evening), not concurrent editing. `parentSnapshotId` + the forced conflict card cover the "I forgot to close the other tab" edge case explicitly and visibly, with the offending device's `deviceLabel` named in the card. CRDT pays off when concurrent editing is the steady state, which it is not yet. Yjs / HLC merge / encrypted event log remain on the §7.4 / §7.5 roadmap; reopen when DayRail expands beyond a single user.
+
+**Re-confirmed parked from §7** (do not implement in v0.6)
+
+- §7.2.1 three-mode `{data only / settings only / everything}` switch — v0.6 syncs everything the `ExportBundle` carries.
+- §7.3 backends beyond Google Drive (iCloud / WebDAV / Dropbox).
+- §7.4 Yjs CRDT + HLC merge for runtime events.
+- §7.5 encrypted append-only event log + 500-events-or-14-days snapshot cadence + zero-knowledge passphrase + recovery-code UX + dual-write E2E migration.
+
 ---
 
 ## 8. Engineering Principles

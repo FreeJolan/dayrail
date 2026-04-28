@@ -6,8 +6,12 @@
 // cold start via `popPendingImport()`. The page reload guarantees
 // the SQLite worker releases its handles before we write new data.
 //
-// Single-device, self-use only (§7 sync is out of scope). Import
-// OVERWRITES — it's restore-from-backup semantics, not merge.
+// Two callers:
+//   1. Manual import (Settings → 高级 → 导入 JSON) via importLocalData.
+//   2. Boot gate apply-remote — the sync layer calls
+//      stashPendingImportAndReload with a bundle pulled from Drive.
+// In both cases, import OVERWRITES — restore-from-backup semantics,
+// not merge.
 
 import type { ExportBundle } from './exportData';
 import { resetLocalData } from './resetLocalData';
@@ -30,6 +34,18 @@ export async function importLocalData(file: File): Promise<void> {
   const bundle = validateBundle(parsed);
   sessionStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(bundle));
   await resetLocalData(); // wipes OPFS + reload; boot picks up sessionStorage
+}
+
+/** Internal entry-point for the sync layer: stash a fully-validated
+ *  bundle and reset+reload. The caller is expected to have validated
+ *  the bundle (it came from our own upload). Caller may also persist
+ *  any sync-layer cursors (lastPulledSnapshotId etc.) BEFORE invoking
+ *  this — localStorage survives the OPFS reset and reload. */
+export async function stashPendingImportAndReload(
+  bundle: ExportBundle,
+): Promise<void> {
+  sessionStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(bundle));
+  await resetLocalData();
 }
 
 /** Called from boot.ts on every cold start. Returns the stashed
