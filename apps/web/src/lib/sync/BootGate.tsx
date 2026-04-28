@@ -22,7 +22,8 @@ import {
   setBootSyncChoice,
   type BootSyncChoice,
 } from './identity';
-import { isDriveConnected } from './driveAuth';
+import { connectDrive, isDriveConnected } from './driveAuth';
+import { syncStore } from './syncStore';
 import {
   applyRemoteBundle,
   downloadLocalAsBackup,
@@ -364,33 +365,81 @@ function OfflinePanel({
   reason: string;
   setPhase: (p: Phase) => void;
 }) {
+  const needsReconnect = reason.includes('NEEDS_RECONNECT');
+  const [reconnecting, setReconnecting] = useState(false);
+  const [reconnectErr, setReconnectErr] = useState<string | null>(null);
+
   const onRetry = () => setPhase({ kind: 'probing', slow: false });
   const onContinue = () => setPhase({ kind: 'done' });
+  const onReconnect = async () => {
+    setReconnecting(true);
+    setReconnectErr(null);
+    try {
+      // Runs from a button click → user gesture → consent popup is
+      // permitted. Once it lands a fresh token in memory, re-probe
+      // exactly like a normal cold start.
+      await connectDrive();
+      syncStore.setConnected(true);
+      setPhase({ kind: 'probing', slow: false });
+    } catch (e) {
+      setReconnectErr((e as Error).message);
+      setReconnecting(false);
+    }
+  };
+
   const friendly = friendlyReason(reason);
   return (
     <section className="flex flex-col gap-3 rounded-md bg-surface-1 px-4 py-4">
       <div className="flex flex-col gap-1">
         <span className="font-mono text-2xs uppercase tracking-widest text-warn">
-          离线 · 使用本地数据
+          {needsReconnect ? '需要重新授权' : '离线 · 使用本地数据'}
         </span>
         <p className="text-sm text-ink-primary">{friendly}</p>
       </div>
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onRetry}
-          className="rounded-md bg-surface-2 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary"
-        >
-          重试
-        </button>
-        <button
-          type="button"
-          onClick={onContinue}
-          className="rounded-md bg-ink-primary px-3 py-1.5 text-xs font-medium text-surface-0 transition hover:brightness-95"
-        >
-          继续使用本地
-        </button>
+        {needsReconnect ? (
+          <>
+            <button
+              type="button"
+              onClick={onReconnect}
+              disabled={reconnecting}
+              autoFocus
+              className="rounded-md bg-ink-primary px-3 py-1.5 text-xs font-medium text-surface-0 transition hover:brightness-95 disabled:opacity-50"
+            >
+              {reconnecting ? '正在打开 Google 同意页…' : '重新连接 Google Drive'}
+            </button>
+            <button
+              type="button"
+              onClick={onContinue}
+              className="rounded-md bg-surface-2 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary"
+            >
+              继续使用本地
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={onRetry}
+              className="rounded-md bg-surface-2 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary"
+            >
+              重试
+            </button>
+            <button
+              type="button"
+              onClick={onContinue}
+              className="rounded-md bg-ink-primary px-3 py-1.5 text-xs font-medium text-surface-0 transition hover:brightness-95"
+            >
+              继续使用本地
+            </button>
+          </>
+        )}
       </div>
+      {reconnectErr && (
+        <p className="rounded-sm bg-surface-0 px-3 py-2 text-2xs text-warn">
+          重新连接失败：{reconnectErr}
+        </p>
+      )}
     </section>
   );
 }
@@ -401,6 +450,11 @@ function friendlyReason(reason: string): string {
   }
   if (reason === 'TIMEOUT') {
     return '同步探测超时（网络抖动或 Drive 慢响应）。可继续使用本地，顶栏会标记未同步。';
+  }
+  if (reason.includes('NEEDS_RECONNECT')) {
+    // Strip the prefix marker; what's left is the human-readable
+    // explanation we wrote in driveAuth's error_callback.
+    return reason.replace(/^.*?NEEDS_RECONNECT\s*·\s*/, '');
   }
   return `同步探测失败：${reason}`;
 }

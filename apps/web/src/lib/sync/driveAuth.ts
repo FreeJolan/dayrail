@@ -158,15 +158,26 @@ function requestToken(prompt: '' | 'consent'): Promise<CachedToken> {
         settleResolve(fresh);
       };
       client.error_callback = (err) => {
-        // Fired when the popup itself fails (browser blocked /
-        // closed by user / postMessage path broken by COOP). Without
-        // this hook the main `callback` would never run and the
-        // caller would hang forever.
+        // Fired when the popup itself fails. Three real-world
+        // sub-cases:
+        //   1. user closed the consent popup → 'popup_closed'
+        //   2. silent refresh fell back to popup at boot, where no
+        //      user gesture is active → browser blocks → fires
+        //      'popup_failed_to_open'. Common after Chrome's
+        //      third-party-cookie phase-out broke GIS's iframe
+        //      silent path. The fix is NOT "allow popups" — the
+        //      block is for unactivated popups, not for popups in
+        //      general — but to retry from a user gesture (the
+        //      `重新连接` button in the offline branch).
+        //   3. anything else GIS gives us
+        // The first two need a Reconnect prompt, not a Retry. The
+        // `NEEDS_RECONNECT · ` prefix is a contract with the offline
+        // branch in BootGate to flip its UI accordingly.
         const friendly =
           err.type === 'popup_closed'
-            ? 'Google 同意页被关闭，未完成授权'
+            ? 'NEEDS_RECONNECT · Google 同意页被关闭，未完成授权'
             : err.type === 'popup_failed_to_open'
-              ? 'Google 弹窗被浏览器拦截，请允许弹窗后重试'
+              ? 'NEEDS_RECONNECT · Google Drive 授权已过期或被浏览器限制静默刷新（这是预期行为，点 重新连接 重新授权）'
               : `Google 授权未完成：${err.type ?? 'unknown'}${err.message ? ' · ' + err.message : ''}`;
         settleReject(new Error(friendly));
       };
