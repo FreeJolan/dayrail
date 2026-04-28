@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { clsx } from 'clsx';
 import {
   Archive,
+  ArrowUp,
   Cloud,
   CloudOff,
   ExternalLink,
@@ -25,6 +26,13 @@ import { exportLocalData } from '@/lib/exportData';
 import { importLocalData } from '@/lib/importData';
 import { useVersionUpdate } from '@/lib/swRegistration';
 import { applyTheme, getThemePref, type ThemePref } from '@/lib/theme';
+import { useUpgradeFlow } from '@/lib/useUpgradeFlow';
+import {
+  getUpgradePref,
+  setUpgradePref,
+  subscribeUpgradePref,
+  type UpgradePref,
+} from '@/lib/upgradePref';
 
 // ============ Appearance ============
 
@@ -751,6 +759,7 @@ export function AboutSection() {
         </div>
 
         <UpdateCheckRow />
+        <UpgradeBackupPrefRow />
 
         <div className="flex flex-col gap-1">
           <a
@@ -808,12 +817,16 @@ function DayRailMarkLarge() {
 
 // ------------------------------------------------------------------
 // Manual update check row — hosts "检查更新" + last-check-at + an
-// inline "已是最新版本" flash for the no-op branch. The update-
-// available branch is handled by the global UpdateBanner. ERD §13.5.
+// inline "已是最新版本" flash for the no-op branch. When an update
+// is waiting, an inline "升级" CTA appears alongside (mirroring the
+// global UpdateBanner so users who live in Settings have a direct
+// path). Both routes funnel through `useUpgradeFlow` (ERD §13.5 /
+// §13.8).
 // ------------------------------------------------------------------
 
 function UpdateCheckRow() {
   const { checkNow, lastCheckedAt, status } = useVersionUpdate();
+  const { requestUpgrade, surface: upgradeSurface } = useUpgradeFlow();
   const [flash, setFlash] = useState<'up-to-date' | null>(null);
   const [relative, setRelative] = useState<string>(() =>
     formatRelativeCheck(lastCheckedAt),
@@ -835,12 +848,14 @@ function UpdateCheckRow() {
       setFlash('up-to-date');
       window.setTimeout(() => setFlash(null), 2500);
     }
-    // 'needs-update' routes through the global UpdateBanner.
+    // 'needs-update' surfaces the inline 升级 button below + the
+    // global UpdateBanner; both lead to the same useUpgradeFlow.
   };
 
   const busy = status === 'checking';
+  const updateReady = status === 'needs-update';
   return (
-    <div className="flex w-full items-center gap-3">
+    <div className="flex w-full flex-wrap items-center gap-3">
       <button
         type="button"
         onClick={handleClick}
@@ -849,9 +864,58 @@ function UpdateCheckRow() {
       >
         {busy ? '检查中…' : '检查更新'}
       </button>
+      {updateReady && (
+        <button
+          type="button"
+          onClick={requestUpgrade}
+          className="inline-flex items-center gap-1.5 rounded-md bg-cta px-3 py-1.5 text-xs font-medium text-cta-foreground transition hover:bg-cta-hover"
+        >
+          <ArrowUp className="h-3 w-3" strokeWidth={2} />
+          升级
+        </button>
+      )}
       <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
         {flash === 'up-to-date' ? '已是最新版本' : relative}
       </span>
+      {upgradeSurface}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------
+// Backup-before-upgrade preference. Three-way segmented control
+// bound to localStorage via `lib/upgradePref`. Manually flipping
+// this back to "询问" overrides whatever the dialog's "Remember my
+// choice" checkbox previously wrote — this row is the single source
+// of truth for the preference. ERD §13.8.
+// ------------------------------------------------------------------
+
+function UpgradeBackupPrefRow() {
+  const [pref, setPrefState] = useState<UpgradePref>(() => getUpgradePref());
+  useEffect(() => subscribeUpgradePref((next) => setPrefState(next)), []);
+  const handleChange = (next: UpgradePref) => {
+    setPrefState(next);
+    setUpgradePref(next);
+  };
+  return (
+    <div className="hairline-t flex w-full items-start justify-between gap-6 py-4">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="text-sm font-medium text-ink-primary">
+          升级前备份
+        </span>
+        <p className="text-xs text-ink-tertiary">
+          升级前是否先把当前数据导出一份到本地。「询问」时每次升级前弹窗确认。
+        </p>
+      </div>
+      <Segmented<UpgradePref>
+        value={pref}
+        onChange={handleChange}
+        options={[
+          { key: 'ask', label: '询问' },
+          { key: 'always', label: '总是' },
+          { key: 'never', label: '从不' },
+        ]}
+      />
     </div>
   );
 }

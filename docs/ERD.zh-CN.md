@@ -2235,7 +2235,7 @@ Template Editor / 日历规则抽屉的一次集中编辑共享同一个 session
   ⭡ 新版本可用：{currentSha} → {newSha}   [立即更新]  [稍后]
   ```
   注：`newSha` 在 `prompt` 模式下拿不到（SW 不会告诉我们"新版是什么 SHA"）。**退化方案**：显示 `[立即更新]  [稍后]` + "新版本已下载"，去掉 SHA 箭头。未来真想拿到可以让 SW 自己读取一个 `/__version__.json` 广播给 client —— 当前 MVP 不做。
-- **立即更新**：调 `updateSW(true)` → SW `skipWaiting` → 监听 `navigator.serviceWorker.controllerchange` → `location.reload()`
+- **立即更新**：**不**直接调 `updateSW(true)`，而是进入 §13.8 描述的「升级前备份」二次确认流；偏好为 `'always'` / `'never'` 时跳过弹窗直接执行；偏好为 `'ask'`（默认）时弹出 `BackupPromptDialog`。最终都走 `updateSW(true)` → SW `skipWaiting` → `controllerchange` → `location.reload()`。
 - **稍后**：
   - 隐藏 banner
   - **本次 session 内不再提醒**（保存到 React 组件级 state，不落 localStorage / sessionStorage）
@@ -2264,14 +2264,16 @@ Template Editor / 日历规则抽屉的一次集中编辑共享同一个 session
 │  构建      badd560 · 2026-04-22              │
 │  Repo      github.com/FreeJolan/dayrail       │
 │                                              │
-│  [ 检查更新 ]    上次检查：2 分钟前           │
+│  [ 检查更新 ]  [ 升级 ]   上次检查：2 分钟前  │
+│  升级前备份   ◉ 询问  ○ 总是  ○ 从不           │
 └──────────────────────────────────────────────┘
 ```
 
 - 版本 / SHA / date 直接从 Vite 注入的常量读
-- "检查更新" 按钮点一下立刻触发 `updateSW()`，按钮下方显示"上次检查：XX 前"相对时间
-- 检查完如果没更新 → 在按钮旁 toast / 行内提示"已是最新版本"，2 秒淡出
-- 有更新 → 主流程（banner 出现）
+- "检查更新" 按钮点一下立刻触发 `updateSW()`，旁边显示"上次检查：XX 前"相对时间
+- 检查完如果没更新 → 行内提示"已是最新版本"，2 秒淡出
+- **「升级」按钮**：仅当 `status === 'needs-update'` 时渲染（CTA 色，与顶栏 banner 视觉一致）；点击进入 §13.8 的备份前确认流。这条入口和顶栏 banner 二选一都能升级，互不冲突。
+- **「升级前备份」偏好行**：三选一 radio（`询问 / 总是 / 从不`），对应 §13.8 的 `'ask' | 'always' | 'never'`。从这里手动改回 `'询问'` 可重置弹窗行为（覆盖之前在弹窗里勾选「记住我的选择」写入的偏好）。
 
 ### 13.6 首次离线可用提示
 
@@ -2282,6 +2284,72 @@ Template Editor / 日历规则抽屉的一次集中编辑共享同一个 session
 - **强制更新通道**（安全漏洞级别"必须马上升级"）：暂无业务驱动。真遇到，单独方案 —— SW 读 `/__force_version__.json`，返回 `{minVersion: "0.5.2"}` 时 app 强制 `updateSW(true)` 绕过 banner。v0.4.1 不做。
 - **增量更新 / delta patch**：完整 bundle gzip 后 ~240KB，delta 系统复杂度 > 收益。
 - **版本日志 / CHANGELOG inline 展示**：Settings 里的 "Repo" 链接先承担查更新日志的职责，直到 CHANGELOG 机制单独落地。
+
+### 13.8 升级前本地备份（v0.4.4 起）
+
+**问题背景**：升级 = SW skipWaiting + 整页 reload。绝大多数情况下不会丢数据（数据在 IndexedDB / Zustand persist 里），但用户的心智模型是「升级 = 风险」。给一条「升级前先把数据导一份到本地」的低成本退路，比反复解释「升级是安全的」更有用，也是 §13.7「强制更新」之外唯一与升级耦合的数据保护机制。
+
+**偏好模型**：`localStorage` 键 `dayrail:upgrade-backup-pref`，取值：
+
+| 值 | 含义 | 弹窗行为 |
+|---|---|---|
+| `'ask'`（**默认**） | 每次升级前问一下 | 显示 `BackupPromptDialog` |
+| `'always'` | 总是先备份再升级 | 跳过弹窗，自动调 `exportLocalData()` 然后 `update()` |
+| `'never'` | 从不备份直接升级 | 跳过弹窗，直接 `update()` |
+
+读写通过一个轻薄的 `lib/upgradePref.ts`（`getUpgradePref()` / `setUpgradePref()`），与现有 `lib/theme.ts` 同样的 localStorage 风格。**不**进 zustand 核心 store —— UI 偏好不属于域数据，也避免污染备份 bundle。
+
+**触发器**：新 hook `useUpgradeFlow()` 封装入口逻辑：
+
+```ts
+const { requestUpgrade, dialog } = useUpgradeFlow();
+// requestUpgrade(): 读偏好 → 'ask' 开 dialog / 'always' 备份后升级 / 'never' 直接升级
+// dialog: 渲染 <BackupPromptDialog /> 所需的状态（open + handlers）
+```
+
+两个调用点共用：
+- §13.3 顶栏 banner 的「立即更新」
+- §13.5 Settings About 的「升级」按钮
+
+**`BackupPromptDialog` 组件**（仓库目前没有 Dialog primitive，新建一个一次性的小内联 modal —— `fixed inset-0` 半透明 overlay + 居中 panel + `role="dialog"` + `aria-modal="true"` + `Escape` 关闭 + 焦点陷阱在三个按钮和 checkbox 之间）：
+
+```
+┌─ 升级前备份？ ───────────────────────────────┐
+│                                              │
+│  你即将升级到新版本。是否在升级前先把当前      │
+│  数据导出一份到本地？                          │
+│                                              │
+│  ☐ 记住我的选择                              │
+│                                              │
+│             [ 取消 ] [ 直接升级 ] [ 备份并升级 ] │
+└────────────────────────────────────────────────┘
+```
+
+- **「备份并升级」**（CTA 主按钮）：调 `exportLocalData()` 触发浏览器下载 → `setTimeout(250ms)` → `update()`。250ms 是给 download stream 落盘的微小窗口，避免 SW reload 中断下载流（`exportLocalData` 内部已经用了 `setTimeout(1000)` 才 `URL.revokeObjectURL`，但触发下载的 `a.click()` 是同步的；250ms 已足够把 navigation 让给 download）。
+- **「直接升级」**（次按钮）：直接调 `update()`。
+- **「取消」**：关弹窗，不升级。`UpdateBanner` 仍在原位（`needsRefresh` 没动）。
+- **「记住我的选择」checkbox**（**默认不勾选**，避免第一次误点把偏好写死）：勾选时把按下的主/次按钮映射成偏好持久化：「备份并升级」→ `'always'`，「直接升级」→ `'never'`，「取消」永远不写偏好。
+
+**`'always'` 路径的可见性 toast**：偏好为 `'always'` 时整条路径是「无弹窗 → 静默触发下载 → 250ms 后 reload」，用户可能完全察觉不到自己刚下载了文件。所以在 `exportLocalData()` 成功之后、`update()` 之前插一个简短 toast：
+
+```
+✓ 已备份到 dayrail-backup-{timestamp}.json · 即将升级…
+```
+
+- 文案就放在 `BackupPromptDialog` 同色系的 toast 区（沿用 §13.6 离线提示用过的右下角 toast 模式）。
+- toast 不阻塞 reload —— 250ms 后照常 `update()`，toast 随页面 reload 自然消失（用户能看到的是「toast 闪了一下 → 页面刷新进入新版本」，足够形成感知）。
+- 仅 `'always'` 路径需要这个 toast；`'ask'` 路径用户已经在弹窗里主动选了「备份并升级」，不需要再提示一次；`'never'` 路径没有备份动作。
+
+**回退路径**：
+- 用户在 Settings 把偏好手动改回「询问」 → 下次升级再次出现弹窗，覆盖之前 `'always'` / `'never'` 的写入。
+- localStorage 失效 / 私密浏览模式：`getUpgradePref()` fallback 到 `'ask'`，等同默认行为。
+- `exportLocalData()` 抛错：catch 后 toast 「备份失败，已取消升级」，**不**继续 update —— 用户既然选了备份就是把升级和备份绑成原子，备份失败时不能背刺。`'always'` 路径同样适用：失败 toast 取代成功 toast，update 不发生。
+
+**为什么不做：**
+- **不**把备份偏好做成 zustand store 字段：UI 偏好，与域数据解耦；备份 bundle 里也不应该出现「我下次升级是否要备份」这种递归元数据。
+- **不**复用 `window.confirm()`：满足不了三按钮 + checkbox 的结构。
+- **不**用 Radix Dialog：仓库目前没有这个依赖，单点新增一个一次性 modal 不值得；走简单 `fixed inset-0` 就够。
+- **不**做「自动定时备份」：和升级耦合的备份是窄场景；常态备份属于另一个产品决策，不在本节范围。
 
 ***
 

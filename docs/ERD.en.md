@@ -2463,7 +2463,7 @@ Human-readable version = `v{version} · {gitSha} · {buildDate}`. The semver say
   ⭡ Update available: {currentSha} → {newSha}   [Update now]  [Later]
   ```
   Note: `newSha` isn't knowable from the `'prompt'` flow (the SW doesn't announce "my SHA is X"). **Fallback**: show "Update downloaded · Restart to apply" + the two buttons, drop the arrow comparison. If we later want the new SHA surfaced we can have the SW fetch a `/__version__.json` and broadcast it; MVP doesn't bother.
-- **Update now** → `updateSW(true)` → SW `skipWaiting` → listen for `navigator.serviceWorker.controllerchange` → `location.reload()`.
+- **Update now** → does **not** call `updateSW(true)` directly. It enters the §13.8 "backup-before-upgrade" confirmation flow: with preference `'always'` / `'never'` we skip the dialog and proceed straight away; with `'ask'` (default) we render `BackupPromptDialog`. Every branch eventually calls `updateSW(true)` → SW `skipWaiting` → `controllerchange` → `location.reload()`.
 - **Later**:
   - Hide the banner.
   - **Suppress re-prompt for the remainder of this session** (React state, not storage).
@@ -2487,17 +2487,20 @@ Human-readable version = `v{version} · {gitSha} · {buildDate}`. The semver say
 Lives inside `SettingsSections.tsx` (not a separate file):
 
 ```
-┌─ About ──────────────────────────────────────┐
-│  DayRail  v0.4.1                             │
-│  Build    badd560 · 2026-04-22                │
-│  Repo     github.com/FreeJolan/dayrail         │
-│                                                │
-│  [ Check for updates ]    Last checked: 2m ago │
-└────────────────────────────────────────────────┘
+┌─ About ─────────────────────────────────────────────┐
+│  DayRail  v0.4.1                                    │
+│  Build    badd560 · 2026-04-22                       │
+│  Repo     github.com/FreeJolan/dayrail                │
+│                                                       │
+│  [ Check for updates ]  [ Upgrade ]   Last checked... │
+│  Backup before upgrade   ◉ Ask  ○ Always  ○ Never     │
+└───────────────────────────────────────────────────────┘
 ```
 
 - Version / SHA / date come straight from the Vite-injected constants.
-- Clicking "Check for updates" triggers `updateSW()`; an inline "Already up to date" toast (~2s fade) covers the no-op branch; the banner covers the hit branch.
+- Clicking "Check for updates" triggers `updateSW()`; an inline "Already up to date" hint (~2s fade) covers the no-op branch.
+- **The "Upgrade" button** is rendered only when `status === 'needs-update'` (CTA-tinted, matching the top banner). Clicking it enters the §13.8 backup-before-upgrade flow. This entry point and the top `UpdateBanner` are interchangeable — either reaches the same flow.
+- **The "Backup before upgrade" preference row**: a 3-way radio (`Ask / Always / Never`) bound to the `'ask' | 'always' | 'never'` preference defined in §13.8. Manually flipping it back to `Ask` here resets the dialog behaviour, overriding whatever the "Remember my choice" checkbox previously wrote.
 
 ### 13.6 First-time offline-ready toast
 
@@ -2508,6 +2511,72 @@ Lives inside `SettingsSections.tsx` (not a separate file):
 - **Force-update channel** (security-critical "must upgrade immediately"): no business driver yet. If we need it, it's its own design — SW reads `/__force_version__.json`, `{minVersion: "0.5.2"}` overrides the banner and forces `updateSW(true)`. Not in v0.4.1.
 - **Delta patching / incremental update**: gzipped bundle is ~240 KB; delta infra complexity > savings.
 - **Inline CHANGELOG in Settings**: the Repo link carries the "read the changelog" job for now; we revisit once a proper CHANGELOG machine exists.
+
+### 13.8 Backup before upgrade (from v0.4.4)
+
+**Why this exists**: an upgrade = SW `skipWaiting` + a full reload. In practice it almost never loses data (everything lives in IndexedDB / Zustand persist), but the user's mental model is *"upgrade = risk"*. A cheap "let me grab a local copy first" escape hatch is more useful than repeatedly explaining that the upgrade is safe — and it's the only data-protection hook coupled to the upgrade flow outside the §13.7 force-update branch.
+
+**Preference model**: `localStorage` key `dayrail:upgrade-backup-pref`, values:
+
+| Value | Meaning | Dialog behaviour |
+|---|---|---|
+| `'ask'` (**default**) | Ask before each upgrade | Show `BackupPromptDialog` |
+| `'always'` | Always back up first | Skip dialog; call `exportLocalData()` then `update()` |
+| `'never'` | Never back up | Skip dialog; call `update()` directly |
+
+Read/write goes through a thin `lib/upgradePref.ts` (`getUpgradePref()` / `setUpgradePref()`), in the same localStorage style as `lib/theme.ts`. It is **not** part of the Zustand core store — UI preferences aren't domain data, and we don't want this recursive metadata polluting the backup bundle.
+
+**Trigger**: a new `useUpgradeFlow()` hook centralises the entry logic:
+
+```ts
+const { requestUpgrade, dialog } = useUpgradeFlow();
+// requestUpgrade(): reads pref → 'ask' opens dialog / 'always' backs up then upgrades / 'never' upgrades directly
+// dialog: state needed to render <BackupPromptDialog /> (open flag + handlers)
+```
+
+Two call sites share it:
+- The §13.3 top banner's "Update now"
+- The §13.5 Settings About "Upgrade" button
+
+**`BackupPromptDialog` component** (the repo has no Dialog primitive yet; we add one one-off inline modal — `fixed inset-0` translucent overlay + centred panel + `role="dialog"` + `aria-modal="true"` + `Escape` to close + focus trap across the three buttons and the checkbox):
+
+```
+┌─ Back up before upgrading? ─────────────────┐
+│                                              │
+│  A new version is ready. Export a local      │
+│  copy of your data before upgrading?         │
+│                                              │
+│  ☐ Remember my choice                        │
+│                                              │
+│        [ Cancel ]  [ Upgrade only ]  [ Backup & upgrade ] │
+└──────────────────────────────────────────────┘
+```
+
+- **"Backup & upgrade"** (primary CTA): calls `exportLocalData()` to fire the browser download → `setTimeout(250ms)` → `update()`. The 250 ms tick is a tiny breathing window so the download stream commits to disk before the SW reload tears the page down. (`exportLocalData()` already does `setTimeout(1000)` before `URL.revokeObjectURL`, but `a.click()` itself is synchronous; 250 ms is enough to hand navigation off to the download.)
+- **"Upgrade only"** (secondary): calls `update()` directly.
+- **"Cancel"**: closes the dialog and does nothing. The `UpdateBanner` stays exactly as it was — `needsRefresh` is untouched.
+- **"Remember my choice" checkbox** (**unchecked by default** — we don't want a first accidental click to permanently pin the preference). When checked, the chosen primary/secondary button persists the matching preference: "Backup & upgrade" → `'always'`, "Upgrade only" → `'never'`. "Cancel" never writes the preference.
+
+**Visibility toast on the `'always'` path**: when the preference is `'always'` the whole sequence is "no dialog → silent download → reload in 250 ms" — the user may not notice the file was downloaded at all. So we insert a short toast after `exportLocalData()` succeeds and before `update()`:
+
+```
+✓ Backed up to dayrail-backup-{timestamp}.json · upgrading…
+```
+
+- Same toast slot used by §13.6 (bottom-right transient).
+- The toast does not block the reload — `update()` still fires after 250 ms; the toast naturally disappears with the page reload (the user perceives "a flash of confirmation → app reloads into the new version", which is enough signal).
+- Only the `'always'` path needs this toast. The `'ask'` path already had the user actively pick "Backup & upgrade" in the dialog (no extra confirmation needed); the `'never'` path does no backup at all.
+
+**Recovery / fallback paths**:
+- Manually flipping the Settings preference back to `Ask` re-enables the dialog on the next upgrade, overriding any previously stored `'always'` / `'never'`.
+- localStorage unavailable / private browsing: `getUpgradePref()` falls back to `'ask'`, i.e. the default behaviour.
+- `exportLocalData()` throws: catch and surface a toast "Backup failed; upgrade cancelled". We do **not** proceed to `update()` — picking "Backup & upgrade" binds the two into an atomic action; a failed backup must not silently degrade into a bare upgrade. The `'always'` path applies the same rule: the failure toast replaces the success toast and the update does not happen.
+
+**What we are intentionally not doing**:
+- **Not** putting the preference into the Zustand store: it's a UI preference, decoupled from domain data; the backup bundle should not contain recursive metadata about future upgrade behaviour.
+- **Not** reusing `window.confirm()`: it can't represent three buttons + a checkbox.
+- **Not** pulling in Radix Dialog: the repo doesn't depend on it today, and adding a dependency for one one-shot modal isn't worth it. A plain `fixed inset-0` overlay is sufficient.
+- **Not** building scheduled / automatic backups: backup-coupled-to-upgrade is a narrow case; a general backup cadence is a separate product decision and out of scope here.
 
 ---
 

@@ -1,6 +1,7 @@
 import { ArrowUp, Check, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useVersionUpdate } from '@/lib/swRegistration';
+import { useUpgradeFlow } from '@/lib/useUpgradeFlow';
 
 // ------------------------------------------------------------------
 // Top-of-page banner that surfaces a pending SW update + a one-time
@@ -16,24 +17,15 @@ import { useVersionUpdate } from '@/lib/swRegistration';
 const OFFLINE_TOAST_MS = 5000;
 
 export function UpdateBanner() {
-  const { needsRefresh, update, dismiss, offlineReady, dismissOfflineReady } =
+  const { needsRefresh, dismiss, offlineReady, dismissOfflineReady } =
     useVersionUpdate();
-  const [updating, setUpdating] = useState(false);
+  const { requestUpgrade, surface: upgradeSurface } = useUpgradeFlow();
 
   useEffect(() => {
     if (!offlineReady) return;
     const t = window.setTimeout(dismissOfflineReady, OFFLINE_TOAST_MS);
     return () => window.clearTimeout(t);
   }, [offlineReady, dismissOfflineReady]);
-
-  const handleUpdate = async () => {
-    setUpdating(true);
-    await update();
-    // `update()` triggers a reload on success, so this state rarely
-    // matters after the call. Guard against the no-SW edge case by
-    // flipping it back so the button is usable again.
-    setUpdating(false);
-  };
 
   return (
     <>
@@ -50,12 +42,11 @@ export function UpdateBanner() {
           <div className="flex items-center gap-1.5">
             <button
               type="button"
-              onClick={handleUpdate}
-              disabled={updating}
-              className="inline-flex items-center gap-1 rounded-md bg-cta px-3 py-1 text-xs font-medium text-cta-foreground transition hover:bg-cta-hover disabled:opacity-60"
+              onClick={requestUpgrade}
+              className="inline-flex items-center gap-1 rounded-md bg-cta px-3 py-1 text-xs font-medium text-cta-foreground transition hover:bg-cta-hover"
             >
               <Check className="h-3 w-3" strokeWidth={2} />
-              {updating ? '正在更新…' : '立即更新'}
+              立即更新
             </button>
             <button
               type="button"
@@ -67,6 +58,7 @@ export function UpdateBanner() {
           </div>
         </div>
       )}
+      {upgradeSurface}
       {offlineReady && (
         <div
           role="status"

@@ -44,7 +44,7 @@ export interface ExportBundle {
   };
 }
 
-export function exportLocalData(): void {
+export function exportLocalData(): string {
   const s = useStore.getState();
   const bundle: ExportBundle = {
     app: 'dayrail',
@@ -87,13 +87,15 @@ export function exportLocalData(): void {
     .toISOString()
     .replace(/[:.]/g, '-')
     .slice(0, 19);
+  const filename = `dayrail-backup-${stamp}.json`;
   const a = document.createElement('a');
   a.href = url;
-  a.download = `dayrail-backup-${stamp}.json`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   // Release the object URL on the next tick — some Safari variants
   // abort the download if we revoke synchronously.
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return filename;
 }
