@@ -1257,6 +1257,34 @@ Cases that force re-consent (rare, not the steady state):
 3. Google session genuinely expired (browser unused for very long stretches; private/incognito session ended).
 
 Steady-state UX: **connect once, never see a Google sign-in page again** for the lifetime of that browser-account session.
+
+**Why we don't store a refresh_token** (v0.6.2 · 2026-04-28)
+
+The `GIS Token Client` flow Google offers for pure browser SPAs is the **OAuth 2.0 implicit flow**. Implicit flow returns only `access_token + expires_in`; **it never returns a refresh_token**. This is by design — RFC 8252 Section 8.6 + Google's implementation deliberately keep refresh tokens out of browsers because the browser is an environment with no defense against the just-executed code (XSS, malicious extensions, DevTools, service workers); a refresh token there is a perpetual credential one XSS away from compromise.
+
+Refresh tokens are only issued by the **Authorization Code flow with a client secret** (Web app type) or **PKCE without a secret** (Native / Desktop type), neither of which is available to a serverless PWA with no backend on the wire. So when callers ask "why don't we just persist the refresh token?" — the answer is "we don't have one to persist; getting one requires either a backend (where it would live, never on the wire) or a native shell (where it would live in the OS keychain)."
+
+This sets a structural ceiling on what nominal-zero-friction looks like for the current architecture:
+
+**Cold-start coverage with v0.6.2 cache + FedCM**
+
+| Scenario | Chrome / Edge / Chromium PWA | Safari PWA | Firefox PWA |
+| --- | --- | --- | --- |
+| Reopen within the cached access token's 1 h validity | ✅ silent (cache hit) | ✅ silent (cache hit) | ✅ silent (cache hit) |
+| Reopen after 1 h, Google session in browser is alive | ✅ silent (FedCM-eligible refresh) | ❌ reconnect prompt (no FedCM yet) | ❌ reconnect prompt (no FedCM yet) |
+| Google session itself expired / user signed out / authorization revoked | ❌ reconnect prompt | ❌ reconnect prompt | ❌ reconnect prompt |
+
+**v0.6.2 ships two stacked optimisations to make the first row trivially common and the second row work on Chromium**:
+
+- **A · Persist the access token across reloads** — write `{ token, expiresAt }` to `localStorage` on every successful `requestToken` resolution; on the first `ensureAccessToken` after page load, hydrate `cachedToken` from `localStorage` if it's still inside its 1 h validity. Reopening within an hour now skips the GIS round-trip entirely. Access tokens are short-lived (1 h max) and scoped to `drive.appdata` only — persisting them is materially equivalent in risk to keeping them in memory while the page is open, and the ergonomic win is large.
+- **B · FedCM** — pass `use_fedcm_for_prompt: true` to `initTokenClient`. GIS prefers FedCM (browser-native UI, no popup, no third-party cookies) over the legacy iframe + 3p-cookie path that Chrome's progressive 3p-cookie phase-out has been breaking. On Chrome 117+ this restores silent refresh after the cached token expires; on Safari / Firefox it does nothing because those browsers have not shipped FedCM (Safari "Position: Support", no timeline; Firefox "Worth prototyping").
+
+**Routes that escape the structural ceiling** (not in scope for v0.6.x; documented for future maintainers):
+
+- **Path C · serverless function** — add a single Vercel function (`apps/web/api/google-token.ts`) that holds the refresh token server-side. Bumps OAuth from implicit to Authorization Code + PKCE; refresh token never enters the browser; works on every browser including Safari / Firefox. Cost: breaks ERD §7.1 "no DayRail backend" + ~80 lines + Vercel KV for token storage (free tier covers it indefinitely).
+- **Native shell (Tauri / Capacitor / native SDKs)** — go through OAuth in a native runtime, store the refresh token in the OS keychain (macOS Keychain / Windows Credential Manager / iOS Keychain / Android Keystore). Zero browser involvement, zero cold-start prompts. ROADMAP already parks Tauri as the `apps/desktop` slot; reopening that work would solve auth as a side effect.
+
+For DayRail's current self-use scope (one user, two Chrome on macOS browsers), A + B is sufficient — both rows that A+B can't cover collapse to "reconnection roughly never happens unless the user did something to invalidate the Google session".
 - File layout in `appdata`:
   - `dayrail-snapshot.json` — canonical "latest"; overwritten on every push.
   - `history/dayrail-snapshot-{yyyymmdd-hhmmss}-{deviceLabel}.json` — rolling history; **14 most-recent retained** (older pruned by oldest `modifiedTime`).

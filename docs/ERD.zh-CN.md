@@ -1183,6 +1183,34 @@ DayRail **不运营账号后端**。没有 DayRail 登录、没有托管的用�
 3. Google 会话真的过期（浏览器长期不用 / 隐身窗口结束）。
 
 稳态体感：**连接一次，之后该浏览器-账号会话存续期间，永远不会再看到 Google 登录页**。
+
+**为什么不存 refresh_token**（v0.6.2 · 2026-04-28）
+
+Google 给纯前端 SPA 提供的 GIS Token Client 走的是 **OAuth 2.0 implicit flow**。implicit flow 只会返回 `access_token + expires_in`，**根本不发 refresh_token**。这是设计选择 —— RFC 8252 §8.6 + Google 的实现刻意不让浏览器持有 refresh token，因为浏览器对刚执行的代码毫无防御能力（XSS、恶意扩展、DevTools、Service Worker）；refresh token 是无限期凭证，落到浏览器里就是"一次 XSS 永久失守"。
+
+refresh token 只有 **Authorization Code flow + client secret**（Web app 类型）或 **PKCE without secret**（Native / Desktop 类型）才会发 —— 这两条路对"纯前端、零后端"PWA 都不可用。所以"为什么不持久化 refresh token"的答案是：**我们根本拿不到** —— 想拿到要么加后端（refresh token 留在后端、永不上 wire），要么做原生壳（refresh token 留在 OS 钥匙串）。
+
+这条限制划出了纯前端架构能做到的"零打扰"上限：
+
+**v0.6.2 缓存 + FedCM 之后的冷启动覆盖**
+
+| 场景 | Chrome / Edge / Chromium 系 PWA | Safari PWA | Firefox PWA |
+| --- | --- | --- | --- |
+| 距上次 < 1h，cached access token 还有效 | ✅ 静默（命中缓存） | ✅ 静默（命中缓存） | ✅ 静默（命中缓存） |
+| 距上次 > 1h，但浏览器里 Google 会话还在 | ✅ 静默（FedCM 续 token） | ❌ 弹"重新连接"（FedCM 还没上） | ❌ 弹"重新连接"（FedCM 还没上） |
+| Google 会话本身过期 / 用户登出 / 在 Google 后台 revoke 了授权 | ❌ 弹"重新连接" | ❌ 弹"重新连接" | ❌ 弹"重新连接" |
+
+**v0.6.2 叠两层优化把第一行变成日常、把第二行在 Chromium 上救回来**：
+
+- **A · access token 跨刷新存活** —— 每次 `requestToken` 成功 resolve 后把 `{ token, expiresAt }` 写到 `localStorage`；下次冷启动后第一次 `ensureAccessToken` 会先尝试从 `localStorage` 还原 `cachedToken`（前提是仍在 1h 有效期内）。1 小时内的二次冷启 = 直接用，跳过整个 GIS 往返。Access token 寿命短（最多 1h）+ scope 限于 `drive.appdata`，落盘的额外风险面与"页面开着时驻留内存"等价；带来的体感收益显著。
+- **B · FedCM** —— `initTokenClient` 加 `use_fedcm_for_prompt: true`。GIS 优先走 FedCM（浏览器原生 UI、不需弹窗、不依赖第三方 cookie），不走 Chrome 第三方 cookie 阶段性下线后越来越脆的旧 iframe 路径。Chrome 117+ 上 cached token 过期后的续期能恢复静默；Safari / Firefox 没 ship FedCM（Safari 立场 "Position: Support" 无具体日程；Firefox "Worth prototyping"），这条优化对它们零作用。
+
+**绕过这条结构上限的两条路**（不在 v0.6.x 范围内，留给未来的维护者）：
+
+- **方案 C · serverless function** —— 加一个 Vercel function（`apps/web/api/google-token.ts`）由后端持有 refresh token。OAuth 从 implicit 升级到 Authorization Code + PKCE；refresh token 永远不进浏览器；**对所有浏览器都生效**，包括 Safari / Firefox。代价：破例 ERD §7.1 "no DayRail backend" + ~80 行 + 一个 Vercel KV（免费档无限够用）。
+- **原生壳（Tauri / Capacitor / Native SDK）** —— 在原生运行时里走 OAuth，refresh token 存在 OS 钥匙串（macOS Keychain / Windows Credential Manager / iOS Keychain / Android Keystore）。完全绕开浏览器，零冷启提示。ROADMAP 已经把 Tauri 留作 `apps/desktop` 槽位 park 着；如果哪天重启那条线，认证问题作为副产品自然解决。
+
+对 DayRail 当前的自用范围（一个用户、两台 macOS Chrome）来说，A + B 已经够用 —— A+B 没法救的两行都坍缩成"基本不会触发，除非用户自己做了点啥让 Google 会话失效"。
 - `appdata` 内文件结构：
   - `dayrail-snapshot.json` —— 规范的"最新"文件，每次推送覆盖。
   - `history/dayrail-snapshot-{yyyymmdd-hhmmss}-{deviceLabel}.json` —— 滚动历史，**保留最近 14 份**（按 `modifiedTime` 最旧者淘汰）。

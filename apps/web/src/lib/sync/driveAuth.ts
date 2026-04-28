@@ -1,20 +1,32 @@
 // Google Identity Services token-client wrapper. Pure browser OAuth
-// per ERD §7.1 ("no DayRail account backend"); access tokens live in
-// memory only, never persisted.
+// per ERD §7.1 ("no DayRail account backend").
+//
+// **Token persistence (v0.6.2)**: access tokens are persisted to
+// localStorage with their `expiresAt` so reopening within the 1 h
+// validity window skips the GIS round-trip entirely. Refresh tokens
+// are NOT persisted — implicit flow doesn't issue any (see ERD §7.6
+// "Why we don't store a refresh_token"). Access tokens are short-
+// lived (≤ 1 h) and scoped to `drive.appdata` only, so persisting
+// them is materially equivalent in risk to keeping them in memory
+// while the page is open.
+//
+// **FedCM (v0.6.2)**: `use_fedcm_for_prompt: true` on initTokenClient
+// makes GIS prefer browser-native UI for silent refresh over the
+// legacy iframe + 3p-cookie path Chrome's 3p-cookie phase-out has
+// been breaking. Chrome 117+ thus regains silent post-1 h refresh;
+// Safari / Firefox don't ship FedCM yet and still fall back to
+// popup → blocked at boot → caller surfaces the offline / Reconnect
+// branch.
 //
 // The GIS script (`https://accounts.google.com/gsi/client`) is loaded
-// by index.html with `async defer`, so on first call we may need to
-// wait for it. `ensureAccessToken` is the everyday entry-point: it
-// returns a fresh, non-expired token, performing a silent refresh if
-// the cached token is expired or near-expiry. `connect()` performs
-// the one-time consent dance (popup); `disconnect()` revokes the
-// token and forgets the connection.
+// by lazily on first call.
 
 const GIS_SCRIPT_URL = 'https://accounts.google.com/gsi/client';
 const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 const NEAR_EXPIRY_MS = 5 * 60 * 1000; // refresh when < 5 min remains
 
 const KEY_CONNECTED = 'dayrail.sync.driveConnected';
+const KEY_CACHED_TOKEN = 'dayrail.sync.cachedAccessToken';
 
 type GisTokenResponse = {
   access_token?: string;
@@ -48,6 +60,8 @@ declare global {
             prompt?: string;
             callback: TokenClientCallback;
             error_callback?: TokenClientErrorCallback;
+            /** v0.6.2 · prefer FedCM over the legacy iframe path. */
+            use_fedcm_for_prompt?: boolean;
           }) => TokenClient;
           revoke: (token: string, done: () => void) => void;
         };
@@ -64,6 +78,65 @@ interface CachedToken {
 let scriptPromise: Promise<void> | null = null;
 let tokenClient: TokenClient | null = null;
 let cachedToken: CachedToken | null = null;
+/** Set on first ensureAccessToken / first cache hydrate after page
+ *  load so we don't read localStorage on every call. */
+let storageHydrated = false;
+
+function readPersistedToken(): CachedToken | null {
+  if (typeof window === 'undefined') return null;
+  let raw: string | null;
+  try {
+    raw = window.localStorage.getItem(KEY_CACHED_TOKEN);
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<CachedToken>;
+    if (
+      typeof parsed.token === 'string' &&
+      typeof parsed.expiresAt === 'number' &&
+      Number.isFinite(parsed.expiresAt)
+    ) {
+      return { token: parsed.token, expiresAt: parsed.expiresAt };
+    }
+  } catch {
+    // corrupted entry — drop it.
+  }
+  return null;
+}
+
+function writePersistedToken(t: CachedToken): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(KEY_CACHED_TOKEN, JSON.stringify(t));
+  } catch {
+    // private browsing / quota — non-fatal; degrade to memory-only.
+  }
+}
+
+function clearPersistedToken(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(KEY_CACHED_TOKEN);
+  } catch {
+    /* swallow */
+  }
+}
+
+function hydrateFromStorageOnce(): void {
+  if (storageHydrated) return;
+  storageHydrated = true;
+  if (cachedToken) return;
+  const persisted = readPersistedToken();
+  if (!persisted) return;
+  // Guard against expired entries left over from a previous session.
+  if (persisted.expiresAt - Date.now() <= NEAR_EXPIRY_MS) {
+    clearPersistedToken();
+    return;
+  }
+  cachedToken = persisted;
+}
 
 function getClientId(): string {
   const id = import.meta.env.VITE_GOOGLE_OAUTH_CLIENT_ID;
@@ -116,6 +189,14 @@ async function ensureTokenClient(): Promise<TokenClient> {
   tokenClient = oauth2.initTokenClient({
     client_id: getClientId(),
     scope: SCOPE,
+    // FedCM (v0.6.2): prefer browser-native silent UI over the
+    // legacy iframe + 3p-cookie path Chrome's 3p-cookie phase-out has
+    // been breaking. On Chrome 117+ this restores silent post-1 h
+    // refresh. Browsers without FedCM ignore the flag and fall back
+    // to the legacy path (which then degrades to popup → blocked at
+    // boot → NEEDS_RECONNECT). See ERD §7.6 cold-start coverage
+    // table for the per-browser matrix.
+    use_fedcm_for_prompt: true,
     callback: () => {
       /* per-request callback set inline below */
     },
@@ -155,6 +236,7 @@ function requestToken(prompt: '' | 'consent'): Promise<CachedToken> {
           expiresAt: Date.now() + resp.expires_in * 1000,
         };
         cachedToken = fresh;
+        writePersistedToken(fresh);
         settleResolve(fresh);
       };
       client.error_callback = (err) => {
@@ -204,12 +286,13 @@ export async function connectDrive(): Promise<void> {
   }
 }
 
-/** Drop the in-memory token + the "connected" flag. Best-effort
- *  revocation against Google so the user's account-permissions page
- *  reflects the disconnect. */
+/** Drop the in-memory token + the persisted token + the "connected"
+ *  flag. Best-effort revocation against Google so the user's
+ *  account-permissions page reflects the disconnect. */
 export async function disconnectDrive(): Promise<void> {
   const had = cachedToken;
   cachedToken = null;
+  clearPersistedToken();
   if (typeof window !== 'undefined') {
     try {
       window.localStorage.removeItem(KEY_CONNECTED);
@@ -249,11 +332,16 @@ export function isDriveConnected(): boolean {
  *  device hasn't connected yet, or if the silent refresh fails (e.g.
  *  user signed out of Google in this browser, or revoked DayRail
  *  from Google's account-permissions page) — caller should treat
- *  that as the boot-gate "offline" branch. */
+ *  that as the boot-gate "offline" branch.
+ *
+ *  v0.6.2: on first call after page load, hydrates `cachedToken`
+ *  from localStorage so a cold start within the previous token's 1 h
+ *  validity skips the GIS round-trip entirely. */
 export async function ensureAccessToken(): Promise<string> {
   if (!isDriveConnected()) {
     throw new Error('NOT_CONNECTED');
   }
+  hydrateFromStorageOnce();
   if (cachedToken && cachedToken.expiresAt - Date.now() > NEAR_EXPIRY_MS) {
     return cachedToken.token;
   }
@@ -262,7 +350,9 @@ export async function ensureAccessToken(): Promise<string> {
 }
 
 /** Drop the cached token without disconnecting. Use after a 401 to
- *  force the next call to silent-refresh. */
+ *  force the next call to silent-refresh. Also clears the persisted
+ *  copy so a stale token doesn't get re-hydrated next page load. */
 export function invalidateCachedToken(): void {
   cachedToken = null;
+  clearPersistedToken();
 }
