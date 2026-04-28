@@ -50,8 +50,11 @@ import { syncStore } from './syncStore';
 const PUSH_DEBOUNCE_MS = 60 * 1000;
 const PROBE_SOFT_TIMEOUT_MS = 1500;
 const PROBE_HARD_TIMEOUT_MS = 3500;
+const RECOVERY_KICK_DELAY_MS = 1500;
+const RETRY_BACKOFF_MS = 5 * 60 * 1000;
 
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let unsubStore: (() => void) | null = null;
 let inFlightPush: Promise<void> | null = null;
 
@@ -74,6 +77,22 @@ export function startSyncBackgroundLoop(): void {
     window.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('pagehide', onPageHide);
     window.addEventListener('beforeunload', onBeforeUnload);
+  }
+
+  // v0.6.3 recovery kick: schedulePush's timer dies on page reload,
+  // but dirtyCount lives in localStorage and survives. Without this
+  // kick, dirty work that was scheduled but not yet pushed at reload
+  // time would sit indefinitely (until the next user write or tab
+  // hide). Fire one push shortly after boot if there's anything
+  // pending. Small delay so boot-time auto-task materialization etc.
+  // settle into the same push.
+  if (isDriveConnected() && getDirtyCount() > 0) {
+    setTimeout(() => {
+      if (!isDriveConnected() || getDirtyCount() === 0) return;
+      void runPush({ trigger: 'recovery' }).catch((err) => {
+        console.warn('[sync] recovery push failed:', err);
+      });
+    }, RECOVERY_KICK_DELAY_MS);
   }
 }
 
@@ -143,7 +162,14 @@ function onBeforeUnload(): void {
 }
 
 interface RunPushOpts {
-  trigger: 'manual' | 'debounced' | 'visibilitychange' | 'pagehide' | 'beforeunload';
+  trigger:
+    | 'manual'
+    | 'debounced'
+    | 'visibilitychange'
+    | 'pagehide'
+    | 'beforeunload'
+    | 'recovery'
+    | 'retry';
   keepalive?: boolean;
 }
 
@@ -198,6 +224,11 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       setLastSyncInfo(info);
       syncStore.setLastSync(info);
       syncStore.setPhase({ kind: 'idle' });
+      // Successful push — drop any pending retry.
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
     } catch (err) {
       const msg = (err as Error).message ?? String(err);
       console.warn('[sync] push failed:', err);
@@ -213,6 +244,27 @@ async function runPush(opts: RunPushOpts): Promise<void> {
             syncStore.setPhase({ kind: 'idle' });
           }
         }, 2000);
+      }
+      // v0.6.3 retry: if there's still dirty work and we're still
+      // connected, schedule a single retry after a backoff window.
+      // Skipped for manual triggers (the user is right there and
+      // can re-click) and for the retry trigger itself (no infinite
+      // ladder; next user write or visibility-change will pick it up).
+      if (
+        opts.trigger !== 'manual' &&
+        opts.trigger !== 'retry' &&
+        getDirtyCount() > 0 &&
+        isDriveConnected()
+      ) {
+        if (retryTimer) clearTimeout(retryTimer);
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          if (!isDriveConnected() || getDirtyCount() === 0) return;
+          void runPush({ trigger: 'retry' }).catch(() => {
+            // Already logged inside; swallow here so the retry
+            // chain doesn't fan out into uncaught rejections.
+          });
+        }, RETRY_BACKOFF_MS);
       }
       throw err;
     } finally {
