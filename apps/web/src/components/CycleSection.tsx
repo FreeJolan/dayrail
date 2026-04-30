@@ -1,10 +1,11 @@
 import { clsx } from 'clsx';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronDown, NotebookPen } from 'lucide-react';
 import type { TaskPriority } from '@dayrail/core';
 import {
   type CycleDay,
   type CycleSlot,
+  type SlotTaskSummary,
   formatDayLabel,
 } from '@/data/sampleCycle';
 import {
@@ -40,6 +41,13 @@ interface Props {
   rails: EditableRail[];
   days: CycleDay[];
   slotsByKey: Map<string, CycleSlot>; // key = `${railId}|${date}`
+  /** Tasks scheduled to a rail that isn't active on their day (rail
+   *  tombstoned / removed from the day's template / template flipped).
+   *  Surfaced in a single "Off-rail" row at the bottom of the section
+   *  so a scheduled task is never silently invisible. The row only
+   *  renders when at least one of `days` has entries; pills inside
+   *  remain draggable so the user can drop them back onto any rail. */
+  offRailByDate?: Record<string, SlotTaskSummary[]>;
   todayISO: string;
   templateChoices: TemplateChoice[];
   /** Dates in this section's `days` slice that already have a written
@@ -88,6 +96,7 @@ export function CycleSection({
   rails,
   days,
   slotsByKey,
+  offRailByDate,
   todayISO,
   templateChoices,
   reflectedDates,
@@ -110,6 +119,20 @@ export function CycleSection({
 }: Props) {
   const stripColor = RAIL_COLOR_HEX[templateColor];
   const [hoverKey, setHoverKey] = useState<string | null>(null);
+  // The Off-rail row only renders when at least one day in this
+  // section has a scheduled task whose rail isn't active that day.
+  // No orphans → no row; the section stays as compact as before.
+  const sectionOffRail = useMemo(() => {
+    if (!offRailByDate) return null;
+    const perDay = new Map<string, SlotTaskSummary[]>();
+    let any = false;
+    for (const d of days) {
+      const arr = offRailByDate[d.date] ?? [];
+      if (arr.length > 0) any = true;
+      perDay.set(d.date, arr);
+    }
+    return any ? perDay : null;
+  }, [offRailByDate, days]);
   // `hoverRailId` falls out of the hoverKey (railId|date). Derived
   // separately so the rail row + left label can signal "this Rail
   // will receive the drop" without every cell tracking it.
@@ -259,6 +282,46 @@ export function CycleSection({
               </tr>
               );
             })}
+            {sectionOffRail && (
+              <tr>
+                <th
+                  scope="row"
+                  className="pr-3 py-1 text-left align-top"
+                >
+                  <OffRailRowLabel />
+                </th>
+                {days.map((d) => {
+                  const offRailTasks = sectionOffRail.get(d.date) ?? [];
+                  return (
+                    <td
+                      key={d.date}
+                      className={clsx(
+                        'p-1 align-top',
+                        d.date === todayISO && 'bg-surface-2/40',
+                      )}
+                    >
+                      <CycleCell
+                        tasks={offRailTasks}
+                        color="slate"
+                        date={d.date}
+                        railId="__offrail__"
+                        railName="未归属"
+                        {...(onClearSlot && { onClearTask: onClearSlot })}
+                        {...(onMarkTaskDone && { onMarkTaskDone })}
+                        {...(onUndoTaskDone && { onUndoTaskDone })}
+                        {...(onArchiveTask && { onArchiveTask })}
+                        {...(onUnarchiveTask && { onUnarchiveTask })}
+                        {...(onOpenTaskDetail && { onOpenTaskDetail })}
+                        {...(onOpenTaskProject && { onOpenTaskProject })}
+                        {...(onSetTaskPriority && { onSetTaskPriority })}
+                        {...(onToggleSubItem && { onToggleSubItem })}
+                        {...(lineLookup && { lineLookup })}
+                      />
+                    </td>
+                  );
+                })}
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -531,3 +594,22 @@ function RailRowLabel({
   );
 }
 
+function OffRailRowLabel() {
+  // Visually distinct from a real rail row: no color bar, dashed
+  // outline, italic copy. Communicates "these tasks lost their rail"
+  // without pretending to be a peer of the user's own rails. Drag the
+  // pill onto any rail above to recover.
+  return (
+    <div className="flex items-center gap-2 rounded-sm border border-dashed border-hairline/60 bg-surface-0/40 pl-0.5 pr-1.5 py-1">
+      <span aria-hidden className="h-6 w-1 shrink-0" />
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate text-sm italic text-ink-secondary">
+          未归属
+        </span>
+        <span className="truncate font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          off-rail · 拖回任意 rail 即可恢复
+        </span>
+      </span>
+    </div>
+  );
+}

@@ -49,17 +49,28 @@ interface Item {
 // keyboard shortcut (wired up in App.tsx, independent of this file).
 interface SideNavProps {}
 
-// Two groups, separated by a 16px margin. Top group = daily / planning
-// consumption (the Rails you ride). Bottom group = meta / config
-// (the Rails' editor + app settings).
-const PRIMARY_ITEMS: Item[] = [
+// Three primary groups separated by mode of use, then config below
+// after a wider gap. Splitting the primary items makes the rail read
+// in three distinct mental modes — plan forward (time views) → act on
+// tasks → reflect — instead of mixing them in a flat list. Unresolved
+// sits next to Tasks (it's the attention-driven counterpart) rather
+// than at the bottom where its badge dot is easy to miss.
+const PLANNING_ITEMS: Item[] = [
   { key: 'today', label: 'Today', icon: Sparkles, path: '/' },
   { key: 'cycle', label: 'Cycle', icon: Layers, path: '/cycle' },
-  { key: 'tasks', label: 'Tasks', icon: ListChecks, path: '/tasks/inbox', prefix: '/tasks' },
-  { key: 'review', label: 'Review', icon: LineChart, path: '/review' },
   { key: 'calendar', label: 'Calendar', icon: Calendar, path: '/calendar' },
+];
+
+const TASK_ITEMS: Item[] = [
+  { key: 'tasks', label: 'Tasks', icon: ListChecks, path: '/tasks/inbox', prefix: '/tasks' },
   { key: 'pending', label: 'Unresolved', icon: Inbox, path: '/pending' },
 ];
+
+const REFLECTION_ITEMS: Item[] = [
+  { key: 'review', label: 'Review', icon: LineChart, path: '/review' },
+];
+
+const PRIMARY_GROUPS: Item[][] = [PLANNING_ITEMS, TASK_ITEMS, REFLECTION_ITEMS];
 
 const SECONDARY_ITEMS: Item[] = [
   { key: 'template', label: 'Template', icon: FileText, path: '/templates', prefix: '/templates' },
@@ -108,20 +119,24 @@ export function SideNav(_props: SideNavProps) {
       <BrandHeader collapsed={collapsed} />
 
       <nav className="mt-8 flex flex-1 flex-col gap-0.5 px-3">
-        {PRIMARY_ITEMS.map((it) => (
-          <NavItem
-            key={it.key}
-            item={it}
-            active={isActive(location.pathname, it)}
-            onClick={() => navigate(it.path)}
-            collapsed={collapsed}
-            badgeDot={it.key === 'pending' && pendingCount > 0}
-            badgeTooltip={
-              it.key === 'pending' && pendingCount > 0
-                ? `${pendingCount} unmarked`
-                : undefined
-            }
-          />
+        {PRIMARY_GROUPS.map((group, gi) => (
+          <div key={gi} className={clsx('flex flex-col gap-0.5', gi > 0 && 'mt-3')}>
+            {group.map((it) => (
+              <NavItem
+                key={it.key}
+                item={it}
+                active={isActive(location.pathname, it)}
+                onClick={() => navigate(it.path)}
+                collapsed={collapsed}
+                badgeDot={it.key === 'pending' && pendingCount > 0}
+                badgeTooltip={
+                  it.key === 'pending' && pendingCount > 0
+                    ? `${pendingCount} unmarked`
+                    : undefined
+                }
+              />
+            ))}
+          </div>
         ))}
         <div aria-hidden className="mt-4" />
         {SECONDARY_ITEMS.map((it) => (

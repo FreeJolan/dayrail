@@ -86,6 +86,14 @@ export interface DerivedCycle {
   cycle: SampleCycle;
   /** Rail list per template, in the shape CycleSection expects. */
   railsByTemplate: Record<string, EditableRail[]>;
+  /** Tasks scheduled to a (date, railId) where the railId is NOT
+   *  active on that date under that day's templateKey — e.g. the rail
+   *  was tombstoned, removed from the template, or the day's template
+   *  flipped to one that doesn't include it. CycleSection surfaces
+   *  these in an "Off-rail" row so a scheduled task is never silently
+   *  invisible; the user can drag the pill back onto any rail to
+   *  recover it. */
+  offRailByDate: Record<string, SlotTaskSummary[]>;
 }
 
 /** Build a Cycle-View-shaped snapshot from live store state for the
@@ -148,45 +156,40 @@ export function deriveCycleFromStore(
     railsByTemplate[key]!.sort((a, b) => a.startMin - b.startMin);
   }
 
+  // Per-day set of railIds that are active on that date AND belong to
+  // the day's templateKey. Used below to split scheduled tasks into
+  // on-rail (rendered in the rail row) vs off-rail (rendered in the
+  // section's Off-rail row, see DerivedCycle.offRailByDate).
+  const railIdsByDate = new Map<string, Set<string>>();
+  for (const day of days) {
+    const set = new Set<string>();
+    for (const { railId, revision } of railsActiveOn(state, day.date)) {
+      if (revision.templateKey === day.templateKey) set.add(railId);
+    }
+    railIdsByDate.set(day.date, set);
+  }
+
   // v0.4: a slot can hold multiple tasks (ERD §4.1 "Slot ↔ Task
   // one-to-many"). Build a per-key task array; each task carries its
-  // own status so CycleCell can render multi-pill stacks.
+  // own status so CycleCell can render multi-pill stacks. Tasks
+  // pointing at a rail that isn't active on their day spill into
+  // `offRailMap` instead — never silently dropped.
   const slotsByKey = new Map<string, CycleSlot>();
+  const offRailMap = new Map<string, SlotTaskSummary[]>();
   for (const task of Object.values(state.tasks)) {
     if (task.status === 'deleted') continue;
     if (!task.slot) continue;
     const { date, railId } = task.slot;
     if (date < startIso || date > endIso) continue;
+    const summary = buildSlotTaskSummary(task);
+    const railOnDay = railIdsByDate.get(date)?.has(railId) ?? false;
+    if (!railOnDay) {
+      const arr = offRailMap.get(date) ?? [];
+      arr.push(summary);
+      offRailMap.set(date, arr);
+      continue;
+    }
     const key = `${railId}|${date}`;
-    const subItems = task.subItems ?? [];
-    // Task.status ∈ pending / in-progress / done / deferred / archived / deleted.
-    // Map anything pre-terminal into `pending` for slot-pill rendering.
-    let state: SlotTaskState;
-    if (task.status === 'done') state = 'done';
-    else if (task.status === 'deferred') state = 'deferred';
-    else if (task.status === 'archived') state = 'archived';
-    else state = 'pending';
-    const trimmedNote = task.note?.trim() ?? '';
-    const summary: SlotTaskSummary = {
-      taskId: task.id,
-      title: task.title,
-      state,
-      isAutoTask: task.source === 'auto-habit',
-      hasNote: trimmedNote.length > 0,
-      ...(trimmedNote.length > 0 && {
-        note: trimmedNote,
-        noteSnippet:
-          trimmedNote.length > 120 ? `${trimmedNote.slice(0, 120)}…` : trimmedNote,
-      }),
-      subItemsDone: subItems.filter((s) => s.done).length,
-      subItemsTotal: subItems.length,
-      ...(subItems.length > 0 && { subItems }),
-      ...(task.milestonePercent != null && {
-        milestonePercent: task.milestonePercent,
-      }),
-      ...(task.priority != null && { priority: task.priority }),
-      ...(task.slotOrder != null && { slotOrder: task.slotOrder }),
-    };
     const existing = slotsByKey.get(key);
     if (existing) {
       existing.tasks.push(summary);
@@ -211,6 +214,11 @@ export function deriveCycleFromStore(
     if (p === 'P2') return 2;
     return 3;
   };
+  const sortByStateThenPriority = (a: SlotTaskSummary, b: SlotTaskSummary) => {
+    const byState = STATE_RANK[a.state] - STATE_RANK[b.state];
+    if (byState !== 0) return byState;
+    return priorityRank(a.priority) - priorityRank(b.priority);
+  };
   for (const slot of slotsByKey.values()) {
     // §4.1 v0.4.4 · if any task in the slot carries a user-defined
     // `slotOrder`, the whole slot sorts by `slotOrder` asc (tasks
@@ -225,15 +233,17 @@ export function deriveCycleFromStore(
         return ao - bo;
       });
     } else {
-      slot.tasks.sort((a, b) => {
-        const byState = STATE_RANK[a.state] - STATE_RANK[b.state];
-        if (byState !== 0) return byState;
-        return priorityRank(a.priority) - priorityRank(b.priority);
-      });
+      slot.tasks.sort(sortByStateThenPriority);
     }
   }
+  // Off-rail tasks have no meaningful in-bucket ordering — slotOrder
+  // was relative to a slot they're no longer in. Sort by the same
+  // state→priority rank used for fresh slots.
+  for (const arr of offRailMap.values()) arr.sort(sortByStateThenPriority);
 
   const slots: CycleSlot[] = [...slotsByKey.values()];
+  const offRailByDate: Record<string, SlotTaskSummary[]> = {};
+  for (const [date, arr] of offRailMap) offRailByDate[date] = arr;
 
   // topLines: cheapest bar for the summary strip — pick three Projects
   // (kind='project') by task count in the current cycle window. Good
@@ -249,7 +259,39 @@ export function deriveCycleFromStore(
     slots,
     topLines,
   };
-  return { cycle, railsByTemplate };
+  return { cycle, railsByTemplate, offRailByDate };
+}
+
+function buildSlotTaskSummary(task: Task): SlotTaskSummary {
+  const subItems = task.subItems ?? [];
+  // Task.status ∈ pending / in-progress / done / deferred / archived / deleted.
+  // Map anything pre-terminal into `pending` for slot-pill rendering.
+  let state: SlotTaskState;
+  if (task.status === 'done') state = 'done';
+  else if (task.status === 'deferred') state = 'deferred';
+  else if (task.status === 'archived') state = 'archived';
+  else state = 'pending';
+  const trimmedNote = task.note?.trim() ?? '';
+  return {
+    taskId: task.id,
+    title: task.title,
+    state,
+    isAutoTask: task.source === 'auto-habit',
+    hasNote: trimmedNote.length > 0,
+    ...(trimmedNote.length > 0 && {
+      note: trimmedNote,
+      noteSnippet:
+        trimmedNote.length > 120 ? `${trimmedNote.slice(0, 120)}…` : trimmedNote,
+    }),
+    subItemsDone: subItems.filter((s) => s.done).length,
+    subItemsTotal: subItems.length,
+    ...(subItems.length > 0 && { subItems }),
+    ...(task.milestonePercent != null && {
+      milestonePercent: task.milestonePercent,
+    }),
+    ...(task.priority != null && { priority: task.priority }),
+    ...(task.slotOrder != null && { slotOrder: task.slotOrder }),
+  };
 }
 
 function railRevisionToEditable(rev: RailRevision): EditableRail {
@@ -294,36 +336,6 @@ function computeTopLines(
         planned: stats.planned + stats.done,
       };
     });
-}
-
-/** Tasks that would be orphaned if day `date` flipped to template
- *  `nextTemplateKey`. Orphans are tasks whose `slot` points at a Rail
- *  that does NOT belong to the new template — they'd still carry
- *  slot metadata, but no Cycle cell would render them. Callers
- *  (`CycleView`'s override handler) use this to gate the switch
- *  behind a small confirmation + batch `task.unscheduled`.
- *
- *  Phase 3: resolves "rails belonging to nextTemplateKey on this date"
- *  via the revision tables, so an override on a past date checks
- *  against the rail roster as it existed on that date. */
-export function findOrphanTasksForTemplateSwitch(
-  state: Pick<
-    DayRailState,
-    'tasks' | 'rails' | 'railRevisions' | 'railTombstones'
-  >,
-  date: string,
-  nextTemplateKey: string,
-): Task[] {
-  const nextRailIds = new Set<string>();
-  for (const { railId, revision } of railsActiveOn(state, date)) {
-    if (revision.templateKey === nextTemplateKey) nextRailIds.add(railId);
-  }
-  return Object.values(state.tasks).filter((t) => {
-    if (t.status === 'archived' || t.status === 'deleted') return false;
-    if (!t.slot) return false;
-    if (t.slot.date !== date) return false;
-    return !nextRailIds.has(t.slot.railId);
-  });
 }
 
 /** Tasks that should surface in the Cycle View's Backlog drawer as

@@ -1,10 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Settings2 } from 'lucide-react';
-import {
-  pickTemplateForDate,
-  toIsoDate,
-} from './cycleFromStore';
-import { findOrphanTasksForTemplateSwitch } from './cycleFromStore';
+import { pickTemplateForDate, toIsoDate } from './cycleFromStore';
 import {
   INBOX_LINE_ID,
   singleDateRuleId,
@@ -42,17 +38,12 @@ export function Calendar() {
   const todayIso = toIsoDate(now);
 
   const templates = useStore((s) => s.templates);
-  const tasks = useStore((s) => s.tasks);
-  const rails = useStore((s) => s.rails);
-  const railRevisions = useStore((s) => s.railRevisions);
-  const railTombstones = useStore((s) => s.railTombstones);
   const calendarRules = useStore((s) => s.calendarRules);
   const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
   const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
   const adhocEvents = useStore((s) => s.adhocEvents);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
   const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
-  const unscheduleTask = useStore((s) => s.unscheduleTask);
   const createAdhocEvent = useStore((s) => s.createAdhocEvent);
   const deleteAdhocEvent = useStore((s) => s.deleteAdhocEvent);
 
@@ -94,59 +85,22 @@ export function Calendar() {
   const gotoToday = () =>
     setMonth({ year: now.getFullYear(), month: now.getMonth() + 1 });
 
-  // Orphan-guarded switch — same logic as CycleView. Shared behavior
-  // kept inline here (not re-exported) since there's no third caller
-  // yet; promote to a hook if a fourth shows up.
-  const applyTemplateSwitch = useCallback(
-    async (
-      date: string,
-      nextTemplateKey: TemplateKey,
-      apply: () => Promise<void>,
-    ) => {
-      const orphans = findOrphanTasksForTemplateSwitch(
-        { tasks, rails, railRevisions, railTombstones },
-        date,
-        nextTemplateKey,
-      );
-      if (orphans.length > 0) {
-        const templateName = templates[nextTemplateKey]?.name ?? nextTemplateKey;
-        const msg = `切换到"${templateName}"会把这一天的 ${orphans.length} 个已排任务移出，可以随时从 Backlog 拖回来。继续？`;
-        if (!window.confirm(msg)) return;
-        for (const t of orphans) {
-          await unscheduleTask(t.id);
-        }
-      }
-      await apply();
-    },
-    [tasks, rails, railRevisions, railTombstones, templates, unscheduleTask],
-  );
-
+  // Template switches no longer unschedule tasks whose rails don't
+  // belong to the new template — those orphan tasks surface in the
+  // Cycle view's Off-rail row, where the user can drag them back onto
+  // any rail to recover. See CycleView for the rendering side.
   const handleOverride = useCallback(
     (date: string, nextTemplate: TemplateKey) => {
-      void applyTemplateSwitch(date, nextTemplate, () =>
-        overrideCycleDay(date, nextTemplate),
-      );
+      void overrideCycleDay(date, nextTemplate);
     },
-    [applyTemplateSwitch, overrideCycleDay],
+    [overrideCycleDay],
   );
 
   const handleClearOverride = useCallback(
     (date: string) => {
-      const target =
-        pickTemplateForDate(
-          {
-            templates,
-            calendarRules: {},
-            calendarRuleRevisions: {},
-            calendarRuleTombstones: {},
-          },
-          date,
-        ) ?? '';
-      void applyTemplateSwitch(date, target, () =>
-        clearCycleDayOverride(date),
-      );
+      void clearCycleDayOverride(date);
     },
-    [applyTemplateSwitch, clearCycleDayOverride, templates],
+    [clearCycleDayOverride],
   );
 
   const handleCreateAdhoc = useCallback(

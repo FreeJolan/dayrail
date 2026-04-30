@@ -33,8 +33,6 @@ import type { CycleDay, CycleSlot } from '@/data/sampleCycle';
 import type { RailColor } from '@/data/sample';
 import {
   deriveCycleFromStore,
-  findOrphanTasksForTemplateSwitch,
-  pickTemplateForDate,
   startOfWeekMonday,
   toIsoDate,
 } from './cycleFromStore';
@@ -111,7 +109,7 @@ export function CycleView() {
     void materializeAutoTasksForCycle(mondayIso);
   }, [weekStart]);
 
-  const { cycle, railsByTemplate } = useMemo(
+  const { cycle, railsByTemplate, offRailByDate } = useMemo(
     () =>
       deriveCycleFromStore(
         {
@@ -172,73 +170,49 @@ export function CycleView() {
     [templates],
   );
 
-  // Compute orphans + gate a template switch behind a small confirm.
-  // The switch itself is two steps: unschedule every orphan task, then
-  // write the CalendarRule. If the user cancels we leave state
-  // untouched.
-  const applyTemplateSwitch = useCallback(
-    async (
-      date: string,
-      nextTemplateKey: TemplateKey,
-      apply: () => Promise<void>,
-    ) => {
-      const orphans = findOrphanTasksForTemplateSwitch(
-        { tasks, rails, railRevisions, railTombstones },
-        date,
-        nextTemplateKey,
-      );
-      if (orphans.length > 0) {
-        const templateName =
-          templates[nextTemplateKey]?.name ?? nextTemplateKey;
-        const msg = `切换到"${templateName}"会把这一天的 ${orphans.length} 个已排任务移出，可以随时从 Backlog 拖回来。继续？`;
-        if (!window.confirm(msg)) return;
-        for (const t of orphans) {
-          await unscheduleTask(t.id, sessionId ?? undefined);
-        }
-      }
-      await apply();
-    },
-    [tasks, rails, railRevisions, railTombstones, templates, unscheduleTask, sessionId],
-  );
-
+  // Switch the day's template. Tasks scheduled to rails that don't
+  // belong to the new template aren't unscheduled — they surface in
+  // the Cycle section's Off-rail row, where the user can drag them
+  // back onto any rail. The previous confirm-and-unschedule flow was
+  // destructive (the task lost its date intent on cancel-and-redo),
+  // so we let the rendering layer handle the "no rail to land on"
+  // case instead.
   const overrideDay = useCallback(
     (date: string, nextTemplate: TemplateKey) => {
-      void applyTemplateSwitch(date, nextTemplate, () =>
-        overrideCycleDay(date, nextTemplate, sessionId ?? undefined),
-      );
+      void overrideCycleDay(date, nextTemplate, sessionId ?? undefined);
     },
-    [applyTemplateSwitch, overrideCycleDay, sessionId],
+    [overrideCycleDay, sessionId],
   );
 
   const clearOverride = useCallback(
     (date: string) => {
-      // Resolve the heuristic pick (no rules) so orphan detection
-      // runs against the template this day will fall back to.
-      const target =
-        pickTemplateForDate(
-          {
-            templates,
-            calendarRules: {},
-            calendarRuleRevisions: {},
-            calendarRuleTombstones: {},
-          },
-          date,
-        ) ?? '';
-      void applyTemplateSwitch(date, target, () =>
-        clearCycleDayOverride(date, sessionId ?? undefined),
-      );
+      void clearCycleDayOverride(date, sessionId ?? undefined);
     },
-    [applyTemplateSwitch, clearCycleDayOverride, templates, sessionId],
+    [clearCycleDayOverride, sessionId],
   );
 
-  // Group days by templateKey preserving first-appearance order.
+  // Group days into contiguous runs of the same template. A sequence
+  // like A → B → C → A produces four sections (the trailing A is its
+  // own section, not folded back into the leading A) — top-to-bottom
+  // reading order matches the calendar, which is what users expect
+  // when scanning a week.
   const groups = useMemo(() => {
-    const seen = new Map<TemplateKey, CycleDay[]>();
+    const sections: { key: string; templateKey: TemplateKey; days: CycleDay[] }[] = [];
     for (const d of cycle.days) {
-      if (!seen.has(d.templateKey)) seen.set(d.templateKey, []);
-      seen.get(d.templateKey)!.push(d);
+      const last = sections[sections.length - 1];
+      if (last && last.templateKey === d.templateKey) {
+        last.days.push(d);
+      } else {
+        // Section keys must be unique even when a template repeats —
+        // anchor on the section's first date to disambiguate.
+        sections.push({
+          key: `${d.templateKey || 'untemplated'}|${d.date}`,
+          templateKey: d.templateKey,
+          days: [d],
+        });
+      }
     }
-    return [...seen.entries()].map(([templateKey, days]) => ({ templateKey, days }));
+    return sections;
   }, [cycle]);
 
   const slotMap = useMemo(() => {
@@ -490,18 +464,19 @@ export function CycleView() {
         <CycleSummaryStrip cycle={cycle} />
 
         <div className="flex flex-col gap-5 pt-6 pb-16">
-          {groups.map(({ templateKey, days }) => {
+          {groups.map(({ key, templateKey, days }) => {
             const tmpl = templateChoices.find((t) => t.key === templateKey);
             const sectionRails = railsByTemplate[templateKey] ?? [];
             return (
               <CycleSection
-                key={templateKey}
+                key={key}
                 templateKey={templateKey}
                 templateLabel={tmpl?.label ?? templateKey}
                 templateColor={tmpl?.color ?? 'slate'}
                 rails={sectionRails}
                 days={days}
                 slotsByKey={slotMap}
+                offRailByDate={offRailByDate}
                 todayISO={todayISO}
                 templateChoices={templateChoices}
                 reflectedDates={reflectedDates}
