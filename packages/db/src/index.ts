@@ -7,3 +7,5 @@
 export * from './connection';
 export * from './schema';
 export * from './migrate';
+export * from './dryj';
+export * from './yjs';
