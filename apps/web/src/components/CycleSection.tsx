@@ -142,12 +142,22 @@ export function CycleSection({
     }
     return any ? perDay : null;
   }, [offRailByDate, days]);
-  // `hoverRailId` falls out of the shared hoverKey (railId|date).
-  // Derived separately so the rail row + left label can signal "this
-  // Rail will receive the drop" without every cell tracking it. The
-  // drag-end / drop window listeners live in CycleView so the shared
-  // state clears exactly once when the gesture ends.
-  const hoverRailId = dragHoverKey ? dragHoverKey.split('|')[0] : null;
+  // `hoverRailId` falls out of the shared hoverKey (railId|date), but
+  // ONLY when that date belongs to this section's days slice. Without
+  // the date check, contiguous-run grouping breaks the highlight: the
+  // same template can produce several sections (sequence A→B→A → two
+  // A-sections, both rendering the same rail.ids). A bare `railId`
+  // match would light up every clone of the rail across all A
+  // sections. The drag-end / drop window listeners live in CycleView
+  // so the shared state clears exactly once when the gesture ends.
+  const hoverRailId = useMemo(() => {
+    if (!dragHoverKey) return null;
+    const sep = dragHoverKey.indexOf('|');
+    if (sep < 0) return null;
+    const railId = dragHoverKey.slice(0, sep);
+    const date = dragHoverKey.slice(sep + 1);
+    return days.some((d) => d.date === date) ? railId : null;
+  }, [dragHoverKey, days]);
 
   return (
     <section

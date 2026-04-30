@@ -54,6 +54,7 @@ import {
 import {
   clearLocalIsSamplesOnly,
   getBootSyncChoice,
+  getDeviceId,
   getDeviceLabel,
   getDirtyCount,
   getLastPulledSnapshotId,
@@ -867,7 +868,7 @@ function DownloadSnapshotRow() {
     setErr(null);
     setHint(null);
     try {
-      const filename = exportDryjSnapshot(getDeviceLabel(), getDeviceLabel());
+      const filename = exportDryjSnapshot(getDeviceId(), getDeviceLabel());
       setHint(`已下载 ${filename}`);
     } catch (e) {
       setErr((e as Error).message);

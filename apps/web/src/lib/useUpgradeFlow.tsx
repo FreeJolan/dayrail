@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, X } from 'lucide-react';
 import { clsx } from 'clsx';
-import { exportLocalData } from '@/lib/exportData';
+import { exportDryjSnapshot } from '@/lib/exportData';
+import { getDeviceId, getDeviceLabel } from '@/lib/sync/identity';
 import {
   getUpgradePref,
   setUpgradePref,
@@ -18,7 +19,11 @@ import { BackupPromptDialog } from '@/components/BackupPromptDialog';
 //
 //   • dialog open/close state (driven by pref === 'ask')
 //   • the "remember my choice" checkbox value
-//   • the actual exportLocalData() → 250ms tick → update() chain
+//   • the actual exportDryjSnapshot() → 250ms tick → update() chain
+//     (v0.7+: backup is a `.dryj` Y.Doc binary — round-trips cleanly
+//     through Settings → "Import from snapshot". The legacy JSON dump
+//     stays available under Settings → 高级 → 下载 JSON for manual
+//     inspection but cannot be re-imported.)
 //   • the visibility toast on the 'always' silent-backup path
 //   • atomic backup-failure handling: a failed export aborts the
 //     upgrade entirely and surfaces an error toast (ERD §13.8).
@@ -72,7 +77,7 @@ export function useUpgradeFlow(): UseUpgradeFlowResult {
     setBusy(true);
     let filename: string;
     try {
-      filename = exportLocalData();
+      filename = exportDryjSnapshot(getDeviceId(), getDeviceLabel());
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[upgrade] backup failed', err);
@@ -88,7 +93,7 @@ export function useUpgradeFlow(): UseUpgradeFlowResult {
     setDialogOpen(false);
     // Hand the navigation off to the download stream before SW reload
     // tears the page down. 250 ms is empirically enough on every
-    // browser we target; `exportLocalData` itself defers
+    // browser we target; `exportDryjSnapshot` itself defers
     // URL.revokeObjectURL by 1 s, so we're inside that window.
     window.setTimeout(() => {
       void update();
