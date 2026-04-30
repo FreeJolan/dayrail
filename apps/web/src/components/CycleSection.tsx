@@ -198,8 +198,14 @@ export function CycleSection({
               <tr key={rail.id}>
                 <th
                   scope="row"
+                  // No CSS transition on the highlight: the bg fades
+                  // over ~150ms by default, and 60Hz dragover events
+                  // outpace the fade, so a fast drag leaves every
+                  // rail it touched mid-fade — visually "all rails
+                  // I passed over stay highlighted". State is correct;
+                  // we just need it to snap.
                   className={clsx(
-                    'pr-3 py-1 text-left align-top transition',
+                    'pr-3 py-1 text-left align-top',
                     railIsDropTarget && 'bg-cta-soft/25',
                   )}
                 >
@@ -245,7 +251,8 @@ export function CycleSection({
                           : undefined
                       }
                       className={clsx(
-                        'p-1 align-top transition',
+                        // Snap, don't fade — see <th> above.
+                        'p-1 align-top',
                         d.date === todayISO && 'bg-surface-2/40',
                         railSoftHover && 'bg-cta-soft/15',
                         isHover && 'bg-cta-soft/30 ring-1 ring-inset ring-cta/60',
