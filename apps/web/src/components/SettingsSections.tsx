@@ -43,7 +43,7 @@ import {
   downloadRemoteAsBackup,
   fetchRemoteBundle,
   forcePushOverridingRemote,
-  runManualPush,
+  runManualSync,
 } from '@/lib/sync/syncController';
 import {
   deleteHistoryEntry,
@@ -740,11 +740,31 @@ function BootSyncChoiceRow() {
 function SyncNowRow() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
   const onClick = async () => {
     setBusy(true);
     setErr(null);
+    setHint(null);
     try {
-      await runManualPush();
+      const outcome = await runManualSync();
+      if (outcome.kind === 'diverged') {
+        // Hand off to RuntimeSyncDialog so the user gets the same
+        // conflict card the visibility probe would have surfaced. The
+        // dialog is mounted at the App level and listens for this
+        // event globally.
+        window.dispatchEvent(
+          new CustomEvent('dayrail-sync:show-diverged', {
+            detail: { remote: outcome.remote },
+          }),
+        );
+      } else if (outcome.kind === 'offline') {
+        setErr('当前离线或 Drive 不可达');
+      } else if (outcome.kind === 'noop') {
+        setHint('已是最新');
+      }
+      // 'pushed' falls through silently — the topbar status row +
+      // last-sync timestamp already reflect the result.
+      // 'pulling' is unreachable (the apply path reloads the page).
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -754,7 +774,7 @@ function SyncNowRow() {
   return (
     <Row
       label="立即同步"
-      description="手动触发一次 push（在 60s debounce 之外）。"
+      description="手动触发一次双向同步：先探测远端，远端有更新则拉取（必要时弹冲突卡），否则推送本地改动。"
       control={
         <div className="flex flex-col items-end gap-1">
           <button
@@ -765,6 +785,9 @@ function SyncNowRow() {
           >
             {busy ? '同步中…' : '立即同步'}
           </button>
+          {hint && (
+            <span className="font-mono text-2xs text-ink-tertiary">{hint}</span>
+          )}
           {err && (
             <span className="font-mono text-2xs text-warn">{err}</span>
           )}

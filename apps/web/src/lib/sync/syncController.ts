@@ -173,9 +173,65 @@ interface RunPushOpts {
   keepalive?: boolean;
 }
 
-/** Manual entry-point — wired to Settings → 同步 → 立即同步. */
-export async function runManualPush(): Promise<void> {
-  await runPush({ trigger: 'manual' });
+/** Manual sync outcome — describes what `runManualSync` did so the
+ *  caller (Settings → 同步 → 立即同步) can render the right feedback
+ *  or surface a conflict card.
+ *
+ *  - `pushed` — local was ahead (or remote was empty); push completed.
+ *  - `noop` — already in sync, nothing dirty; no Drive write performed.
+ *  - `pulling` — remote was ahead and local was clean; the apply-bundle
+ *    path is mid-execution and will reload the page (so this kind is
+ *    typed for completeness but never observed by the caller).
+ *  - `diverged` — remote ahead AND local dirty; caller should surface
+ *    the existing conflict card via the
+ *    `dayrail-sync:show-diverged` CustomEvent that `RuntimeSyncDialog`
+ *    listens for.
+ *  - `offline` — Drive unreachable / not connected; caller surfaces
+ *    a transient error. */
+export type ManualSyncOutcome =
+  | { kind: 'pushed' }
+  | { kind: 'noop' }
+  | { kind: 'pulling' }
+  | { kind: 'diverged'; remote: RemoteMeta }
+  | { kind: 'offline'; reason: string };
+
+/** Manual entry-point — wired to Settings → 同步 → 立即同步.
+ *
+ *  v0.6.3 (ERD §7.7): bidirectional. Probe Drive first, then either
+ *  push (if remote is at-or-behind local), pull (if remote is ahead
+ *  and local is clean), or surface a conflict (if both diverged).
+ *  Replaces the v0.6 push-only `runManualPush`, which mis-fired when
+ *  the user clicked "立即同步" hoping it would pull. */
+export async function runManualSync(): Promise<ManualSyncOutcome> {
+  if (!isDriveConnected()) {
+    return { kind: 'offline', reason: 'NOT_CONNECTED' };
+  }
+  const probe = await runBootProbe();
+  if (probe.kind === 'offline') {
+    return { kind: 'offline', reason: probe.reason };
+  }
+  if (probe.kind === 'no-remote') {
+    // No canonical on Drive yet — seed it. Push regardless of dirty.
+    await runPush({ trigger: 'manual' });
+    return { kind: 'pushed' };
+  }
+  if (probe.kind === 'equal') {
+    if (getDirtyCount() > 0) {
+      await runPush({ trigger: 'manual' });
+      return { kind: 'pushed' };
+    }
+    return { kind: 'noop' };
+  }
+  if (probe.kind === 'linear-lead') {
+    // Remote ahead, local clean → pull. applyRemoteBundle reloads the
+    // page; never returns. The recovery kick in
+    // startSyncBackgroundLoop handles any post-reload dirty work
+    // (none expected here since dirtyCount is 0 on this branch).
+    const bundle = await fetchRemoteBundle(probe.remote);
+    await applyRemoteBundle(bundle);
+    return { kind: 'pulling' };
+  }
+  return { kind: 'diverged', remote: probe.remote };
 }
 
 async function runPush(opts: RunPushOpts): Promise<void> {

@@ -1,5 +1,5 @@
 // Runtime sync dialog — covers the cases the boot gate alone misses
-// (ERD §7.6 + §7.7 "Pull triggers"). Three triggers feed it:
+// (ERD §7.6 + §7.7 "Pull triggers"). Four triggers feed it:
 //   1. visibility probe — tab returns to foreground / device wakes from
 //      screen lock (§7.6).
 //   2. periodic probe — every 5 minutes while visible + online (§7.7),
@@ -7,6 +7,11 @@
 //   3. online-restoration probe — `online` event fires the moment the
 //      device regains network (§7.7), so a 4-minute-old offline gap
 //      doesn't have to wait for the next periodic tick.
+//   4. external diverged hand-off — Settings → 同步 → 立即同步 (and
+//      future callers) dispatch the `dayrail-sync:show-diverged`
+//      CustomEvent with `{ remote }` to surface the conflict card
+//      here. Keeps the conflict UX in one place rather than
+//      duplicating the modal in Settings.
 //
 // (A separate "first connect on a new device" trigger is handled inline
 // by SettingsSections — not this component.)
@@ -125,6 +130,21 @@ export function RuntimeSyncDialog() {
     window.addEventListener('online', onOnline);
     return () => window.removeEventListener('online', onOnline);
   }, [tryProbe]);
+
+  // Trigger 4: external hand-off — Settings's bidirectional 立即同步
+  // already ran the probe and decided the outcome is diverged; it
+  // hands the RemoteMeta over so the user gets the same conflict card
+  // a probe-triggered diverged would have shown.
+  useEffect(() => {
+    const onShow = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { remote?: RemoteMeta } | undefined;
+      if (!detail?.remote) return;
+      if (stateKindRef.current !== 'idle') return;
+      setState({ kind: 'diverged', remote: detail.remote });
+    };
+    window.addEventListener('dayrail-sync:show-diverged', onShow);
+    return () => window.removeEventListener('dayrail-sync:show-diverged', onShow);
+  }, []);
 
   if (state.kind === 'idle') return null;
   return <Overlay state={state} setState={setState} />;
