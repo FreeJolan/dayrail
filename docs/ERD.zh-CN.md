@@ -1308,6 +1308,126 @@ React 主路由（`App.tsx`）在闸门 resolve 之前**不挂载**。闸门期�
 - §7.4 Yjs CRDT + HLC 合并（用于运行时事件）。
 - §7.5 加密 append-only 事件日志 + "500 个事件 或 14 天" 快照节奏 + 零知识 passphrase + 恢复码 UX + 双写 E2E 迁移。
 
+### 7.7 v0.7 实施说明 — Yjs CRDT · 字段级合并
+
+> 状态：2026-04-30 设计已锁定，v0.7 ship。承接 §7.6 已落地的 Drive 通道、auth 生命周期、推送/拉取触发器骨架、Settings 同步页布局。**§7.4 / §7.6 footer 中关于 Yjs CRDT 的"停车"在 v0.7 解冻**；其它停车项（§7.5 加密事件日志 / §7.5 passphrase + 恢复码 + 双写 E2E 迁移 / §7.2.1 三档同步开关 / §7.3 多后端）继续停车。v0.7 的边界是"修 v0.6 暴露的两个 UX 痛点"，不扩大其它维度。
+
+**v0.7 触发因素**
+
+v0.6 在自用半年中暴露两个稳态痛点：
+
+1. **后台拉取盲区** —— 设备 B 的 tab 一直可见（笔记本不关机、副屏挂着），可见性 probe 永不 fire。设备 A 改完 push、设备 B 看到顶栏 `⚠ 远端有更新` 后**只能等下一次冷启动才会应用**。手动「立即同步」按钮在 v0.6 是 push-only，反而误导用户。
+2. **冲突只能整盘覆盖** —— `parentSnapshotId` 分叉时弹的冲突卡片是"保留远端 / 覆盖远端"二选一。最频繁的实际场景是"我在设备 A 标完任务 X，回设备 B 看到没标，又点了一次完成"——技术上属分叉冲突，语义上是同向修改，本应零打扰自动消解。
+
+两个痛点指向同一上限：snapshot 级 LWW + parent 比对不足以承载多设备稳态。Yjs CRDT 是 §7.4 已经选定的方向，v0.7 把它从 v0.7+ 路线提前到 v0.7 ship。
+
+**同步单元 · Yjs document**
+
+- 顶层 `Y.Doc` 下挂多个 `Y.Map`，每个对应现有的一个 store：`templates` / `rails` / `lines` / `tasks` / `signals` / `shifts` / `adhocEvents` / `calendarRules` / `cycles` / `habitPhases` / `habitBindings`，以及 v0.5+ 的 revision 表 / tombstone 表。
+- 每个 entity 是一个 `Y.Map`：标量字段（string / number / boolean / 日期 ISO 字符串）作为普通 value，数组字段（如 `Task.tags`）用 `Y.Array`，嵌套对象（如配置块）用嵌套 `Y.Map`。
+- **理由**：字段级合并面最大化——两端改同一 entity 的不同字段时无冲突；改同一字段且新值相等时同向自动消解（即上面"再点一次完成"场景）；只有"两端改同一字段且新值不等"才是真冲突，由 Yjs 内部的 LWW + Lamport clock 决定胜者，不弹 UI。
+- v0.5+ 的 entity ID 已经是 UUID，**Yjs 不需要额外 ID 改造**。
+
+**为什么直接全量 Yjs（不走渐进路线）**
+
+考虑过两个折中方案：①"快照级三路 LWW + 实体级冲突列表"自己写合并算法；②先把 Task 一个实体迁到 Yjs、其它继续 snapshot。两条都被否：
+- 自己写三路合并撞 corner case（嵌套数组顺序、tombstone vs edit、ID 复用），成本不低、质量没把握，且半年后体验需求只会进一步推向 CRDT，等于做一份必扔的中间态。
+- 单实体先行能降低风险但要付出"双数据模型共存"的认知与持久化复杂度，对当前用户范围（作者本人）收益不成正比。
+
+Yjs 的代价是数据模型必须改造成 CRDT 文档（持久化层 + store 层），但**UI 不用动**。Zustand 订阅 Yjs `observe` 触发 UI 更新是社区现成 pattern。
+
+**Wire format · `.dryj` 容器**
+
+替换 v0.6 的 `dayrail-snapshot.json`。Drive `appdata` 上规范文件名：`dayrail-snapshot.dryj`（**.dryj** = DayRail Yjs）。文件结构：
+
+```
+[ 4 bytes ] magic       —— ASCII "DRYJ"
+[ 2 bytes ] version     —— uint16 BE，从 1 开始（容器版本，不是用户数据 schemaVersion）
+[ 4 bytes ] metaLen     —— uint32 BE，meta JSON 字节数
+[ N bytes ] meta JSON   —— UTF-8：{ snapshotId, parentSnapshotId?, deviceId, deviceLabel, createdAt, schemaVersion: 2 }
+[ 剩余    ] yjs update  —— Y.encodeStateAsUpdate(doc) 的二进制结果
+```
+
+设计点：
+- **magic + 容器 version**：以后改容器结构（加 zstd 压缩、加签名等）不会读崩老文件；老 reader 看到不认识的 version 直接报错并指引升级，而不是误读。
+- **meta 不进 Yjs document**：这是关于"这份文件是什么"的元信息，不是用户数据。混进 Yjs 会引入跨文件 `snapshotId` 该谁覆盖谁这种悖论。meta 走 LWW（每次 push 整体替换，不合并），与 v0.6 行为一致。
+- **不走 JSON-with-base64 envelope**：那是 Yjs 圈更"现成"的 pattern，但有 ~33% 体积膨胀，与你"单文件 / 越紧凑越好"的偏好相反。`.dryj` 容器读写各 ~20 行无依赖代码，归类为"文件框架"而非"自研算法"。
+- **不预先加 gzip / zstd**：Yjs `encodeStateAsUpdate` 输出已经是 lib0 紧凑编码，DayRail 数据规模（实测几百 KB 量级）压不出多少。再加一层只增加排查面，不值。等数据膨胀到 MB 级再升 version 加压缩。
+- **History 文件**：`history/dayrail-snapshot-{ts}-{deviceLabel}.dryj`。保留 14 份策略不变。
+
+**冲突合并 · CRDT 全程自动**
+
+`parentSnapshotId` 不再用于决定弹窗；它仅作为可观测信号写入 meta，便于排障与历史界面显示设备链路。Pull 路径：
+
+1. 下载 `dayrail-snapshot.dryj`，解析容器，读出远端 update bytes。
+2. 本地有 `Y.Doc` 的情况下，`Y.applyUpdate(localDoc, remoteUpdate)`——Yjs 内部 LWW + Lamport clock 自动消解。所有"非冲突"和"同向冲突"的修改都收敛，无 UI 中断。
+3. 应用后**立即触发一次 push**（合并产物作为新 `snapshotId` 写回），让其它设备下次 pull 时拿到的是已合并版本，避免合并状态长期挂在单一设备上。
+
+**v0.6 那张冲突卡片在 v0.7 不复存在**。Yjs 本身不会产出"两个互斥版本"——任何状态都是确定性合并结果。
+
+**安全网保留**：Settings → 同步 永远保留两个逃生口：
+- **下载当前 snapshot** —— 一键导出本地 `Y.Doc` 为 `.dryj`，同时导出一份扁平化 JSON（与 v0.6 `exportData()` 等价的可读格式）双格式留底。
+- **从快照导入** —— 上传一个 `.dryj` 覆盖本地 `Y.Doc`。这条路径**同时承担三个职责**：① v0.6 → v0.7 一次性迁移落地；② 用户主动从 Drive history 中恢复某个版本；③ 万一 Yjs 自动合并出意外结果，从最近备份回滚。是真冲突 UI 的兜底——如果未来 Yjs LWW 选错胜者影响体感，用户始终有"导出留底 → 改完 → 重新导入覆盖"的回旋空间。
+
+**拉取触发 · v0.7 新增**
+
+承接 §7.6 v0.6.1 已落地的可见性 probe + 连接 probe，v0.7 补一个**周期性 probe** 关掉后台盲区：
+
+- **周期性 probe** —— `setInterval` 5 分钟，仅在 `document.visibilityState === 'visible'` 且 `navigator.onLine === true` 时执行。只读 Drive metadata（`files.get?fields=appProperties,modifiedTime` 量级 ~1KB），不下载 `.dryj` 主体。判断 `remote.snapshotId` 是否领先于 `lastPulledSnapshotId`；领先则触发完整 pull（同 RuntimeSyncDialog 的 linear-lead 路径）。
+  - **5 分钟节奏的取舍**：低于 1 分钟会让 Drive metadata 调用累积成可观测成本（也可能撞 Drive API quota）；高于 10 分钟用户能感觉到肉眼可见的滞后。5 分钟在"我刚切到这台设备"和"另一台设备半小时前 push 过"之间提供清晰的连续性。
+  - **`document.hidden` 时不跑**：tab 真切走时由可见性 probe 接管，无需双触发。
+  - **`navigator.onLine === false` 时不跑**：避免离线时累积 401/网络错误日志。
+
+- **联网恢复 probe**（online-restoration probe）—— `window.addEventListener('online', ...)`，触发时立即跑一次 metadata 探测（与周期性 probe 同一判定逻辑），5 秒节流防抖。补的洞是："设备断网 N 分钟后恢复"——周期性 probe 在 `navigator.onLine === false` 时跳过 tick，恢复后最坏要等接近 5 分钟才会下一次 tick。`online` 事件让恢复瞬间就触发，不再被 setInterval 节奏吞掉。可见性 probe 与周期性 probe 都是"轮询/状态轮转"模型；这条是"边缘事件"模型，与可见性 probe 并列，对应网络状态翻转的瞬间。
+  - 仅在 `document.visibilityState === 'visible'` 时执行：tab 真在后台时由后续可见性 probe 接管。
+  - 5 秒节流与可见性 probe 共享同一节流窗：网络抖动场景下不会因 `online` / `offline` 反复翻转打爆 Drive。
+
+**立即同步 · 双向语义**
+
+v0.6 的「立即同步」按钮 = `runManualPush`（只推），与"立即同步"字面期望不符，导致用户在"远端有更新"时反而不敢点（正是痛点 1 的副作用）。v0.7 重塑：
+
+- 按钮点击 → 先做一次轻量 metadata 探测（同周期性 probe）：
+  - 远端 ≤ 本地：执行 push（与 v0.6 manual push 一致）。
+  - 远端 > 本地：先 pull（Yjs 自动合并）；完成后若本地有未推送修改，再执行一次 push。
+- 状态条上的 `⚠ 远端有更新` 与「立即同步」按钮**链接同一动作**——用户点哪里都触发完整双向流程。
+
+**v0.6 → v0.7 一次性迁移**
+
+用户范围当前只有作者本人 + 两台 macOS Chrome，所以**不在产品代码里实现自动迁移**——避免 dual-write / 新旧格式共存的复杂度。流程：
+
+1. 作者在 v0.6 末次启动时手动导出本地 JSON 备份（Settings → 导出 JSON），存盘外。
+2. 跑一次性脚本 `tools/migrate/migrate-json-to-yjs.ts`（`tsx` 直接执行）：
+   - 输入：`dayrail-snapshot.json`（v0.6 格式，`schemaVersion: 1`）。
+   - 处理：按 v0.7 schema 把 JSON 字段逐个 wrap 成 `Y.Doc`——标量字段直接写、数组写 `Y.Array`、嵌套对象写嵌套 `Y.Map`。所有 `updatedAt` / `createdAt` / `id` 等字段直接保留。
+   - 输出：`dayrail-snapshot.dryj`（容器 version 1，meta `schemaVersion: 2`，新生成的 `snapshotId`，`createdAt: now`，`deviceLabel: "migration"` 占位）。
+3. 浏览器装 v0.7，Settings → 同步 → 「从快照导入」上传 `.dryj`。本地 IndexedDB 写入新 schema → reload。
+4. 连 Drive → 第一次推送即新格式 canonical 上线。Drive 上 v0.6 的 `dayrail-snapshot.json` 与 `history/*.json` **保留不动**作为兜底；v0.7 之后只读写 `.dryj`、忽略旧 JSON。
+5. 跑通后，作者删本地 v0.6 备份的时机由作者决定（脚本不强制；v0.7 也不会再读 v0.6 格式）。
+
+**作用域：脚本只跑一次**。代码层面：
+- `tools/migrate/`（仓库内）保留脚本作为升级流程的可复现记录。
+- `apps/web/` 产品代码**不**带"检测旧 schema → 自动转换"逻辑。新版本启动时遇到旧 IndexedDB store 直接抛初始化错误，提示用户走"从快照导入"路径（这条路径常驻，是上面安全网的一部分）。
+- Drive 端不实现"远端旧格式自动转新格式"——首次 push 后远端 canonical 即新格式，旧文件被 history 滚动淘汰。
+
+**与 beta 兼容策略的关系**：标准的"数据层不做破坏性 migration"约束（v0.6 期间确立）在 v0.7 因用户基数 = 1 + 显式手动备份双兜底而**有意例外**。"用户只有我，可以提前先备份好 JSON"是作者明确给出的授权。这是 v0.7 独有的窗口；v0.8 起若用户范围扩大，类似破坏性升级必须改回 §7.6 时代的 dual-write / 在产品里自动迁移路径。
+
+**v0.7 显式不做（继续停车）**
+
+- §7.5 加密 append-only 事件日志：v0.7 的 wire format 是整 `Y.Doc` snapshot，不是 update log。Yjs 本身可演进到增量 update 协议，留给 v0.8+ 在带宽真成问题时再开。
+- §7.5 passphrase / 端到端加密 / 恢复码 / 双写 E2E 迁移：`appdata` scope 隔离仍然成立，单用户场景威胁模型未变。
+- §7.2.1 三档 `{仅数据 / 仅设置 / 全部}` 同步开关。
+- §7.3 多后端（iCloud / WebDAV / Dropbox）。
+- 字段级真冲突 UI（"两端改同一字段且新值不等"）—— Yjs LWW + Lamport clock 决定胜者，不弹 UI。如果未来发现真冲突影响体感，再独立设计冲突 surface；当前由"下载当前 snapshot + 从快照导入"安全网兜底。
+
+**v0.7 仍然有效的 v0.6 机制**
+
+- §7.6 整段 Auth 生命周期（GIS token client、access token cache、FedCM、不持久化 refresh token）继续生效——v0.7 只换 wire format，认证层零改动。
+- §7.6 推送触发的全部四条（debounce 60s / `visibilitychange === 'hidden'` / `pagehide` / `beforeunload` keepalive）继续生效。
+- §7.6 拉取触发的可见性 probe / 连接 probe 继续生效；v0.7 补的是周期性 probe。
+- §7.6 RuntimeSyncDialog 组件保留，但内部分支简化：`linear-lead` 仍然存在；`diverged` 分支整段移除（CRDT 不会产生分叉）；`offline` 分支不变；`equal` 不变。
+- §7.6 顶栏同步指示灯 / Settings 同步页布局 / 备份历史 14 行保留不变。
+- §7.6 启动闸门 splash + "记住启动同步选择" radio 保留不变（只是分叉分支永不触发）。
+
 ***
 
 ## 8. 设计原则（工程层）

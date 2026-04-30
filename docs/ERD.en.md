@@ -1382,6 +1382,126 @@ The user's actual workflow is **temporal handoff** (work-machine in the day, per
 - §7.4 Yjs CRDT + HLC merge for runtime events.
 - §7.5 encrypted append-only event log + 500-events-or-14-days snapshot cadence + zero-knowledge passphrase + recovery-code UX + dual-write E2E migration.
 
+### 7.7 v0.7 implementation note — Yjs CRDT · field-level merge
+
+> Status: design locked 2026-04-30, ships in v0.7. Inherits the Drive transport, auth lifecycle, push/pull trigger skeleton, and Settings sync layout that landed in §7.6. **The Yjs CRDT parking decision in §7.4 / the §7.6 footer thaws in v0.7**; the rest stays parked (§7.5 encrypted event log / §7.5 passphrase + recovery code + dual-write E2E migration / §7.2.1 three-mode toggle / §7.3 multi-backend). v0.7's scope is "fix the two UX pain points exposed by v0.6"; it deliberately does not expand other dimensions.
+
+**Why v0.7**
+
+Six months of self-use on v0.6 surfaced two steady-state pain points:
+
+1. **Background pull blind spot** — Device B's tab stays visible (laptops aren't powered off, the side display keeps DayRail in view), so the visibility probe never fires. Device A pushes; Device B sees the topbar `⚠ remote ahead` indicator but **has to wait for the next cold start to apply it**. The manual "Sync now" button in v0.6 is push-only, which actively misleads users in this state.
+2. **Conflicts can only overwrite wholesale** — when `parentSnapshotId` diverges, the conflict card is "keep remote / overwrite remote", a binary choice on the entire dataset. The most frequent real case is "I marked task X done on Device A, came back on Device B, saw it still open, marked it again" — technically a divergent conflict, semantically a same-direction edit, and ought to auto-resolve silently.
+
+Both point at the same ceiling: snapshot-level LWW + parent comparison cannot carry steady-state multi-device usage. Yjs CRDT was already the §7.4 pick; v0.7 pulls it forward from the v0.7+ roadmap into v0.7 ship.
+
+**Sync unit · Yjs document**
+
+- A top-level `Y.Doc` holds multiple `Y.Map`s, one per existing store: `templates` / `rails` / `lines` / `tasks` / `signals` / `shifts` / `adhocEvents` / `calendarRules` / `cycles` / `habitPhases` / `habitBindings`, plus the v0.5+ revision tables and tombstones.
+- Each entity is a `Y.Map`: scalar fields (string / number / boolean / ISO date strings) as plain values, array fields (e.g. `Task.tags`) as `Y.Array`, nested objects (config blocks) as nested `Y.Map`.
+- **Why**: maximum field-level merge surface — edits to different fields of the same entity never conflict; edits to the same field with the same new value collapse silently (the "marked done twice" case above); only "same field, different new values" is a real conflict, and Yjs's internal LWW + Lamport clock decides without any UI.
+- v0.5+ entity IDs are already UUIDs, so **Yjs needs no extra ID rework**.
+
+**Why full Yjs (not a graduated path)**
+
+Two compromise paths were considered and rejected: (a) a hand-rolled "snapshot-level three-way LWW + entity-level conflict list", and (b) migrating only the Task entity to Yjs first, leaving others on snapshot. Both lose:
+- Hand-rolled three-way merge runs into corner cases (nested array order, tombstone vs. edit, ID reuse) — the cost is non-trivial, the quality bar is shaky, and within a year the experience demand will only push further toward CRDT, making the intermediate work disposable.
+- Single-entity-first reduces risk but pays "two coexisting data models" in store-layer and persistence complexity, which is a poor trade at the current user count (just the author).
+
+Yjs's price is reshaping the data model into a CRDT document (persistence + store layer), but **the UI layer is unchanged**. Wiring Zustand to subscribe to Yjs `observe` events is a known community pattern.
+
+**Wire format · `.dryj` container**
+
+Replaces v0.6's `dayrail-snapshot.json`. Drive `appdata` canonical filename: `dayrail-snapshot.dryj` (**.dryj** = DayRail Yjs). Layout:
+
+```
+[ 4 bytes ] magic       — ASCII "DRYJ"
+[ 2 bytes ] version     — uint16 BE, starts at 1 (container version, not user-data schemaVersion)
+[ 4 bytes ] metaLen     — uint32 BE, byte length of meta JSON
+[ N bytes ] meta JSON   — UTF-8: { snapshotId, parentSnapshotId?, deviceId, deviceLabel, createdAt, schemaVersion: 2 }
+[ remainder ] yjs update — binary output of Y.encodeStateAsUpdate(doc)
+```
+
+Design points:
+- **magic + container version**: future structural changes (zstd compression, signing, etc.) won't silently break older readers; an old reader hitting an unknown version errors out and points to upgrade, rather than misreading.
+- **Meta stays out of the Yjs document**: it's metadata about *this file*, not user data. Folding it into Yjs creates the paradox of "whose `snapshotId` wins on merge". Meta gets LWW (every push replaces it wholesale), matching v0.6's behavior.
+- **No JSON-with-base64 envelope**: that is the more "off-the-shelf" Yjs persistence pattern, but carries ~33% size overhead, which contradicts the "single file, as compact as possible" preference. The `.dryj` container is ~20 lines of dependency-free read/write — file framing, not custom algorithm.
+- **No upfront gzip / zstd**: `Y.encodeStateAsUpdate` already emits lib0's compact encoding; DayRail's actual data size (a few hundred KB) leaves little compression headroom. Adding a compression layer expands the debug surface for marginal savings. Bump container version when data crosses MB scale.
+- **History files**: `history/dayrail-snapshot-{ts}-{deviceLabel}.dryj`. The keep-14 policy is unchanged.
+
+**Conflict merge · CRDT all the way**
+
+`parentSnapshotId` is no longer used to decide UI; it is preserved in meta only as an observable signal for debugging and history-view device chains. Pull path:
+
+1. Download `dayrail-snapshot.dryj`, parse the container, extract the remote update bytes.
+2. With a local `Y.Doc` already in memory, run `Y.applyUpdate(localDoc, remoteUpdate)` — Yjs's internal LWW + Lamport clock handles convergence. All non-conflicting and same-direction-conflicting edits merge silently, no UI interruption.
+3. **Trigger a push immediately** after apply, so the merged result becomes a new `snapshotId` written back. Other devices' next pull receives the post-merge state, and the merge isn't trapped on a single device.
+
+**The v0.6 conflict card disappears in v0.7**. Yjs cannot produce "two mutually exclusive versions" — every state is a deterministic merge result.
+
+**Safety net retained**: Settings → Sync keeps two escape hatches available indefinitely:
+- **Download current snapshot** — exports the local `Y.Doc` as `.dryj` plus a flattened JSON file (semantically equivalent to v0.6 `exportData()`) for a dual-format backup.
+- **Import from snapshot** — uploads a `.dryj` and overwrites the local `Y.Doc`. This path **serves three roles**: ① the v0.6 → v0.7 one-shot migration landing point; ② manual recovery from a specific Drive history version; ③ rollback path if Yjs's automatic merge ever produces a surprising result. It is the fallback for true field-level conflicts — if Yjs LWW picks the wrong winner in some case, the user always has "export → edit → re-import to overwrite" to recover.
+
+**Pull triggers · v0.7 addition**
+
+On top of the visibility probe and connect probe that landed in §7.6 v0.6.1, v0.7 adds a **periodic probe** to close the background blind spot:
+
+- **Periodic probe** — `setInterval` every 5 minutes, only when `document.visibilityState === 'visible'` and `navigator.onLine === true`. Reads Drive metadata only (`files.get?fields=appProperties,modifiedTime`, ~1KB), does not download the `.dryj` body. Compares `remote.snapshotId` to `lastPulledSnapshotId`; if remote is ahead, fires a full pull (same code path as RuntimeSyncDialog's linear-lead branch).
+  - **Why 5 minutes**: under 1 minute makes Drive metadata calls pile up to a measurable cost (and risks Drive API quota); above 10 minutes lets users perceive the lag. 5 minutes provides clean continuity between "I just switched to this device" and "the other device pushed half an hour ago".
+  - **Skip when `document.hidden`**: the visibility probe already covers that transition; no double-trigger needed.
+  - **Skip when `navigator.onLine === false`**: avoids accumulating 401/network errors while offline.
+
+- **Online-restoration probe** — `window.addEventListener('online', ...)`, fires a single metadata probe immediately on the event (same decision logic as the periodic probe), with 5-second throttle. Closes the gap "device was offline for N minutes, then came back online" — the periodic probe skips ticks while `navigator.onLine === false`, so after reconnect the worst case waits nearly a full 5 minutes for the next tick. The `online` event triggers at the reconnect moment itself rather than being absorbed by the setInterval cadence. The visibility and periodic probes are "polling / state-rotation" models; this one is an "edge event" model, paired with the visibility probe to cover network-state flips.
+  - Only fires when `document.visibilityState === 'visible'`: a truly backgrounded tab is handled by the next visibility probe.
+  - Shares the 5-second throttle window with the visibility probe: network flapping (`online` / `offline` rapidly toggling) cannot storm Drive.
+
+**Sync now · bidirectional**
+
+v0.6's "Sync now" button = `runManualPush` (push only), which contradicts the literal expectation of "sync" and made users hesitant to click it precisely when remote was ahead (which is pain point 1's compounding effect). v0.7 reshapes:
+
+- On click → first run a lightweight metadata probe (same as the periodic probe):
+  - `remote ≤ local` → run push (identical to v0.6 manual push).
+  - `remote > local` → run pull first (Yjs auto-merge); if the local has unpushed changes after merge, run a push.
+- The `⚠ remote ahead` indicator on the topbar and the **Sync now** button **link to the same action** — clicking either fires the full bidirectional flow.
+
+**v0.6 → v0.7 one-shot migration**
+
+Current user count is the author plus two macOS Chromes, so **product code does not implement automatic migration** — that avoids dual-write / coexistence complexity. Flow:
+
+1. On the last v0.6 launch, the author manually exports a JSON backup (Settings → Export JSON) to off-app storage.
+2. Run the one-shot script `tools/migrate/migrate-json-to-yjs.ts` (executed via `tsx`):
+   - Input: `dayrail-snapshot.json` (v0.6 format, `schemaVersion: 1`).
+   - Process: walk the JSON per the v0.7 schema and wrap every field into the `Y.Doc` — scalars as plain values, arrays as `Y.Array`, nested objects as nested `Y.Map`. All `updatedAt` / `createdAt` / `id` fields preserve verbatim.
+   - Output: `dayrail-snapshot.dryj` (container version 1, meta `schemaVersion: 2`, freshly generated `snapshotId`, `createdAt: now`, placeholder `deviceLabel: "migration"`).
+3. Install v0.7 in the browser, Settings → Sync → "Import from snapshot", upload the `.dryj`. Local IndexedDB is rewritten with the new schema → reload.
+4. Connect Drive → first push promotes the new format to canonical. The v0.6 `dayrail-snapshot.json` and `history/*.json` on Drive **stay untouched** as fallback; v0.7 onward only reads/writes `.dryj` and ignores the old JSON.
+5. Once verified working, the author decides when to delete the local v0.6 backup (the script does not enforce; v0.7 will not read v0.6 format).
+
+**Scope: the script runs once**. Code-wise:
+- `tools/migrate/` (in-repo) keeps the script as a reproducible record of the upgrade procedure.
+- `apps/web/` product code carries **no** "detect old schema → auto-convert" branch. v0.7 startup that hits a v0.6-shaped IndexedDB store throws an init error and points the user at the "Import from snapshot" flow (which is permanent — part of the safety net above).
+- Drive side has no "convert remote old format to new" logic — first push promotes the new canonical, old files age out of history naturally.
+
+**Relationship to the beta compat policy**: the standing "no destructive data-layer migrations" constraint (established during v0.6) is **knowingly waived** for v0.7 on the basis that user count = 1 and the author has explicit double-fallback (manual JSON backup + Drive history preserved). "I'm the only user, and I can take a JSON backup ahead of time" is the author's explicit grant. This window is v0.7-specific; from v0.8 on, if the user base widens, similar destructive upgrades must revert to §7.6-era dual-write / in-product migration paths.
+
+**v0.7 explicitly does not do (still parked)**
+
+- §7.5 encrypted append-only event log: v0.7's wire format is a full `Y.Doc` snapshot, not an update log. Yjs itself can evolve to incremental update protocols — leave that for v0.8+ when bandwidth becomes a real problem.
+- §7.5 passphrase / E2E encryption / recovery codes / dual-write E2E migration: `appdata` scope isolation still holds, single-user threat model unchanged.
+- §7.2.1 three-mode `{data only / settings only / everything}` toggle.
+- §7.3 multi-backend (iCloud / WebDAV / Dropbox).
+- A field-level conflict UI (for "same field, different new values") — Yjs LWW + Lamport clock decides the winner, no UI fires. If true conflicts ever degrade UX, design a conflict surface separately; today the "Download current snapshot + Import from snapshot" safety net catches it.
+
+**v0.6 mechanisms still in force in v0.7**
+
+- The full §7.6 auth lifecycle (GIS token client, access token cache, FedCM, no-refresh-token-persistence) is untouched — v0.7 only swaps the wire format, the auth layer is unchanged.
+- All four §7.6 push triggers (debounce 60s / `visibilitychange === 'hidden'` / `pagehide` / `beforeunload` keepalive) carry over.
+- §7.6 pull triggers (visibility probe / connect probe) carry over; v0.7 adds the periodic probe.
+- The §7.6 `RuntimeSyncDialog` component is preserved, with branches simplified: `linear-lead` stays; the `diverged` branch is removed entirely (CRDT cannot diverge); `offline` and `equal` are unchanged.
+- The §7.6 topbar sync indicator / Settings sync layout / 14-row backup history are unchanged.
+- The §7.6 boot-gate splash + "remember boot-time sync choice" radio are unchanged (the divergent branch simply never fires).
+
 ---
 
 ## 8. Engineering Principles

@@ -1,9 +1,15 @@
 // Runtime sync dialog — covers the cases the boot gate alone misses
-// (ERD §7.6 "Pull triggers"):
-//   1. tab returns to foreground / device wakes from screen lock,
-//      and meanwhile another device pushed to Drive
-//   2. (handled inline by SettingsSections) first connect on a new
-//      device that already has data on Drive
+// (ERD §7.6 + §7.7 "Pull triggers"). Three triggers feed it:
+//   1. visibility probe — tab returns to foreground / device wakes from
+//      screen lock (§7.6).
+//   2. periodic probe — every 5 minutes while visible + online (§7.7),
+//      silent (no topbar flash on equal/no-remote).
+//   3. online-restoration probe — `online` event fires the moment the
+//      device regains network (§7.7), so a 4-minute-old offline gap
+//      doesn't have to wait for the next periodic tick.
+//
+// (A separate "first connect on a new device" trigger is handled inline
+// by SettingsSections — not this component.)
 //
 // Mounts at the App level (alongside <App />), runs probes after the
 // boot gate has resolved. Renders nothing in the idle state — the
@@ -11,7 +17,7 @@
 // needs user input (or a brief "正在拉取" frame for the auto-pull
 // path before the OPFS reset + reload kicks in).
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { isDriveConnected } from './driveAuth';
 import { getBootSyncChoice } from './identity';
 import {
@@ -24,7 +30,8 @@ import {
 } from './syncController';
 import type { RemoteMeta } from './driveBackend';
 
-const VISIBILITY_THROTTLE_MS = 5000;
+const PROBE_THROTTLE_MS = 5000;
+const PERIODIC_PROBE_INTERVAL_MS = 5 * 60 * 1000;
 
 type State =
   | { kind: 'idle' }
@@ -35,54 +42,89 @@ type State =
 
 export function RuntimeSyncDialog() {
   const [state, setState] = useState<State>({ kind: 'idle' });
+  const stateKindRef = useRef<State['kind']>('idle');
   const lastProbeAt = useRef(0);
   const probing = useRef(false);
 
   useEffect(() => {
+    stateKindRef.current = state.kind;
+  }, [state.kind]);
+
+  // Single probe entry point shared by all three triggers. Caller
+  // passes `silent: true` for purely background triggers (periodic) so
+  // a no-op probe doesn't flash the topbar; user-perceptible triggers
+  // (visibility, online-restoration) leave it loud.
+  const tryProbe = useCallback((silent: boolean) => {
+    if (!isDriveConnected()) return;
+    if (probing.current) return;
+    // Don't re-probe if a dialog from a previous trigger is still up.
+    if (stateKindRef.current !== 'idle') return;
+    const now = Date.now();
+    if (now - lastProbeAt.current < PROBE_THROTTLE_MS) return;
+    lastProbeAt.current = now;
+    probing.current = true;
+
+    void runBootProbe({ silent })
+      .then((outcome) => {
+        if (outcome.kind === 'equal' || outcome.kind === 'no-remote') return;
+        if (outcome.kind === 'offline') {
+          // Top-bar already reflects this via syncStore (when not
+          // silent); no modal overlay needed for a transient probe
+          // failure.
+          return;
+        }
+        if (outcome.kind === 'linear-lead') {
+          if (getBootSyncChoice() === 'auto-pull') {
+            setState({ kind: 'auto-pulling' });
+            void doApply(outcome.remote, setState);
+          } else {
+            setState({ kind: 'linear-confirm', remote: outcome.remote });
+          }
+          return;
+        }
+        if (outcome.kind === 'diverged') {
+          setState({ kind: 'diverged', remote: outcome.remote });
+        }
+      })
+      .finally(() => {
+        probing.current = false;
+      });
+  }, []);
+
+  // Trigger 1: visibility — tab returns to foreground.
+  useEffect(() => {
     const onVis = () => {
       if (document.visibilityState !== 'visible') return;
-      if (!isDriveConnected()) return;
-      if (probing.current) return;
-      // Don't re-probe if we're already showing a dialog from a
-      // previous trigger.
-      if (state.kind !== 'idle') return;
-      const now = Date.now();
-      if (now - lastProbeAt.current < VISIBILITY_THROTTLE_MS) return;
-      lastProbeAt.current = now;
-      probing.current = true;
-
-      void runBootProbe()
-        .then((outcome) => {
-          if (outcome.kind === 'equal' || outcome.kind === 'no-remote') {
-            // Nothing to do — already in sync.
-            return;
-          }
-          if (outcome.kind === 'offline') {
-            // Top-bar already reflects this via syncStore; no modal
-            // overlay needed for a transient probe failure.
-            return;
-          }
-          if (outcome.kind === 'linear-lead') {
-            if (getBootSyncChoice() === 'auto-pull') {
-              setState({ kind: 'auto-pulling' });
-              void doApply(outcome.remote, setState);
-            } else {
-              setState({ kind: 'linear-confirm', remote: outcome.remote });
-            }
-            return;
-          }
-          if (outcome.kind === 'diverged') {
-            setState({ kind: 'diverged', remote: outcome.remote });
-          }
-        })
-        .finally(() => {
-          probing.current = false;
-        });
+      tryProbe(false);
     };
-
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
-  }, [state.kind]);
+  }, [tryProbe]);
+
+  // Trigger 2: periodic — every 5 minutes, gated on visible + online.
+  // Silent so the topbar doesn't flash on every no-op tick.
+  useEffect(() => {
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      tryProbe(true);
+    };
+    const id = window.setInterval(tick, PERIODIC_PROBE_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [tryProbe]);
+
+  // Trigger 3: online-restoration — fires the moment the network
+  // returns, so a 4-minute offline gap doesn't have to wait nearly a
+  // full periodic tick to be discovered. Gated on visible (a truly
+  // backgrounded tab is handled by the next visibility probe).
+  useEffect(() => {
+    const onOnline = () => {
+      if (document.visibilityState !== 'visible') return;
+      tryProbe(false);
+    };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [tryProbe]);
 
   if (state.kind === 'idle') return null;
   return <Overlay state={state} setState={setState} />;

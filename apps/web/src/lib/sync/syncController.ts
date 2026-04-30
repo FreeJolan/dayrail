@@ -286,12 +286,22 @@ export type BootProbeOutcome =
 
 /** Boot gate calls this once on cold start to decide what to render
  *  (silent pull / confirm card / conflict card / offline banner).
- *  Soft and hard timeouts mirror ERD §7.6. */
-export async function runBootProbe(): Promise<BootProbeOutcome> {
+ *  Soft and hard timeouts mirror ERD §7.6.
+ *
+ *  `silent: true` — passive runtime probes (periodic / online-restoration,
+ *  ERD §7.7) skip the topbar phase mutation so a successful no-op probe
+ *  doesn't flash `⟳ syncing` on every tick. The boot gate and visibility
+ *  probe stay non-silent because the user perceives those moments. */
+export async function runBootProbe(
+  options: { silent?: boolean } = {},
+): Promise<BootProbeOutcome> {
+  const silent = options.silent === true;
   if (!isDriveConnected()) {
     return { kind: 'offline', reason: 'NOT_CONNECTED' };
   }
-  syncStore.setPhase({ kind: 'syncing', reason: 'probe' });
+  if (!silent) {
+    syncStore.setPhase({ kind: 'syncing', reason: 'probe' });
+  }
 
   let timedOut = false;
   const hardTimer = new Promise<BootProbeOutcome>((resolve) => {
@@ -322,10 +332,12 @@ export async function runBootProbe(): Promise<BootProbeOutcome> {
   })();
 
   const outcome = await Promise.race([probe, hardTimer]);
-  if (timedOut) {
-    syncStore.setPhase({ kind: 'offline', message: '同步探测超时' });
-  } else {
-    syncStore.setPhase({ kind: 'idle' });
+  if (!silent) {
+    if (timedOut) {
+      syncStore.setPhase({ kind: 'offline', message: '同步探测超时' });
+    } else {
+      syncStore.setPhase({ kind: 'idle' });
+    }
   }
   return outcome;
 }
