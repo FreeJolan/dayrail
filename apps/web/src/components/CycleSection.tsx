@@ -1,5 +1,5 @@
 import { clsx } from 'clsx';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Check, ChevronDown, NotebookPen } from 'lucide-react';
 import type { TaskPriority } from '@dayrail/core';
 import {
@@ -48,6 +48,14 @@ interface Props {
    *  renders when at least one of `days` has entries; pills inside
    *  remain draggable so the user can drop them back onto any rail. */
   offRailByDate?: Record<string, SlotTaskSummary[]>;
+  /** Drag-hover state, lifted to CycleView so it's shared across all
+   *  sections. With per-section state, dragging across a section
+   *  boundary stranded the previous section's highlight (its dragOver
+   *  no longer fires, and window-level dragend only clears at the
+   *  end of the drag). One shared key means at most one cell + rail
+   *  glows at a time across the whole grid. Format: `${railId}|${date}`. */
+  dragHoverKey: string | null;
+  onDragHoverKeyChange: (next: string | null) => void;
   todayISO: string;
   templateChoices: TemplateChoice[];
   /** Dates in this section's `days` slice that already have a written
@@ -97,6 +105,8 @@ export function CycleSection({
   days,
   slotsByKey,
   offRailByDate,
+  dragHoverKey,
+  onDragHoverKeyChange,
   todayISO,
   templateChoices,
   reflectedDates,
@@ -118,7 +128,6 @@ export function CycleSection({
   lineLookup,
 }: Props) {
   const stripColor = RAIL_COLOR_HEX[templateColor];
-  const [hoverKey, setHoverKey] = useState<string | null>(null);
   // The Off-rail row only renders when at least one day in this
   // section has a scheduled task whose rail isn't active that day.
   // No orphans → no row; the section stays as compact as before.
@@ -133,28 +142,12 @@ export function CycleSection({
     }
     return any ? perDay : null;
   }, [offRailByDate, days]);
-  // `hoverRailId` falls out of the hoverKey (railId|date). Derived
-  // separately so the rail row + left label can signal "this Rail
-  // will receive the drop" without every cell tracking it.
-  const hoverRailId = hoverKey ? hoverKey.split('|')[0] : null;
-
-  // Clear the drag highlight once the drag ends (successful drop,
-  // cancel/ESC, or dragging out of the window). We don't use per-cell
-  // dragleave because it fires every time the cursor transitions
-  // between a cell's child elements — that's the "frantic flicker"
-  // bug. dragover alone handles the "what cell am I over" question
-  // (each hover sets hoverKey to that cell, overwriting the previous
-  // in a single state write), and window-level dragend/drop wipes
-  // state exactly once when the gesture is over.
-  useEffect(() => {
-    const clear = () => setHoverKey(null);
-    window.addEventListener('dragend', clear);
-    window.addEventListener('drop', clear, true);
-    return () => {
-      window.removeEventListener('dragend', clear);
-      window.removeEventListener('drop', clear, true);
-    };
-  }, []);
+  // `hoverRailId` falls out of the shared hoverKey (railId|date).
+  // Derived separately so the rail row + left label can signal "this
+  // Rail will receive the drop" without every cell tracking it. The
+  // drag-end / drop window listeners live in CycleView so the shared
+  // state clears exactly once when the gesture ends.
+  const hoverRailId = dragHoverKey ? dragHoverKey.split('|')[0] : null;
 
   return (
     <section
@@ -207,7 +200,7 @@ export function CycleSection({
                   const cellKey = `${rail.id}|${d.date}`;
                   const tasks = slot?.tasks ?? [];
                   const canDrop = onDropTask != null;
-                  const isHover = hoverKey === cellKey;
+                  const isHover = dragHoverKey === cellKey;
                   const railSoftHover = railIsDropTarget && !isHover;
                   return (
                     <td
@@ -222,7 +215,9 @@ export function CycleSection({
                               // state equals prev, so the ~60Hz dragover
                               // cadence doesn't cause re-renders once
                               // the cursor stabilizes on a cell.
-                              if (hoverKey !== cellKey) setHoverKey(cellKey);
+                              if (dragHoverKey !== cellKey) {
+                                onDragHoverKeyChange(cellKey);
+                              }
                             }
                           : undefined
                       }
@@ -232,7 +227,7 @@ export function CycleSection({
                               const taskId = e.dataTransfer.getData(
                                 TASK_DRAG_MIME,
                               );
-                              setHoverKey(null);
+                              onDragHoverKeyChange(null);
                               if (!taskId) return;
                               e.preventDefault();
                               onDropTask(taskId, d.date, rail.id);

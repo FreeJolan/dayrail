@@ -51,6 +51,22 @@ export function CycleView() {
   const navigate = useNavigate();
   const [anchorDate, setAnchorDate] = useState<Date>(() => new Date());
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
+  // Drag-hover key shared across all CycleSection instances. Lifted
+  // here so dragging a task across a section boundary doesn't strand
+  // the previous section's highlight — only one cell + rail glows at
+  // a time across the whole grid. Format: `${railId}|${date}`.
+  const [dragHoverKey, setDragHoverKey] = useState<string | null>(null);
+  useEffect(() => {
+    const clear = () => setDragHoverKey(null);
+    // capture-phase drop so we clear before any per-cell drop handler
+    // mutates state, mirroring the pre-lift behavior.
+    window.addEventListener('dragend', clear);
+    window.addEventListener('drop', clear, true);
+    return () => {
+      window.removeEventListener('dragend', clear);
+      window.removeEventListener('drop', clear, true);
+    };
+  }, []);
 
   const templates = useStore((s) => s.templates);
   const rails = useStore((s) => s.rails);
@@ -477,6 +493,8 @@ export function CycleView() {
                 days={days}
                 slotsByKey={slotMap}
                 offRailByDate={offRailByDate}
+                dragHoverKey={dragHoverKey}
+                onDragHoverKeyChange={setDragHoverKey}
                 todayISO={todayISO}
                 templateChoices={templateChoices}
                 reflectedDates={reflectedDates}
