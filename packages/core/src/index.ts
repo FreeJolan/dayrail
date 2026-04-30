@@ -1,13 +1,10 @@
-// @dayrail/core — domain logic + event bus + session registry.
+// @dayrail/core — domain logic + Yjs-backed Zustand store (v0.7).
 //
-// This package wraps @dayrail/db with the event-sourced model described
-// in ERD §5.3.1 (Edit Sessions) and docs/v0.2-plan.md (HLC clock,
-// snapshot cadence, session-level undo).
+// v0.7 (ERD §7.7) replaced the v0.6 event-sourced model (events +
+// snapshots + HLC + session SQL tables) with a Y.Doc-backed store
+// persisted to OPFS as a `.dryj` binary. Sessions live in zustand
+// only; their undo history is tracked by per-session Y.UndoManager.
 
-export * from './hlc';
-export * from './event';
-export * from './session';
-export * from './snapshot';
 export * from './store';
 export * from './today';
 export * from './types';

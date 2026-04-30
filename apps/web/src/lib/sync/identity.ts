@@ -17,6 +17,7 @@ const KEY_BOOT_CHOICE = 'dayrail.sync.bootSyncChoice';
 const KEY_DIRTY_COUNT = 'dayrail.sync.dirtyCount';
 const KEY_LAST_SYNC_AT = 'dayrail.sync.lastSyncAt';
 const KEY_LAST_SYNC_LABEL = 'dayrail.sync.lastSyncLabel';
+const KEY_SAMPLES_ONLY = 'dayrail.sync.samplesOnly';
 
 export type BootSyncChoice = 'auto-pull' | 'ask';
 const DEFAULT_BOOT_CHOICE: BootSyncChoice = 'auto-pull';
@@ -176,4 +177,35 @@ export function getLastSyncInfo(): LastSyncInfo | null {
 export function setLastSyncInfo(info: LastSyncInfo): void {
   safeSet(KEY_LAST_SYNC_AT, String(info.at));
   safeSet(KEY_LAST_SYNC_LABEL, info.label);
+}
+
+/** "Local Y.Doc holds only the v0.7 first-run sample seed; nothing
+ *  the user has authored sits on this device." Used to gate the
+ *  destructive "first-connect / first-pull" replace-from-remote
+ *  flow against the migration scenario, where the user has just
+ *  imported real data via tools/migrate + Settings → "Import from
+ *  snapshot" and `lastPulledSnapshotId === null` is true even
+ *  though local data is precious.
+ *
+ *  Set by `boot.ts.seedFromSamples` after the seed completes.
+ *  Cleared by:
+ *    - `importLocalData` (the user just brought in data they care
+ *      about — definitely NOT samples-only).
+ *    - `syncController.startSyncBackgroundLoop`'s afterTransaction
+ *      listener on the first user-authored transact (any non-
+ *      REMOTE_ORIGIN / OPFS_ORIGIN write means we have authored
+ *      content beyond the seed).
+ *    - The first successful pull / push (after the device has
+ *      synced, lastPulledSnapshotId is no longer null and the
+ *      gate the flag protects no longer fires anyway). */
+export function setLocalIsSamplesOnly(): void {
+  safeSet(KEY_SAMPLES_ONLY, '1');
+}
+
+export function clearLocalIsSamplesOnly(): void {
+  safeRemove(KEY_SAMPLES_ONLY);
+}
+
+export function isLocalSamplesOnly(): boolean {
+  return safeGet(KEY_SAMPLES_ONLY) === '1';
 }

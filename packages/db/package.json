@@ -7,16 +7,14 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./schema": "./src/schema.ts",
     "./dryj": "./src/dryj.ts",
-    "./yjs": "./src/yjs.ts"
+    "./yjs": "./src/yjs.ts",
+    "./yjsPersistence": "./src/yjsPersistence.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@sqlite.org/sqlite-wasm": "3.47.0-build1",
-    "drizzle-orm": "0.36.4",
     "yjs": "^13.6.0"
   },
   "peerDependencies": {

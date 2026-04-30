@@ -7,10 +7,6 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./hlc": "./src/hlc.ts",
-    "./event": "./src/event.ts",
-    "./session": "./src/session.ts",
-    "./snapshot": "./src/snapshot.ts",
     "./store": "./src/store.ts",
     "./today": "./src/today.ts"
   },
@@ -21,7 +17,7 @@
   },
   "dependencies": {
     "@dayrail/db": "workspace:*",
-    "immer": "10.1.1",
+    "yjs": "^13.6.0",
     "zustand": "5.0.2"
   },
   "peerDependencies": {

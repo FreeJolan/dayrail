@@ -1,38 +1,32 @@
-// Runtime sync dialog — covers the cases the boot gate alone misses
-// (ERD §7.6 + §7.7 "Pull triggers"). Four triggers feed it:
-//   1. visibility probe — tab returns to foreground / device wakes from
-//      screen lock (§7.6).
+// Runtime sync dialog (v0.7) — covers the cases the boot gate alone
+// misses (ERD §7.6 + §7.7 "Pull triggers"). Three triggers feed it:
+//   1. visibility probe — tab returns to foreground / device wakes
+//      from screen lock (§7.6).
 //   2. periodic probe — every 5 minutes while visible + online (§7.7),
 //      silent (no topbar flash on equal/no-remote).
 //   3. online-restoration probe — `online` event fires the moment the
-//      device regains network (§7.7), so a 4-minute-old offline gap
+//      device regains network (§7.7), so a 4-minute offline gap
 //      doesn't have to wait for the next periodic tick.
-//   4. external diverged hand-off — Settings → 同步 → 立即同步 (and
-//      future callers) dispatch the `dayrail-sync:show-diverged`
-//      CustomEvent with `{ remote }` to surface the conflict card
-//      here. Keeps the conflict UX in one place rather than
-//      duplicating the modal in Settings.
 //
-// (A separate "first connect on a new device" trigger is handled inline
-// by SettingsSections — not this component.)
+// v0.7 removed the `diverged` conflict card: Yjs's CRDT merge handles
+// concurrent edits silently, so any "remote ahead" state is just a
+// linear-lead pull. The pull itself is in-memory (no reload) — the
+// Y.Doc observer re-derives flat zustand state and the UI updates
+// without losing scroll position or open dialogs.
 //
 // Mounts at the App level (alongside <App />), runs probes after the
-// boot gate has resolved. Renders nothing in the idle state — the
-// modal overlay only appears when the probe lands on a branch that
-// needs user input (or a brief "正在拉取" frame for the auto-pull
-// path before the OPFS reset + reload kicks in).
+// boot gate has resolved. Renders nothing in the idle state.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isDriveConnected } from './driveAuth';
 import { getBootSyncChoice } from './identity';
 import {
-  applyRemoteBundle,
-  downloadLocalAsBackup,
-  downloadRemoteAsBackup,
-  fetchRemoteBundle,
-  forcePushOverridingRemote,
+  applyRemoteDryj,
+  isPullInFlight,
+  replaceLocalFromRemote,
   runBootProbe,
 } from './syncController';
+import { clearLocalIsSamplesOnly, isLocalSamplesOnly } from './identity';
 import type { RemoteMeta } from './driveBackend';
 
 const PROBE_THROTTLE_MS = 5000;
@@ -41,9 +35,7 @@ const PERIODIC_PROBE_INTERVAL_MS = 5 * 60 * 1000;
 type State =
   | { kind: 'idle' }
   | { kind: 'auto-pulling' }
-  | { kind: 'linear-confirm'; remote: RemoteMeta }
-  | { kind: 'diverged'; remote: RemoteMeta }
-  | { kind: 'pushing' };
+  | { kind: 'linear-confirm'; remote: RemoteMeta };
 
 export function RuntimeSyncDialog() {
   const [state, setState] = useState<State>({ kind: 'idle' });
@@ -55,14 +47,15 @@ export function RuntimeSyncDialog() {
     stateKindRef.current = state.kind;
   }, [state.kind]);
 
-  // Single probe entry point shared by all three triggers. Caller
-  // passes `silent: true` for purely background triggers (periodic) so
-  // a no-op probe doesn't flash the topbar; user-perceptible triggers
-  // (visibility, online-restoration) leave it loud.
   const tryProbe = useCallback((silent: boolean) => {
     if (!isDriveConnected()) return;
     if (probing.current) return;
-    // Don't re-probe if a dialog from a previous trigger is still up.
+    // A pull is already running through the sync controller (manual
+    // 立即同步, BootGate apply, or a previous probe). Don't probe
+    // against the stale lastPulled cursor — once the in-flight pull
+    // finishes it advances the cursor; the next probe tick will see
+    // an up-to-date state.
+    if (isPullInFlight()) return;
     if (stateKindRef.current !== 'idle') return;
     const now = Date.now();
     if (now - lastProbeAt.current < PROBE_THROTTLE_MS) return;
@@ -72,23 +65,15 @@ export function RuntimeSyncDialog() {
     void runBootProbe({ silent })
       .then((outcome) => {
         if (outcome.kind === 'equal' || outcome.kind === 'no-remote') return;
-        if (outcome.kind === 'offline') {
-          // Top-bar already reflects this via syncStore (when not
-          // silent); no modal overlay needed for a transient probe
-          // failure.
-          return;
-        }
-        if (outcome.kind === 'linear-lead') {
-          if (getBootSyncChoice() === 'auto-pull') {
-            setState({ kind: 'auto-pulling' });
-            void doApply(outcome.remote, setState);
-          } else {
-            setState({ kind: 'linear-confirm', remote: outcome.remote });
-          }
-          return;
-        }
-        if (outcome.kind === 'diverged') {
-          setState({ kind: 'diverged', remote: outcome.remote });
+        if (outcome.kind === 'offline') return;
+        // linear-lead: pull. Respect the persisted "boot sync choice"
+        // — auto-pull defaults to silent merge, "ask each time" pops
+        // a confirm card.
+        if (getBootSyncChoice() === 'auto-pull') {
+          setState({ kind: 'auto-pulling' });
+          void doPull(outcome.remote, setState);
+        } else {
+          setState({ kind: 'linear-confirm', remote: outcome.remote });
         }
       })
       .finally(() => {
@@ -107,7 +92,6 @@ export function RuntimeSyncDialog() {
   }, [tryProbe]);
 
   // Trigger 2: periodic — every 5 minutes, gated on visible + online.
-  // Silent so the topbar doesn't flash on every no-op tick.
   useEffect(() => {
     const tick = () => {
       if (document.visibilityState !== 'visible') return;
@@ -118,10 +102,7 @@ export function RuntimeSyncDialog() {
     return () => window.clearInterval(id);
   }, [tryProbe]);
 
-  // Trigger 3: online-restoration — fires the moment the network
-  // returns, so a 4-minute offline gap doesn't have to wait nearly a
-  // full periodic tick to be discovered. Gated on visible (a truly
-  // backgrounded tab is handled by the next visibility probe).
+  // Trigger 3: online-restoration.
   useEffect(() => {
     const onOnline = () => {
       if (document.visibilityState !== 'visible') return;
@@ -131,29 +112,30 @@ export function RuntimeSyncDialog() {
     return () => window.removeEventListener('online', onOnline);
   }, [tryProbe]);
 
-  // Trigger 4: external hand-off — Settings's bidirectional 立即同步
-  // already ran the probe and decided the outcome is diverged; it
-  // hands the RemoteMeta over so the user gets the same conflict card
-  // a probe-triggered diverged would have shown.
-  useEffect(() => {
-    const onShow = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { remote?: RemoteMeta } | undefined;
-      if (!detail?.remote) return;
-      if (stateKindRef.current !== 'idle') return;
-      setState({ kind: 'diverged', remote: detail.remote });
-    };
-    window.addEventListener('dayrail-sync:show-diverged', onShow);
-    return () => window.removeEventListener('dayrail-sync:show-diverged', onShow);
-  }, []);
-
   if (state.kind === 'idle') return null;
   return <Overlay state={state} setState={setState} />;
 }
 
-async function doApply(remote: RemoteMeta, setState: (s: State) => void) {
+async function doPull(remote: RemoteMeta, setState: (s: State) => void) {
   try {
-    const bundle = await fetchRemoteBundle(remote);
-    await applyRemoteBundle(bundle); // reloads page; never returns
+    // Same samples-only gate as ConnectDrivePanel and BootGate. The
+    // visibility/periodic/online probes can fire on a passive
+    // session that hasn't yet authored anything beyond the v0.7
+    // sample seed (e.g., boot canonical-peek timed out → seed
+    // fired → BootGate hit hard-timeout → user clicked "use local"
+    // → app mounts samples-only → network recovers → online event
+    // wakes this dialog). Without this branch, doPull merges
+    // samples into the user's cloud canonical and the next push
+    // pollutes Drive for every other device. The flag is the
+    // contract; all three pull surfaces have to honor it.
+    if (isLocalSamplesOnly()) {
+      await replaceLocalFromRemote(remote);
+    } else {
+      await applyRemoteDryj(remote);
+    }
+    // Belt-and-suspenders, mirroring BootGate.pullAndMount.
+    clearLocalIsSamplesOnly();
+    setState({ kind: 'idle' });
   } catch (err) {
     console.warn('[sync] runtime auto-pull failed:', err);
     setState({ kind: 'idle' });
@@ -176,12 +158,8 @@ function Overlay({
       <div className="w-full max-w-lg rounded-md bg-surface-0 shadow-xl">
         <div className="px-5 py-5">
           {state.kind === 'auto-pulling' && <AutoPullingPanel />}
-          {state.kind === 'pushing' && <PushingPanel />}
           {state.kind === 'linear-confirm' && (
             <LinearConfirmPanel remote={state.remote} setState={setState} />
-          )}
-          {state.kind === 'diverged' && (
-            <DivergedPanel remote={state.remote} setState={setState} />
           )}
         </div>
       </div>
@@ -207,15 +185,6 @@ function AutoPullingPanel() {
   );
 }
 
-function PushingPanel() {
-  return (
-    <div className="flex items-center gap-3">
-      <Spinner />
-      <span className="text-sm text-ink-secondary">正在覆盖远端…</span>
-    </div>
-  );
-}
-
 function LinearConfirmPanel({
   remote,
   setState,
@@ -225,10 +194,9 @@ function LinearConfirmPanel({
 }) {
   const onPull = () => {
     setState({ kind: 'auto-pulling' });
-    void doApply(remote, setState);
+    void doPull(remote, setState);
   };
   const onUseLocalOnce = () => {
-    // Non-memoizable on purpose. ERD §7.6.
     setState({ kind: 'idle' });
   };
   return (
@@ -245,7 +213,7 @@ function LinearConfirmPanel({
           </span>
         </p>
         <p className="text-2xs text-ink-tertiary">
-          本地没有未同步的改动，可以安全地拉取。
+          v0.7 用 Yjs CRDT 自动合并，本地未推送的改动也会保留。
         </p>
       </div>
       <div className="flex items-center gap-2">
@@ -265,87 +233,6 @@ function LinearConfirmPanel({
           稍后处理（仅本次）
         </button>
       </div>
-    </section>
-  );
-}
-
-function DivergedPanel({
-  remote,
-  setState,
-}: {
-  remote: RemoteMeta;
-  setState: (s: State) => void;
-}) {
-  const [busy, setBusy] = useState<null | 'keep-remote' | 'overwrite'>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const onKeepRemote = async () => {
-    setBusy('keep-remote');
-    setError(null);
-    try {
-      downloadLocalAsBackup();
-      await new Promise((r) => setTimeout(r, 400));
-      setState({ kind: 'auto-pulling' });
-      const bundle = await fetchRemoteBundle(remote);
-      await applyRemoteBundle(bundle); // reloads
-    } catch (err) {
-      setError((err as Error).message);
-      setBusy(null);
-    }
-  };
-
-  const onOverwrite = async () => {
-    setBusy('overwrite');
-    setError(null);
-    try {
-      await downloadRemoteAsBackup(remote);
-      await new Promise((r) => setTimeout(r, 400));
-      setState({ kind: 'pushing' });
-      await forcePushOverridingRemote();
-      setState({ kind: 'idle' });
-    } catch (err) {
-      setError((err as Error).message);
-      setState({ kind: 'diverged', remote });
-      setBusy(null);
-    }
-  };
-
-  return (
-    <section className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <span className="font-mono text-2xs uppercase tracking-widest text-warn">
-          本地与云端有冲突
-        </span>
-        <p className="text-sm text-ink-primary">
-          本地有未推送改动，云端也有
-          <span className="text-ink-secondary">
-            {' '}
-            {remote.deviceLabel ?? '另一台设备'} · {fmtRelative(remote.modifiedTime)}
-          </span>
-          {' '}的新改动。
-        </p>
-      </div>
-      <div className="flex flex-col gap-2">
-        <button
-          type="button"
-          onClick={onKeepRemote}
-          disabled={busy !== null}
-          className="rounded-md bg-ink-primary px-3 py-2 text-xs font-medium text-surface-0 transition hover:brightness-95 disabled:opacity-50"
-        >
-          {busy === 'keep-remote' ? '正在保留远端…' : '保留远端、把本地导出留底'}
-        </button>
-        <button
-          type="button"
-          onClick={onOverwrite}
-          disabled={busy !== null}
-          className="rounded-md bg-surface-2 px-3 py-2 text-xs font-medium text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary disabled:opacity-50"
-        >
-          {busy === 'overwrite' ? '正在覆盖远端…' : '覆盖远端（先把远端下载留底）'}
-        </button>
-      </div>
-      {error && (
-        <p className="rounded-sm bg-surface-1 px-3 py-2 text-2xs text-warn">{error}</p>
-      )}
     </section>
   );
 }

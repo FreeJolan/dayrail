@@ -1428,6 +1428,50 @@ v0.6 的「立即同步」按钮 = `runManualPush`（只推），与"立即同�
 - §7.6 顶栏同步指示灯 / Settings 同步页布局 / 备份历史 14 行保留不变。
 - §7.6 启动闸门 splash + "记住启动同步选择" radio 保留不变（只是分叉分支永不触发）。
 
+**v0.7 落地纪要（2026-04-30 实际 ship 校对）**
+
+实施完成后回看,把"设计意图"和"实际代码"对齐。下面是几个值得记一笔的 delta:
+
+- **pull 真的不 reload 了** —— `applyRemoteDryj` 在内存里跑 `Y.applyUpdate`,Y.Doc observer 重新派生 zustand state。用户保留 scroll 位置、打开的弹窗、in-flight 表单输入。BootGate 的 linear-lead 分支也走同一路径,启动期"应用远端"不再触发刷新。
+- **dailyReflections 进了同步流** —— 单 Y.Doc + 单 wire 的简洁性优先于"私密日记"那点边际隐私顾虑;单用户 appdata scope 的威胁模型未变。如果 v0.8 用户基数扩大,再用 Yjs sub-document 做局部过滤。
+- **Sessions 改成内存-only + Y.UndoManager** —— 没有 SQL `sessions` 表了。`openEditSession` 创建一个 trackedOrigins = `{sessionId}` 的 UndoManager;每个 session-aware action 用 `doc.transact(..., sessionId ?? actionLabel)` 让操作落入跟踪范围。`undoEditSession` 循环 `um.undo()` 直到栈空,然后销毁 UndoManager。等价于 v0.6 的"按 sessionId 回滚整批事件",但 reload 不持久化——单用户场景这是可接受的缩减。
+- **`runManualSync.diverged` outcome 移除** —— CRDT 不会分叉,所以"立即同步"不再产生 diverged 分支。状态条上的 `dayrail-sync:show-diverged` CustomEvent 监听器一并删掉。
+- **§7.6 conflict card 整段删除** —— `BootGate.DivergedPanel` / `RuntimeSyncDialog.DivergedPanel` / `forcePushOverridingRemote` / `downloadLocalAsBackup` / `downloadRemoteAsBackup` 全部从代码库消失。"冲突"在 v0.7 的语义里是"两端改了同一字段不同值",这个 Yjs LWW + Lamport 自动决,不弹 UI。
+- **§5.5.6 reschedule/unschedule Shift 在 v0.7 仍然由 store 自己 emit**——`detectReschedule` / `detectUnschedule` 不变,`persistShiftAndQueuePromptY` 在 transact 之后写入 `shifts` 这张同步 map + 设置本地 `pendingShiftPrompt`(UI ephemeral,不进 Y.Doc)。
+- **Settings 同步页新增两行**:
+  - 「下载本地快照」—— 把当前 Y.Doc 编码成 `.dryj` 二进制下载到本地,作为 Drive 14 份滚动历史之外的额外留底。
+  - 「从快照导入」—— 用 `.dryj` 替换本地数据,通过现有 `importLocalData` 路径走 stash + reset + reload。**这条路径仍然 reload**(用现有 OPFS 重置基础设施最稳),与 sync pull 的"无 reload"区分:replace-everything 用 reload、merge-from-remote 用内存合并。
+- **删除的代码量** —— net 约 4600 行(`SQLite over OPFS` 整层 + event-source reducer + HLC 时钟 + sessions 表 + snapshot 缓存全部下线)。Drizzle、`@sqlite.org/sqlite-wasm`、`immer` 三个 dep 也跟着移除。
+- **保留作为"未来 hook"的 API**:`saveYDocBytes` 在 Settings 里 `void`-pin 着——下次想做"无 reload import"时这是入口。
+
+**v0.7 ship 后外部 review 修复(2026-04-30)**
+
+外部独立 review 后修了几条:
+
+- **push 前先 pull-merge** —— `runPush` 上传前先 `getRemoteMeta()`,如果远端 `snapshotId` 不等于 `lastPulledSnapshotId`,先把远端 `.dryj` 拉下来 `applyRemoteUpdate` 再编码上传。Drive 不是 Yjs server,不做这步的话 A 推 → B 不拉就推 → Drive 上看不到 A 的修改(虽然 A 本地下次 pull 还能合回来,但 Drive 那一刻的 canonical 是 lying)。`keepalive` push 跳过此步(pagehide 时间预算紧),其它路径全开。失败时 fallback 到无前置 pull 的纯 push,降级为旧行为。
+- **`Task.subItems` 改回原子 LWW** —— 原本的 `Y.Array` 在 action 层"整列重写"语义下退化成"删空再 push",并发 tick 不同 subitem 会产生 dup / interleave / loss——比 LWW 更糟。先回退到 plain JS array(原子 LWW),等 action 层改成 per-element op(insert/delete/update on inner Y.Array)再开。
+- **§5.5.6 Shift 进入 session 跟踪范围** —— `persistShiftAndQueuePromptY` 现在用 `sessionId ?? 'persistShiftAndQueuePrompt'` 作为 transact origin。之前固定字符串,session 里 emit 的 reschedule/unschedule shift 不被 UndoManager 跟踪,`undoEditSession` 回滚 slot 但留下 orphan shift。
+- **pull 时不必取消 pending pushTimer** —— round-3 早期试过 `clearTimeout(pushTimer)` 但放错了位置(在 applyRemoteUpdate 触发 observer 之前清,然后 observer 又重新 schedule)。round-3 后期换了 transact origin 过滤(REMOTE_ORIGIN / OPFS_ORIGIN 永不 bump dirty),从根上避免了 echo 推。round-4 进一步把 syncController 的 dirty 跟踪直接挂到 `doc.on('afterTransaction', tr)` 上,origin 在闭包里,完全消除了 echo 风险。`pushTimer` 不需要在 pull 时清。
+- **revision 并发 dedup** —— `appendRevision` 的"找同 id 删除再 push"对本地视图幂等,但两端并发推同一 `rev-{kind}-{id}-{effectiveFrom}` 后 Y.Array 会有两份(authoredAt 不同)。`readFlatStateFromDoc` 的 revision 读路径加了 `dedupRevisions`:按 id 分组,保留 authoredAt 最大的。同 id revision 的内容一致(确定性 id schema),collapse 安全。
+- **删 dead code** —— `replaceYDoc` 删了(hydrate 直接用 `getYDoc()` lazy-create);Settings 里那一堆 helper 的 `void`-pin block 删了(每个 helper 现在都被引用)。`packages/db/src/migrations/` 空目录删了。
+
+**Round 5-7 round外部 review 补强(2026-04-30 续)**
+
+后续 3 轮 review 集中在数据流的边角 case,几个真正的 bug 修了:
+
+- **首次连接 Drive 的 replace-vs-merge 门** —— round 5 引入 `replaceFromRemote` / `replaceLocalFromRemote`(清空所有 top-level Y.Map 后 applyUpdate),为"全新设备装机用一会儿样本数据然后连 Drive"场景避免污染。但 round 5 用 `lastPulledSnapshotId === null` 当判断条件——这条件**也**对刚跑完迁移脚本的用户成立,导致 ConnectDrivePanel 上的推荐按钮静默删掉用户刚导入的 v0.6 数据。round 6 改用 `dayrail.sync.samplesOnly` 正信号 flag(`identity.ts`):
+  - `boot.ts.seedFromSamples` 完成后 set。
+  - `importLocalData` 入口 clear(用户刚导入了真数据)。
+  - `syncController.startSyncBackgroundLoop` 的 afterTransaction listener 在第一次 non-REMOTE / non-OPFS origin 的 transact 上 clear(用户写了任何东西,本地不再是 samples-only)。
+  - 成功的 `replaceLocalFromRemote` 完成后 clear(本地已经镜像 Drive canonical,不再是 samples-only)。
+- **三个 pull surface 都看 flag** —— `ConnectDrivePanel.onPullRemote` / `BootGate.pullAndMount` / `RuntimeSyncDialog.doPull` 都 branch on `isLocalSamplesOnly()`:flag 为真用 replace,为假用 merge。round 7 抓出 `RuntimeSyncDialog.doPull` 漏了这个门——visibility / 周期 / online probe 在 boot canonical-peek timeout + BootGate hard-timeout + 用户点"继续使用本地"的链路上能进入 samples-only 状态,然后任何运行时 probe 还会污染 Drive。
+- **`runForcePush`(用本地覆盖云端按钮)** —— round 5 加了它。runPush 的 preflight pull-merge 不能用于 rollback 场景(用户刚 import .dryj 想让 Drive 镜像它);force-push 直接上传本地 Y.Doc,不带 parentSnapshotId,挑明"detached lineage"。round 6 补:进入 force-push 时 `clearTimeout(pushTimer)` + `clearTimeout(retryTimer)` + `wantsPushFollowUp = false`,否则 60s 后旧 timer fire 会把 force-push 后的 canonical 跟另一台设备的推送 merge 回来,把 rollback 抹掉。round 7 进一步:`runPush` 加 `getDirtyCount() === 0` 时 early-return(避免 force-push 后残留的 mid-flight timer 浪费一个 Drive history slot 上传重复 state)。
+- **`runManualSync` `'pulled'` → `'pushed'`** —— round 5 已经在 pulled 之后 inline await runPush(if dirty>0)。round 6 把返回值也改成 `'pushed'`,Settings 「立即同步」的 hint 反映"本地改动也推上去了"而不是只显示"已合并云端改动"。
+- **boot getRemoteMeta 1500ms timeout** —— round 5 加的,避免慢网卡死首屏。round 6 注意到 `Promise.race` 不会真正中止 fetch,但这个限制在"timeout 时 fallback 到 seed"的语义下可接受——后果是 boot 后 BootGate 的 probe 会再跑一次,经由 round 6 的 samples-only 门避免污染。
+- **`saveYDocBytes` 串行化** —— round 4 加的 `inFlightSave`。round 5 修了 round-4 的 cleanup bug:`task.finally(...)` 返回新 promise,与 `task` 比对永远 false,清理永不执行 → 内存里的 prev 链长度无界。改成 `wrapped` 引用比对。
+- **dedupRevisions caveat 诚实** —— round 2 就标了 same-id revision 的内容**未必**等价(两端并发 update 同一个 entity 不同字段),只是合并语义在 live state 上是对的;revision-history fidelity 在多用户场景下需要重做 id schema(加 deviceId)。
+- **测试覆盖率仍是 0** —— action 层 + 同步控制器 + samples-only flag 生命周期。单用户 beta 阶段接受,作者手动验证。round 5/6/7 都 flag 了这件事;数据破坏类 bug 6 轮间出现 2 次("round 3 修了但没修对" + "round 5 引入新 bug"),整体应当评估等用户基数扩大时尽快补集成测试。
+
 ***
 
 ## 8. 设计原则（工程层）

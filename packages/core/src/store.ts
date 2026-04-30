@@ -1,77 +1,137 @@
-// Zustand store factory for DayRail v0.2. Backed by @dayrail/db:
-// mutations dispatch events (see event.ts), reducers update both the
-// in-memory store and the materialised domain tables.
+// Y.Doc-backed store (ERD §7.7 · v0.7).
 //
-// This is the narrowest useful slice for v0.2 — just the tables
-// Template Editor touches (templates + rails + sessions). Cycle
-// planning, check-in flow, Projects/Tasks follow in later wire-ups.
+// Status: SCAFFOLD (PR #28 in-progress). This file is NOT yet exported
+// from `@dayrail/core/index.ts`. The legacy `store.ts` (event-sourced,
+// SQL-backed) remains the active store until this file's action set is
+// fully translated and verified, at which point a single commit on
+// the v0.7/yjs-integration branch swaps the export, and a follow-up
+// commit deletes store.ts / event.ts / snapshot.ts / hlc.ts plus the
+// SQL-only @dayrail/db files.
+//
+// =================================================================
+// Design (Option A — full replacement)
+// =================================================================
+//
+// Y.Doc is the source of truth for all v0.7 user data. There is no
+// SQL events table, no snapshots table, no HLC clock. Persistence is
+// a single binary file in OPFS (`dayrail-state.dryj`); the same .dryj
+// container is what gets uploaded to Drive.
+//
+// Each top-level Y.Map (one per existing entity store: templates,
+// rails, lines, tasks, …) holds entities keyed by id. Each entity is
+// itself a Y.Map so field-level merge is the default. See
+// @dayrail/db/yjs for the schema definition.
+//
+// The Zustand store mirrors a flat-shape derivation of Y.Doc state.
+// On every Y.Doc transaction, an observer re-derives the flat state
+// and calls `set()`. Consumers (React components) keep using
+// `useStore` exactly as before — no UI churn.
+//
+// Action contract:
+//   1. Open `ydoc.transact(() => { ... })`.
+//   2. Inside, write to Y.Map / Y.Array directly. For revisions and
+//      tombstones, use the helpers further down (emitRailRevisionY,
+//      etc.).
+//   3. Return. The observer fires synchronously, derives new flat
+//      state, and `set()`s it. The OPFS persistence subscriber
+//      (debounced) writes the new bytes to disk.
+//
+// =================================================================
+// Translation guide for the remaining actions
+// =================================================================
+//
+// Each action stub below carries a comment pointing to the legacy
+// implementation in `store.ts`. The pattern to follow:
+//
+//   // Legacy (store.ts:LINE):
+//   //   - appendEvent({ type: 'foo.bar', payload, ... })
+//   //   - applyEventInPlace(draft, 'foo.bar', payload)
+//   //   - revision/tombstone helpers
+//   //
+//   // Y.Doc translation:
+//   //   doc.transact(() => {
+//   //     // Mirror what applyEventInPlace did, but on Y.Map / Y.Array:
+//   //     const map = doc.getMap('foo');
+//   //     // upsert: patchEntityYMap(existing, patch) or
+//   //              entityToYMap(entity)
+//   //     // delete: map.delete(id)
+//   //     // revisions: emitRailRevisionY(doc, ...) etc.
+//   //   });
+//
+// Helpers `entityToYMap` / `yMapToEntity` / `patchEntityYMap` come
+// from `@dayrail/db/yjs`. v0.7 stores all array-typed entity fields
+// (incl. Task.subItems) as plain JS arrays — atomic LWW. See yjs.ts
+// header for the Y.Array trade-off.
+//
+// IMPORTANT — no event log, no replay. Two consequences:
+//   - "session undo" (undoEditSession) reads the Y.Doc's recent
+//     update history via Y.UndoManager rather than the events table.
+//     Implementation deferred to the cutover commit.
+//   - the v0.5 sentinel-revision migration is a no-op in v0.7: any
+//     bundle imported through "Import from snapshot" already carries
+//     the post-migration state.
 
 import { create } from 'zustand';
-import { immer } from 'zustand/middleware/immer';
-import { getDb, runMigrations } from '@dayrail/db';
+import type { Doc as YDoc, Map as YMap, Array as YArray } from 'yjs';
+import * as Y from 'yjs';
 import {
-  appendEvent,
-  currentClock,
-  initClock,
-  loadEvents,
-  dropSessionEvents,
-} from './event';
+  createYDoc,
+  encodeDocAsUpdate,
+  entityToYMap,
+  loadFlatStateIntoDoc,
+  patchEntityYMap,
+  readFlatStateFromDoc,
+  TOP_LEVEL_MAPS,
+  type FlatState,
+} from '@dayrail/db/yjs';
+import { encodeDryj, type DryjMeta } from '@dayrail/db/dryj';
 import {
-  closeSession,
-  onSessionChange,
-  openSession,
-  recoverActiveSessions,
-  touchSession,
-  type EditSession,
-} from './session';
-import {
-  armSnapshotOnHide,
-  clearSnapshots,
-  loadLatestSnapshot,
-  noteEvent,
-  resetUnsnapshotted,
-  shouldSnapshotAfterEvent,
-  writeSnapshot,
-} from './snapshot';
-import {
-  INBOX_LINE_ID,
-  REVISION_SENTINEL_DATE,
-  type AdhocEvent,
-  type CalendarRule,
-  type CalendarRuleCycle,
-  type CalendarRuleDateRange,
-  type CalendarRuleRevision,
-  type CalendarRuleSingleDate,
-  type CalendarRuleWeekday,
-  type Cycle,
-  type DailyReflection,
-  type HabitBinding,
-  type HabitBindingRevision,
-  type HabitPhase,
-  type Line,
-  type Rail,
-  type RailColor,
-  type RailRevision,
-  type ReschedulePayload,
-  type Shift,
-  type ShiftType,
-  type Signal,
-  type SignalResponse,
-  type Task,
-  type Template,
-  type TemplateKey,
-  type TemplateRevision,
-  type Tombstone,
-  type UnschedulePayload,
+  loadYDocBytes,
+  saveYDocBytes,
+} from '@dayrail/db/yjsPersistence';
+import { decodeDryj } from '@dayrail/db/dryj';
+import type {
+  AdhocEvent,
+  CalendarRule,
+  CalendarRuleRevision,
+  Cycle,
+  DailyReflection,
+  HabitBinding,
+  HabitBindingRevision,
+  HabitPhase,
+  Line,
+  Rail,
+  RailColor,
+  RailRevision,
+  Shift,
+  Signal,
+  SignalResponse,
+  Task,
+  Template,
+  TemplateKey,
+  TemplateRevision,
+  Tombstone,
 } from './types';
-import { toIsoDate } from './today';
 import { detectReschedule } from './reschedule';
 import { detectUnschedule } from './unschedule';
-import { calendarRuleRevisionsActiveOn } from './revisions';
+import type { ReschedulePayload, UnschedulePayload, ShiftType } from './types';
 
-// ------------------------------------------------------------------
-// Store shape.
-// ------------------------------------------------------------------
+// ============ EditSession (preserved from legacy session.ts) ============
+
+/** Edit Session record (ERD §5.3.1). v0.7 sessions live in zustand
+ *  state only — no SQL persistence — and the corresponding undo
+ *  history lives in a Y.UndoManager scoped to the session's origin
+ *  string. See `openEditSession` / `undoEditSession` for details. */
+export interface EditSession {
+  id: string;
+  surface: string;
+  openedAt: number;
+  lastActivityAt: number;
+  changeCount: number;
+  closed: boolean;
+}
+
+// ============ State / actions interfaces (mirrored from legacy store.ts) ============
 
 export interface DayRailState {
   ready: boolean;
@@ -86,76 +146,36 @@ export interface DayRailState {
   calendarRules: Record<string, CalendarRule>;
   cycles: Record<string, Cycle>;
   habitPhases: Record<string, HabitPhase>;
-  /** §4.1 / §10.4 · daily reflections (v0.4.3+). Keyed by date
-   *  (YYYY-MM-DD). Empty entries are dropped — `state.reflections[date]`
-   *  returns `undefined` for "not written today". */
   reflections: Record<string, DailyReflection>;
-  /** §5.5.0 v0.4 · habit ↔ rail bindings. Keyed on binding id. */
   habitBindings: Record<string, HabitBinding>;
-  // ----------------------------------------------------------------
-  // ERD §10.5 · effective-from revision tables. Phase 1 lands these
-  // alongside the legacy tables: writers keep updating both, readers
-  // can opt in to the date-aware selectors in `revisions.ts`. Phase 2
-  // will switch reads, Phase 3 will narrow the legacy tables to
-  // identity-only fields.
-  //
-  // Each map is keyed by the parent entity id (or templateKey for
-  // templates) and holds an ordered array of revisions, sorted ASC by
-  // `effectiveFrom`. Reducer-side ordering is enforced on insert.
-  // ----------------------------------------------------------------
   railRevisions: Record<string, RailRevision[]>;
   templateRevisions: Record<TemplateKey, TemplateRevision[]>;
   calendarRuleRevisions: Record<string, CalendarRuleRevision[]>;
   habitBindingRevisions: Record<string, HabitBindingRevision[]>;
-  /** Identity-shell tombstones — present when the entity was retired
-   *  on or after `effectiveFrom`. Past dates still resolve to the
-   *  last revision; today / future treat the entity as nonexistent. */
   railTombstones: Record<string, Tombstone>;
   templateTombstones: Record<TemplateKey, Tombstone>;
   calendarRuleTombstones: Record<string, Tombstone>;
   habitBindingTombstones: Record<string, Tombstone>;
-  /** True once the v0.5 sentinel-revision migration has run (whether
-   *  by emitting `migration.v05-revision-model` on this device or by
-   *  replaying that event from a sibling device). Phase 1 uses this
-   *  flag to short-circuit the migration scanner on subsequent boots. */
+  /** v0.5 sentinel-revision migration is a no-op in v0.7 — any state
+   *  reaching this store is already post-migration. The field stays
+   *  on the type for legacy reads but is always `true`. */
   v05MigrationApplied: boolean;
   sessions: Record<string, EditSession>;
-  /** §5.5.6 · ephemeral queue for the overdue-shift Reason toast. Set by
-   *  `scheduleTaskToRail` / `scheduleTaskFreeTime` (type='reschedule')
-   *  and by `unscheduleTask` (type='unschedule') when they auto-record
-   *  a shift; cleared via `ackShiftPrompt`. Not replayed from the
-   *  event log — the shift itself is durable, this field is only
-   *  "did we just record one the UI should annotate?". */
   pendingShiftPrompt: Shift | null;
 }
 
-interface DayRailActions {
+export interface DayRailActions {
   hydrate: () => Promise<void>;
-  // --- templates ---
-  /** `effectiveFrom` (ERD §10.5) — when provided, the matching
-   *  `template-revision.upserted` event uses this ISO date instead of
-   *  today. Lets the user say "apply this rename starting next
-   *  Monday" while leaving today/yesterday on the prior revision.
-   *  Defaults to today. Only affects the revision write — the legacy
-   *  current-state mirror still flips immediately. */
   upsertTemplate: (
     tpl: Template,
     sessionId?: string,
     effectiveFrom?: string,
   ) => Promise<void>;
-  /** Delete a Template and cascade its Rails. The caller is responsible
-   *  for checking referential integrity (CalendarRule bindings, live
-   *  Tasks scheduled on this template's rails) before calling — we
-   *  don't guess what the right user-facing escape hatch is here.
-   *  `effectiveFrom` controls the tombstone date (default = today). */
   deleteTemplate: (
     key: TemplateKey,
     sessionId?: string,
     effectiveFrom?: string,
   ) => Promise<void>;
-  // --- rails ---
-  /** `effectiveFrom` controls the revision's start date (default =
-   *  today; see ERD §10.5 "apply from" semantics). */
   createRail: (
     rail: Rail,
     sessionId?: string,
@@ -172,111 +192,60 @@ interface DayRailActions {
     sessionId?: string,
     effectiveFrom?: string,
   ) => Promise<void>;
-  // --- audit for check-in / Pending actions ---
-  /** Audit a §5.6 check-in button press. `Task.status` is written by
-   *  the caller (updateTask) before this runs — recordSignal only
-   *  logs intent + provides the anchor any subsequent Shift wants. */
   recordSignal: (
     taskId: string,
     response: SignalResponse,
     surface: Signal['surface'],
   ) => Promise<void>;
   recordShift: (shift: Shift) => Promise<void>;
-  /** Append tags to an existing shift. Used by the overdue-shift Reason
-   *  toast (§5.5.6) when the user picks a tag AFTER the shift has
-   *  already been recorded. Emits `shift.tags_updated`. */
   setShiftTags: (shiftId: string, tags: string[]) => Promise<void>;
-  /** Clear pendingShiftPrompt once the toast has been shown /
-   *  dismissed / acted on. No event — UI bookkeeping only. */
   ackShiftPrompt: (shiftId: string) => void;
-  // --- lines (Project / Habit / Tag, §5.5) ---
   createLine: (line: Line) => Promise<void>;
   updateLine: (id: string, patch: Partial<Line>) => Promise<void>;
   deleteLine: (id: string) => Promise<void>;
   restoreLine: (id: string) => Promise<void>;
   purgeLine: (id: string) => Promise<void>;
-  // --- tasks (units of work inside a Line, §5.5) ---
   createTask: (task: Task, sessionId?: string) => Promise<void>;
   updateTask: (
     id: string,
     patch: Partial<Task>,
     sessionId?: string,
   ) => Promise<void>;
-  /** Status transitions as dedicated actions so the event log captures
-   *  intent cleanly (task.archived vs task.updated with status=archived). */
   archiveTask: (id: string) => Promise<void>;
   restoreTask: (id: string) => Promise<void>;
   deleteTask: (id: string) => Promise<void>;
   purgeTask: (id: string, sessionId?: string) => Promise<void>;
-  // --- task scheduling (§5.5.2) ---
-  /** Mode A: bind the task to a Rail on the given date. Also clears any
-   *  existing free-time Ad-hoc backing this task, if one was set. */
   scheduleTaskToRail: (
     taskId: string,
     slot: { cycleId: string; date: string; railId: string },
     sessionId?: string,
   ) => Promise<void>;
-  /** §4.1 v0.4.4 · write the user-defined order for one slot. The
-   *  caller passes the **final desired visual order** as an array of
-   *  task ids; this action assigns `slotOrder = 0..N-1` to each.
-   *
-   *  Why an explicit ordered list rather than `(taskId, position)`?
-   *  The store has no way to compute the slot's current visual order
-   *  without duplicating the cycleFromStore sort (state → priority →
-   *  insertion). The UI already knows the visual order, so the
-   *  cleanest API is "tell me the new order, I'll persist it."
-   *
-   *  All N writes share `sessionId` so session-level ⤺ Undo rolls
-   *  the whole reorder back as one batch. Tasks already at the right
-   *  index are skipped (no redundant events). */
   setSlotTaskOrder: (
     slot: { cycleId: string; date: string; railId: string },
     orderedTaskIds: string[],
     sessionId?: string,
   ) => Promise<void>;
-  /** Mode B: schedule the task into a free time window. Creates an
-   *  AdhocEvent with `taskId` back-reference. Clears `task.slot` (if
-   *  previously Rail-bound) so the two modes stay mutually exclusive. */
   scheduleTaskFreeTime: (
     taskId: string,
-    opts: {
-      date: string;
-      startMinutes: number;
-      durationMinutes: number;
-    },
+    opts: { date: string; startMinutes: number; durationMinutes: number },
   ) => Promise<void>;
-  /** Remove whichever schedule the task has (Slot or Ad-hoc). No-op
-   *  if the task is already unscheduled. No Shift / status change —
-   *  this is "I hadn't done it yet, take it off my plan". */
   unscheduleTask: (taskId: string, sessionId?: string) => Promise<void>;
-  // --- calendar rules (§5.4 CalendarRule) ---
-  /** Write a `single-date` CalendarRule binding `date` to `templateKey`.
-   *  Deduplicated by the deterministic id `cr-single-{date}` — flipping
-   *  the same day repeatedly is one row's worth of events, not N.
-   *  `effectiveFrom` controls when the revision starts applying
-   *  (default = today). */
   overrideCycleDay: (
     date: string,
     templateKey: TemplateKey,
     sessionId?: string,
     effectiveFrom?: string,
   ) => Promise<void>;
-  /** Remove the single-date override for `date`. No-op if absent. */
   clearCycleDayOverride: (
     date: string,
     sessionId?: string,
     effectiveFrom?: string,
   ) => Promise<void>;
-  /** Upsert a weekday rule (one per template; flipping a template's
-   *  coverage replaces the old row). `weekdays` uses 0 = Sunday. */
   upsertWeekdayRule: (
     templateKey: TemplateKey,
     weekdays: number[],
     effectiveFrom?: string,
   ) => Promise<void>;
-  /** Create or update a date-range rule. Pass `id` to update an
-   *  existing one in place (keeps row id stable so history / tags
-   *  stay attached); omit `id` to create a new rule (ULID id). */
   upsertDateRangeRule: (opts: {
     id?: string;
     from: string;
@@ -285,7 +254,6 @@ interface DayRailActions {
     label?: string;
     effectiveFrom?: string;
   }) => Promise<string>;
-  /** Create or update a cycle rule. Pass `id` to update in place. */
   upsertCycleRule: (opts: {
     id?: string;
     cycleLength: number;
@@ -293,21 +261,9 @@ interface DayRailActions {
     mapping: TemplateKey[];
     effectiveFrom?: string;
   }) => Promise<string>;
-  /** Remove any CalendarRule by id (weekday / date-range / cycle /
-   *  single-date — caller names the rule explicitly). */
   removeCalendarRule: (id: string, effectiveFrom?: string) => Promise<void>;
-  // --- custom Cycle records (§5.3 / §9.7; v0.3.2 label-only scope) ---
-  /** Upsert a Cycle record by deterministic id `cycle-{startDate}`.
-   *  In v0.3.2 every Cycle is 7-day Monday-anchored, so id stability
-   *  keyed by Monday is safe. `endDate` is enforced to `startDate +
-   *  6 days` for now; v0.4 custom-length Cycles relax this. */
   upsertCycle: (opts: { startDate: string; label?: string }) => Promise<string>;
-  /** Remove a Cycle record (strips the custom label / any future
-   *  custom length; falls back to the derived default). */
   removeCycle: (id: string) => Promise<void>;
-  // --- habit phases (§5.5.0; v0.3.3 scope: user-managed labels) ---
-  /** Upsert a HabitPhase. Pass `id` to update in place (preserves
-   *  `createdAt`); omit to create (ULID id). */
   upsertHabitPhase: (opts: {
     id?: string;
     lineId: string;
@@ -315,18 +271,8 @@ interface DayRailActions {
     description?: string;
     startDate: string;
   }) => Promise<string>;
-  /** Remove a HabitPhase. Deleting the last phase for a Line flips
-   *  it back to "simple habit" mode — derived from record count,
-   *  no Line mutation needed. */
   removeHabitPhase: (id: string) => Promise<void>;
-  // --- daily reflections (§4.1; v0.4.3+) ---
-  /** Upsert the user's reflection for a given date. Empty / whitespace-
-   *  only `content` emits `reflection.cleared` instead, dropping the
-   *  materialized row. */
   setReflection: (date: string, content: string) => Promise<void>;
-  // --- habit ↔ rail bindings (§5.5.0 v0.4) ---
-  /** Upsert a HabitBinding. Pass `id` to update in place (preserves
-   *  `createdAt`); omit to create (ULID id). */
   upsertHabitBinding: (
     opts: {
       id?: string;
@@ -342,14 +288,7 @@ interface DayRailActions {
     sessionId?: string,
     effectiveFrom?: string,
   ) => Promise<void>;
-  // --- auto-task materialization (§10.2; v0.4+) ---
-  /** Idempotent upsert of an auto-task. No-op when `state.tasks[id]`
-   *  already exists — the caller (autoTask.ts materializer) uses
-   *  deterministic ids, so this is the safe re-entry guard. */
   upsertAutoTask: (task: Task) => Promise<void>;
-  // --- ad-hoc events (standalone; task-backed adhocs live under
-  //     scheduleTaskFreeTime + unscheduleTask) ---
-  /** Create a standalone AdhocEvent on a given date. Returns the id. */
   createAdhocEvent: (opts: {
     date: string;
     name: string;
@@ -358,11 +297,7 @@ interface DayRailActions {
     color?: RailColor;
     lineId?: string;
   }) => Promise<string>;
-  /** Soft-delete a standalone AdhocEvent. Refuses task-backed events
-   *  (taskId set) — those are owned by their Task's schedule state
-   *  and must be unwound via `unscheduleTask`. */
   deleteAdhocEvent: (id: string) => Promise<void>;
-  // --- sessions ---
   openEditSession: (surface: string) => Promise<EditSession>;
   closeEditSession: (sessionId: string) => Promise<void>;
   undoEditSession: (sessionId: string) => Promise<number>;
@@ -370,762 +305,1507 @@ interface DayRailActions {
 
 export type DayRailStore = DayRailState & DayRailActions;
 
-// ------------------------------------------------------------------
-// Reducer — applies an event to the in-memory state. Called for both
-// fresh dispatches (after `appendEvent`) and historical replay (on
-// `hydrate`). MUST be pure + deterministic.
-// ------------------------------------------------------------------
+// ============ Y.Doc singleton + persistence wiring ============
 
-type ReducerState = Pick<
-  DayRailState,
-  | 'templates'
-  | 'rails'
-  | 'signals'
-  | 'shifts'
-  | 'lines'
-  | 'tasks'
-  | 'adhocEvents'
-  | 'calendarRules'
-  | 'cycles'
-  | 'habitPhases'
-  | 'reflections'
-  | 'habitBindings'
-  | 'railRevisions'
-  | 'templateRevisions'
-  | 'calendarRuleRevisions'
-  | 'habitBindingRevisions'
-  | 'railTombstones'
-  | 'templateTombstones'
-  | 'calendarRuleTombstones'
-  | 'habitBindingTombstones'
-  | 'v05MigrationApplied'
->;
+let docInstance: YDoc | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+const SAVE_DEBOUNCE_MS = 750;
 
-// Narrowed local types matching exactly the event payloads the Template
-// Editor emits.
-interface TemplatePayload extends Omit<Template, 'isDefault'> {
-  isDefault?: boolean;
-}
-type RailPayload = Rail;
-interface ShiftPayload {
-  id: string;
-  taskId: string;
-  type: ShiftType;
-  at: string;
-  payload?: Record<string, unknown>;
-  tags?: string[];
-  reason?: string;
-}
-interface SignalPayload {
-  id: string;
-  taskId: string;
-  actedAt: string;
-  response: SignalResponse;
-  surface: Signal['surface'];
+export function getYDoc(): YDoc {
+  if (!docInstance) {
+    docInstance = createYDoc();
+  }
+  return docInstance;
 }
 
-/** Upsert a revision into a sorted array (`effectiveFrom asc`), keyed
- *  by `id`. If a revision with the same id exists, replace in place;
- *  otherwise insert at the position that keeps the array sorted.
- *  Reused by all four revision event types. */
-function upsertRevisionInArray<
-  R extends { id: string; effectiveFrom: string },
->(arr: R[] | undefined, rev: R): R[] {
-  const next = arr ? arr.filter((r) => r.id !== rev.id) : [];
-  let inserted = false;
-  for (let i = 0; i < next.length; i++) {
-    const probe = next[i];
-    if (!probe) continue;
-    if (probe.effectiveFrom > rev.effectiveFrom) {
-      next.splice(i, 0, rev);
-      inserted = true;
-      break;
+/** Origins reserved for non-user-authored Y.Doc transactions. The
+ *  sync layer hooks Y.Doc's afterTransaction directly and skips
+ *  dirty-count bumps for these origins (origin lives in the closure
+ *  of that listener — see syncController.startSyncBackgroundLoop).
+ *  Local actions tag their transacts with sessionId / actionLabel —
+ *  none of those collide with these reserved strings. */
+export const REMOTE_ORIGIN = 'remote';
+export const OPFS_ORIGIN = 'opfs';
+
+let observerAttached = false;
+function attachObservers(doc: YDoc): void {
+  if (observerAttached) return;
+  // Single document-wide subscriber. Fires once per top-level
+  // transaction; we re-derive the whole flat state from the doc and
+  // hand it to zustand. This is O(N) over current entity counts but
+  // those are small enough (hundreds to low thousands) that it's
+  // negligible in practice. Origin-aware logic (echo prevention) is
+  // NOT done here — the sync layer attaches its own afterTransaction
+  // listener via getYDoc() so the origin is closure-bound rather
+  // than threaded through a fragile module-scoped global.
+  doc.on('afterTransaction', () => {
+    const flat = readFlatStateFromDoc(doc);
+    useStore.setState((prev) => ({
+      ...prev,
+      ...stateFromFlat(flat),
+    }));
+    schedulePersist();
+  });
+  observerAttached = true;
+}
+
+function schedulePersist(): void {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void persistNow().catch((err) => {
+      console.warn('[storeYjs] persist failed:', err);
+    });
+  }, SAVE_DEBOUNCE_MS);
+}
+
+async function persistNow(): Promise<void> {
+  const doc = getYDoc();
+  const update = encodeDocAsUpdate(doc);
+  const meta: DryjMeta = {
+    snapshotId: cryptoUUID(),
+    deviceId: 'local', // Real deviceId comes from identity layer in sync controller; persistence-only meta is local-only and not authoritative.
+    deviceLabel: 'local',
+    createdAt: new Date().toISOString(),
+    schemaVersion: 2,
+  };
+  const bytes = encodeDryj(meta, update);
+  await saveYDocBytes(bytes);
+}
+
+function cryptoUUID(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `snap-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function stateFromFlat(flat: FlatState): Omit<DayRailState, 'ready' | 'error' | 'sessions' | 'pendingShiftPrompt' | 'v05MigrationApplied'> {
+  return {
+    templates: flat.templates as Record<TemplateKey, Template>,
+    rails: flat.rails as Record<string, Rail>,
+    signals: flat.signals as Record<string, Signal>,
+    shifts: flat.shifts as Record<string, Shift>,
+    lines: flat.lines as Record<string, Line>,
+    tasks: flat.tasks as Record<string, Task>,
+    adhocEvents: flat.adhocEvents as Record<string, AdhocEvent>,
+    calendarRules: flat.calendarRules as Record<string, CalendarRule>,
+    cycles: flat.cycles as Record<string, Cycle>,
+    habitPhases: flat.habitPhases as Record<string, HabitPhase>,
+    reflections: flat.dailyReflections as Record<string, DailyReflection>,
+    habitBindings: flat.habitBindings as Record<string, HabitBinding>,
+    railRevisions: flat.railRevisions as Record<string, RailRevision[]>,
+    templateRevisions: flat.templateRevisions as Record<TemplateKey, TemplateRevision[]>,
+    calendarRuleRevisions: flat.calendarRuleRevisions as Record<string, CalendarRuleRevision[]>,
+    habitBindingRevisions: flat.habitBindingRevisions as Record<string, HabitBindingRevision[]>,
+    railTombstones: flat.railTombstones as Record<string, Tombstone>,
+    templateTombstones: flat.templateTombstones as Record<TemplateKey, Tombstone>,
+    calendarRuleTombstones: flat.calendarRuleTombstones as Record<string, Tombstone>,
+    habitBindingTombstones: flat.habitBindingTombstones as Record<string, Tombstone>,
+  };
+}
+
+// ============ Sync layer hand-off ============
+
+/** Used by the sync controller's pull path. Decodes `.dryj` bytes
+ *  and applies the embedded Yjs update to the local Y.Doc. Yjs's
+ *  internal LWW + Lamport clock handles convergence; the observer
+ *  re-derives flat state and zustand setState fires, so no reload
+ *  is required. */
+export function applyRemoteUpdate(dryjBytes: Uint8Array): void {
+  const decoded = decodeDryj(dryjBytes);
+  // Tag the transaction so the dirty-tracking subscriber in
+  // syncController skips bumping the dirty cursor — otherwise the
+  // store observer's setState would convince syncController this is
+  // a user-authored change and schedule an echo push 60s later.
+  Y.applyUpdate(getYDoc(), decoded.update, REMOTE_ORIGIN);
+}
+
+/** Apply a `.dryj` that the user supplied locally (Settings → Backup
+ *  history → 恢复, "Import from snapshot" in-place flow, etc.). The
+ *  intent is "treat this as if I authored these merges locally" —
+ *  unlike applyRemoteUpdate, the dirty cursor SHOULD bump so the
+ *  next debounced push sweeps the merged state up to Drive. The
+ *  origin is a non-reserved string so syncController's afterTransaction
+ *  listener doesn't filter it. */
+export function applyImportedUpdate(dryjBytes: Uint8Array): void {
+  const decoded = decodeDryj(dryjBytes);
+  Y.applyUpdate(getYDoc(), decoded.update, 'imported');
+}
+
+/** "First device joining an existing Drive canonical" path: clear
+ *  every top-level Y.Map, then apply the remote update. Distinct
+ *  from applyRemoteUpdate (which CRDT-merges into existing local
+ *  state) — `replaceFromRemote` is for when the user explicitly
+ *  wants the remote to BE their state, not be merged with what
+ *  happens to be locally seeded.
+ *
+ *  Use case: user installed v0.7 fresh on a new device, the app
+ *  seeded sample templates / rails / Inbox, then they connected
+ *  Drive. Without this, "Pull from cloud" CRDT-merges samples with
+ *  the user's actual cloud data, and the next push uploads the
+ *  union — polluting Drive with samples for every other device. */
+export function replaceFromRemote(dryjBytes: Uint8Array): void {
+  const decoded = decodeDryj(dryjBytes);
+  const doc = getYDoc();
+  doc.transact(() => {
+    for (const name of TOP_LEVEL_MAPS) {
+      doc.getMap(name).clear();
+    }
+    // Apply remote inside the same transact so observers see one
+    // atomic transition rather than "wipe → empty → restore"
+    // intermediate states.
+    Y.applyUpdate(doc, decoded.update, REMOTE_ORIGIN);
+  }, REMOTE_ORIGIN);
+}
+
+/** Used by the sync controller's push path. */
+export function exportYDocAsUpdate(): Uint8Array {
+  return encodeDocAsUpdate(getYDoc());
+}
+
+// ============ Hydrate ============
+
+async function hydrateImpl(): Promise<void> {
+  // 1. Get (or lazy-create) the singleton Y.Doc and load OPFS bytes
+  //    onto it.
+  const doc = getYDoc();
+  const bytes = await loadYDocBytes().catch(() => null);
+  if (bytes) {
+    try {
+      const decoded = decodeDryj(bytes);
+      Y.applyUpdate(doc, decoded.update, OPFS_ORIGIN);
+    } catch (err) {
+      console.warn(
+        '[store] failed to decode OPFS state, starting fresh:',
+        err,
+      );
     }
   }
-  if (!inserted) next.push(rev);
-  return next;
+  // 2. Attach the document-wide observer so subsequent transacts
+  //    (including the very first action call after boot) re-derive
+  //    flat state and trigger debounced persistence. Idempotent.
+  attachObservers(doc);
+
+  // 3. Derive flat state and seed zustand.
+  const flat = readFlatStateFromDoc(doc);
+  useStore.setState((prev) => ({
+    ...prev,
+    ...stateFromFlat(flat),
+    ready: true,
+    v05MigrationApplied: true, // No-op in v0.7; see file header.
+  }));
 }
 
-function applyEventInPlace(
-  state: ReducerState,
-  type: string,
-  payload: Record<string, unknown>,
+// ============ Y.Doc write helpers ============
+
+function getEntityMap(doc: YDoc, name: string): YMap<unknown> {
+  return doc.getMap(name) as YMap<unknown>;
+}
+
+function upsertEntity(
+  doc: YDoc,
+  mapName: string,
+  id: string,
+  entity: Record<string, unknown>,
+  arrayFields: ReadonlyArray<string> = [],
 ): void {
-  switch (type) {
-    case 'template.created':
-    case 'template.updated': {
-      const tpl = payload as unknown as TemplatePayload;
-      state.templates[tpl.key] = {
-        key: tpl.key,
-        name: tpl.name,
-        color: tpl.color,
-        isDefault: tpl.isDefault ?? false,
-      };
-      break;
-    }
-    case 'template.deleted': {
-      const key = (payload as { key: TemplateKey }).key;
-      delete state.templates[key];
-      break;
-    }
-    case 'rail.created': {
-      const rail = payload as unknown as RailPayload;
-      state.rails[rail.id] = { ...rail };
-      break;
-    }
-    case 'rail.updated': {
-      const p = payload as unknown as Partial<Rail> & { id: string };
-      const existing = state.rails[p.id];
-      if (existing) state.rails[p.id] = { ...existing, ...p };
-      break;
-    }
-    case 'rail.deleted': {
-      const id = (payload as { id: string }).id;
-      delete state.rails[id];
-      break;
-    }
-    case 'shift.recorded': {
-      const p = payload as unknown as ShiftPayload;
-      state.shifts[p.id] = {
-        id: p.id,
-        taskId: p.taskId,
-        type: p.type,
-        at: p.at,
-        payload: p.payload ?? {},
-        tags: p.tags,
-        reason: p.reason,
-      };
-      break;
-    }
-    case 'shift.tags_updated': {
-      // §5.5.6 · append tags to an already-recorded shift. Merges
-      // with existing tags so replay is commutative if two tag
-      // updates ever race (they shouldn't in practice; one toast
-      // per shift — but the event log is the source of truth).
-      const p = payload as unknown as { id: string; tags: string[] };
-      const existing = state.shifts[p.id];
-      if (!existing) break;
-      const merged = new Set([...(existing.tags ?? []), ...p.tags]);
-      existing.tags = [...merged];
-      break;
-    }
-    case 'signal.acted': {
-      const p = payload as unknown as SignalPayload;
-      state.signals[p.id] = {
-        id: p.id,
-        taskId: p.taskId,
-        actedAt: p.actedAt,
-        response: p.response,
-        surface: p.surface,
-      };
-      break;
-    }
-    case 'line.created': {
-      const line = payload as unknown as Line;
-      state.lines[line.id] = { ...line };
-      break;
-    }
-    case 'line.updated': {
-      const p = payload as unknown as Partial<Line> & { id: string };
-      const existing = state.lines[p.id];
-      if (existing) state.lines[p.id] = { ...existing, ...p };
-      break;
-    }
-    case 'line.restored':
-    case 'line.deleted': {
-      const p = payload as unknown as Partial<Line> & { id: string };
-      const existing = state.lines[p.id];
-      if (existing) state.lines[p.id] = { ...existing, ...p };
-      break;
-    }
-    case 'line.purged': {
-      const id = (payload as { id: string }).id;
-      delete state.lines[id];
-      // Cascade: drop tasks that belonged to this line.
-      for (const tid of Object.keys(state.tasks)) {
-        if (state.tasks[tid]?.lineId === id) delete state.tasks[tid];
-      }
-      break;
-    }
-    case 'task.created': {
-      const task = payload as unknown as Task;
-      state.tasks[task.id] = { ...task };
-      break;
-    }
-    case 'task.updated':
-    case 'task.archived':
-    case 'task.restored':
-    case 'task.deleted':
-    case 'task.scheduled':
-    case 'task.unscheduled': {
-      const p = payload as unknown as Partial<Task> & { id: string };
-      const existing = state.tasks[p.id];
-      if (existing) state.tasks[p.id] = { ...existing, ...p };
-      break;
-    }
-    case 'task.purged': {
-      const id = (payload as { id: string }).id;
-      delete state.tasks[id];
-      break;
-    }
-    case 'adhoc.created': {
-      const adhoc = payload as unknown as AdhocEvent;
-      state.adhocEvents[adhoc.id] = { ...adhoc };
-      break;
-    }
-    case 'adhoc.updated':
-    case 'adhoc.deleted':
-    case 'adhoc.restored': {
-      const p = payload as unknown as Partial<AdhocEvent> & { id: string };
-      const existing = state.adhocEvents[p.id];
-      if (existing) state.adhocEvents[p.id] = { ...existing, ...p };
-      break;
-    }
-    case 'calendar-rule.upserted': {
-      const p = payload as unknown as CalendarRule;
-      state.calendarRules[p.id] = {
-        id: p.id,
-        kind: p.kind,
-        priority: p.priority,
-        value: p.value,
-        createdAt: p.createdAt,
-      };
-      break;
-    }
-    case 'calendar-rule.removed': {
-      const id = (payload as { id: string }).id;
-      delete state.calendarRules[id];
-      break;
-    }
-    case 'cycle.upserted': {
-      const p = payload as unknown as Cycle;
-      state.cycles[p.id] = { ...p };
-      break;
-    }
-    case 'cycle.removed': {
-      const id = (payload as { id: string }).id;
-      delete state.cycles[id];
-      break;
-    }
-    case 'habit-phase.upserted': {
-      const p = payload as unknown as HabitPhase;
-      state.habitPhases[p.id] = { ...p };
-      break;
-    }
-    case 'habit-phase.removed': {
-      const id = (payload as { id: string }).id;
-      delete state.habitPhases[id];
-      break;
-    }
-    case 'reflection.upserted': {
-      const p = payload as { date: string; content: string; updatedAt: number };
-      state.reflections[p.date] = {
-        date: p.date,
-        content: p.content,
-        updatedAt: p.updatedAt,
-      };
-      break;
-    }
-    case 'reflection.cleared': {
-      const date = (payload as { date: string }).date;
-      delete state.reflections[date];
-      break;
-    }
-    case 'habit-binding.upserted': {
-      const p = payload as unknown as HabitBinding;
-      state.habitBindings[p.id] = { ...p };
-      break;
-    }
-    case 'habit-binding.removed': {
-      const id = (payload as { id: string }).id;
-      delete state.habitBindings[id];
-      break;
-    }
-    // ----------------------------------------------------------------
-    // ERD §10.5 · revision events. Payload = full revision row.
-    // ----------------------------------------------------------------
-    case 'rail-revision.upserted': {
-      const rev = payload as unknown as RailRevision;
-      state.railRevisions[rev.railId] = upsertRevisionInArray(
-        state.railRevisions[rev.railId],
-        rev,
-      );
-      break;
-    }
-    case 'rail-revision.removed': {
-      const p = payload as { id: string; railId: string };
-      const list = state.railRevisions[p.railId];
-      if (!list) break;
-      state.railRevisions[p.railId] = list.filter((r) => r.id !== p.id);
-      break;
-    }
-    case 'template-revision.upserted': {
-      const rev = payload as unknown as TemplateRevision;
-      state.templateRevisions[rev.templateKey] = upsertRevisionInArray(
-        state.templateRevisions[rev.templateKey],
-        rev,
-      );
-      break;
-    }
-    case 'template-revision.removed': {
-      const p = payload as { id: string; templateKey: TemplateKey };
-      const list = state.templateRevisions[p.templateKey];
-      if (!list) break;
-      state.templateRevisions[p.templateKey] = list.filter((r) => r.id !== p.id);
-      break;
-    }
-    case 'calendar-rule-revision.upserted': {
-      const rev = payload as unknown as CalendarRuleRevision;
-      state.calendarRuleRevisions[rev.ruleId] = upsertRevisionInArray(
-        state.calendarRuleRevisions[rev.ruleId],
-        rev,
-      );
-      break;
-    }
-    case 'calendar-rule-revision.removed': {
-      const p = payload as { id: string; ruleId: string };
-      const list = state.calendarRuleRevisions[p.ruleId];
-      if (!list) break;
-      state.calendarRuleRevisions[p.ruleId] = list.filter((r) => r.id !== p.id);
-      break;
-    }
-    case 'habit-binding-revision.upserted': {
-      const rev = payload as unknown as HabitBindingRevision;
-      state.habitBindingRevisions[rev.bindingId] = upsertRevisionInArray(
-        state.habitBindingRevisions[rev.bindingId],
-        rev,
-      );
-      break;
-    }
-    case 'habit-binding-revision.removed': {
-      const p = payload as { id: string; bindingId: string };
-      const list = state.habitBindingRevisions[p.bindingId];
-      if (!list) break;
-      state.habitBindingRevisions[p.bindingId] = list.filter(
-        (r) => r.id !== p.id,
-      );
-      break;
-    }
-    // ----------------------------------------------------------------
-    // ERD §10.5 · tombstone events. Payload carries the parent id and
-    // the Tombstone fields.
-    // ----------------------------------------------------------------
-    case 'rail.tombstoned': {
-      const p = payload as unknown as Tombstone & { railId: string };
-      state.railTombstones[p.railId] = {
-        effectiveFrom: p.effectiveFrom,
-        at: p.at,
-        ...(p.sessionId && { sessionId: p.sessionId }),
-      };
-      break;
-    }
-    case 'rail.tombstone-cleared': {
-      const id = (payload as { railId: string }).railId;
-      delete state.railTombstones[id];
-      break;
-    }
-    case 'template.tombstoned': {
-      const p = payload as unknown as Tombstone & { templateKey: TemplateKey };
-      state.templateTombstones[p.templateKey] = {
-        effectiveFrom: p.effectiveFrom,
-        at: p.at,
-        ...(p.sessionId && { sessionId: p.sessionId }),
-      };
-      break;
-    }
-    case 'template.tombstone-cleared': {
-      const key = (payload as { templateKey: TemplateKey }).templateKey;
-      delete state.templateTombstones[key];
-      break;
-    }
-    case 'calendar-rule.tombstoned': {
-      const p = payload as unknown as Tombstone & { ruleId: string };
-      state.calendarRuleTombstones[p.ruleId] = {
-        effectiveFrom: p.effectiveFrom,
-        at: p.at,
-        ...(p.sessionId && { sessionId: p.sessionId }),
-      };
-      break;
-    }
-    case 'calendar-rule.tombstone-cleared': {
-      const id = (payload as { ruleId: string }).ruleId;
-      delete state.calendarRuleTombstones[id];
-      break;
-    }
-    case 'habit-binding.tombstoned': {
-      const p = payload as unknown as Tombstone & { bindingId: string };
-      state.habitBindingTombstones[p.bindingId] = {
-        effectiveFrom: p.effectiveFrom,
-        at: p.at,
-        ...(p.sessionId && { sessionId: p.sessionId }),
-      };
-      break;
-    }
-    case 'habit-binding.tombstone-cleared': {
-      const id = (payload as { bindingId: string }).bindingId;
-      delete state.habitBindingTombstones[id];
-      break;
-    }
-    case 'migration.v05-revision-model': {
-      state.v05MigrationApplied = true;
-      break;
-    }
-    default:
-      // Unknown event types are no-ops in this store slice.
-      break;
+  const map = getEntityMap(doc, mapName);
+  const existing = map.get(id);
+  if (existing instanceof Y.Map) {
+    patchEntityYMap(existing as YMap<unknown>, entity, arrayFields);
+  } else {
+    map.set(id, entityToYMap(entity, arrayFields));
   }
 }
 
-// ------------------------------------------------------------------
-// ERD §10.5 · sentinel-revision migration.
-//
-// First v0.5 boot scans the legacy current-state tables and writes a
-// single `*-revision.upserted` event per entity with `effectiveFrom =
-// '1970-01-01'` so every historical date resolves to that revision.
-// Idempotent: if `state.v05MigrationApplied` is already true (the
-// marker event has been replayed), the scan is skipped. The scan is
-// also self-healing — entities that landed without a revision (legacy
-// writers created them, sync replay surfaced them) get backfilled on
-// the next hydrate.
-// ------------------------------------------------------------------
-
-function makeSentinelRailRevision(rail: Rail): RailRevision {
-  return {
-    id: `rev-rail-${rail.id}-sentinel`,
-    railId: rail.id,
-    effectiveFrom: REVISION_SENTINEL_DATE,
-    templateKey: rail.templateKey,
-    name: rail.name,
-    ...(rail.subtitle != null && { subtitle: rail.subtitle }),
-    startMinutes: rail.startMinutes,
-    durationMinutes: rail.durationMinutes,
-    color: rail.color,
-    ...(rail.icon != null && { icon: rail.icon }),
-    showInCheckin: rail.showInCheckin,
-    authoredAt: 0,
-  };
+function deleteEntity(doc: YDoc, mapName: string, id: string): void {
+  getEntityMap(doc, mapName).delete(id);
 }
 
-function makeSentinelTemplateRevision(tpl: Template): TemplateRevision {
-  return {
-    id: `rev-template-${tpl.key}-sentinel`,
-    templateKey: tpl.key,
-    effectiveFrom: REVISION_SENTINEL_DATE,
-    name: tpl.name,
-    ...(tpl.color != null && { color: tpl.color }),
-    authoredAt: 0,
-  };
-}
-
-function makeSentinelCalendarRuleRevision(
-  rule: CalendarRule,
-): CalendarRuleRevision {
-  return {
-    id: `rev-calrule-${rule.id}-sentinel`,
-    ruleId: rule.id,
-    effectiveFrom: REVISION_SENTINEL_DATE,
-    priority: rule.priority,
-    value: rule.value,
-    authoredAt: 0,
-  };
-}
-
-function makeSentinelHabitBindingRevision(
-  binding: HabitBinding,
-): HabitBindingRevision {
-  return {
-    id: `rev-binding-${binding.id}-sentinel`,
-    bindingId: binding.id,
-    effectiveFrom: REVISION_SENTINEL_DATE,
-    habitId: binding.habitId,
-    railId: binding.railId,
-    ...(binding.weekdays != null && { weekdays: [...binding.weekdays] }),
-    authoredAt: binding.createdAt,
-  };
-}
-
-// ------------------------------------------------------------------
-// Phase 2 · runtime revision builders. Used by every legacy writer
-// that mutates a versioned entity. The id schema
-// `rev-{kind}-{entityId}-{effectiveFrom}` makes same-day re-edits
-// replace in place (one revision per (entity, effectiveFrom)) — the
-// reducer's upsertRevisionInArray handles the dedup by id.
-//
-// Sentinel revisions from the migration use `-sentinel` suffix instead
-// of an effectiveFrom, so they coexist with runtime revisions for the
-// same entity without collision.
-// ------------------------------------------------------------------
-
-function railRevisionId(railId: string, effectiveFrom: string): string {
-  return `rev-rail-${railId}-${effectiveFrom}`;
-}
-function templateRevisionId(key: TemplateKey, effectiveFrom: string): string {
-  return `rev-template-${key}-${effectiveFrom}`;
-}
-function calendarRuleRevisionId(ruleId: string, effectiveFrom: string): string {
-  return `rev-calrule-${ruleId}-${effectiveFrom}`;
-}
-function habitBindingRevisionId(
-  bindingId: string,
-  effectiveFrom: string,
-): string {
-  return `rev-binding-${bindingId}-${effectiveFrom}`;
-}
-
-function buildRailRevision(
-  rail: Rail,
-  effectiveFrom: string,
-  sessionId?: string,
-): RailRevision {
-  return {
-    id: railRevisionId(rail.id, effectiveFrom),
-    railId: rail.id,
-    effectiveFrom,
-    templateKey: rail.templateKey,
-    name: rail.name,
-    ...(rail.subtitle != null && { subtitle: rail.subtitle }),
-    startMinutes: rail.startMinutes,
-    durationMinutes: rail.durationMinutes,
-    color: rail.color,
-    ...(rail.icon != null && { icon: rail.icon }),
-    showInCheckin: rail.showInCheckin,
-    authoredAt: Date.now(),
-    ...(sessionId && { sessionId }),
-  };
-}
-
-function buildTemplateRevision(
-  tpl: Template,
-  effectiveFrom: string,
-  sessionId?: string,
-): TemplateRevision {
-  return {
-    id: templateRevisionId(tpl.key, effectiveFrom),
-    templateKey: tpl.key,
-    effectiveFrom,
-    name: tpl.name,
-    ...(tpl.color != null && { color: tpl.color }),
-    authoredAt: Date.now(),
-    ...(sessionId && { sessionId }),
-  };
-}
-
-function buildCalendarRuleRevision(
-  rule: CalendarRule,
-  effectiveFrom: string,
-  sessionId?: string,
-): CalendarRuleRevision {
-  return {
-    id: calendarRuleRevisionId(rule.id, effectiveFrom),
-    ruleId: rule.id,
-    effectiveFrom,
-    priority: rule.priority,
-    value: rule.value,
-    authoredAt: Date.now(),
-    ...(sessionId && { sessionId }),
-  };
-}
-
-function buildHabitBindingRevision(
-  binding: HabitBinding,
-  effectiveFrom: string,
-  sessionId?: string,
-): HabitBindingRevision {
-  return {
-    id: habitBindingRevisionId(binding.id, effectiveFrom),
-    bindingId: binding.id,
-    effectiveFrom,
-    habitId: binding.habitId,
-    railId: binding.railId,
-    ...(binding.weekdays != null && { weekdays: [...binding.weekdays] }),
-    authoredAt: Date.now(),
-    ...(sessionId && { sessionId }),
-  };
-}
-
-type RevisionAppendInput = {
-  aggregateId: string;
-  payload: Record<string, unknown>;
-};
-
-async function emitMigrationEvent(
-  type:
-    | 'rail-revision.upserted'
-    | 'template-revision.upserted'
-    | 'calendar-rule-revision.upserted'
-    | 'habit-binding-revision.upserted'
-    | 'migration.v05-revision-model',
-  input: RevisionAppendInput,
-): Promise<void> {
-  const ev = await appendEvent({
-    aggregateId: input.aggregateId,
-    type,
-    payload: input.payload,
-  });
-  useStore.setState((draft) => {
-    applyEventInPlace(draft, ev.type, ev.payload);
-  });
-}
-
-async function runV05RevisionMigration(): Promise<void> {
-  const state = useStore.getState();
-  if (state.v05MigrationApplied) return;
-
-  for (const rail of Object.values(state.rails)) {
-    if ((state.railRevisions[rail.id]?.length ?? 0) > 0) continue;
-    await emitMigrationEvent('rail-revision.upserted', {
-      aggregateId: `rail:${rail.id}`,
-      payload: makeSentinelRailRevision(rail) as unknown as Record<
-        string,
-        unknown
-      >,
-    });
+function appendRevision(
+  doc: YDoc,
+  mapName: string,
+  parentId: string,
+  revision: Record<string, unknown>,
+): void {
+  const map = getEntityMap(doc, mapName);
+  let arr = map.get(parentId);
+  if (!(arr instanceof Y.Array)) {
+    arr = new Y.Array<unknown>();
+    map.set(parentId, arr);
   }
-
-  for (const tpl of Object.values(state.templates)) {
-    if ((state.templateRevisions[tpl.key]?.length ?? 0) > 0) continue;
-    await emitMigrationEvent('template-revision.upserted', {
-      aggregateId: `template:${tpl.key}`,
-      payload: makeSentinelTemplateRevision(tpl) as unknown as Record<
-        string,
-        unknown
-      >,
-    });
-  }
-
-  for (const rule of Object.values(state.calendarRules)) {
-    if ((state.calendarRuleRevisions[rule.id]?.length ?? 0) > 0) continue;
-    await emitMigrationEvent('calendar-rule-revision.upserted', {
-      aggregateId: `calendar-rule:${rule.id}`,
-      payload: makeSentinelCalendarRuleRevision(rule) as unknown as Record<
-        string,
-        unknown
-      >,
-    });
-  }
-
-  for (const binding of Object.values(state.habitBindings)) {
-    if ((state.habitBindingRevisions[binding.id]?.length ?? 0) > 0) continue;
-    await emitMigrationEvent('habit-binding-revision.upserted', {
-      aggregateId: `habit-binding:${binding.id}`,
-      payload: makeSentinelHabitBindingRevision(binding) as unknown as Record<
-        string,
-        unknown
-      >,
-    });
-  }
-
-  // Always emit the marker — even on a fully empty database — so the
-  // next boot short-circuits without re-scanning.
-  await emitMigrationEvent('migration.v05-revision-model', {
-    aggregateId: 'migration:v05',
-    payload: { appliedAt: Date.now() },
-  });
+  // Same-(entity, effectiveFrom) replacement: drop any prior entry
+  // with the same id, then append. Mirrors store.ts's
+  // upsertRevisionInArray semantics (id schema makes same-day
+  // re-edits collide on id, so we replace in place).
+  const yarr = arr as YArray<unknown>;
+  const revs = yarr.toArray() as Array<{ id?: string }>;
+  const idx = revs.findIndex((r) => r?.id === revision['id']);
+  if (idx >= 0) yarr.delete(idx, 1);
+  yarr.push([revision]);
 }
 
-// ------------------------------------------------------------------
-// Store factory. Exposed as a singleton created at module evaluation
-// time, just like Zustand's common usage pattern. `hydrate()` must be
-// awaited before components render any store-derived data.
-// ------------------------------------------------------------------
-
-type SnapshotPayload = Pick<
-  DayRailState,
-  | 'templates'
-  | 'rails'
-  | 'signals'
-  | 'shifts'
-  | 'lines'
-  | 'tasks'
-  | 'adhocEvents'
-  | 'calendarRules'
-  | 'cycles'
-  | 'habitPhases'
-  | 'reflections'
-  | 'habitBindings'
-  | 'railRevisions'
-  | 'templateRevisions'
-  | 'calendarRuleRevisions'
-  | 'habitBindingRevisions'
-  | 'railTombstones'
-  | 'templateTombstones'
-  | 'calendarRuleTombstones'
-  | 'habitBindingTombstones'
-  | 'v05MigrationApplied'
->;
-
-function emptyReducerState(): ReducerState {
-  return {
-    templates: {},
-    rails: {},
-    signals: {},
-    shifts: {},
-    lines: {},
-    tasks: {},
-    adhocEvents: {},
-    calendarRules: {},
-    cycles: {},
-    habitPhases: {},
-    reflections: {},
-    habitBindings: {},
-    railRevisions: {},
-    templateRevisions: {},
-    calendarRuleRevisions: {},
-    habitBindingRevisions: {},
-    railTombstones: {},
-    templateTombstones: {},
-    calendarRuleTombstones: {},
-    habitBindingTombstones: {},
-    v05MigrationApplied: false,
-  };
+function setTombstone(
+  doc: YDoc,
+  mapName: string,
+  parentId: string,
+  tomb: Tombstone,
+): void {
+  getEntityMap(doc, mapName).set(parentId, { ...tomb });
 }
 
-function snapshotFromState(s: DayRailState): SnapshotPayload {
-  return {
-    templates: s.templates,
-    rails: s.rails,
-    signals: s.signals,
-    shifts: s.shifts,
-    lines: s.lines,
-    tasks: s.tasks,
-    adhocEvents: s.adhocEvents,
-    calendarRules: s.calendarRules,
-    cycles: s.cycles,
-    habitPhases: s.habitPhases,
-    reflections: s.reflections,
-    habitBindings: s.habitBindings,
-    railRevisions: s.railRevisions,
-    templateRevisions: s.templateRevisions,
-    calendarRuleRevisions: s.calendarRuleRevisions,
-    habitBindingRevisions: s.habitBindingRevisions,
-    railTombstones: s.railTombstones,
-    templateTombstones: s.templateTombstones,
-    calendarRuleTombstones: s.calendarRuleTombstones,
-    habitBindingTombstones: s.habitBindingTombstones,
-    v05MigrationApplied: s.v05MigrationApplied,
-  };
+function clearTombstone(doc: YDoc, mapName: string, parentId: string): void {
+  getEntityMap(doc, mapName).delete(parentId);
+}
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function ulidLite(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
+
+// ============ Revision builders ============
+//
+// Mirrors the runtime revision builders in store.ts:875-942. The id
+// schema `rev-{kind}-{entityId}-{effectiveFrom}` makes same-day
+// re-edits replace in place via appendRevision's id-collision check.
+
+function buildRailRevisionY(
+  rail: Rail,
+  effectiveFrom: string,
+  sessionId: string | undefined,
+): RailRevision {
+  return {
+    id: `rev-rail-${rail.id}-${effectiveFrom}`,
+    railId: rail.id,
+    effectiveFrom,
+    templateKey: rail.templateKey,
+    name: rail.name,
+    ...(rail.subtitle !== undefined && { subtitle: rail.subtitle }),
+    startMinutes: rail.startMinutes,
+    durationMinutes: rail.durationMinutes,
+    color: rail.color,
+    ...(rail.icon !== undefined && { icon: rail.icon }),
+    showInCheckin: rail.showInCheckin,
+    authoredAt: Date.now(),
+    ...(sessionId && { sessionId }),
+  };
+}
+
+function buildTemplateRevisionY(
+  tpl: Template,
+  effectiveFrom: string,
+  sessionId: string | undefined,
+): TemplateRevision {
+  return {
+    id: `rev-template-${tpl.key}-${effectiveFrom}`,
+    templateKey: tpl.key,
+    effectiveFrom,
+    name: tpl.name,
+    ...(tpl.color !== undefined && { color: tpl.color }),
+    authoredAt: Date.now(),
+    ...(sessionId && { sessionId }),
+  };
+}
+
+function buildCalendarRuleRevisionY(
+  rule: CalendarRule,
+  effectiveFrom: string,
+  sessionId: string | undefined,
+): CalendarRuleRevision {
+  return {
+    id: `rev-calrule-${rule.id}-${effectiveFrom}`,
+    ruleId: rule.id,
+    effectiveFrom,
+    priority: rule.priority,
+    value: rule.value,
+    authoredAt: Date.now(),
+    ...(sessionId && { sessionId }),
+  };
+}
+
+function buildHabitBindingRevisionY(
+  binding: HabitBinding,
+  effectiveFrom: string,
+  sessionId: string | undefined,
+): HabitBindingRevision {
+  return {
+    id: `rev-hbinding-${binding.id}-${effectiveFrom}`,
+    bindingId: binding.id,
+    effectiveFrom,
+    habitId: binding.habitId,
+    railId: binding.railId,
+    ...(binding.weekdays !== undefined && { weekdays: binding.weekdays }),
+    authoredAt: Date.now(),
+    ...(sessionId && { sessionId }),
+  };
+}
+
+// Calendar rule helpers — mirror the constants in store.ts.
+const CALENDAR_RULE_PRIORITY_Y: Record<CalendarRule['kind'], number> = {
+  'single-date': 100,
+  'date-range': 50,
+  cycle: 30,
+  weekday: 10,
+};
+
+function singleDateRuleIdY(date: string): string {
+  return `cr-single-${date}`;
+}
+
+function addDaysIsoY(iso: string, n: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Persist a Shift to Y.Doc and queue the same record on
+ *  pendingShiftPrompt so the §5.5.6 Reason toast can surface.
+ *  Mirrors the legacy persistShiftAndQueuePrompt helper in store.ts. */
+function persistShiftAndQueuePromptY(
+  taskId: string,
+  type: ShiftType,
+  payload: ReschedulePayload | UnschedulePayload,
+  sessionId?: string,
+): void {
+  const doc = getYDoc();
+  const shiftId = ulidLite('shift');
+  const at = new Date().toISOString();
+  const shift: Shift = {
+    id: shiftId,
+    taskId,
+    type,
+    at,
+    payload: payload as unknown as Record<string, unknown>,
+    tags: [],
+  };
+  // sessionId threads into the transact origin below so the session's
+  // Y.UndoManager rolls this shift back as part of undoEditSession.
+  // The persisted Shift record itself does NOT carry sessionId today
+  // (Shift type has no such field). If a future "which session
+  // authored this shift" surface needs it, extend Shift in types.ts
+  // and round-trip the field through both the Y.Map upsert below and
+  // the pendingShiftPrompt setState.
+  doc.transact(() => {
+    upsertEntity(doc, 'shifts', shiftId, {
+      id: shiftId,
+      taskId,
+      type,
+      at,
+      payload: payload as unknown as Record<string, unknown>,
+      tags: [],
+    });
+  }, sessionId ?? 'persistShiftAndQueuePrompt');
+  useStore.setState((prev) => ({
+    ...prev,
+    pendingShiftPrompt: {
+      ...shift,
+      payload: { ...shift.payload },
+      ...(shift.tags && { tags: [...shift.tags] }),
+    },
+  }));
+}
+
+// ============ Zustand store ============
+
+const initialState: DayRailState = {
+  ready: false,
+  templates: {},
+  rails: {},
+  signals: {},
+  shifts: {},
+  lines: {},
+  tasks: {},
+  adhocEvents: {},
+  calendarRules: {},
+  cycles: {},
+  habitPhases: {},
+  reflections: {},
+  habitBindings: {},
+  railRevisions: {},
+  templateRevisions: {},
+  calendarRuleRevisions: {},
+  habitBindingRevisions: {},
+  railTombstones: {},
+  templateTombstones: {},
+  calendarRuleTombstones: {},
+  habitBindingTombstones: {},
+  v05MigrationApplied: true,
+  sessions: {},
+  pendingShiftPrompt: null,
+};
+
+const notImplemented = (action: string): never => {
+  throw new Error(
+    `[storeYjs] ${action} not yet implemented in v0.7 — fall back to legacy store.ts via @dayrail/core/store`,
+  );
+};
+
+export const useStore = create<DayRailStore>()((_set, get) => ({
+  ...initialState,
+
+  hydrate: hydrateImpl,
+
+  // ============ Templates ============
+
+  // Legacy: store.ts:1775 — appendEvent(template.created/updated) +
+  // applyEventInPlace + emitTemplateRevision + tombstone-clear.
+  upsertTemplate: async (tpl, sessionId, effectiveFrom) => {
+    // sessionId is used as the transact origin so per-session
+    // Y.UndoManager (set up in openEditSession) can track and roll
+    // back this operation. When undefined, falls back to the action
+    // label — operations outside any session aren't tracked.
+    const doc = getYDoc();
+    doc.transact(() => {
+      // Mirror current-state map.
+      upsertEntity(doc, 'templates', tpl.key, {
+        key: tpl.key,
+        name: tpl.name,
+        ...(tpl.color !== undefined && { color: tpl.color }),
+        isDefault: tpl.isDefault ?? false,
+      });
+      // Append revision (effectiveFrom default = today).
+      const ef = effectiveFrom ?? todayIso();
+      appendRevision(
+        doc,
+        'templateRevisions',
+        tpl.key,
+        { ...buildTemplateRevisionY({ ...tpl }, ef, sessionId) } as Record<
+          string,
+          unknown
+        >,
+      );
+      // Resurrect: clear any tombstone.
+      const tombs = getEntityMap(doc, 'templateTombstones');
+      if (tombs.has(tpl.key)) clearTombstone(doc, 'templateTombstones', tpl.key);
+    }, sessionId ?? 'upsertTemplate');
+  },
+
+  // Legacy: store.ts:1804 — cascade-delete dependent rails (each with
+  // tombstone), then template.deleted, then template tombstone.
+  deleteTemplate: async (key, sessionId, effectiveFrom) => {
+    const doc = getYDoc();
+    const ef = effectiveFrom ?? todayIso();
+    doc.transact(() => {
+      // Cascade rails belonging to this template.
+      const railsMap = getEntityMap(doc, 'rails');
+      const railIds: string[] = [];
+      railsMap.forEach((value, id) => {
+        if (value instanceof Y.Map) {
+          const rail = value as YMap<unknown>;
+          if (rail.get('templateKey') === key) railIds.push(id);
+        }
+      });
+      for (const railId of railIds) {
+        deleteEntity(doc, 'rails', railId);
+        setTombstone(doc, 'railTombstones', railId, {
+          effectiveFrom: ef,
+          at: Date.now(),
+          ...(sessionId && { sessionId }),
+        });
+      }
+      // Delete template + tombstone.
+      deleteEntity(doc, 'templates', key);
+      setTombstone(doc, 'templateTombstones', key, {
+        effectiveFrom: ef,
+        at: Date.now(),
+        ...(sessionId && { sessionId }),
+      });
+    }, sessionId ?? 'deleteTemplate');
+  },
+
+  // ============ Rails ============
+
+  // Legacy: store.ts:1839
+  createRail: async (rail, sessionId, effectiveFrom) => {
+    const doc = getYDoc();
+    const ef = effectiveFrom ?? todayIso();
+    doc.transact(() => {
+      upsertEntity(doc, 'rails', rail.id, { ...rail });
+      appendRevision(
+        doc,
+        'railRevisions',
+        rail.id,
+        { ...buildRailRevisionY({ ...rail }, ef, sessionId) } as Record<
+          string,
+          unknown
+        >,
+      );
+      const tombs = getEntityMap(doc, 'railTombstones');
+      if (tombs.has(rail.id)) clearTombstone(doc, 'railTombstones', rail.id);
+    }, sessionId ?? 'createRail');
+  },
+
+  // Legacy: store.ts:1864
+  updateRail: async (id, patch, sessionId, effectiveFrom) => {
+    const doc = getYDoc();
+    const ef = effectiveFrom ?? todayIso();
+    doc.transact(() => {
+      const map = getEntityMap(doc, 'rails');
+      const existing = map.get(id);
+      if (!(existing instanceof Y.Map)) return;
+      patchEntityYMap(existing as YMap<unknown>, { ...patch });
+      // Revision uses the post-patch value.
+      const merged = {
+        id,
+        ...((existing as YMap<unknown>).toJSON() as Record<string, unknown>),
+      } as Rail;
+      appendRevision(
+        doc,
+        'railRevisions',
+        id,
+        { ...buildRailRevisionY(merged, ef, sessionId) } as Record<
+          string,
+          unknown
+        >,
+      );
+    }, sessionId ?? 'updateRail');
+  },
+
+  // Legacy: store.ts:1880
+  deleteRail: async (id, sessionId, effectiveFrom) => {
+    const doc = getYDoc();
+    const ef = effectiveFrom ?? todayIso();
+    doc.transact(() => {
+      deleteEntity(doc, 'rails', id);
+      setTombstone(doc, 'railTombstones', id, {
+        effectiveFrom: ef,
+        at: Date.now(),
+        ...(sessionId && { sessionId }),
+      });
+    }, sessionId ?? 'deleteRail');
+  },
+
+  // ============ Daily reflections ============
+
+  // Legacy: store.ts → setReflection. Empty content drops the row.
+  setReflection: async (date, content) => {
+    const doc = getYDoc();
+    const trimmed = content.trim();
+    doc.transact(() => {
+      if (trimmed.length === 0) {
+        deleteEntity(doc, 'dailyReflections', date);
+      } else {
+        upsertEntity(doc, 'dailyReflections', date, {
+          date,
+          content,
+          updatedAt: Date.now(),
+        });
+      }
+    }, 'setReflection');
+  },
+
+  // ============ TODO — to be translated in subsequent commits ============
+  //
+  // Each stub below points to its legacy implementation. The
+  // translation pattern is identical to the actions above:
+  //   - open ydoc.transact
+  //   - mirror what applyEventInPlace does (set / delete / cascade)
+  //   - emit revision/tombstone via the helpers when the legacy
+  //     impl called emitRailRevision / emitTemplateTombstone / etc.
+  //   - return; the observer derives state and triggers persistence.
+
+  // ============ Signals + Shifts ============
+
+  // Legacy: store.ts:1895 — append signal.acted with ulid id.
+  recordSignal: async (taskId, response, surface) => {
+    const doc = getYDoc();
+    const id = ulidLite('sig');
+    const actedAt = new Date().toISOString();
+    doc.transact(() => {
+      upsertEntity(doc, 'signals', id, {
+        id,
+        taskId,
+        actedAt,
+        response,
+        surface,
+      });
+    }, 'recordSignal');
+  },
+
+  // Legacy: store.ts:1919 — append shift.recorded. Note: pendingShiftPrompt
+  // is UI-only state; the legacy reducer set it as a side-effect of
+  // shift.recorded with `payload`/`tags` cloned. v0.7 keeps the same
+  // semantic: synced shifts go to Y.Doc, pendingShiftPrompt is set
+  // directly on zustand for the toast handoff.
+  recordShift: async (shift) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      upsertEntity(doc, 'shifts', shift.id, {
+        id: shift.id,
+        taskId: shift.taskId,
+        type: shift.type,
+        at: shift.at,
+        payload: shift.payload ?? {},
+        ...(shift.tags !== undefined && { tags: shift.tags }),
+        ...(shift.reason !== undefined && { reason: shift.reason }),
+      });
+    }, 'recordShift');
+    useStore.setState((prev) => ({
+      ...prev,
+      pendingShiftPrompt: {
+        ...shift,
+        payload: { ...shift.payload },
+        ...(shift.tags && { tags: [...shift.tags] }),
+      },
+    }));
+  },
+
+  // Legacy: store.ts:1931 — merge tags into the Shift's tag list.
+  // NOT commutative across devices: Shift.tags is a plain JS array
+  // stored as an atomic LWW value (yjs.ts schema header), so
+  // concurrent setShiftTags calls on two devices each read prevTags,
+  // compute distinct merges locally, write atomically — Yjs picks
+  // one writer's result by Lamport order, dropping the other side's
+  // additions. Acceptable for v0.7's single-user / occasional-multi-
+  // device target where two devices simultaneously tagging the same
+  // overdue Shift is vanishingly rare. If this ever bites, migrate
+  // `Shift.tags` to a Y.Array via Y_ARRAY_FIELDS in yjs.ts and
+  // emit per-tag insert ops here instead of the read-modify-write.
+  setShiftTags: async (shiftId, tags) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const map = getEntityMap(doc, 'shifts');
+      const existing = map.get(shiftId);
+      if (!(existing instanceof Y.Map)) return;
+      const current = existing.get('tags');
+      const prevTags = Array.isArray(current) ? (current as string[]) : [];
+      const merged = Array.from(new Set([...prevTags, ...tags]));
+      (existing as YMap<unknown>).set('tags', merged);
+    }, 'setShiftTags');
+  },
+
+  // Legacy: store.ts:1943 — UI flag clear, no Y.Doc write.
+  ackShiftPrompt: (shiftId) => {
+    useStore.setState((prev) =>
+      prev.pendingShiftPrompt?.id === shiftId
+        ? { ...prev, pendingShiftPrompt: null }
+        : prev,
+    );
+  },
+
+  // ============ Lines ============
+
+  // Legacy: store.ts:1953
+  createLine: async (line) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      upsertEntity(doc, 'lines', line.id, { ...line });
+    }, 'createLine');
+  },
+
+  // Legacy: store.ts:1963
+  updateLine: async (id, patch) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const map = getEntityMap(doc, 'lines');
+      const existing = map.get(id);
+      if (!(existing instanceof Y.Map)) return;
+      patchEntityYMap(existing as YMap<unknown>, { ...patch });
+    }, 'updateLine');
+  },
+
+  // Legacy: store.ts:1978 — Inbox is undeletable; status patch.
+  deleteLine: async (id) => {
+    const doc = getYDoc();
+    const map = getEntityMap(doc, 'lines');
+    const existing = map.get(id);
+    if (!(existing instanceof Y.Map)) return;
+    if ((existing as YMap<unknown>).get('isDefault') === true) return;
+    doc.transact(() => {
+      patchEntityYMap(existing as YMap<unknown>, {
+        status: 'deleted',
+        deletedAt: Date.now(),
+      });
+    }, 'deleteLine');
+  },
+
+  // Legacy: store.ts:1992 — restore to active, clear timestamps.
+  restoreLine: async (id) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const map = getEntityMap(doc, 'lines');
+      const existing = map.get(id);
+      if (!(existing instanceof Y.Map)) return;
+      patchEntityYMap(existing as YMap<unknown>, {
+        status: 'active',
+        deletedAt: undefined,
+        archivedAt: undefined,
+      });
+    }, 'restoreLine');
+  },
+
+  // Legacy: store.ts:2002 — purge + cascade tasks belonging to the Line.
+  purgeLine: async (id) => {
+    const doc = getYDoc();
+    const linesMap = getEntityMap(doc, 'lines');
+    const existing = linesMap.get(id);
+    if (!(existing instanceof Y.Map)) return;
+    if ((existing as YMap<unknown>).get('isDefault') === true) return;
+    doc.transact(() => {
+      // Cascade: drop tasks whose lineId matches.
+      const tasksMap = getEntityMap(doc, 'tasks');
+      const cascade: string[] = [];
+      tasksMap.forEach((value, taskId) => {
+        if (value instanceof Y.Map) {
+          const t = value as YMap<unknown>;
+          if (t.get('lineId') === id) cascade.push(taskId);
+        }
+      });
+      for (const tid of cascade) tasksMap.delete(tid);
+      linesMap.delete(id);
+    }, 'purgeLine');
+  },
+
+  // ============ Tasks ============
+
+  // Legacy: store.ts:2017. subItems is plain LWW (see yjs.ts file
+  // header for why per-element CRDT was reverted).
+  createTask: async (task, sessionId) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      upsertEntity(doc, 'tasks', task.id, { ...task });
+    }, sessionId ?? 'createTask');
+  },
+
+  // Legacy: store.ts:2029. subItems patch is whole-list replacement.
+  updateTask: async (id, patch, sessionId) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const map = getEntityMap(doc, 'tasks');
+      const existing = map.get(id);
+      if (!(existing instanceof Y.Map)) return;
+      patchEntityYMap(existing as YMap<unknown>, { ...patch });
+    }, sessionId ?? 'updateTask');
+  },
+
+  // Legacy: store.ts:2041
+  archiveTask: async (id) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const map = getEntityMap(doc, 'tasks');
+      const existing = map.get(id);
+      if (!(existing instanceof Y.Map)) return;
+      patchEntityYMap(existing as YMap<unknown>, {
+        status: 'archived',
+        archivedAt: new Date().toISOString(),
+      });
+    }, 'archiveTask');
+  },
+
+  // Legacy: store.ts:2052 — restore to pending, clear timestamps.
+  restoreTask: async (id) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const map = getEntityMap(doc, 'tasks');
+      const existing = map.get(id);
+      if (!(existing instanceof Y.Map)) return;
+      patchEntityYMap(existing as YMap<unknown>, {
+        status: 'pending',
+        archivedAt: undefined,
+        deletedAt: undefined,
+      });
+    }, 'restoreTask');
+  },
+
+  // Legacy: store.ts:2065
+  deleteTask: async (id) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const map = getEntityMap(doc, 'tasks');
+      const existing = map.get(id);
+      if (!(existing instanceof Y.Map)) return;
+      patchEntityYMap(existing as YMap<unknown>, {
+        status: 'deleted',
+        deletedAt: new Date().toISOString(),
+      });
+    }, 'deleteTask');
+  },
+
+  // Legacy: store.ts:2076 — hard delete from the map.
+  purgeTask: async (id, sessionId) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      deleteEntity(doc, 'tasks', id);
+    }, sessionId ?? 'purgeTask');
+  },
+
+  // Legacy: store.ts:2521 — idempotent on existing id.
+  upsertAutoTask: async (task) => {
+    const doc = getYDoc();
+    const tasksMap = getEntityMap(doc, 'tasks');
+    if (tasksMap.has(task.id)) return;
+    doc.transact(() => {
+      upsertEntity(doc, 'tasks', task.id, { ...task });
+    }, 'upsertAutoTask');
+  },
+
+  // ============ Ad-hoc events ============
+
+  // Legacy: store.ts:2536 — standalone (no taskId), status='active'.
+  createAdhocEvent: async (opts) => {
+    const id = ulidLite('adhoc');
+    const doc = getYDoc();
+    doc.transact(() => {
+      upsertEntity(doc, 'adhocEvents', id, {
+        id,
+        date: opts.date,
+        name: opts.name,
+        startMinutes: opts.startMinutes,
+        durationMinutes: opts.durationMinutes,
+        status: 'active',
+        ...(opts.color && { color: opts.color }),
+        ...(opts.lineId && { lineId: opts.lineId }),
+      });
+    }, 'createAdhocEvent');
+    return id;
+  },
+
+  // Legacy: store.ts:2558 — refuses task-backed; soft-delete others.
+  deleteAdhocEvent: async (id) => {
+    const doc = getYDoc();
+    const map = getEntityMap(doc, 'adhocEvents');
+    const existing = map.get(id);
+    if (!(existing instanceof Y.Map)) return;
+    const ad = existing as YMap<unknown>;
+    if (ad.get('taskId')) {
+      throw new Error(
+        '不能直接删除绑定 Task 的 Ad-hoc 事件 —— 去 Tasks 视图把任务移出自由时间排期。',
+      );
+    }
+    if (ad.get('status') === 'deleted') return;
+    doc.transact(() => {
+      patchEntityYMap(ad, {
+        status: 'deleted',
+        deletedAt: new Date().toISOString(),
+      });
+    }, 'deleteAdhocEvent');
+  },
+
+  // ============ Calendar rules ============
+
+  // Legacy: store.ts:2256 — single-date rule keyed `cr-single-{date}`.
+  overrideCycleDay: async (date, templateKey, sessionId, effectiveFrom) => {
+    const doc = getYDoc();
+    const id = singleDateRuleIdY(date);
+    const map = getEntityMap(doc, 'calendarRules');
+    const existing = map.get(id);
+    if (existing instanceof Y.Map) {
+      const value = (existing as YMap<unknown>).get('value') as
+        | { templateKey?: string }
+        | undefined;
+      if (value?.templateKey === templateKey) return;
+    }
+    const rule: CalendarRule = {
+      id,
+      kind: 'single-date',
+      priority: CALENDAR_RULE_PRIORITY_Y['single-date'],
+      value: { date, templateKey },
+      createdAt:
+        existing instanceof Y.Map
+          ? ((existing as YMap<unknown>).get('createdAt') as number) ??
+            Date.now()
+          : Date.now(),
+    };
+    const ef = effectiveFrom ?? todayIso();
+    doc.transact(() => {
+      upsertEntity(doc, 'calendarRules', id, { ...rule });
+      appendRevision(
+        doc,
+        'calendarRuleRevisions',
+        id,
+        { ...buildCalendarRuleRevisionY(rule, ef, sessionId) } as Record<
+          string,
+          unknown
+        >,
+      );
+    }, sessionId ?? 'overrideCycleDay');
+  },
+
+  // Legacy: store.ts:2283
+  clearCycleDayOverride: async (date, sessionId, effectiveFrom) => {
+    const doc = getYDoc();
+    const id = singleDateRuleIdY(date);
+    const map = getEntityMap(doc, 'calendarRules');
+    if (!map.has(id)) return;
+    const ef = effectiveFrom ?? todayIso();
+    doc.transact(() => {
+      deleteEntity(doc, 'calendarRules', id);
+      setTombstone(doc, 'calendarRuleTombstones', id, {
+        effectiveFrom: ef,
+        at: Date.now(),
+        ...(sessionId && { sessionId }),
+      });
+    }, sessionId ?? 'clearCycleDayOverride');
+  },
+
+  // Legacy: store.ts:2298 — one rule per template, deterministic id.
+  upsertWeekdayRule: async (templateKey, weekdays, effectiveFrom) => {
+    const doc = getYDoc();
+    const id = `cr-weekday-${templateKey}`;
+    const ef = effectiveFrom ?? todayIso();
+    const existing = getEntityMap(doc, 'calendarRules').get(id);
+    const createdAt =
+      existing instanceof Y.Map
+        ? ((existing as YMap<unknown>).get('createdAt') as number) ??
+          Date.now()
+        : Date.now();
+    const rule: CalendarRule = {
+      id,
+      kind: 'weekday',
+      priority: CALENDAR_RULE_PRIORITY_Y.weekday,
+      value: { templateKey, weekdays: [...weekdays].sort() },
+      createdAt,
+    };
+    doc.transact(() => {
+      upsertEntity(doc, 'calendarRules', id, { ...rule });
+      appendRevision(
+        doc,
+        'calendarRuleRevisions',
+        id,
+        { ...buildCalendarRuleRevisionY(rule, ef, undefined) } as Record<
+          string,
+          unknown
+        >,
+      );
+    }, 'upsertWeekdayRule');
+  },
+
+  // Legacy: store.ts:2320
+  upsertDateRangeRule: async ({ id, from, to, templateKey, label, effectiveFrom }) => {
+    const doc = getYDoc();
+    const ruleId = id ?? ulidLite('cr-range');
+    const ef = effectiveFrom ?? todayIso();
+    const existing = id
+      ? getEntityMap(doc, 'calendarRules').get(id)
+      : undefined;
+    const createdAt =
+      existing instanceof Y.Map
+        ? ((existing as YMap<unknown>).get('createdAt') as number) ??
+          Date.now()
+        : Date.now();
+    const rule: CalendarRule = {
+      id: ruleId,
+      kind: 'date-range',
+      priority: CALENDAR_RULE_PRIORITY_Y['date-range'],
+      value: { from, to, templateKey, ...(label && { label }) },
+      createdAt,
+    };
+    doc.transact(() => {
+      upsertEntity(doc, 'calendarRules', ruleId, { ...rule });
+      appendRevision(
+        doc,
+        'calendarRuleRevisions',
+        ruleId,
+        { ...buildCalendarRuleRevisionY(rule, ef, undefined) } as Record<
+          string,
+          unknown
+        >,
+      );
+    }, 'upsertDateRangeRule');
+    return ruleId;
+  },
+
+  // Legacy: store.ts:2346
+  upsertCycleRule: async ({ id, cycleLength, anchor, mapping, effectiveFrom }) => {
+    const doc = getYDoc();
+    const ruleId = id ?? ulidLite('cr-cycle');
+    const ef = effectiveFrom ?? todayIso();
+    const existing = id
+      ? getEntityMap(doc, 'calendarRules').get(id)
+      : undefined;
+    const createdAt =
+      existing instanceof Y.Map
+        ? ((existing as YMap<unknown>).get('createdAt') as number) ??
+          Date.now()
+        : Date.now();
+    const rule: CalendarRule = {
+      id: ruleId,
+      kind: 'cycle',
+      priority: CALENDAR_RULE_PRIORITY_Y.cycle,
+      value: { cycleLength, anchor, mapping: [...mapping] },
+      createdAt,
+    };
+    doc.transact(() => {
+      upsertEntity(doc, 'calendarRules', ruleId, { ...rule });
+      appendRevision(
+        doc,
+        'calendarRuleRevisions',
+        ruleId,
+        { ...buildCalendarRuleRevisionY(rule, ef, undefined) } as Record<
+          string,
+          unknown
+        >,
+      );
+    }, 'upsertCycleRule');
+    return ruleId;
+  },
+
+  // Legacy: store.ts:2368
+  removeCalendarRule: async (id, effectiveFrom) => {
+    const doc = getYDoc();
+    if (!getEntityMap(doc, 'calendarRules').has(id)) return;
+    const ef = effectiveFrom ?? todayIso();
+    doc.transact(() => {
+      deleteEntity(doc, 'calendarRules', id);
+      setTombstone(doc, 'calendarRuleTombstones', id, {
+        effectiveFrom: ef,
+        at: Date.now(),
+      });
+    }, 'removeCalendarRule');
+  },
+
+  // ============ Cycles ============
+
+  // Legacy: store.ts:2380 — deterministic id keyed on Monday startDate.
+  upsertCycle: async ({ startDate, label }) => {
+    const doc = getYDoc();
+    const id = `cycle-${startDate}`;
+    const endDate = addDaysIsoY(startDate, 6);
+    const existing = getEntityMap(doc, 'cycles').get(id);
+    const createdAt =
+      existing instanceof Y.Map
+        ? ((existing as YMap<unknown>).get('createdAt') as number) ??
+          Date.now()
+        : Date.now();
+    doc.transact(() => {
+      upsertEntity(doc, 'cycles', id, {
+        id,
+        startDate,
+        endDate,
+        ...(label && { label }),
+        createdAt,
+      });
+    }, 'upsertCycle');
+    return id;
+  },
+
+  // Legacy: store.ts:2404
+  removeCycle: async (id) => {
+    const doc = getYDoc();
+    if (!getEntityMap(doc, 'cycles').has(id)) return;
+    doc.transact(() => {
+      deleteEntity(doc, 'cycles', id);
+    }, 'removeCycle');
+  },
+
+  // ============ Habit phases ============
+
+  // Legacy: store.ts:2415
+  upsertHabitPhase: async ({ id, lineId, name, description, startDate }) => {
+    const doc = getYDoc();
+    const phaseId = id ?? ulidLite('hp');
+    const existing = id
+      ? getEntityMap(doc, 'habitPhases').get(id)
+      : undefined;
+    const createdAt =
+      existing instanceof Y.Map
+        ? ((existing as YMap<unknown>).get('createdAt') as number) ??
+          Date.now()
+        : Date.now();
+    doc.transact(() => {
+      upsertEntity(doc, 'habitPhases', phaseId, {
+        id: phaseId,
+        lineId,
+        name,
+        startDate,
+        createdAt,
+        ...(description && { description }),
+      });
+    }, 'upsertHabitPhase');
+    return phaseId;
+  },
+
+  // Legacy: store.ts:2436
+  removeHabitPhase: async (id) => {
+    const doc = getYDoc();
+    if (!getEntityMap(doc, 'habitPhases').has(id)) return;
+    doc.transact(() => {
+      deleteEntity(doc, 'habitPhases', id);
+    }, 'removeHabitPhase');
+  },
+
+  // ============ Habit bindings ============
+
+  // Legacy: store.ts:2470 — revision-bearing + tombstone-clear.
+  upsertHabitBinding: async (opts, sessionId) => {
+    const doc = getYDoc();
+    const id = opts.id ?? ulidLite('binding');
+    const ef = opts.effectiveFrom ?? todayIso();
+    const existing = getEntityMap(doc, 'habitBindings').get(id);
+    const createdAt =
+      existing instanceof Y.Map
+        ? ((existing as YMap<unknown>).get('createdAt') as number) ??
+          Date.now()
+        : Date.now();
+    const binding: HabitBinding = {
+      id,
+      habitId: opts.habitId,
+      railId: opts.railId,
+      ...(opts.weekdays !== undefined && { weekdays: opts.weekdays }),
+      createdAt,
+    };
+    doc.transact(() => {
+      upsertEntity(doc, 'habitBindings', id, { ...binding });
+      appendRevision(
+        doc,
+        'habitBindingRevisions',
+        id,
+        { ...buildHabitBindingRevisionY(binding, ef, sessionId) } as Record<
+          string,
+          unknown
+        >,
+      );
+      const tombs = getEntityMap(doc, 'habitBindingTombstones');
+      if (tombs.has(id)) clearTombstone(doc, 'habitBindingTombstones', id);
+    }, sessionId ?? 'upsertHabitBinding');
+    return id;
+  },
+
+  // Legacy: store.ts:2507
+  removeHabitBinding: async (id, sessionId, effectiveFrom) => {
+    const doc = getYDoc();
+    if (!getEntityMap(doc, 'habitBindings').has(id)) return;
+    const ef = effectiveFrom ?? todayIso();
+    doc.transact(() => {
+      deleteEntity(doc, 'habitBindings', id);
+      setTombstone(doc, 'habitBindingTombstones', id, {
+        effectiveFrom: ef,
+        at: Date.now(),
+        ...(sessionId && { sessionId }),
+      });
+    }, sessionId ?? 'removeHabitBinding');
+  },
+
+  // ============ Task scheduling ============
+
+  // Legacy: store.ts:2090. Capture prior state BEFORE the transact,
+  // mutate inside, then post-mutation check whether to emit a
+  // §5.5.6 reschedule Shift.
+  scheduleTaskToRail: async (taskId, slot, sessionId) => {
+    const doc = getYDoc();
+    const priorState = useStore.getState();
+    const priorTask = priorState.tasks[taskId];
+    const priorSlot = priorTask?.slot;
+    const priorAdhoc = Object.values(priorState.adhocEvents).find(
+      (a) => a.taskId === taskId && a.status === 'active',
+    );
+    const isAutoHabit = priorTask?.source === 'auto-habit';
+    const wasDeferred = priorTask?.status === 'deferred';
+
+    doc.transact(() => {
+      // Drop any active free-time Ad-hoc backing this task — the two
+      // scheduling modes are mutually exclusive.
+      const adhocsMap = getEntityMap(doc, 'adhocEvents');
+      adhocsMap.forEach((value, adhocId) => {
+        if (!(value instanceof Y.Map)) return;
+        const ad = value as YMap<unknown>;
+        if (ad.get('taskId') === taskId && ad.get('status') === 'active') {
+          patchEntityYMap(ad, {
+            status: 'deleted',
+            deletedAt: new Date().toISOString(),
+          });
+          void adhocId;
+        }
+      });
+      // Bind the slot.
+      const tasksMap = getEntityMap(doc, 'tasks');
+      const taskYMap = tasksMap.get(taskId);
+      if (taskYMap instanceof Y.Map) {
+        patchEntityYMap(taskYMap as YMap<unknown>, { slot });
+        // Re-scheduling a deferred task = reverse the defer.
+        if (wasDeferred) {
+          patchEntityYMap(taskYMap as YMap<unknown>, {
+            status: 'pending',
+            deferredAt: undefined,
+          });
+        }
+      }
+    }, sessionId ?? 'scheduleTaskToRail');
+
+    const decision = detectReschedule({
+      priorSlot,
+      priorAdhoc,
+      nextDate: slot.date,
+      todayIso: todayIso(),
+      isAutoHabit,
+    });
+    if (decision.shouldEmit) {
+      const payload: ReschedulePayload = {
+        fromDate: decision.priorDate,
+        toDate: slot.date,
+        ...(priorSlot?.railId != null && { fromRailId: priorSlot.railId }),
+        ...(priorSlot == null &&
+          priorAdhoc?.id != null && { fromAdhocId: priorAdhoc.id }),
+        toRailId: slot.railId,
+      };
+      persistShiftAndQueuePromptY(taskId, 'reschedule', payload, sessionId);
+    }
+  },
+
+  // Legacy: store.ts:2161. Caller-supplied visual order; assigns
+  // slotOrder = 0..N-1, skipping tasks that are already at their
+  // target index.
+  setSlotTaskOrder: async (slot, orderedTaskIds, sessionId) => {
+    void slot;
+    const doc = getYDoc();
+    doc.transact(() => {
+      const tasksMap = getEntityMap(doc, 'tasks');
+      for (let i = 0; i < orderedTaskIds.length; i++) {
+        const id = orderedTaskIds[i]!;
+        const taskYMap = tasksMap.get(id);
+        if (!(taskYMap instanceof Y.Map)) continue;
+        const t = taskYMap as YMap<unknown>;
+        if (t.get('status') === 'deleted') continue;
+        if (t.get('slotOrder') === i) continue;
+        t.set('slotOrder', i);
+      }
+    }, sessionId ?? 'setSlotTaskOrder');
+  },
+
+  // Legacy: store.ts:2173. Switches a task to free-time scheduling:
+  // creates or updates an Ad-hoc event keyed to this task, clears any
+  // Rail slot the task previously had.
+  scheduleTaskFreeTime: async (taskId, opts) => {
+    const doc = getYDoc();
+    const priorState = useStore.getState();
+    const priorTask = priorState.tasks[taskId];
+    const priorSlot = priorTask?.slot;
+    const priorAdhoc = Object.values(priorState.adhocEvents).find(
+      (a) => a.taskId === taskId && a.status === 'active',
+    );
+    const isAutoHabit = priorTask?.source === 'auto-habit';
+    const wasDeferred = priorTask?.status === 'deferred';
+
+    let nextAdhocId: string;
+    if (priorAdhoc) {
+      nextAdhocId = priorAdhoc.id;
+    } else {
+      nextAdhocId = `adhoc-${taskId}-${Date.now().toString(36)}`;
+    }
+
+    doc.transact(() => {
+      const tasksMap = getEntityMap(doc, 'tasks');
+      const taskYMap = tasksMap.get(taskId);
+      if (taskYMap instanceof Y.Map) {
+        // Clear Rail slot if present (modes A and B mutually exclusive).
+        if ((taskYMap as YMap<unknown>).has('slot')) {
+          (taskYMap as YMap<unknown>).delete('slot');
+        }
+      }
+      const adhocsMap = getEntityMap(doc, 'adhocEvents');
+      if (priorAdhoc) {
+        const existing = adhocsMap.get(priorAdhoc.id);
+        if (existing instanceof Y.Map) {
+          patchEntityYMap(existing as YMap<unknown>, {
+            date: opts.date,
+            startMinutes: opts.startMinutes,
+            durationMinutes: opts.durationMinutes,
+          });
+        }
+      } else {
+        upsertEntity(doc, 'adhocEvents', nextAdhocId, {
+          id: nextAdhocId,
+          date: opts.date,
+          startMinutes: opts.startMinutes,
+          durationMinutes: opts.durationMinutes,
+          name: priorTask?.title ?? 'Task',
+          ...(priorTask?.lineId && { lineId: priorTask.lineId }),
+          taskId,
+          status: 'active',
+        });
+      }
+      if (wasDeferred && taskYMap instanceof Y.Map) {
+        patchEntityYMap(taskYMap as YMap<unknown>, {
+          status: 'pending',
+          deferredAt: undefined,
+        });
+      }
+    }, 'scheduleTaskFreeTime');
+
+    const decision = detectReschedule({
+      priorSlot,
+      priorAdhoc,
+      nextDate: opts.date,
+      todayIso: todayIso(),
+      isAutoHabit,
+    });
+    if (decision.shouldEmit) {
+      const payload: ReschedulePayload = {
+        fromDate: decision.priorDate,
+        toDate: opts.date,
+        ...(priorSlot?.railId != null && { fromRailId: priorSlot.railId }),
+        ...(priorSlot == null &&
+          priorAdhoc?.id != null && { fromAdhocId: priorAdhoc.id }),
+        toAdhocId: nextAdhocId,
+      };
+      persistShiftAndQueuePromptY(taskId, 'reschedule', payload);
+    }
+  },
+
+  // Legacy: store.ts:2583. Removes whichever schedule the task has;
+  // conditionally emits a §5.5.6 unschedule Shift on overdue clears.
+  unscheduleTask: async (taskId, sessionId) => {
+    const doc = getYDoc();
+    const priorState = useStore.getState();
+    const priorTask = priorState.tasks[taskId];
+    const priorSlot = priorTask?.slot;
+    const priorAdhoc = Object.values(priorState.adhocEvents).find(
+      (a) => a.taskId === taskId && a.status === 'active',
+    );
+    const isAutoHabit = priorTask?.source === 'auto-habit';
+    let touched = false;
+
+    doc.transact(() => {
+      const tasksMap = getEntityMap(doc, 'tasks');
+      const taskYMap = tasksMap.get(taskId);
+      if (taskYMap instanceof Y.Map) {
+        if ((taskYMap as YMap<unknown>).has('slot')) {
+          (taskYMap as YMap<unknown>).delete('slot');
+          touched = true;
+        }
+      }
+      const adhocsMap = getEntityMap(doc, 'adhocEvents');
+      adhocsMap.forEach((value, adhocId) => {
+        if (!(value instanceof Y.Map)) return;
+        const ad = value as YMap<unknown>;
+        if (ad.get('taskId') === taskId && ad.get('status') === 'active') {
+          patchEntityYMap(ad, {
+            status: 'deleted',
+            deletedAt: new Date().toISOString(),
+          });
+          touched = true;
+          void adhocId;
+        }
+      });
+    }, sessionId ?? 'unscheduleTask');
+
+    if (touched) {
+      const decision = detectUnschedule({
+        priorSlot,
+        priorAdhoc,
+        todayIso: todayIso(),
+        isAutoHabit,
+      });
+      if (decision.shouldEmit) {
+        const payload: UnschedulePayload = {
+          fromDate: decision.priorDate,
+          ...(priorSlot?.railId != null && { fromRailId: priorSlot.railId }),
+          ...(priorSlot == null &&
+            priorAdhoc?.id != null && { fromAdhocId: priorAdhoc.id }),
+        };
+        persistShiftAndQueuePromptY(taskId, 'unschedule', payload, sessionId);
+      }
+    }
+  },
+
+  // ============ Sessions ============
+  //
+  // v0.7 sessions: each open session creates a Y.UndoManager that
+  // tracks Y.Doc operations whose origin matches the sessionId. Every
+  // session-aware action (upsertTemplate, createTask, scheduleTask*,
+  // etc.) calls `doc.transact(..., sessionId ?? actionLabel)` so its
+  // operations are captured by the manager.
+  //
+  // undoEditSession loops um.undo() until the undo stack is empty,
+  // returning the number of stack items rolled back. Then it closes
+  // the session record and clears the manager from the registry.
+  //
+  // Behavior delta vs legacy event-log undo: equivalent for the
+  // common case (one user edits in one session, hits Cancel, all
+  // operations roll back). Edge case difference: Yjs's undo manages
+  // per-Y.Doc state, not events; concurrently-pulled remote changes
+  // applied during a session are NOT subject to session undo (legacy
+  // event log would have replayed them either way after a session
+  // rollback). Acceptable for v0.7's single-user workload.
+
+  openEditSession: async (surface) => {
+    const sessionId = ulidLite('sess');
+    const now = Date.now();
+    const session: EditSession = {
+      id: sessionId,
+      surface,
+      openedAt: now,
+      lastActivityAt: now,
+      changeCount: 0,
+      closed: false,
+    };
+    const doc = getYDoc();
+    const scope = TOP_LEVEL_MAPS.map((name) => doc.getMap(name));
+    const um = new Y.UndoManager(
+      scope as unknown as Y.AbstractType<unknown>[],
+      {
+        trackedOrigins: new Set([sessionId]),
+        // -1 disables time-based capture coalescing — every transact
+        // becomes its own undo step, so the stack length matches the
+        // number of operations the session accumulated. We loop undo()
+        // until empty regardless, but explicit stepping keeps the
+        // behavior predictable if a future caller wants partial undo.
+        captureTimeout: -1,
+      },
+    );
+    sessionUndoManagers.set(sessionId, um);
+    useStore.setState((prev) => ({
+      ...prev,
+      sessions: { ...prev.sessions, [sessionId]: session },
+    }));
+    return session;
+  },
+
+  closeEditSession: async (sessionId) => {
+    const um = sessionUndoManagers.get(sessionId);
+    if (um) {
+      um.destroy();
+      sessionUndoManagers.delete(sessionId);
+    }
+    useStore.setState((prev) => {
+      if (!prev.sessions[sessionId]) return prev;
+      const next = { ...prev.sessions };
+      delete next[sessionId];
+      return { ...prev, sessions: next };
+    });
+  },
+
+  undoEditSession: async (sessionId) => {
+    const um = sessionUndoManagers.get(sessionId);
+    if (!um) return 0;
+    let count = 0;
+    // undo() returns the rolled-back StackItem or null on empty stack.
+    while (um.undo() != null) count++;
+    um.destroy();
+    sessionUndoManagers.delete(sessionId);
+    useStore.setState((prev) => {
+      if (!prev.sessions[sessionId]) return prev;
+      const next = { ...prev.sessions };
+      delete next[sessionId];
+      return { ...prev, sessions: next };
+    });
+    return count;
+  },
+}));
+
+// Keyed by sessionId; lifecycle managed by openEditSession /
+// closeEditSession / undoEditSession.
+const sessionUndoManagers = new Map<string, Y.UndoManager>();
+
+// ============ Calendar rule resolution (preserved from legacy store.ts) ============
+
+import type {
+  CalendarRuleSingleDate,
+  CalendarRuleWeekday,
+  CalendarRuleDateRange,
+  CalendarRuleCycle,
+} from './types';
+import { calendarRuleRevisionsActiveOn } from './revisions';
 
 /** Deterministic id for a `single-date` CalendarRule. Flipping the same
  *  day's template repeatedly resolves to an upsert on one row, not a
  *  growing pile of same-day rules. */
 export function singleDateRuleId(date: string): string {
   return `cr-single-${date}`;
-}
-
-/** Add `n` days to an ISO date string; returns a new ISO date string.
- *  Used by the Cycle-record path to derive endDate from startDate+6. */
-function addDaysIso(iso: string, n: number): string {
-  const d = new Date(`${iso}T00:00:00`);
-  d.setDate(d.getDate() + n);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
 }
 
 /** Default priorities per CalendarRule kind — §5.4 precedence order.
@@ -1140,11 +1820,7 @@ export const CALENDAR_RULE_PRIORITY: Record<CalendarRule['kind'], number> = {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Return true iff `rule` matches `date`. Precondition-checked
- *  against the resolver's invariants: `rule.value` is assumed to
- *  follow the `kind`'s typed shape (events that land in the store
- *  are only ever written through the typed action surface, so this
- *  holds at runtime). */
+/** Return true iff `rule` matches `date`. */
 export function calendarRuleApplies(rule: CalendarRule, date: string): boolean {
   switch (rule.kind) {
     case 'single-date': {
@@ -1170,18 +1846,12 @@ export function calendarRuleApplies(rule: CalendarRule, date: string): boolean {
       );
       if (diff < 0) return false;
       const idx = diff % v.cycleLength;
-      // A cycle rule always "matches" a date in-range — it maps
-      // every position to a template. But the resolver extracts the
-      // mapped template via `calendarRuleTemplate`, which can return
-      // undefined for out-of-bounds mapping entries; guard there.
       return v.mapping[idx] != null;
     }
   }
 }
 
-/** Extract the `templateKey` a rule resolves to for the given date.
- *  Returns `undefined` if the rule's typed shape doesn't carry one
- *  for this date (e.g. cycle mapping missing at the position). */
+/** Extract the `templateKey` a rule resolves to for the given date. */
 export function calendarRuleTemplate(
   rule: CalendarRule,
   date: string,
@@ -1208,18 +1878,7 @@ export function calendarRuleTemplate(
 }
 
 /** Resolve the active Template for `date` by walking every
- *  CalendarRule revision active on that date in priority-desc order;
- *  returns the first match. Falls back to the caller-provided
- *  heuristic only if no revision matches. Ties in `priority` are
- *  broken by the shell's `createdAt` desc (newer rule wins) — the
- *  typical user mental model.
- *
- *  Phase 2: this now reads from the §10.5 revision tables, not the
- *  legacy `calendarRules` mirror. Past dates land on prior revisions
- *  via `calendarRuleAtDate` / `calendarRuleRevisionsActiveOn`. The
- *  legacy mirror is still consulted to find the rule's `kind` (which
- *  lives on the identity shell) and `createdAt` (used as a tie-break);
- *  edits never change those, so reading them off the shell is correct. */
+ *  CalendarRule revision active on that date in priority-desc order. */
 export function resolveTemplateForDate(
   state: Pick<
     DayRailState,
@@ -1254,1436 +1913,7 @@ export function resolveTemplateForDate(
   return heuristic(date);
 }
 
-let unhookSnapshotTriggers: (() => void) | null = null;
-let unsubscribeSessionBridge: (() => void) | null = null;
-
-export const useStore = create<DayRailStore>()(
-  immer((set, get) => {
-    // After a mutation: bump the unsnapshotted counter and, if the
-    // threshold just tripped, snapshot in the background. We cap the
-    // snapshot to "current state" — HLC is read fresh from the clock
-    // so a racing appendEvent doesn't land outside the snapshot.
-    const afterMutation = (): void => {
-      noteEvent();
-      if (shouldSnapshotAfterEvent()) {
-        void writeSnapshot<SnapshotPayload>(
-          snapshotFromState(get()),
-          currentClock(),
-          /* eventCount */ 0,
-        );
-      }
-    };
-
-    // ----------------------------------------------------------------
-    // §10.5 Phase 2 · revision mirror helpers. Every legacy writer that
-    // mutates a versioned entity calls one of these immediately after
-    // applying its legacy event. The mirror writes the matching
-    // `*-revision.upserted` (effectiveFrom = today) so the revision
-    // history stays in lock-step with the current-state mirror.
-    //
-    // Same-day re-edits collapse into one revision because the id is
-    // deterministic (`rev-{kind}-{entityId}-{effectiveFrom}`); the
-    // reducer's upsertRevisionInArray dedups by id.
-    //
-    // Tombstones use the same path with `effectiveFrom = today`; past
-    // dates still resolve to the prior revision via `*AtDate`.
-    // ----------------------------------------------------------------
-
-    // §10.5 Phase 4: every emitter takes an optional `effectiveFrom`.
-    // When omitted the revision starts from today (preserving v0.5.0
-    // semantics); when provided, the caller is choosing a future
-    // cutover ("apply this rename starting next Monday") so the
-    // current/today read still resolves to the prior revision.
-    const resolveEffectiveFrom = (override?: string): string =>
-      override ?? toIsoDate();
-
-    const emitRailRevision = async (
-      rail: Rail,
-      sessionId?: string,
-      effectiveFromOverride?: string,
-    ): Promise<void> => {
-      const rev = buildRailRevision(
-        rail,
-        resolveEffectiveFrom(effectiveFromOverride),
-        sessionId,
-      );
-      const ev = await appendEvent({
-        aggregateId: `rail:${rail.id}`,
-        type: 'rail-revision.upserted',
-        payload: rev as unknown as Record<string, unknown>,
-        ...(sessionId && { sessionId }),
-      });
-      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-    };
-
-    const emitTemplateRevision = async (
-      tpl: Template,
-      sessionId?: string,
-      effectiveFromOverride?: string,
-    ): Promise<void> => {
-      const rev = buildTemplateRevision(
-        tpl,
-        resolveEffectiveFrom(effectiveFromOverride),
-        sessionId,
-      );
-      const ev = await appendEvent({
-        aggregateId: `template:${tpl.key}`,
-        type: 'template-revision.upserted',
-        payload: rev as unknown as Record<string, unknown>,
-        ...(sessionId && { sessionId }),
-      });
-      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-    };
-
-    const emitCalendarRuleRevision = async (
-      rule: CalendarRule,
-      sessionId?: string,
-      effectiveFromOverride?: string,
-    ): Promise<void> => {
-      const rev = buildCalendarRuleRevision(
-        rule,
-        resolveEffectiveFrom(effectiveFromOverride),
-        sessionId,
-      );
-      const ev = await appendEvent({
-        aggregateId: `calendar-rule:${rule.id}`,
-        type: 'calendar-rule-revision.upserted',
-        payload: rev as unknown as Record<string, unknown>,
-        ...(sessionId && { sessionId }),
-      });
-      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-    };
-
-    const emitHabitBindingRevision = async (
-      binding: HabitBinding,
-      sessionId?: string,
-      effectiveFromOverride?: string,
-    ): Promise<void> => {
-      const rev = buildHabitBindingRevision(
-        binding,
-        resolveEffectiveFrom(effectiveFromOverride),
-        sessionId,
-      );
-      const ev = await appendEvent({
-        aggregateId: `habit-binding:${binding.id}`,
-        type: 'habit-binding-revision.upserted',
-        payload: rev as unknown as Record<string, unknown>,
-        ...(sessionId && { sessionId }),
-      });
-      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-    };
-
-    const emitRailTombstone = async (
-      railId: string,
-      sessionId?: string,
-      effectiveFromOverride?: string,
-    ): Promise<void> => {
-      const ev = await appendEvent({
-        aggregateId: `rail:${railId}`,
-        type: 'rail.tombstoned',
-        payload: {
-          railId,
-          effectiveFrom: resolveEffectiveFrom(effectiveFromOverride),
-          at: Date.now(),
-          ...(sessionId && { sessionId }),
-        },
-        ...(sessionId && { sessionId }),
-      });
-      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-    };
-
-    const emitTemplateTombstone = async (
-      key: TemplateKey,
-      sessionId?: string,
-      effectiveFromOverride?: string,
-    ): Promise<void> => {
-      const ev = await appendEvent({
-        aggregateId: `template:${key}`,
-        type: 'template.tombstoned',
-        payload: {
-          templateKey: key,
-          effectiveFrom: resolveEffectiveFrom(effectiveFromOverride),
-          at: Date.now(),
-          ...(sessionId && { sessionId }),
-        },
-        ...(sessionId && { sessionId }),
-      });
-      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-    };
-
-    const emitCalendarRuleTombstone = async (
-      ruleId: string,
-      sessionId?: string,
-      effectiveFromOverride?: string,
-    ): Promise<void> => {
-      const ev = await appendEvent({
-        aggregateId: `calendar-rule:${ruleId}`,
-        type: 'calendar-rule.tombstoned',
-        payload: {
-          ruleId,
-          effectiveFrom: resolveEffectiveFrom(effectiveFromOverride),
-          at: Date.now(),
-          ...(sessionId && { sessionId }),
-        },
-        ...(sessionId && { sessionId }),
-      });
-      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-    };
-
-    const emitHabitBindingTombstone = async (
-      bindingId: string,
-      sessionId?: string,
-      effectiveFromOverride?: string,
-    ): Promise<void> => {
-      const ev = await appendEvent({
-        aggregateId: `habit-binding:${bindingId}`,
-        type: 'habit-binding.tombstoned',
-        payload: {
-          bindingId,
-          effectiveFrom: resolveEffectiveFrom(effectiveFromOverride),
-          at: Date.now(),
-          ...(sessionId && { sessionId }),
-        },
-        ...(sessionId && { sessionId }),
-      });
-      set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-    };
-
-    // §4.1 v0.4.4 · persist the caller-supplied visual order for a
-    // slot. Writes `slotOrder = 0..N-1` to the listed tasks, skipping
-    // any task that's already at its target index so no redundant
-    // `task.updated` events fire. The caller is the source of truth
-    // for what order the user just intended — the store doesn't try
-    // to merge with prior state (a no-op same-position drag is
-    // legitimately just a no-op).
-    const persistSlotOrder = async (
-      orderedTaskIds: string[],
-      sessionId: string | undefined,
-    ): Promise<void> => {
-      for (let i = 0; i < orderedTaskIds.length; i++) {
-        const id = orderedTaskIds[i]!;
-        const t = get().tasks[id];
-        if (!t || t.status === 'deleted') continue;
-        if (t.slotOrder === i) continue;
-        const ev = await appendEvent({
-          aggregateId: `task:${id}`,
-          type: 'task.updated',
-          payload: { id, slotOrder: i },
-          sessionId,
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-      }
-    };
-
-    // §5.5.6 · internal helper · persist a newly-recorded shift and
-    // queue it for the Reason toast. Shared by the reschedule and
-    // unschedule emitters so both overdue-mutation paths end with the
-    // same UI handoff.
-    const persistShiftAndQueuePrompt = async (opts: {
-      taskId: string;
-      type: ShiftType;
-      // Callers pass a typed `ReschedulePayload` / `UnschedulePayload`;
-      // the event log widens to `Record<string, unknown>` below. The
-      // union here keeps the call sites typed without needing a cast
-      // at each one.
-      payload: ReschedulePayload | UnschedulePayload;
-      sessionId?: string;
-    }): Promise<void> => {
-      const shiftId = ulidLite('shift');
-      const ev = await appendEvent({
-        aggregateId: `task:${opts.taskId}`,
-        type: 'shift.recorded',
-        payload: {
-          id: shiftId,
-          taskId: opts.taskId,
-          type: opts.type,
-          at: new Date().toISOString(),
-          payload: opts.payload as unknown as Record<string, unknown>,
-          tags: [],
-        },
-        ...(opts.sessionId && { sessionId: opts.sessionId }),
-      });
-      set((draft) => {
-        applyEventInPlace(draft, ev.type, ev.payload);
-        const recorded = draft.shifts[shiftId];
-        if (recorded) {
-          // Copy so UI consumers can't mutate the reducer state.
-          draft.pendingShiftPrompt = {
-            ...recorded,
-            payload: { ...recorded.payload },
-            ...(recorded.tags && { tags: [...recorded.tags] }),
-          };
-        }
-      });
-    };
-
-    // §5.5.6 · auto-emit a `type='reschedule'` Shift when a schedule
-    // mutation moves an already-overdue Task to a different day.
-    // Called by `scheduleTaskToRail` / `scheduleTaskFreeTime` after
-    // their binding change has committed so we have the final task
-    // state to compare against.
-    //
-    // Fires ONLY when:
-    //   - task is hand-built (auto-habit occurrences out of scope —
-    //     the habit edit table marks `slot` read-only anyway).
-    //   - prior binding existed (first-time schedule = not a reschedule).
-    //   - priorDate < today (genuinely overdue; future-task reschedule
-    //     is planning, not slippage).
-    //   - newDate != priorDate (cross-day, not an intraday shuffle).
-    //
-    // Seeds `pendingShiftPrompt` so the UI Reason toast can surface
-    // and let the user tag why.
-    const maybeEmitReschedule = async (opts: {
-      taskId: string;
-      priorSlot: Task['slot'] | undefined;
-      priorAdhoc: AdhocEvent | undefined;
-      nextDate: string;
-      nextRailId?: string;
-      nextAdhocId?: string;
-      isAutoHabit: boolean;
-      sessionId?: string;
-    }): Promise<void> => {
-      const decision = detectReschedule({
-        priorSlot: opts.priorSlot,
-        priorAdhoc: opts.priorAdhoc,
-        nextDate: opts.nextDate,
-        todayIso: toIsoDate(),
-        isAutoHabit: opts.isAutoHabit,
-      });
-      if (!decision.shouldEmit) return;
-      const priorDate = decision.priorDate;
-
-      const payload: ReschedulePayload = {
-        fromDate: priorDate,
-        toDate: opts.nextDate,
-        ...(opts.priorSlot?.railId != null && {
-          fromRailId: opts.priorSlot.railId,
-        }),
-        ...(opts.priorSlot == null &&
-          opts.priorAdhoc?.id != null && {
-            fromAdhocId: opts.priorAdhoc.id,
-          }),
-        ...(opts.nextRailId != null && { toRailId: opts.nextRailId }),
-        ...(opts.nextAdhocId != null && { toAdhocId: opts.nextAdhocId }),
-      };
-      await persistShiftAndQueuePrompt({
-        taskId: opts.taskId,
-        type: 'reschedule',
-        payload,
-        ...(opts.sessionId && { sessionId: opts.sessionId }),
-      });
-    };
-
-    // §5.5.6 · auto-emit a `type='unschedule'` Shift when the user
-    // clears the schedule of an already-overdue Task. Called by
-    // `unscheduleTask` with the prior binding captured BEFORE the
-    // clear committed — once the mutation runs, `task.slot` /
-    // `task.adhoc` are gone and the decision can't be reconstructed.
-    //
-    // Same overdue / auto-habit gate as reschedule; no cross-day
-    // check since there is no next date.
-    const maybeEmitUnschedule = async (opts: {
-      taskId: string;
-      priorSlot: Task['slot'] | undefined;
-      priorAdhoc: AdhocEvent | undefined;
-      isAutoHabit: boolean;
-      sessionId?: string;
-    }): Promise<void> => {
-      const decision = detectUnschedule({
-        priorSlot: opts.priorSlot,
-        priorAdhoc: opts.priorAdhoc,
-        todayIso: toIsoDate(),
-        isAutoHabit: opts.isAutoHabit,
-      });
-      if (!decision.shouldEmit) return;
-
-      const payload: UnschedulePayload = {
-        fromDate: decision.priorDate,
-        ...(opts.priorSlot?.railId != null && {
-          fromRailId: opts.priorSlot.railId,
-        }),
-        ...(opts.priorSlot == null &&
-          opts.priorAdhoc?.id != null && {
-            fromAdhocId: opts.priorAdhoc.id,
-          }),
-      };
-      await persistShiftAndQueuePrompt({
-        taskId: opts.taskId,
-        type: 'unschedule',
-        payload,
-        ...(opts.sessionId && { sessionId: opts.sessionId }),
-      });
-    };
-
-    return {
-      ready: false,
-      templates: {},
-      rails: {},
-      signals: {},
-      shifts: {},
-      lines: {},
-      tasks: {},
-      adhocEvents: {},
-      calendarRules: {},
-      cycles: {},
-      habitPhases: {},
-      reflections: {},
-      habitBindings: {},
-      railRevisions: {},
-      templateRevisions: {},
-      calendarRuleRevisions: {},
-      habitBindingRevisions: {},
-      railTombstones: {},
-      templateTombstones: {},
-      calendarRuleTombstones: {},
-      habitBindingTombstones: {},
-      v05MigrationApplied: false,
-      sessions: {},
-      pendingShiftPrompt: null,
-
-      hydrate: async () => {
-        try {
-          // 1. Open DB + run migrations (await — the worker queues DB
-          //    calls serially but we still want surfaced errors).
-          const db = await getDb();
-          await runMigrations(db);
-
-          // 2. Seed HLC + recover sessions.
-          await initClock();
-          const recovered = await recoverActiveSessions();
-
-          // 3. Load latest snapshot (if any) + replay events since.
-          const snap = await loadLatestSnapshot<SnapshotPayload>();
-          const events = await loadEvents(snap ? { sinceHlc: snap.hlc } : {});
-
-          set((draft) => {
-            const reducerState = emptyReducerState();
-            if (snap) {
-              reducerState.templates = { ...(snap.state.templates ?? {}) };
-              reducerState.rails = { ...(snap.state.rails ?? {}) };
-              reducerState.signals = { ...(snap.state.signals ?? {}) };
-              reducerState.shifts = { ...(snap.state.shifts ?? {}) };
-              reducerState.lines = { ...(snap.state.lines ?? {}) };
-              reducerState.tasks = { ...(snap.state.tasks ?? {}) };
-              reducerState.adhocEvents = { ...(snap.state.adhocEvents ?? {}) };
-              reducerState.calendarRules = { ...(snap.state.calendarRules ?? {}) };
-              reducerState.cycles = { ...(snap.state.cycles ?? {}) };
-              reducerState.habitPhases = { ...(snap.state.habitPhases ?? {}) };
-              reducerState.reflections = { ...(snap.state.reflections ?? {}) };
-              reducerState.habitBindings = {
-                ...(snap.state.habitBindings ?? {}),
-              };
-              // §10.5 · revision tables — snapshots written before v0.5
-              // omit these; coalesce to {} so reducer cases find an
-              // array slot when they need one.
-              reducerState.railRevisions = { ...(snap.state.railRevisions ?? {}) };
-              reducerState.templateRevisions = {
-                ...(snap.state.templateRevisions ?? {}),
-              };
-              reducerState.calendarRuleRevisions = {
-                ...(snap.state.calendarRuleRevisions ?? {}),
-              };
-              reducerState.habitBindingRevisions = {
-                ...(snap.state.habitBindingRevisions ?? {}),
-              };
-              reducerState.railTombstones = {
-                ...(snap.state.railTombstones ?? {}),
-              };
-              reducerState.templateTombstones = {
-                ...(snap.state.templateTombstones ?? {}),
-              };
-              reducerState.calendarRuleTombstones = {
-                ...(snap.state.calendarRuleTombstones ?? {}),
-              };
-              reducerState.habitBindingTombstones = {
-                ...(snap.state.habitBindingTombstones ?? {}),
-              };
-              reducerState.v05MigrationApplied =
-                snap.state.v05MigrationApplied ?? false;
-            }
-            for (const ev of events) {
-              applyEventInPlace(reducerState, ev.type, ev.payload);
-            }
-            draft.templates = reducerState.templates;
-            draft.rails = reducerState.rails;
-            draft.signals = reducerState.signals;
-            draft.shifts = reducerState.shifts;
-            draft.lines = reducerState.lines;
-            draft.tasks = reducerState.tasks;
-            draft.adhocEvents = reducerState.adhocEvents;
-            draft.calendarRules = reducerState.calendarRules;
-            draft.cycles = reducerState.cycles;
-            draft.habitPhases = reducerState.habitPhases;
-            draft.reflections = reducerState.reflections;
-            draft.habitBindings = reducerState.habitBindings;
-            draft.railRevisions = reducerState.railRevisions;
-            draft.templateRevisions = reducerState.templateRevisions;
-            draft.calendarRuleRevisions = reducerState.calendarRuleRevisions;
-            draft.habitBindingRevisions = reducerState.habitBindingRevisions;
-            draft.railTombstones = reducerState.railTombstones;
-            draft.templateTombstones = reducerState.templateTombstones;
-            draft.calendarRuleTombstones = reducerState.calendarRuleTombstones;
-            draft.habitBindingTombstones = reducerState.habitBindingTombstones;
-            draft.v05MigrationApplied = reducerState.v05MigrationApplied;
-            for (const s of recovered) {
-              if (!s.closed) draft.sessions[s.id] = s;
-            }
-            draft.ready = true;
-          });
-          resetUnsnapshotted(events.length);
-
-          // §10.5 · run the sentinel-revision migration once per
-          // device/dataset. Idempotent: backs off if the marker event
-          // was already replayed (e.g. from a sibling device).
-          await runV05RevisionMigration();
-
-          // 4. Arm visibilitychange → snapshot if there are pending
-          //    events. HMR may call hydrate more than once; clean up
-          //    any previous binding first.
-          if (unhookSnapshotTriggers) unhookSnapshotTriggers();
-          unhookSnapshotTriggers = armSnapshotOnHide(() => {
-            void writeSnapshot<SnapshotPayload>(
-              snapshotFromState(get()),
-              currentClock(),
-              /* eventCount */ 0,
-            );
-          });
-
-          // 5. Bridge session.ts's internal map into the store. `touchSession`
-          //    and friends mutate the session registry but don't know about
-          //    Zustand; without this listener the Edit Session indicator's
-          //    `changeCount` would stay frozen at 0.
-          if (unsubscribeSessionBridge) unsubscribeSessionBridge();
-          unsubscribeSessionBridge = onSessionChange((session) => {
-            set((draft) => {
-              if (session.closed) {
-                delete draft.sessions[session.id];
-              } else {
-                draft.sessions[session.id] = session;
-              }
-            });
-          });
-        } catch (err) {
-          set((d) => {
-            d.error = (err as Error).message;
-            d.ready = true;
-          });
-          throw err;
-        }
-      },
-
-      upsertTemplate: async (tpl, sessionId, effectiveFrom) => {
-        const isCreate = !get().templates[tpl.key];
-        const event = await appendEvent({
-          aggregateId: `template:${tpl.key}`,
-          type: isCreate ? 'template.created' : 'template.updated',
-          payload: { ...tpl },
-          sessionId,
-        });
-        if (sessionId) await touchSession(sessionId);
-        set((draft) => {
-          applyEventInPlace(draft, event.type, event.payload);
-        });
-        // §10.5 mirror — capture the post-event template state.
-        const next = get().templates[tpl.key];
-        if (next) await emitTemplateRevision(next, sessionId, effectiveFrom);
-        // Re-create on top of a tombstone clears the tombstone so future
-        // dates see the resurrected template.
-        if (get().templateTombstones[tpl.key]) {
-          const ev = await appendEvent({
-            aggregateId: `template:${tpl.key}`,
-            type: 'template.tombstone-cleared',
-            payload: { templateKey: tpl.key },
-            ...(sessionId && { sessionId }),
-          });
-          set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        }
-        afterMutation();
-      },
-
-      deleteTemplate: async (key, sessionId, effectiveFrom) => {
-        // Delete dependent rails first so replay order matches intent:
-        // when a reader rebuilds state the template disappears only
-        // after its children. Ambient railInstances / signals for those
-        // rails stay in history — the Rail aggregate is gone but its
-        // event log lives on (matches how deleteRail already behaves).
-        const railIds = Object.values(get().rails)
-          .filter((r) => r.templateKey === key)
-          .map((r) => r.id);
-        for (const railId of railIds) {
-          const railEvent = await appendEvent({
-            aggregateId: `rail:${railId}`,
-            type: 'rail.deleted',
-            payload: { id: railId },
-            sessionId,
-          });
-          set((draft) => {
-            applyEventInPlace(draft, railEvent.type, railEvent.payload);
-          });
-          await emitRailTombstone(railId, sessionId, effectiveFrom);
-        }
-        const event = await appendEvent({
-          aggregateId: `template:${key}`,
-          type: 'template.deleted',
-          payload: { key },
-          sessionId,
-        });
-        if (sessionId) await touchSession(sessionId);
-        set((draft) => {
-          applyEventInPlace(draft, event.type, event.payload);
-        });
-        await emitTemplateTombstone(key, sessionId, effectiveFrom);
-        afterMutation();
-      },
-
-      createRail: async (rail, sessionId, effectiveFrom) => {
-        const event = await appendEvent({
-          aggregateId: `rail:${rail.id}`,
-          type: 'rail.created',
-          payload: { ...rail },
-          sessionId,
-        });
-        if (sessionId) await touchSession(sessionId);
-        set((draft) => {
-          applyEventInPlace(draft, event.type, event.payload);
-        });
-        const next = get().rails[rail.id];
-        if (next) await emitRailRevision(next, sessionId, effectiveFrom);
-        if (get().railTombstones[rail.id]) {
-          const ev = await appendEvent({
-            aggregateId: `rail:${rail.id}`,
-            type: 'rail.tombstone-cleared',
-            payload: { railId: rail.id },
-            ...(sessionId && { sessionId }),
-          });
-          set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        }
-        afterMutation();
-      },
-
-      updateRail: async (id, patch, sessionId, effectiveFrom) => {
-        const event = await appendEvent({
-          aggregateId: `rail:${id}`,
-          type: 'rail.updated',
-          payload: { id, ...patch },
-          sessionId,
-        });
-        if (sessionId) await touchSession(sessionId);
-        set((draft) => {
-          applyEventInPlace(draft, event.type, event.payload);
-        });
-        const next = get().rails[id];
-        if (next) await emitRailRevision(next, sessionId, effectiveFrom);
-        afterMutation();
-      },
-
-      deleteRail: async (id, sessionId, effectiveFrom) => {
-        const event = await appendEvent({
-          aggregateId: `rail:${id}`,
-          type: 'rail.deleted',
-          payload: { id },
-          sessionId,
-        });
-        if (sessionId) await touchSession(sessionId);
-        set((draft) => {
-          applyEventInPlace(draft, event.type, event.payload);
-        });
-        await emitRailTombstone(id, sessionId, effectiveFrom);
-        afterMutation();
-      },
-
-      recordSignal: async (taskId, response, surface) => {
-        // v0.4: Signal is pure audit. The caller (§5.6 check-in / §5.7
-        // Pending) has already written the corresponding Task.status
-        // via updateTask; recordSignal just logs intent + provides the
-        // anchor any subsequent Shift record wants.
-        const signalId = ulidLite('sig');
-        const actedAt = new Date().toISOString();
-        const event = await appendEvent({
-          aggregateId: `task:${taskId}`,
-          type: 'signal.acted',
-          payload: {
-            id: signalId,
-            taskId,
-            actedAt,
-            response,
-            surface,
-          },
-        });
-        set((draft) => {
-          applyEventInPlace(draft, event.type, event.payload);
-        });
-        afterMutation();
-      },
-
-      recordShift: async (shift) => {
-        const event = await appendEvent({
-          aggregateId: `task:${shift.taskId}`,
-          type: 'shift.recorded',
-          payload: { ...shift },
-        });
-        set((draft) => {
-          applyEventInPlace(draft, event.type, event.payload);
-        });
-        afterMutation();
-      },
-
-      setShiftTags: async (shiftId, tags) => {
-        const existing = get().shifts[shiftId];
-        if (!existing) return;
-        const event = await appendEvent({
-          aggregateId: `task:${existing.taskId}`,
-          type: 'shift.tags_updated',
-          payload: { id: shiftId, tags },
-        });
-        set((draft) => applyEventInPlace(draft, event.type, event.payload));
-        afterMutation();
-      },
-
-      ackShiftPrompt: (shiftId) => {
-        set((draft) => {
-          if (draft.pendingShiftPrompt?.id === shiftId) {
-            draft.pendingShiftPrompt = null;
-          }
-        });
-      },
-
-      // ---- Line CRUD (§5.5) --------------------------------------
-
-      createLine: async (line) => {
-        const event = await appendEvent({
-          aggregateId: `line:${line.id}`,
-          type: 'line.created',
-          payload: { ...line },
-        });
-        set((draft) => applyEventInPlace(draft, event.type, event.payload));
-        afterMutation();
-      },
-
-      updateLine: async (id, patch) => {
-        // Guard: built-in Lines (Inbox) can only be updated in limited
-        // ways — we allow status transitions internally but block any
-        // rename / recolor / delete from the UI layer. Here we leave
-        // enforcement to callers; the store just writes whatever it
-        // was asked to.
-        const event = await appendEvent({
-          aggregateId: `line:${id}`,
-          type: 'line.updated',
-          payload: { id, ...patch },
-        });
-        set((draft) => applyEventInPlace(draft, event.type, event.payload));
-        afterMutation();
-      },
-
-      deleteLine: async (id) => {
-        const line = get().lines[id];
-        if (!line) return;
-        if (line.isDefault) return; // Inbox is undeletable.
-        const deletedAt = Date.now();
-        const event = await appendEvent({
-          aggregateId: `line:${id}`,
-          type: 'line.deleted',
-          payload: { id, status: 'deleted', deletedAt },
-        });
-        set((draft) => applyEventInPlace(draft, event.type, event.payload));
-        afterMutation();
-      },
-
-      restoreLine: async (id) => {
-        const event = await appendEvent({
-          aggregateId: `line:${id}`,
-          type: 'line.restored',
-          payload: { id, status: 'active', deletedAt: undefined, archivedAt: undefined },
-        });
-        set((draft) => applyEventInPlace(draft, event.type, event.payload));
-        afterMutation();
-      },
-
-      purgeLine: async (id) => {
-        const line = get().lines[id];
-        if (!line) return;
-        if (line.isDefault) return; // Inbox can't be purged either.
-        const event = await appendEvent({
-          aggregateId: `line:${id}`,
-          type: 'line.purged',
-          payload: { id },
-        });
-        set((draft) => applyEventInPlace(draft, event.type, event.payload));
-        afterMutation();
-      },
-
-      // ---- Task CRUD (§5.5) --------------------------------------
-
-      createTask: async (task, sessionId) => {
-        const event = await appendEvent({
-          aggregateId: `task:${task.id}`,
-          type: 'task.created',
-          payload: { ...task },
-          sessionId,
-        });
-        set((draft) => applyEventInPlace(draft, event.type, event.payload));
-        if (sessionId) await touchSession(sessionId);
-        afterMutation();
-      },
-
-      updateTask: async (id, patch, sessionId) => {
-        const event = await appendEvent({
-          aggregateId: `task:${id}`,
-          type: 'task.updated',
-          payload: { id, ...patch },
-          sessionId,
-        });
-        set((draft) => applyEventInPlace(draft, event.type, event.payload));
-        if (sessionId) await touchSession(sessionId);
-        afterMutation();
-      },
-
-      archiveTask: async (id) => {
-        const archivedAt = new Date().toISOString();
-        const event = await appendEvent({
-          aggregateId: `task:${id}`,
-          type: 'task.archived',
-          payload: { id, status: 'archived', archivedAt },
-        });
-        set((draft) => applyEventInPlace(draft, event.type, event.payload));
-        afterMutation();
-      },
-
-      restoreTask: async (id) => {
-        // Restore returns to `pending` by default. Callers that know a
-        // more specific prior status can pass it through updateTask
-        // afterward.
-        const event = await appendEvent({
-          aggregateId: `task:${id}`,
-          type: 'task.restored',
-          payload: { id, status: 'pending', archivedAt: undefined, deletedAt: undefined },
-        });
-        set((draft) => applyEventInPlace(draft, event.type, event.payload));
-        afterMutation();
-      },
-
-      deleteTask: async (id) => {
-        const deletedAt = new Date().toISOString();
-        const event = await appendEvent({
-          aggregateId: `task:${id}`,
-          type: 'task.deleted',
-          payload: { id, status: 'deleted', deletedAt },
-        });
-        set((draft) => applyEventInPlace(draft, event.type, event.payload));
-        afterMutation();
-      },
-
-      purgeTask: async (id, sessionId) => {
-        const event = await appendEvent({
-          aggregateId: `task:${id}`,
-          type: 'task.purged',
-          payload: { id },
-          sessionId,
-        });
-        if (sessionId) await touchSession(sessionId);
-        set((draft) => applyEventInPlace(draft, event.type, event.payload));
-        afterMutation();
-      },
-
-      // ---- Task scheduling (§5.5.2) ------------------------------
-
-      scheduleTaskToRail: async (taskId, slot, sessionId) => {
-        // Capture prior binding BEFORE any mutation so the reschedule
-        // detection below has a clean "from" to compare against.
-        const priorTask = get().tasks[taskId];
-        const priorSlot = priorTask?.slot;
-        const priorAdhoc = Object.values(get().adhocEvents).find(
-          (a) => a.taskId === taskId && a.status === 'active',
-        );
-        const isAutoHabit = priorTask?.source === 'auto-habit';
-
-        // If the task currently has a free-time Ad-hoc backing it, drop
-        // it first — modes A and B are mutually exclusive. Both the
-        // Ad-hoc deletion and the schedule event share the session tag
-        // so session-level undo takes the pair back together.
-        const adhocs = get().adhocEvents;
-        for (const adhoc of Object.values(adhocs)) {
-          if (adhoc.taskId === taskId && adhoc.status === 'active') {
-            const del = await appendEvent({
-              aggregateId: `adhoc:${adhoc.id}`,
-              type: 'adhoc.deleted',
-              payload: {
-                id: adhoc.id,
-                status: 'deleted',
-                deletedAt: new Date().toISOString(),
-              },
-              sessionId,
-            });
-            set((draft) =>
-              applyEventInPlace(draft, del.type, del.payload),
-            );
-          }
-        }
-        const ev = await appendEvent({
-          aggregateId: `task:${taskId}`,
-          type: 'task.scheduled',
-          payload: { id: taskId, slot },
-          sessionId,
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        // Rescheduling a deferred task = reversing the defer. User's
-        // intent when they re-schedule is "I'm committing to do this
-        // on the new day", so flip the status back to pending. Other
-        // terminal states (done / archived / deleted) stay put — the
-        // caller should unwind those explicitly first.
-        const taskAfter = get().tasks[taskId];
-        if (taskAfter?.status === 'deferred') {
-          const flip = await appendEvent({
-            aggregateId: `task:${taskId}`,
-            type: 'task.updated',
-            payload: {
-              id: taskId,
-              status: 'pending',
-              deferredAt: undefined,
-            },
-            sessionId,
-          });
-          set((draft) => applyEventInPlace(draft, flip.type, flip.payload));
-        }
-        await maybeEmitReschedule({
-          taskId,
-          priorSlot,
-          priorAdhoc,
-          nextDate: slot.date,
-          nextRailId: slot.railId,
-          isAutoHabit,
-          ...(sessionId && { sessionId }),
-        });
-        if (sessionId) await touchSession(sessionId);
-        afterMutation();
-      },
-
-      setSlotTaskOrder: async (slot, orderedTaskIds, sessionId) => {
-        // The caller (CycleCell drag handler) already filtered to
-        // tasks bound to this slot. We don't re-validate `slot` here
-        // beyond it being part of the action signature for clarity
-        // and future-proofing if a debugger / event-trace ever wants
-        // to know which slot a reorder belonged to.
-        void slot;
-        await persistSlotOrder(orderedTaskIds, sessionId);
-        if (sessionId) await touchSession(sessionId);
-        afterMutation();
-      },
-
-      scheduleTaskFreeTime: async (taskId, opts) => {
-        // Capture prior binding for reschedule detection.
-        const task = get().tasks[taskId];
-        const priorSlot = task?.slot;
-        const priorAdhoc = Object.values(get().adhocEvents).find(
-          (a) => a.taskId === taskId && a.status === 'active',
-        );
-        const isAutoHabit = task?.source === 'auto-habit';
-
-        // Clear Rail binding first if present — keeps the two modes
-        // mutually exclusive.
-        if (task?.slot) {
-          const clr = await appendEvent({
-            aggregateId: `task:${taskId}`,
-            type: 'task.scheduled',
-            payload: { id: taskId, slot: undefined },
-          });
-          set((draft) =>
-            applyEventInPlace(draft, clr.type, clr.payload),
-          );
-        }
-        // Re-use an existing active Ad-hoc for this task if present
-        // (user is just shifting the time window), otherwise create.
-        let nextAdhocId: string;
-        if (priorAdhoc) {
-          nextAdhocId = priorAdhoc.id;
-          const ev = await appendEvent({
-            aggregateId: `adhoc:${priorAdhoc.id}`,
-            type: 'adhoc.updated',
-            payload: {
-              id: priorAdhoc.id,
-              date: opts.date,
-              startMinutes: opts.startMinutes,
-              durationMinutes: opts.durationMinutes,
-            },
-          });
-          set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        } else {
-          nextAdhocId = `adhoc-${taskId}-${Date.now().toString(36)}`;
-          const name = task?.title ?? 'Task';
-          const ev = await appendEvent({
-            aggregateId: `adhoc:${nextAdhocId}`,
-            type: 'adhoc.created',
-            payload: {
-              id: nextAdhocId,
-              date: opts.date,
-              startMinutes: opts.startMinutes,
-              durationMinutes: opts.durationMinutes,
-              name,
-              lineId: task?.lineId,
-              taskId,
-              status: 'active',
-            },
-          });
-          set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        }
-        // Same deferred → pending flip as scheduleTaskToRail. Any
-        // re-schedule — rail slot or free-time — reverses an earlier
-        // defer.
-        const taskAfter = get().tasks[taskId];
-        if (taskAfter?.status === 'deferred') {
-          const flip = await appendEvent({
-            aggregateId: `task:${taskId}`,
-            type: 'task.updated',
-            payload: {
-              id: taskId,
-              status: 'pending',
-              deferredAt: undefined,
-            },
-          });
-          set((draft) => applyEventInPlace(draft, flip.type, flip.payload));
-        }
-        await maybeEmitReschedule({
-          taskId,
-          priorSlot,
-          priorAdhoc,
-          nextDate: opts.date,
-          nextAdhocId,
-          isAutoHabit,
-        });
-        afterMutation();
-      },
-
-      overrideCycleDay: async (date, templateKey, sessionId, effectiveFrom) => {
-        const id = singleDateRuleId(date);
-        const payload: CalendarRule = {
-          id,
-          kind: 'single-date',
-          priority: CALENDAR_RULE_PRIORITY['single-date'],
-          value: { date, templateKey } as CalendarRuleSingleDate,
-          createdAt: Date.now(),
-        };
-        const existing = get().calendarRules[id];
-        const existingValue = existing?.value as
-          | CalendarRuleSingleDate
-          | undefined;
-        if (existing && existingValue?.templateKey === templateKey) return;
-        const ev = await appendEvent({
-          aggregateId: `calendar-rule:${id}`,
-          type: 'calendar-rule.upserted',
-          payload: payload as unknown as Record<string, unknown>,
-          sessionId,
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        if (sessionId) await touchSession(sessionId);
-        const next = get().calendarRules[id];
-        if (next) await emitCalendarRuleRevision(next, sessionId, effectiveFrom);
-        afterMutation();
-      },
-
-      clearCycleDayOverride: async (date, sessionId, effectiveFrom) => {
-        const id = singleDateRuleId(date);
-        if (!get().calendarRules[id]) return;
-        const ev = await appendEvent({
-          aggregateId: `calendar-rule:${id}`,
-          type: 'calendar-rule.removed',
-          payload: { id },
-          sessionId,
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        if (sessionId) await touchSession(sessionId);
-        await emitCalendarRuleTombstone(id, sessionId, effectiveFrom);
-        afterMutation();
-      },
-
-      upsertWeekdayRule: async (templateKey, weekdays, effectiveFrom) => {
-        // One rule per template — deterministic id lets subsequent
-        // edits (coverage shrinks / grows) replace the row in place.
-        const id = `cr-weekday-${templateKey}`;
-        const payload: CalendarRule = {
-          id,
-          kind: 'weekday',
-          priority: CALENDAR_RULE_PRIORITY.weekday,
-          value: { templateKey, weekdays: [...weekdays].sort() } as CalendarRuleWeekday,
-          createdAt: Date.now(),
-        };
-        const ev = await appendEvent({
-          aggregateId: `calendar-rule:${id}`,
-          type: 'calendar-rule.upserted',
-          payload: payload as unknown as Record<string, unknown>,
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        const next = get().calendarRules[id];
-        if (next) await emitCalendarRuleRevision(next, undefined, effectiveFrom);
-        afterMutation();
-      },
-
-      upsertDateRangeRule: async ({ id, from, to, templateKey, label, effectiveFrom }) => {
-        // Reuse the existing id on update so the rule row stays stable
-        // (and a later "revision history" view can key off it); mint
-        // a fresh ULID on create.
-        const ruleId = id ?? ulidLite('cr-range');
-        const existing = id ? get().calendarRules[id] : undefined;
-        const payload: CalendarRule = {
-          id: ruleId,
-          kind: 'date-range',
-          priority: CALENDAR_RULE_PRIORITY['date-range'],
-          value: { from, to, templateKey, ...(label && { label }) } as
-            CalendarRuleDateRange,
-          createdAt: existing?.createdAt ?? Date.now(),
-        };
-        const ev = await appendEvent({
-          aggregateId: `calendar-rule:${ruleId}`,
-          type: 'calendar-rule.upserted',
-          payload: payload as unknown as Record<string, unknown>,
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        const next = get().calendarRules[ruleId];
-        if (next) await emitCalendarRuleRevision(next, undefined, effectiveFrom);
-        afterMutation();
-        return ruleId;
-      },
-
-      upsertCycleRule: async ({ id, cycleLength, anchor, mapping, effectiveFrom }) => {
-        const ruleId = id ?? ulidLite('cr-cycle');
-        const existing = id ? get().calendarRules[id] : undefined;
-        const payload: CalendarRule = {
-          id: ruleId,
-          kind: 'cycle',
-          priority: CALENDAR_RULE_PRIORITY.cycle,
-          value: { cycleLength, anchor, mapping: [...mapping] } as CalendarRuleCycle,
-          createdAt: existing?.createdAt ?? Date.now(),
-        };
-        const ev = await appendEvent({
-          aggregateId: `calendar-rule:${ruleId}`,
-          type: 'calendar-rule.upserted',
-          payload: payload as unknown as Record<string, unknown>,
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        const next = get().calendarRules[ruleId];
-        if (next) await emitCalendarRuleRevision(next, undefined, effectiveFrom);
-        afterMutation();
-        return ruleId;
-      },
-
-      removeCalendarRule: async (id, effectiveFrom) => {
-        if (!get().calendarRules[id]) return;
-        const ev = await appendEvent({
-          aggregateId: `calendar-rule:${id}`,
-          type: 'calendar-rule.removed',
-          payload: { id },
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        await emitCalendarRuleTombstone(id, undefined, effectiveFrom);
-        afterMutation();
-      },
-
-      upsertCycle: async ({ startDate, label }) => {
-        // Deterministic id keyed on startDate — every Monday maps to
-        // at most one Cycle record, so edits (relabel, future length
-        // change) replace in place.
-        const id = `cycle-${startDate}`;
-        const endDate = addDaysIso(startDate, 6);
-        const existing = get().cycles[id];
-        const payload: Cycle = {
-          id,
-          startDate,
-          endDate,
-          ...(label && { label }),
-          createdAt: existing?.createdAt ?? Date.now(),
-        };
-        const ev = await appendEvent({
-          aggregateId: `cycle:${id}`,
-          type: 'cycle.upserted',
-          payload: payload as unknown as Record<string, unknown>,
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        afterMutation();
-        return id;
-      },
-
-      removeCycle: async (id) => {
-        if (!get().cycles[id]) return;
-        const ev = await appendEvent({
-          aggregateId: `cycle:${id}`,
-          type: 'cycle.removed',
-          payload: { id },
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        afterMutation();
-      },
-
-      upsertHabitPhase: async ({ id, lineId, name, description, startDate }) => {
-        const phaseId = id ?? ulidLite('hp');
-        const existing = id ? get().habitPhases[id] : undefined;
-        const payload: HabitPhase = {
-          id: phaseId,
-          lineId,
-          name,
-          startDate,
-          createdAt: existing?.createdAt ?? Date.now(),
-          ...(description && { description }),
-        };
-        const ev = await appendEvent({
-          aggregateId: `habit-phase:${phaseId}`,
-          type: 'habit-phase.upserted',
-          payload: payload as unknown as Record<string, unknown>,
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        afterMutation();
-        return phaseId;
-      },
-
-      removeHabitPhase: async (id) => {
-        if (!get().habitPhases[id]) return;
-        const ev = await appendEvent({
-          aggregateId: `habit-phase:${id}`,
-          type: 'habit-phase.removed',
-          payload: { id },
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        afterMutation();
-      },
-
-      setReflection: async (date, content) => {
-        const trimmed = content.replace(/\s+$/u, '');
-        const existing = get().reflections[date];
-        const isClear = trimmed.length === 0;
-        if (isClear && !existing) return;
-        if (!isClear && existing && existing.content === trimmed) return;
-        const ev = await appendEvent(
-          isClear
-            ? {
-                aggregateId: `reflection:${date}`,
-                type: 'reflection.cleared',
-                payload: { date },
-              }
-            : {
-                aggregateId: `reflection:${date}`,
-                type: 'reflection.upserted',
-                payload: { date, content: trimmed, updatedAt: Date.now() },
-              },
-        );
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        afterMutation();
-      },
-
-      upsertHabitBinding: async (opts, sessionId) => {
-        const id = opts.id ?? ulidLite('binding');
-        const existing = get().habitBindings[id];
-        const binding: HabitBinding = {
-          id,
-          habitId: opts.habitId,
-          railId: opts.railId,
-          ...(opts.weekdays !== undefined && { weekdays: opts.weekdays }),
-          createdAt: existing?.createdAt ?? Date.now(),
-        };
-        const ev = await appendEvent({
-          aggregateId: `habit-binding:${id}`,
-          type: 'habit-binding.upserted',
-          payload: binding as unknown as Record<string, unknown>,
-          sessionId,
-        });
-        if (sessionId) await touchSession(sessionId);
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        const next = get().habitBindings[id];
-        if (next) {
-          await emitHabitBindingRevision(next, sessionId, opts.effectiveFrom);
-        }
-        if (get().habitBindingTombstones[id]) {
-          const cleared = await appendEvent({
-            aggregateId: `habit-binding:${id}`,
-            type: 'habit-binding.tombstone-cleared',
-            payload: { bindingId: id },
-            ...(sessionId && { sessionId }),
-          });
-          set((draft) =>
-            applyEventInPlace(draft, cleared.type, cleared.payload),
-          );
-        }
-        afterMutation();
-        return id;
-      },
-
-      removeHabitBinding: async (id, sessionId, effectiveFrom) => {
-        if (!get().habitBindings[id]) return;
-        const ev = await appendEvent({
-          aggregateId: `habit-binding:${id}`,
-          type: 'habit-binding.removed',
-          payload: { id },
-          sessionId,
-        });
-        if (sessionId) await touchSession(sessionId);
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        await emitHabitBindingTombstone(id, sessionId, effectiveFrom);
-        afterMutation();
-      },
-
-      upsertAutoTask: async (task) => {
-        // Idempotent: the materializer uses deterministic ids
-        // (`task-auto-{habitId}-{date}`). Second call with the same id
-        // is a no-op. This lets cycle switches / Today-Track boots /
-        // rhythm-strip opens re-run freely without writing duplicates.
-        if (get().tasks[task.id]) return;
-        const ev = await appendEvent({
-          aggregateId: `task:${task.id}`,
-          type: 'task.created',
-          payload: { ...task },
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        afterMutation();
-      },
-
-      createAdhocEvent: async (opts) => {
-        const id = ulidLite('adhoc');
-        const payload: AdhocEvent = {
-          id,
-          date: opts.date,
-          name: opts.name,
-          startMinutes: opts.startMinutes,
-          durationMinutes: opts.durationMinutes,
-          status: 'active',
-          ...(opts.color && { color: opts.color }),
-          ...(opts.lineId && { lineId: opts.lineId }),
-        };
-        const ev = await appendEvent({
-          aggregateId: `adhoc:${id}`,
-          type: 'adhoc.created',
-          payload: payload as unknown as Record<string, unknown>,
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        afterMutation();
-        return id;
-      },
-
-      deleteAdhocEvent: async (id) => {
-        const ad = get().adhocEvents[id];
-        if (!ad) return;
-        if (ad.taskId) {
-          // Task-backed adhocs are owned by the Task's schedule state.
-          // Unscheduling the Task is the right path — refuse here so
-          // we don't leave a Task pointing at a deleted slot.
-          throw new Error(
-            '不能直接删除绑定 Task 的 Ad-hoc 事件 —— 去 Tasks 视图把任务移出自由时间排期。',
-          );
-        }
-        if (ad.status === 'deleted') return;
-        const ev = await appendEvent({
-          aggregateId: `adhoc:${id}`,
-          type: 'adhoc.deleted',
-          payload: {
-            id,
-            status: 'deleted',
-            deletedAt: new Date().toISOString(),
-          },
-        });
-        set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-        afterMutation();
-      },
-
-      unscheduleTask: async (taskId, sessionId) => {
-        // Capture prior binding BEFORE any mutation so maybeEmitUnschedule
-        // can decide whether to record a §5.5.6 overdue-shift record.
-        const priorTask = get().tasks[taskId];
-        const priorSlot = priorTask?.slot;
-        const priorAdhoc = Object.values(get().adhocEvents).find(
-          (a) => a.taskId === taskId && a.status === 'active',
-        );
-        const isAutoHabit = priorTask?.source === 'auto-habit';
-
-        let touched = false;
-        if (priorTask?.slot) {
-          const ev = await appendEvent({
-            aggregateId: `task:${taskId}`,
-            type: 'task.unscheduled',
-            payload: { id: taskId, slot: undefined },
-            sessionId,
-          });
-          set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-          touched = true;
-        }
-        for (const adhoc of Object.values(get().adhocEvents)) {
-          if (adhoc.taskId === taskId && adhoc.status === 'active') {
-            const ev = await appendEvent({
-              aggregateId: `adhoc:${adhoc.id}`,
-              type: 'adhoc.deleted',
-              payload: {
-                id: adhoc.id,
-                status: 'deleted',
-                deletedAt: new Date().toISOString(),
-              },
-              sessionId,
-            });
-            set((draft) => applyEventInPlace(draft, ev.type, ev.payload));
-            touched = true;
-          }
-        }
-        if (touched) {
-          await maybeEmitUnschedule({
-            taskId,
-            priorSlot,
-            priorAdhoc,
-            isAutoHabit,
-            ...(sessionId && { sessionId }),
-          });
-        }
-        if (touched && sessionId) await touchSession(sessionId);
-        afterMutation();
-      },
-
-      openEditSession: async (surface) => {
-        const session = await openSession(surface);
-        set((draft) => {
-          draft.sessions[session.id] = session;
-        });
-        return session;
-      },
-
-      closeEditSession: async (sessionId) => {
-        await closeSession(sessionId);
-        set((draft) => {
-          delete draft.sessions[sessionId];
-        });
-      },
-
-      /** §5.3.1 · roll back every event tagged with the session, then
-       *  rebuild the in-memory state from the surviving events. */
-      undoEditSession: async (sessionId) => {
-        const removed = await dropSessionEvents(sessionId);
-        // Any existing snapshot may have baked in the session's now-
-        // dropped events. Wipe them so the next cold start replays
-        // from scratch rather than inheriting ghost state.
-        await clearSnapshots();
-        const events = await loadEvents();
-        set((draft) => {
-          const reducerState = emptyReducerState();
-          for (const ev of events) {
-            applyEventInPlace(reducerState, ev.type, ev.payload);
-          }
-          draft.templates = reducerState.templates;
-          draft.rails = reducerState.rails;
-          draft.signals = reducerState.signals;
-          draft.shifts = reducerState.shifts;
-          draft.lines = reducerState.lines;
-          draft.tasks = reducerState.tasks;
-          draft.adhocEvents = reducerState.adhocEvents;
-          draft.calendarRules = reducerState.calendarRules;
-          draft.cycles = reducerState.cycles;
-          draft.habitPhases = reducerState.habitPhases;
-          draft.habitBindings = reducerState.habitBindings;
-        });
-        await closeSession(sessionId);
-        set((draft) => {
-          delete draft.sessions[sessionId];
-        });
-        return removed;
-      },
-    };
-  }),
-);
-
-// ------------------------------------------------------------------
-// One-shot selectors — a tiny ergonomic layer on top of store state.
-// ------------------------------------------------------------------
+// ============ One-shot selectors (preserved from legacy store.ts) ============
 
 export function selectRailsByTemplate(state: DayRailState, key: TemplateKey): Rail[] {
   return Object.values(state.rails)
@@ -2694,10 +1924,6 @@ export function selectRailsByTemplate(state: DayRailState, key: TemplateKey): Ra
 export function selectTemplateList(state: DayRailState): Template[] {
   return Object.values(state.templates);
 }
-
-// ------------------------------------------------------------------
-// Tasks view selectors (§5.5).
-// ------------------------------------------------------------------
 
 export function selectActiveLines(state: DayRailState): Line[] {
   return Object.values(state.lines)
@@ -2727,10 +1953,6 @@ export function selectTasksByLine(
     .sort((a, b) => a.order - b.order);
 }
 
-/** §4.1 / §10.4 · returns the user's reflection for a date, or
- *  `undefined` when nothing was written. The store keys reflections
- *  by date so this is an O(1) hash lookup; safe to call from a
- *  Zustand `useStore` selector without memoization. */
 export function selectReflection(
   state: Pick<DayRailState, 'reflections'>,
   date: string,
@@ -2738,8 +1960,6 @@ export function selectReflection(
   return state.reflections[date];
 }
 
-/** Phases attached to a habit Line, ordered by startDate asc.
- *  Returns empty array when the habit has phase tracking disabled. */
 export function selectHabitPhasesByLine(
   state: Pick<DayRailState, 'habitPhases'>,
   lineId: string,
@@ -2749,9 +1969,6 @@ export function selectHabitPhasesByLine(
     .sort((a, b) => a.startDate.localeCompare(b.startDate));
 }
 
-/** Current phase of a habit = the phase with `startDate <= today`
- *  and the largest startDate. Returns undefined when the habit has
- *  no phases or all phases start in the future. */
 export function selectCurrentHabitPhase(
   state: Pick<DayRailState, 'habitPhases'>,
   lineId: string,
@@ -2767,8 +1984,6 @@ export function selectCurrentHabitPhase(
   return best;
 }
 
-/** Has-milestone check — drives the §5.5 Project header's conditional
- *  progress bar. */
 export function hasMilestone(state: DayRailState, lineId: string): boolean {
   for (const t of Object.values(state.tasks)) {
     if (t.lineId !== lineId) continue;
@@ -2778,10 +1993,6 @@ export function hasMilestone(state: DayRailState, lineId: string): boolean {
   return false;
 }
 
-/** Project progress: max `milestonePercent` among done tasks in the
- *  Line. Returns 0 if no done-milestones yet. Callers should guard
- *  with `hasMilestone` — an all-zero bar on a no-milestone Project is
- *  misleading. */
 export function selectProjectProgress(state: DayRailState, lineId: string): number {
   let max = 0;
   for (const t of Object.values(state.tasks)) {
@@ -2809,6 +2020,4 @@ export function countTasks(
   return { done, open, total: done + open };
 }
 
-export { INBOX_LINE_ID };
-
-export type { Line, Task, AdhocEvent, RailColor };
+export { INBOX_LINE_ID } from './types';

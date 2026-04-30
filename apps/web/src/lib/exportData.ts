@@ -1,57 +1,34 @@
-// Backup export. Pulls the in-memory Zustand snapshot (authoritative
-// for the UI) into a JSON blob. Used for two paths:
-//   1. Manual download (Settings → 高级 → 下载 JSON) — produces a file
-//      via `<a download>`.
-//   2. Sync push (lib/sync/syncController) — the same bundle shape is
-//      what we upload to Drive `appdata`. The sync layer adds optional
-//      lineage metadata (snapshotId / parentSnapshotId / deviceId /
-//      deviceLabel) before upload. Manual download omits those fields;
-//      they are still optional on read so old bundles round-trip.
+// Backup export (v0.7).
 //
-// Not an event-log dump — the point is "I can eyeball my data" AND the
-// matching `importLocalData` can re-hydrate from this bundle (snapshot-
-// based restore, not event replay).
+// Two paths:
+//   1. Manual JSON download (Settings → 高级 → 下载 JSON) — produces a
+//      human-readable JSON snapshot of current state. NOT used by the
+//      sync layer in v0.7. Round-trip via "Import from snapshot" is
+//      not supported for JSON; the migration script
+//      (tools/migrate/migrate-json-to-yjs.ts) converts JSON → .dryj
+//      offline if the user wants to restore from a JSON backup.
+//   2. .dryj snapshot (Settings → 同步 → "Download snapshot") —
+//      binary container produced from the live Y.Doc. Round-trips
+//      cleanly via "Import from snapshot".
+//
+// The sync layer reads/writes its OWN .dryj wire format directly via
+// `exportYDocAsUpdate` from @dayrail/core/store + encodeDryj from
+// @dayrail/db/dryj — it does not use anything in this file.
 
-import { useStore } from '@dayrail/core';
+import {
+  exportYDocAsUpdate,
+  useStore,
+} from '@dayrail/core';
+import { encodeDryj, type DryjMeta } from '@dayrail/db/dryj';
 
-/** Optional lineage fields stamped by the sync layer. Manual-download
- *  bundles omit them; remote-sourced bundles always carry them. All
- *  optional on read so v0.4 / v0.5 bundles still validate. */
-export interface SyncMeta {
-  /** UUID identifying THIS bundle. Generated at upload time (sync) or
-   *  not present at all (manual download). */
-  snapshotId?: string;
-  /** UUID of the bundle this one was authored on top of — i.e. the
-   *  remote `snapshotId` the device had pulled at the moment writes
-   *  began. Diverged-branch detection compares this to remote
-   *  `snapshotId`. */
-  parentSnapshotId?: string;
-  /** Stable per-(browser, OPFS instance) UUID. Generated on first sync
-   *  enable; never rotates. */
-  deviceId?: string;
-  /** Human-readable device tag (UA-derived default, user-renamable in
-   *  Settings → 同步). Stamped on upload so other devices' boot gate
-   *  can name "the device whose change you're seeing". */
-  deviceLabel?: string;
-}
-
-export interface ExportBundle extends SyncMeta {
+export interface ExportBundle {
   app: 'dayrail';
   version: string;
   gitSha: string;
   exportedAt: string; // ISO
-  /** Schema version of the state payload itself. Bump when the shape
-   *  of any map changes so old bundles can be rejected / migrated.
-   *  v1 → v1 with v0.5 additive fields: the §10.5 revision tables and
-   *  identity-shell tombstones are present when produced by v0.5+;
-   *  absent in older bundles. Importer treats them as optional so v0.4
-   *  bundles still round-trip cleanly (the v0.5 sentinel migration
-   *  will backfill revisions on first boot post-import).
-   *
-   *  v0.6 sync (§7.6) does NOT bump this version — the sync metadata
-   *  fields (snapshotId / parentSnapshotId / deviceId / deviceLabel)
-   *  live at the bundle root, not under `state`, and are all `?` on
-   *  read. */
+  /** v0.7 export shape — the same `state` map shape v0.6 used. JSON
+   *  bundles are inspection-only in v0.7; "Import from snapshot"
+   *  expects the .dryj container, not this JSON. */
   schemaVersion: 1;
   state: {
     templates: unknown;
@@ -65,7 +42,6 @@ export interface ExportBundle extends SyncMeta {
     cycles: unknown;
     habitPhases: unknown;
     habitBindings: unknown;
-    // §10.5 revision tables (v0.5+; optional on read for back-compat).
     railRevisions?: unknown;
     templateRevisions?: unknown;
     calendarRuleRevisions?: unknown;
@@ -78,10 +54,7 @@ export interface ExportBundle extends SyncMeta {
   };
 }
 
-/** Build a bundle in memory without touching the DOM. The sync layer
- *  uses this directly; manual download wraps it in `exportLocalData`
- *  below. */
-export function buildExportBundle(meta?: SyncMeta): ExportBundle {
+export function buildExportBundle(): ExportBundle {
   const s = useStore.getState();
   return {
     app: 'dayrail',
@@ -89,10 +62,6 @@ export function buildExportBundle(meta?: SyncMeta): ExportBundle {
     gitSha: __APP_GIT_SHA__,
     exportedAt: new Date().toISOString(),
     schemaVersion: 1,
-    ...(meta?.snapshotId && { snapshotId: meta.snapshotId }),
-    ...(meta?.parentSnapshotId && { parentSnapshotId: meta.parentSnapshotId }),
-    ...(meta?.deviceId && { deviceId: meta.deviceId }),
-    ...(meta?.deviceLabel && { deviceLabel: meta.deviceLabel }),
     state: {
       templates: s.templates,
       rails: s.rails,
@@ -105,11 +74,6 @@ export function buildExportBundle(meta?: SyncMeta): ExportBundle {
       cycles: s.cycles,
       habitPhases: s.habitPhases,
       habitBindings: s.habitBindings,
-      // §10.5 — preserve every future-dated revision + tombstone so
-      // an export/import round-trip doesn't silently lose them. The
-      // sentinel migration would re-build the today-and-back baseline
-      // from the legacy mirrors, but it can't recover any forward
-      // cutovers the user already authored.
       railRevisions: s.railRevisions,
       templateRevisions: s.templateRevisions,
       calendarRuleRevisions: s.calendarRuleRevisions,
@@ -133,31 +97,50 @@ export function exportLocalData(): string {
     .replace(/[:.]/g, '-')
     .slice(0, 19);
   const filename = `dayrail-backup-${stamp}.json`;
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  // Release the object URL on the next tick — some Safari variants
-  // abort the download if we revoke synchronously.
+  triggerDownload(url, filename);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   return filename;
 }
 
-/** Trigger a download for an arbitrary bundle (used by the sync
- *  conflict dialog to give the user a one-click reversal copy of the
- *  losing side before it is overwritten). Mirrors `exportLocalData`'s
- *  download mechanics; caller chooses the filename. */
-export function downloadBundleAs(bundle: ExportBundle, filename: string): void {
-  const json = JSON.stringify(bundle, null, 2);
-  const blob = new Blob([json], { type: 'application/json' });
+/** Build a fresh `.dryj` container from the live Y.Doc and trigger a
+ *  download. Filename includes a timestamp so consecutive downloads
+ *  don't collide. Round-trips through "Import from snapshot". */
+export function exportDryjSnapshot(deviceId: string, deviceLabel: string): string {
+  const update = exportYDocAsUpdate();
+  const meta: DryjMeta = {
+    snapshotId: cryptoUUID(),
+    deviceId,
+    deviceLabel,
+    createdAt: new Date().toISOString(),
+    schemaVersion: 2,
+  };
+  const bytes = encodeDryj(meta, update);
+  const blob = new Blob([bytes as BlobPart], {
+    type: 'application/octet-stream',
+  });
   const url = URL.createObjectURL(blob);
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[:.]/g, '-')
+    .slice(0, 19);
+  const filename = `dayrail-snapshot-${stamp}.dryj`;
+  triggerDownload(url, filename);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return filename;
+}
+
+function triggerDownload(url: string, filename: string): void {
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function cryptoUUID(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `snap-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }

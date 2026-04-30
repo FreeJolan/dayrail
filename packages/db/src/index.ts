@@ -1,11 +1,11 @@
-// @dayrail/db — SQLite-over-OPFS persistence layer for DayRail v0.2+.
+// @dayrail/db — Y.Doc-backed persistence for DayRail v0.7.
 //
-// Consumers should import from the package root for high-level helpers
-// (createConnection, runMigrations, etc.) and from `./schema` when they
-// need typed table references for Drizzle queries.
+// v0.7 (ERD §7.7) replaced the v0.6 SQLite/sql.js layer with a single
+// `.dryj` Yjs binary on OPFS. Consumers import:
+//   - `./yjs` for the Y.Doc schema + state↔Yjs converters
+//   - `./dryj` for the binary container codec
+//   - `./yjsPersistence` for OPFS load/save
 
-export * from './connection';
-export * from './schema';
-export * from './migrate';
 export * from './dryj';
 export * from './yjs';
+export * from './yjsPersistence';

@@ -1,6 +1,12 @@
-// Sync controller — orchestrates push (debounced after writes,
+// Sync controller (v0.7) — orchestrates push (debounced after writes,
 // pagehide best-effort, manual button) and the boot-gate pull. Keeps
 // identity cursors + syncStore in sync.
+//
+// v0.7 wire format: `.dryj` Yjs binary container (see @dayrail/db/dryj).
+// Yjs's internal LWW + Lamport clock handles convergence, so the
+// "diverged" branch is gone — every pull is `Y.applyUpdate` and every
+// push uploads the local Y.Doc state. There is no in-flight conflict
+// surface; the user just sees field-level merges happen.
 //
 // Push path:
 //   1. caller (subscription / manual button / pagehide) calls
@@ -8,40 +14,40 @@
 //   2. controller debounces 60s; first event after a quiet window
 //      goes through immediately, follow-ups within the window are
 //      collapsed.
-//   3. uploads with a fresh snapshotId; parentSnapshotId =
-//      lastPulledSnapshotId at upload time. Pre-flight: read remote
-//      meta, ensure it still matches our parent — if not, abort and
-//      transition to "diverged" (next boot will surface the conflict
-//      card; mid-session we just stop pushing until the user pulls).
+//   3. encodes Y.Doc → .dryj → uploads as application/octet-stream.
 //
 // Pull path:
-//   1. boot gate calls runBootProbe() which returns a decision the
-//      gate UI then acts on (apply remote / show conflict / skip).
-//   2. If user accepts, applyRemote() stashes the bundle in the
-//      same sessionStorage key importLocalData uses, then resets
-//      OPFS — boot.ts on reload picks it up via popPendingImport.
+//   1. boot gate calls runBootProbe(); on linear-lead it downloads the
+//      remote `.dryj` and applyRemoteUpdate'd in-memory. The Y.Doc
+//      observer re-derives flat state and zustand setState fires —
+//      no page reload needed.
 
-import { useStore, type DayRailState } from '@dayrail/core';
 import {
-  buildExportBundle,
-  type ExportBundle,
-  downloadBundleAs,
-} from '../exportData';
-import { stashPendingImportAndReload } from '../importData';
+  useStore,
+  exportYDocAsUpdate,
+  applyRemoteUpdate,
+  replaceFromRemote,
+  getYDoc,
+  REMOTE_ORIGIN,
+  OPFS_ORIGIN,
+} from '@dayrail/core';
+import { encodeDryj, type DryjMeta } from '@dayrail/db/dryj';
 import {
   bumpDirtyCount,
   clearDirtyCount,
+  clearLocalIsSamplesOnly,
   getDeviceId,
   getDeviceLabel,
   getDirtyCount,
   getLastPulledSnapshotId,
+  isLocalSamplesOnly,
   setLastPulledSnapshotId,
   setLastSyncInfo,
 } from './identity';
 import {
-  downloadBundleById,
+  downloadDryjById,
   getRemoteMeta,
-  uploadSnapshot,
+  uploadDryj,
   type RemoteMeta,
 } from './driveBackend';
 import { isDriveConnected } from './driveAuth';
@@ -57,21 +63,78 @@ let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let unsubStore: (() => void) | null = null;
 let inFlightPush: Promise<void> | null = null;
+let inFlightPull: Promise<void> | null = null;
 
-/** Wire dirty-count tracking to the core store. Called once from
- *  main.tsx after boot. Subscribes to maps that represent user-
- *  authored state; map-identity changes (immer produces new
- *  references on writes) bump the dirty counter and schedule a
- *  push. */
+/** True when a pull is currently in progress. RuntimeSyncDialog's
+ *  tryProbe early-returns on this so it doesn't pop a "remote is
+ *  ahead" prompt for a pull that's already happening (would compare
+ *  against a stale lastPulled cursor mid-update). */
+export function isPullInFlight(): boolean {
+  return inFlightPull !== null;
+}
+/** Set when a runPush call arrives while another push is in-flight,
+ *  asking the in-flight one to schedule one more push on completion.
+ *  Coalesces multi-trigger windows (typing + visibility-change +
+ *  debounce timer all firing) into a single follow-up push. */
+let wantsPushFollowUp = false;
+
 export function startSyncBackgroundLoop(): void {
   if (unsubStore) return;
-  unsubStore = useStore.subscribe((curr, prev) => {
-    if (didUserStateChange(curr, prev)) {
-      const next = bumpDirtyCount();
-      syncStore.setDirtyCount(next);
-      schedulePush();
+  // Hook directly into the Y.Doc afterTransaction event (rather than
+  // subscribing to zustand's setState chain). Two wins:
+  //   1. transaction.origin is in the closure — no global
+  //      `lastTransactOrigin` to clobber if a future subscriber
+  //      re-enters Y.Doc.
+  //   2. Every Y.Doc transaction is by definition a synced-state
+  //      change (entities all live in Y.Doc); the v0.6
+  //      didUserStateChange diff over 19 zustand maps is no longer
+  //      needed.
+  // pendingShiftPrompt is UI-ephemeral (zustand-only, not in Y.Doc),
+  // so it correctly never triggers a dirty bump.
+  const doc = getYDoc();
+  const onTransaction = (transaction: { origin?: unknown }) => {
+    const origin = transaction?.origin;
+    if (origin === REMOTE_ORIGIN || origin === OPFS_ORIGIN) return;
+    // First non-remote write since boot means the user has authored
+    // something on top of (or instead of) the v0.7 sample seed.
+    // Clear the samples-only flag so ConnectDrivePanel / BootGate
+    // stop treating local as disposable. Cheap localStorage write;
+    // safe to call repeatedly.
+    if (isLocalSamplesOnly()) {
+      clearLocalIsSamplesOnly();
     }
-  });
+    // Session activity tracking: when origin is the id of an open
+    // session (set by openEditSession + threaded through every
+    // session-aware action's `doc.transact(..., sessionId ?? label)`),
+    // bump that session's changeCount + lastActivityAt. Drives
+    // EditSessionIndicator's "N changes since open" counter and the
+    // future idle-close timer. Lookup is O(1) on the zustand
+    // sessions map. Dropped event-log → touchSession in v0.7 cutover
+    // left this hole; the indicator was reading a counter that
+    // nothing incremented.
+    if (typeof origin === 'string') {
+      const sessions = useStore.getState().sessions;
+      const session = sessions[origin];
+      if (session) {
+        useStore.setState((prev) => ({
+          ...prev,
+          sessions: {
+            ...prev.sessions,
+            [origin]: {
+              ...session,
+              changeCount: session.changeCount + 1,
+              lastActivityAt: Date.now(),
+            },
+          },
+        }));
+      }
+    }
+    const next = bumpDirtyCount();
+    syncStore.setDirtyCount(next);
+    schedulePush();
+  };
+  doc.on('afterTransaction', onTransaction);
+  unsubStore = () => doc.off('afterTransaction', onTransaction);
 
   if (typeof window !== 'undefined') {
     window.addEventListener('visibilitychange', onVisibilityChange);
@@ -79,13 +142,6 @@ export function startSyncBackgroundLoop(): void {
     window.addEventListener('beforeunload', onBeforeUnload);
   }
 
-  // v0.6.3 recovery kick: schedulePush's timer dies on page reload,
-  // but dirtyCount lives in localStorage and survives. Without this
-  // kick, dirty work that was scheduled but not yet pushed at reload
-  // time would sit indefinitely (until the next user write or tab
-  // hide). Fire one push shortly after boot if there's anything
-  // pending. Small delay so boot-time auto-task materialization etc.
-  // settle into the same push.
   if (isDriveConnected() && getDirtyCount() > 0) {
     setTimeout(() => {
       if (!isDriveConnected() || getDirtyCount() === 0) return;
@@ -94,30 +150,6 @@ export function startSyncBackgroundLoop(): void {
       });
     }, RECOVERY_KICK_DELAY_MS);
   }
-}
-
-function didUserStateChange(curr: DayRailState, prev: DayRailState): boolean {
-  return (
-    curr.templates !== prev.templates ||
-    curr.rails !== prev.rails ||
-    curr.lines !== prev.lines ||
-    curr.tasks !== prev.tasks ||
-    curr.signals !== prev.signals ||
-    curr.shifts !== prev.shifts ||
-    curr.adhocEvents !== prev.adhocEvents ||
-    curr.calendarRules !== prev.calendarRules ||
-    curr.cycles !== prev.cycles ||
-    curr.habitPhases !== prev.habitPhases ||
-    curr.habitBindings !== prev.habitBindings ||
-    curr.railRevisions !== prev.railRevisions ||
-    curr.templateRevisions !== prev.templateRevisions ||
-    curr.calendarRuleRevisions !== prev.calendarRuleRevisions ||
-    curr.habitBindingRevisions !== prev.habitBindingRevisions ||
-    curr.railTombstones !== prev.railTombstones ||
-    curr.templateTombstones !== prev.templateTombstones ||
-    curr.calendarRuleTombstones !== prev.calendarRuleTombstones ||
-    curr.habitBindingTombstones !== prev.habitBindingTombstones
-  );
 }
 
 function schedulePush(): void {
@@ -144,18 +176,13 @@ function onVisibilityChange(): void {
 function onPageHide(): void {
   if (getDirtyCount() > 0 && isDriveConnected()) {
     void runPush({ trigger: 'pagehide' }).catch(() => {
-      /* swallow — we're leaving the page anyway */
+      /* leaving anyway */
     });
   }
 }
 
 function onBeforeUnload(): void {
-  // Best-effort keepalive push. If the user has already triggered a
-  // recent push (no dirty items), skip — we'd just churn Drive.
   if (getDirtyCount() === 0 || !isDriveConnected()) return;
-  // We can't await here without blocking the unload. Fire and forget;
-  // the keepalive flag inside runPush's fetch chain is what makes it
-  // survive teardown for short uploads.
   void runPush({ trigger: 'beforeunload', keepalive: true }).catch(() => {
     /* ignore */
   });
@@ -173,35 +200,19 @@ interface RunPushOpts {
   keepalive?: boolean;
 }
 
-/** Manual sync outcome — describes what `runManualSync` did so the
- *  caller (Settings → 同步 → 立即同步) can render the right feedback
- *  or surface a conflict card.
+/** Manual sync outcome.
  *
- *  - `pushed` — local was ahead (or remote was empty); push completed.
- *  - `noop` — already in sync, nothing dirty; no Drive write performed.
- *  - `pulling` — remote was ahead and local was clean; the apply-bundle
- *    path is mid-execution and will reload the page (so this kind is
- *    typed for completeness but never observed by the caller).
- *  - `diverged` — remote ahead AND local dirty; caller should surface
- *    the existing conflict card via the
- *    `dayrail-sync:show-diverged` CustomEvent that `RuntimeSyncDialog`
- *    listens for.
- *  - `offline` — Drive unreachable / not connected; caller surfaces
- *    a transient error. */
+ *  - `pushed` — local pushed.
+ *  - `noop` — already in sync, nothing dirty.
+ *  - `pulled` — remote was ahead; merged in-memory (no reload).
+ *  - `offline` — Drive unreachable / not connected. */
 export type ManualSyncOutcome =
   | { kind: 'pushed' }
   | { kind: 'noop' }
-  | { kind: 'pulling' }
-  | { kind: 'diverged'; remote: RemoteMeta }
+  | { kind: 'pulled' }
   | { kind: 'offline'; reason: string };
 
-/** Manual entry-point — wired to Settings → 同步 → 立即同步.
- *
- *  v0.6.3 (ERD §7.7): bidirectional. Probe Drive first, then either
- *  push (if remote is at-or-behind local), pull (if remote is ahead
- *  and local is clean), or surface a conflict (if both diverged).
- *  Replaces the v0.6 push-only `runManualPush`, which mis-fired when
- *  the user clicked "立即同步" hoping it would pull. */
+/** Manual entry — wired to Settings → 同步 → 立即同步. */
 export async function runManualSync(): Promise<ManualSyncOutcome> {
   if (!isDriveConnected()) {
     return { kind: 'offline', reason: 'NOT_CONNECTED' };
@@ -211,7 +222,6 @@ export async function runManualSync(): Promise<ManualSyncOutcome> {
     return { kind: 'offline', reason: probe.reason };
   }
   if (probe.kind === 'no-remote') {
-    // No canonical on Drive yet — seed it. Push regardless of dirty.
     await runPush({ trigger: 'manual' });
     return { kind: 'pushed' };
   }
@@ -222,65 +232,291 @@ export async function runManualSync(): Promise<ManualSyncOutcome> {
     }
     return { kind: 'noop' };
   }
-  if (probe.kind === 'linear-lead') {
-    // Remote ahead, local clean → pull. applyRemoteBundle reloads the
-    // page; never returns. The recovery kick in
-    // startSyncBackgroundLoop handles any post-reload dirty work
-    // (none expected here since dirtyCount is 0 on this branch).
-    const bundle = await fetchRemoteBundle(probe.remote);
-    await applyRemoteBundle(bundle);
-    return { kind: 'pulling' };
+  // linear-lead: pull (CRDT-merge in-memory; no reload). If the user
+  // had uncommitted local writes pre-pull, those survive the merge
+  // but Drive doesn't have them yet — explicitly push as part of the
+  // same manual action so the user can close the tab right after
+  // clicking 立即同步 without stranding their edits. (Without the
+  // inline push, runPullFromRemote merely schedules a 60s debounce
+  // that may not fire before tab close.) Return 'pushed' in that
+  // path so UI surfaces tell the user "everything's on Drive now"
+  // instead of the merge-only "已合并云端改动" hint.
+  await runPullFromRemote(probe.remote);
+  if (getDirtyCount() > 0 && isDriveConnected()) {
+    await runPush({ trigger: 'manual' });
+    return { kind: 'pushed' };
   }
-  return { kind: 'diverged', remote: probe.remote };
+  return { kind: 'pulled' };
+}
+
+/** Force-push: upload the current local Y.Doc to Drive WITHOUT the
+ *  runPush preflight pull-merge. Drive's canonical becomes whatever
+ *  this device has; remote devices' subsequent pulls will CRDT-merge
+ *  with their LOCAL ops (those survive). Use case: user just imported
+ *  a `.dryj` they want Drive to mirror exactly, or wants to "rollback"
+ *  Drive after Yjs surprised them. Distinct from `runPush({ trigger:
+ *  'manual' })` which would pull-merge first and re-upload the union. */
+export async function runForcePush(): Promise<void> {
+  if (!isDriveConnected()) throw new Error('NOT_CONNECTED');
+  // Cancel anything that would re-merge AFTER this force push.
+  // Specifically:
+  //   - pushTimer: a debounced runPush 60s later would do a
+  //     preflight pull-merge against the new force-pushed canonical
+  //     plus any third-device push that landed in the gap, then
+  //     upload the merge — undoing the force-push intent.
+  //   - retryTimer: same shape after a recent push failure.
+  //   - wantsPushFollowUp: similar — force-push replaces the in-
+  //     flight push semantics; we don't want a follow-up debounced
+  //     push to fire.
+  if (pushTimer) {
+    clearTimeout(pushTimer);
+    pushTimer = null;
+  }
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  wantsPushFollowUp = false;
+  // Serialize behind any in-flight push/pull to avoid racing on the
+  // lastPulled cursor.
+  if (inFlightPull) {
+    try {
+      await inFlightPull;
+    } catch {
+      /* continue */
+    }
+  }
+  if (inFlightPush) {
+    try {
+      await inFlightPush;
+    } catch {
+      /* continue */
+    }
+  }
+  syncStore.setPhase({ kind: 'syncing', reason: 'push' });
+  inFlightPush = (async () => {
+    try {
+      const update = exportYDocAsUpdate();
+      const snapshotId = cryptoUUID();
+      const meta: DryjMeta = {
+        snapshotId,
+        // No parentSnapshotId — force-push is intentionally
+        // detached from prior lineage.
+        deviceId: getDeviceId(),
+        deviceLabel: getDeviceLabel(),
+        createdAt: new Date().toISOString(),
+        schemaVersion: 2,
+      };
+      const bytes = encodeDryj(meta, update);
+      await uploadDryj(bytes, {
+        snapshotId,
+        deviceId: getDeviceId(),
+        deviceLabel: getDeviceLabel(),
+      });
+      setLastPulledSnapshotId(snapshotId);
+      clearDirtyCount();
+      syncStore.setDirtyCount(0);
+      clearLocalIsSamplesOnly();
+      const info = { at: Date.now(), label: getDeviceLabel() };
+      setLastSyncInfo(info);
+      syncStore.setLastSync(info);
+      syncStore.setPhase({ kind: 'idle' });
+    } catch (err) {
+      console.warn('[sync] force-push failed:', err);
+      syncStore.setPhase({
+        kind: 'error',
+        message: (err as Error).message ?? '强制推送失败',
+      });
+      throw err;
+    } finally {
+      inFlightPush = null;
+    }
+  })();
+  return inFlightPush;
+}
+
+async function runPullFromRemote(remote: RemoteMeta): Promise<void> {
+  // Serialize against an in-flight push so the lineage cursor
+  // (lastPulledSnapshotId) doesn't get clobbered by an upload's
+  // post-success setLastPulledSnapshotId after we've already
+  // written the pulled remote's snapshotId. If a push is mid-air,
+  // wait for it to settle, then start the pull.
+  if (inFlightPush) {
+    try {
+      await inFlightPush;
+    } catch {
+      /* push errored; we still want to attempt the pull */
+    }
+  }
+  if (inFlightPull) return inFlightPull;
+  inFlightPull = (async () => {
+    syncStore.setPhase({ kind: 'syncing', reason: 'pull' });
+    // Echo prevention: the inline doc.on('afterTransaction', ...)
+    // listener registered in startSyncBackgroundLoop reads
+    // transaction.origin from its closure and skips the dirty bump
+    // when origin === REMOTE_ORIGIN / OPFS_ORIGIN. So the applyUpdate
+    // below does NOT schedule a follow-up push.
+    try {
+      const bytes = await downloadDryjById(remote.fileId);
+      applyRemoteUpdate(bytes);
+      setLastPulledSnapshotId(remote.snapshotId);
+      // Do NOT clearDirtyCount here. After Y.applyUpdate, the merged
+      // Y.Doc holds the union of remote + local ops, but the *local*
+      // ops are still unsynced — Drive's canonical only carries the
+      // remote half (the bytes we just pulled). Zeroing the dirty
+      // cursor would mean no push trigger fires until the user makes
+      // another edit, stranding their pre-pull writes on this device.
+      // Leave the count alone; if there were dirty ops before the
+      // pull, they're still dirty after, and the next debounced /
+      // visibility / manual push naturally sweeps them up. (runPush
+      // clears dirty on success because the upload covers everything.)
+      //
+      // DO clear the samples-only flag though. After this merge path
+      // completes, local holds (samples ∪ remote real data) — the
+      // "samples-only" assertion is false; future pull surfaces should
+      // not treat local as disposable. Defensive against the bug where
+      // ConnectDrivePanel/BootGate/RuntimeSyncDialog took the merge
+      // branch instead of replace (e.g., isLocalSamplesOnly() returned
+      // a stale false), leaving the flag stuck at '1'.
+      clearLocalIsSamplesOnly();
+      const info = { at: Date.now(), label: getDeviceLabel() };
+      setLastSyncInfo(info);
+      syncStore.setLastSync(info);
+      syncStore.setPhase({ kind: 'idle' });
+      // If there's local-only work the pull just merged with, nudge
+      // a push so it propagates to Drive without waiting for the next
+      // user write. schedulePush respects the 60s debounce.
+      if (getDirtyCount() > 0 && isDriveConnected()) {
+        schedulePush();
+      }
+    } catch (err) {
+      console.warn('[sync] pull failed:', err);
+      syncStore.setPhase({
+        kind: 'error',
+        message: (err as Error).message ?? '拉取失败',
+      });
+      throw err;
+    } finally {
+      inFlightPull = null;
+    }
+  })();
+  return inFlightPull;
 }
 
 async function runPush(opts: RunPushOpts): Promise<void> {
+  // Early-return when dirty=0: nothing to upload. Specifically guards
+  // against stale pushTimer / retryTimer firings AFTER runForcePush
+  // (or replaceLocalFromRemote) zeroed the dirty cursor — without
+  // this we'd waste a Drive history slot uploading the same state
+  // under a fresh snapshotId. Skip the guard for 'manual' triggers
+  // which want the noop semantics surfaced via runManualSync's
+  // 'noop' return.
+  if (opts.trigger !== 'manual' && getDirtyCount() === 0) return;
+  // Coalesce reentrant pushes: if a push is already in-flight (e.g.
+  // the user typed in 5 places, debounce fired, and a
+  // visibility-change is now firing too), don't queue N follow-ups.
+  // Mark "we want one more after this finishes"; the in-flight push
+  // re-fires once if dirty-count is still > 0 when it lands.
   if (inFlightPush) {
-    // Another push is in flight; reschedule on its tail.
-    return inFlightPush.then(() => runPush(opts));
+    wantsPushFollowUp = true;
+    return inFlightPush;
   }
   if (!isDriveConnected()) return;
+  // Wait for any in-flight pull to settle so the upload encodes
+  // post-merge state, not a snapshot taken during the merge window.
+  if (inFlightPull) {
+    try {
+      await inFlightPull;
+    } catch {
+      /* pull errored; continue with whatever we have locally */
+    }
+  }
 
   const phaseBefore = syncStore.getSnapshot().phase;
   syncStore.setPhase({ kind: 'syncing', reason: 'push' });
 
   inFlightPush = (async () => {
     try {
-      // Pre-flight: ensure remote hasn't moved past our parent. If it
-      // has, we're diverged and can't safely push — surface offline-
-      // ish state and let the next boot's gate run the conflict card.
-      const remote = await getRemoteMeta().catch(() => null);
-      const parent = getLastPulledSnapshotId();
-      if (remote && parent && remote.snapshotId !== parent) {
-        // Diverged mid-session. Don't auto-overwrite remote.
-        syncStore.setPhase({
-          kind: 'error',
-          message: '云端有另一台设备的新改动，请在 Settings 同步页处理',
-        });
-        return;
+      // Pre-flight: if remote has moved past our last pull, pull-and-
+      // merge BEFORE encoding the upload. Drive isn't a Yjs server,
+      // so it stores whatever bytes the last pusher uploaded — without
+      // this step, A's push would overwrite a canonical that already
+      // contained B's edits.
+      //
+      // This SHRINKS the wipe window from "anywhere between A's last
+      // pull and A's upload" to "between A's preflight getRemoteMeta
+      // and A's uploadDryj" — it does NOT close it. Drive REST has
+      // no etag/precondition on the upload here, so a B-push that
+      // lands inside the gap still overwrites. Local Y.Docs converge
+      // eventually (next pull on either device merges everything),
+      // but a freshly-provisioned device pulling Drive in the gap
+      // sees a snapshot missing one side's ops until either device
+      // pushes again. Acceptable for the single-user / occasional-
+      // multi-device workload v0.7 targets; tighten with Drive
+      // headRevisionId precondition if/when this ever bites.
+      //
+      // Skip the preflight for keepalive (pagehide budget) — the
+      // next active push from this device will repair lineage.
+      if (!opts.keepalive) {
+        try {
+          const remoteBefore = await getRemoteMeta();
+          const lastPulled = getLastPulledSnapshotId();
+          if (
+            remoteBefore &&
+            remoteBefore.snapshotId &&
+            remoteBefore.snapshotId !== lastPulled
+          ) {
+            const remoteBytes = await downloadDryjById(remoteBefore.fileId);
+            applyRemoteUpdate(remoteBytes);
+            setLastPulledSnapshotId(remoteBefore.snapshotId);
+            // Don't clearDirtyCount here — local still has unpushed
+            // ops the upload below will carry. The merge added
+            // remote ops on top; the union is what we encode.
+          }
+        } catch (preflightErr) {
+          // If the preflight fails, fall through to a plain push —
+          // worst case we re-introduce the v0.6 wipe-window for one
+          // upload cycle, which is the prior behavior anyway.
+          console.warn('[sync] pull-before-push preflight failed:', preflightErr);
+        }
       }
 
-      const snapshotId =
-        typeof crypto !== 'undefined' && 'randomUUID' in crypto
-          ? crypto.randomUUID()
-          : `snap-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const bundle = buildExportBundle({
+      const update = exportYDocAsUpdate();
+      const snapshotId = cryptoUUID();
+      const parent = getLastPulledSnapshotId();
+      const meta: DryjMeta = {
+        snapshotId,
+        ...(parent && { parentSnapshotId: parent }),
+        deviceId: getDeviceId(),
+        deviceLabel: getDeviceLabel(),
+        createdAt: new Date().toISOString(),
+        schemaVersion: 2,
+      };
+      const bytes = encodeDryj(meta, update);
+      await uploadDryj(bytes, {
         snapshotId,
         ...(parent && { parentSnapshotId: parent }),
         deviceId: getDeviceId(),
         deviceLabel: getDeviceLabel(),
       });
 
-      await uploadSnapshot(bundle);
-
       setLastPulledSnapshotId(snapshotId);
       clearDirtyCount();
       syncStore.setDirtyCount(0);
+      // After a successful push, local has been committed to Drive.
+      // The samples-only flag's whole job is to gate the destructive
+      // "replace local with remote" branch on first-connect devices;
+      // once we've pushed (whether the upload was samples or real
+      // data), local IS now part of the canonical lineage, and a
+      // future pull must merge — not replace. Clearing the flag here
+      // covers the "fresh device → connect Drive (no canonical) →
+      // ConnectDrivePanel pushes seeds up via runManualSync" path,
+      // which previously left samplesOnly=1 forever.
+      clearLocalIsSamplesOnly();
       const info = { at: Date.now(), label: getDeviceLabel() };
       setLastSyncInfo(info);
       syncStore.setLastSync(info);
       syncStore.setPhase({ kind: 'idle' });
-      // Successful push — drop any pending retry.
       if (retryTimer) {
         clearTimeout(retryTimer);
         retryTimer = null;
@@ -289,23 +525,13 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       const msg = (err as Error).message ?? String(err);
       console.warn('[sync] push failed:', err);
       syncStore.setPhase({ kind: 'error', message: msg });
-      // Restore the previous phase if it was idle — but keep error
-      // visible if user explicitly triggered manual.
       if (opts.trigger !== 'manual' && phaseBefore.kind === 'idle') {
-        // For background pushes we want to fall back to idle quickly
-        // so the indicator doesn't get stuck — but keep the dirty
-        // banner because dirtyCount is still > 0.
         setTimeout(() => {
           if (syncStore.getSnapshot().phase.kind === 'error') {
             syncStore.setPhase({ kind: 'idle' });
           }
         }, 2000);
       }
-      // v0.6.3 retry: if there's still dirty work and we're still
-      // connected, schedule a single retry after a backoff window.
-      // Skipped for manual triggers (the user is right there and
-      // can re-click) and for the retry trigger itself (no infinite
-      // ladder; next user write or visibility-change will pick it up).
       if (
         opts.trigger !== 'manual' &&
         opts.trigger !== 'retry' &&
@@ -317,37 +543,47 @@ async function runPush(opts: RunPushOpts): Promise<void> {
           retryTimer = null;
           if (!isDriveConnected() || getDirtyCount() === 0) return;
           void runPush({ trigger: 'retry' }).catch(() => {
-            // Already logged inside; swallow here so the retry
-            // chain doesn't fan out into uncaught rejections.
+            /* logged inside */
           });
         }, RETRY_BACKOFF_MS);
       }
       throw err;
     } finally {
       inFlightPush = null;
+      // Replay-once if reentrant runPush calls landed during this
+      // upload AND there's still real work to push. The flag is the
+      // contract: "exactly one more push after I finish, regardless
+      // of how many reentrant calls arrived." Without the dirty-
+      // count check we'd echo a no-op upload.
+      if (wantsPushFollowUp) {
+        wantsPushFollowUp = false;
+        if (getDirtyCount() > 0 && isDriveConnected()) {
+          // Re-trigger as a debounced trigger so the new debounce
+          // window collapses subsequent reentrants again.
+          schedulePush();
+        }
+      }
     }
   })();
 
   return inFlightPush;
 }
 
-// ============ Boot probe + apply ============
+// ============ Boot probe ============
 
 export type BootProbeOutcome =
-  | { kind: 'no-remote' } // remote has never been written
-  | { kind: 'equal'; remote: RemoteMeta } // remote.snapshotId === lastPulled
-  | { kind: 'linear-lead'; remote: RemoteMeta } // remote ahead, local clean
-  | { kind: 'diverged'; remote: RemoteMeta } // remote ahead, local dirty
+  | { kind: 'no-remote' }
+  | { kind: 'equal'; remote: RemoteMeta }
+  | { kind: 'linear-lead'; remote: RemoteMeta }
   | { kind: 'offline'; reason: string };
 
-/** Boot gate calls this once on cold start to decide what to render
- *  (silent pull / confirm card / conflict card / offline banner).
- *  Soft and hard timeouts mirror ERD §7.6.
+/** Read remote canonical metadata and classify state. v0.7 has no
+ *  `diverged` branch — Yjs converges deterministically, so any remote
+ *  that's ahead is just "linear-lead"; the local doc applies it and
+ *  any local-only changes survive via CRDT merge.
  *
- *  `silent: true` — passive runtime probes (periodic / online-restoration,
- *  ERD §7.7) skip the topbar phase mutation so a successful no-op probe
- *  doesn't flash `⟳ syncing` on every tick. The boot gate and visibility
- *  probe stay non-silent because the user perceives those moments. */
+ *  `silent: true` skips the topbar phase mutation (used by passive
+ *  periodic / online-restoration probes). */
 export async function runBootProbe(
   options: { silent?: boolean } = {},
 ): Promise<BootProbeOutcome> {
@@ -370,17 +606,12 @@ export async function runBootProbe(
   const probe = (async (): Promise<BootProbeOutcome> => {
     try {
       const remote = await getRemoteMeta();
-      if (!remote) {
-        return { kind: 'no-remote' };
-      }
+      if (!remote) return { kind: 'no-remote' };
       const lastPulled = getLastPulledSnapshotId();
       if (remote.snapshotId === lastPulled) {
         return { kind: 'equal', remote };
       }
-      const dirty = getDirtyCount() > 0;
-      return dirty
-        ? { kind: 'diverged', remote }
-        : { kind: 'linear-lead', remote };
+      return { kind: 'linear-lead', remote };
     } catch (err) {
       const msg = (err as Error).message ?? 'PROBE_FAILED';
       return { kind: 'offline', reason: msg };
@@ -403,64 +634,76 @@ export const PROBE_TIMEOUTS = {
   hard: PROBE_HARD_TIMEOUT_MS,
 };
 
-/** Apply a remote bundle to local: stash it, persist
- *  lastPulledSnapshotId, then OPFS reset + reload. The function
- *  never returns — the reload takes over. */
-export async function applyRemoteBundle(bundle: ExportBundle): Promise<void> {
-  if (bundle.snapshotId) {
-    setLastPulledSnapshotId(bundle.snapshotId);
+/** Apply remote `.dryj` bytes to the local Y.Doc and update sync
+ *  cursors. No reload — the Y.Doc observer rebuilds zustand state
+ *  in place. Used by the boot gate's "linear lead, accept pull" path
+ *  and by the runtime visibility/online probes' auto-pull. */
+export async function applyRemoteDryj(remote: RemoteMeta): Promise<void> {
+  await runPullFromRemote(remote);
+}
+
+/** "First device joining an existing Drive canonical" pull. Replaces
+ *  local Y.Doc state with the remote bytes (clears top-level maps
+ *  first) instead of CRDT-merging. Used by ConnectDrivePanel when
+ *  lastPulledSnapshotId is null — the local state at that moment is
+ *  almost certainly v0.7 sample seeds, NOT user data the user wants
+ *  to preserve. CRDT-merging samples with cloud data and pushing the
+ *  union pollutes Drive for every other device. */
+export async function replaceLocalFromRemote(remote: RemoteMeta): Promise<void> {
+  // Replace semantics: any pending debounced push referenced the
+  // pre-replace state. Cancel it so we don't waste a Drive history
+  // slot uploading the just-pulled state under a fresh snapshotId
+  // 60s later.
+  if (pushTimer) {
+    clearTimeout(pushTimer);
+    pushTimer = null;
   }
-  clearDirtyCount();
-  syncStore.setDirtyCount(0);
-  await stashPendingImportAndReload(bundle);
+  if (inFlightPush) {
+    try {
+      await inFlightPush;
+    } catch {
+      /* push errored; we still want to replace */
+    }
+  }
+  if (inFlightPull) return inFlightPull;
+  inFlightPull = (async () => {
+    syncStore.setPhase({ kind: 'syncing', reason: 'pull' });
+    try {
+      const bytes = await downloadDryjById(remote.fileId);
+      replaceFromRemote(bytes);
+      setLastPulledSnapshotId(remote.snapshotId);
+      // Replace semantics: local is now exactly remote, nothing
+      // unsynced. Clear the samples-only flag too — local now
+      // mirrors a real Drive canonical, not a v0.7 sample seed.
+      clearDirtyCount();
+      syncStore.setDirtyCount(0);
+      clearLocalIsSamplesOnly();
+      const info = { at: Date.now(), label: getDeviceLabel() };
+      setLastSyncInfo(info);
+      syncStore.setLastSync(info);
+      syncStore.setPhase({ kind: 'idle' });
+    } catch (err) {
+      console.warn('[sync] replace-from-remote failed:', err);
+      syncStore.setPhase({
+        kind: 'error',
+        message: (err as Error).message ?? '替换本地失败',
+      });
+      throw err;
+    } finally {
+      inFlightPull = null;
+    }
+  })();
+  return inFlightPull;
 }
 
-/** Pull the remote canonical bundle in full (body, not just meta).
- *  Used by the boot gate's "linear lead, accept pull" path and the
- *  conflict card's "keep remote" path. */
-export async function fetchRemoteBundle(remote: RemoteMeta): Promise<ExportBundle> {
-  return downloadBundleById(remote.fileId);
+/** For the import flow: download remote `.dryj` bytes raw. */
+export async function fetchRemoteDryj(remote: RemoteMeta): Promise<Uint8Array> {
+  return downloadDryjById(remote.fileId);
 }
 
-/** For the conflict card "overwrite remote" path: download a copy of
- *  the remote bundle to the user's Downloads first, so the action is
- *  reversible. ERD §7.6 mandates this gate. */
-export async function downloadRemoteAsBackup(remote: RemoteMeta): Promise<void> {
-  const bundle = await downloadBundleById(remote.fileId);
-  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  downloadBundleAs(bundle, `dayrail-remote-conflict-${ts}.json`);
-}
-
-/** For the conflict card "keep remote, export local first" path. */
-export function downloadLocalAsBackup(): void {
-  const bundle = buildExportBundle();
-  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  downloadBundleAs(bundle, `dayrail-local-conflict-${ts}.json`);
-}
-
-/** For the conflict card "overwrite remote" path: forces a push that
- *  bypasses the parent-snapshot check (we KNOW remote is ahead and
- *  the user authorized the overwrite). */
-export async function forcePushOverridingRemote(): Promise<void> {
-  syncStore.setPhase({ kind: 'syncing', reason: 'push' });
-  const snapshotId =
-    typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : `snap-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  // We deliberately do NOT set parentSnapshotId — this push is a
-  // "fork override". The next pull on any other device will treat
-  // this as the new canonical and offer the diverged card.
-  const bundle = buildExportBundle({
-    snapshotId,
-    deviceId: getDeviceId(),
-    deviceLabel: getDeviceLabel(),
-  });
-  await uploadSnapshot(bundle);
-  setLastPulledSnapshotId(snapshotId);
-  clearDirtyCount();
-  syncStore.setDirtyCount(0);
-  const info = { at: Date.now(), label: getDeviceLabel() };
-  setLastSyncInfo(info);
-  syncStore.setLastSync(info);
-  syncStore.setPhase({ kind: 'idle' });
+function cryptoUUID(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `snap-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }

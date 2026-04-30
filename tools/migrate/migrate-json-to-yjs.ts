@@ -102,12 +102,37 @@ function main(): void {
     .join(' ');
   process.stdout.write(`  contents: ${summary || '(empty)'}\n`);
 
+  // v0.6 ExportBundles never carried `state.dailyReflections` —
+  // reflections were a local-only SQL table not exported. v0.7 syncs
+  // reflections via Y.Doc, but this migration starts with an empty
+  // dailyReflections map. Warn the user so they can manually copy /
+  // photograph reflections out of v0.6 before flipping to v0.7.
+  if (
+    !bundle.state?.dailyReflections ||
+    (typeof bundle.state.dailyReflections === 'object' &&
+      Object.keys(bundle.state.dailyReflections as object).length === 0)
+  ) {
+    process.stdout.write(
+      '  ⚠ reflections: not present in v0.6 export — v0.7 starts empty.\n' +
+      '    If you wrote daily reflections in v0.6, copy them out before\n' +
+      '    flipping to v0.7 (they were never included in JSON exports).\n',
+    );
+  }
+
   const doc = createYDoc();
   loadFlatStateIntoDoc(doc, bundle.state as FlatState);
   const update = encodeDocAsUpdate(doc);
 
+  // Forensics: link the v0.7 .dryj back to its v0.6 source bundle via
+  // parentSnapshotId. After this .dryj is imported and pushed for the
+  // first time, the Drive canonical's appProperties.parentSnapshotId
+  // will point at the v0.6 ExportBundle's snapshotId — useful when
+  // tracing "where did this v0.7 lineage start". The pointer is meta
+  // only; Yjs's Lamport clocks don't span the v0.6 → v0.7 cut.
+  const v06Lineage = bundle.snapshotId ?? bundle.parentSnapshotId;
   const meta: DryjMeta = {
     snapshotId: randomUUID(),
+    ...(v06Lineage && { parentSnapshotId: v06Lineage }),
     deviceId: bundle.deviceId ?? randomUUID(),
     deviceLabel: 'migration',
     createdAt: new Date().toISOString(),

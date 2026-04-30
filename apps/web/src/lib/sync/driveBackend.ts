@@ -1,30 +1,26 @@
-// Drive REST against the `appdata` space. Only this app sees these
-// files (per OAuth scope drive.appdata). All calls go through
+// Drive REST against the `appdata` space (v0.7). Only this app sees
+// these files (per OAuth scope drive.appdata). All calls go through
 // ensureAccessToken which transparently handles silent refresh.
 //
 // Files we manage in `appdata`:
-//   dayrail-snapshot.json         — canonical "latest", overwritten on every push
-//   dayrail-snapshot-{ts}-{label}.json   — rolling history, 14 most recent kept
+//   dayrail-snapshot.dryj          — canonical "latest", overwritten on every push
+//   dayrail-snapshot-{ts}-{label}.dryj — rolling history, 14 most recent kept
 //
-// Note: `appdata` does NOT support folders the way the user-visible
-// Drive does — files there have implicit parent `appDataFolder`.
-// We disambiguate history entries by filename prefix.
+// The `.dryj` container (see @dayrail/db/dryj) wraps a Yjs update-bytes
+// payload with a small JSON metadata header (snapshotId,
+// parentSnapshotId, deviceId, deviceLabel, createdAt, schemaVersion).
+// The same fields are mirrored into Drive `appProperties` so the boot
+// probe can read lineage without downloading the body.
 
-import type { ExportBundle } from '../exportData';
 import { ensureAccessToken, invalidateCachedToken } from './driveAuth';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 const APP_DATA_PARENT = 'appDataFolder';
-const CANONICAL_FILENAME = 'dayrail-snapshot.json';
+const CANONICAL_FILENAME = 'dayrail-snapshot.dryj';
 const HISTORY_PREFIX = 'dayrail-snapshot-';
 const HISTORY_RETENTION = 14;
 
-/** What we need to know about the canonical remote file before we
- *  decide what to do at boot. Sourced from Drive `appProperties` (set
- *  during upload) so we don't have to download the body to compare
- *  lineage. Legacy uploads from before this commit fall back to a
- *  body fetch — that path still works, just slower. */
 export interface RemoteMeta {
   fileId: string;
   modifiedTime: string; // ISO
@@ -66,14 +62,13 @@ async function authedFetch(
 async function readJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
-    throw new Error(`Drive ${res.status} ${res.statusText}${txt ? ' · ' + txt.slice(0, 200) : ''}`);
+    throw new Error(
+      `Drive ${res.status} ${res.statusText}${txt ? ' · ' + txt.slice(0, 200) : ''}`,
+    );
   }
   return (await res.json()) as T;
 }
 
-/** List all DayRail files in appdata. Names + ids + modifiedTime +
- *  appProperties (so we can read snapshot lineage without fetching
- *  bodies). Bodies are fetched separately when actually needed. */
 async function listAll(): Promise<DriveFile[]> {
   const acc: DriveFile[] = [];
   let pageToken: string | undefined;
@@ -94,47 +89,31 @@ async function listAll(): Promise<DriveFile[]> {
   return acc;
 }
 
-/** Get the canonical "latest" remote bundle's lineage metadata.
- *  Returns null if the remote has never been written (fresh user).
- *
- *  Fast path: read snapshotId + parent + deviceLabel from Drive
- *  `appProperties` (set during upload) — no body download.
- *
- *  Fallback path: legacy uploads from before appProperties landed
- *  don't carry it; we download the bundle body to extract the same
- *  fields. After one push from the new code, this fallback never
- *  fires again. */
+/** Read canonical lineage metadata (no body download). Returns null
+ *  when the remote has never been written. */
 export async function getRemoteMeta(): Promise<RemoteMeta | null> {
   const all = await listAll();
   const canonical = all.find((f) => f.name === CANONICAL_FILENAME);
   if (!canonical) return null;
   const ap = canonical.appProperties ?? {};
   const sizeBytes = canonical.size ? Number(canonical.size) : undefined;
-  if (ap.snapshotId) {
-    return {
-      fileId: canonical.id,
-      modifiedTime: canonical.modifiedTime ?? '',
-      snapshotId: ap.snapshotId,
-      ...(ap.parentSnapshotId && { parentSnapshotId: ap.parentSnapshotId }),
-      ...(ap.deviceLabel && { deviceLabel: ap.deviceLabel }),
-      ...(sizeBytes !== undefined &&
-        Number.isFinite(sizeBytes) && { sizeBytes }),
-    };
+  if (!ap.snapshotId) {
+    // v0.7 always writes appProperties on upload. A canonical without
+    // snapshotId is either a bare manual upload (rare) or corruption;
+    // surface as a fresh remote and let the next push re-seed.
+    return null;
   }
-  const bundle = await downloadBundleById(canonical.id);
   return {
     fileId: canonical.id,
     modifiedTime: canonical.modifiedTime ?? '',
-    snapshotId: bundle.snapshotId ?? '',
-    ...(bundle.parentSnapshotId && { parentSnapshotId: bundle.parentSnapshotId }),
-    ...(bundle.deviceLabel && { deviceLabel: bundle.deviceLabel }),
+    snapshotId: ap.snapshotId,
+    ...(ap.parentSnapshotId && { parentSnapshotId: ap.parentSnapshotId }),
+    ...(ap.deviceLabel && { deviceLabel: ap.deviceLabel }),
     ...(sizeBytes !== undefined &&
       Number.isFinite(sizeBytes) && { sizeBytes }),
   };
 }
 
-/** Total count of files we manage in appdata (canonical + history).
- *  Cheap meta-only call; use for the Settings → 同步 panel. */
 export async function getRemoteSummary(): Promise<{
   canonicalPresent: boolean;
   historyCount: number;
@@ -155,46 +134,58 @@ export async function getRemoteSummary(): Promise<{
   return { canonicalPresent, historyCount, totalSizeBytes };
 }
 
-/** Download a bundle by Drive file id. */
-export async function downloadBundleById(id: string): Promise<ExportBundle> {
+/** Download the raw `.dryj` bytes by Drive file id. */
+export async function downloadDryjById(id: string): Promise<Uint8Array> {
   const url = `${DRIVE_API}/files/${id}?alt=media`;
   const res = await authedFetch(url);
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
-    throw new Error(`Drive ${res.status} ${res.statusText}${txt ? ' · ' + txt.slice(0, 200) : ''}`);
+    throw new Error(
+      `Drive ${res.status} ${res.statusText}${txt ? ' · ' + txt.slice(0, 200) : ''}`,
+    );
   }
-  return (await res.json()) as ExportBundle;
+  const buf = await res.arrayBuffer();
+  return new Uint8Array(buf);
 }
 
 interface UploadResult {
   fileId: string;
 }
 
-async function multipartUpload(
-  bundle: ExportBundle,
+async function multipartUploadDryj(
+  bytes: Uint8Array,
   filename: string,
   existingFileId: string | null,
-  appProperties?: Record<string, string>,
+  appProperties: Record<string, string>,
 ): Promise<UploadResult> {
   const boundary = `dayrailsync${Math.random().toString(36).slice(2)}`;
   const meta = existingFileId
-    ? { name: filename, ...(appProperties && { appProperties }) }
+    ? { name: filename, appProperties }
     : {
         name: filename,
         parents: [APP_DATA_PARENT],
-        mimeType: 'application/json',
-        ...(appProperties && { appProperties }),
+        mimeType: 'application/octet-stream',
+        appProperties,
       };
-  const body =
+
+  // Multipart body: JSON metadata part + binary content part.
+  // Drive accepts the full request body as a Blob; we assemble one
+  // by concatenating the parts.
+  const enc = new TextEncoder();
+  const metaPart = enc.encode(
     `--${boundary}\r\n` +
-    'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-    JSON.stringify(meta) +
-    '\r\n' +
-    `--${boundary}\r\n` +
-    'Content-Type: application/json\r\n\r\n' +
-    JSON.stringify(bundle) +
-    '\r\n' +
-    `--${boundary}--`;
+      'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+      JSON.stringify(meta) +
+      '\r\n' +
+      `--${boundary}\r\n` +
+      'Content-Type: application/octet-stream\r\n\r\n',
+  );
+  const tailPart = enc.encode(`\r\n--${boundary}--`);
+  const body = new Blob([
+    metaPart as BlobPart,
+    bytes as BlobPart,
+    tailPart as BlobPart,
+  ]);
 
   const url = existingFileId
     ? `${DRIVE_UPLOAD}/files/${existingFileId}?uploadType=multipart`
@@ -206,7 +197,9 @@ async function multipartUpload(
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
-    throw new Error(`Drive upload ${res.status}${txt ? ' · ' + txt.slice(0, 200) : ''}`);
+    throw new Error(
+      `Drive upload ${res.status}${txt ? ' · ' + txt.slice(0, 200) : ''}`,
+    );
   }
   const json = (await res.json()) as { id?: string };
   if (!json.id) throw new Error('Drive upload returned no file id');
@@ -217,7 +210,9 @@ async function deleteFile(id: string): Promise<void> {
   const res = await authedFetch(`${DRIVE_API}/files/${id}`, { method: 'DELETE' });
   if (!res.ok && res.status !== 404) {
     const txt = await res.text().catch(() => '');
-    throw new Error(`Drive delete ${res.status}${txt ? ' · ' + txt.slice(0, 200) : ''}`);
+    throw new Error(
+      `Drive delete ${res.status}${txt ? ' · ' + txt.slice(0, 200) : ''}`,
+    );
   }
 }
 
@@ -226,46 +221,48 @@ function safeFilenameFragment(s: string): string {
 }
 
 function timestampFragment(): string {
-  // YYYYMMDD-HHMMSS in UTC for stable lex order.
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\..+$/, '').replace('T', '-');
 }
 
+export interface UploadAppProperties {
+  snapshotId: string;
+  parentSnapshotId?: string;
+  deviceId: string;
+  deviceLabel: string;
+}
+
 interface UploadOpts {
-  /** Skip writing a history copy (e.g., for a probe-only push). */
   skipHistory?: boolean;
 }
 
-/** Push a bundle: overwrite (or create) `dayrail-snapshot.json` AND
- *  drop a stamped copy into history. Caller must have stamped the
- *  bundle's sync metadata (snapshotId / parentSnapshotId / deviceId
- *  / deviceLabel) before calling. The same metadata is mirrored into
- *  Drive `appProperties` so other devices' boot probe + the Settings
- *  → 同步 panel can read lineage without downloading bodies. */
-export async function uploadSnapshot(
-  bundle: ExportBundle,
+/** Push: overwrite `dayrail-snapshot.dryj` AND drop a stamped copy in
+ *  history. The bytes are the full `.dryj` container (already wrapped
+ *  by encodeDryj before this call). */
+export async function uploadDryj(
+  bytes: Uint8Array,
+  meta: UploadAppProperties,
   opts: UploadOpts = {},
 ): Promise<{ canonicalFileId: string; historyFileId: string | null }> {
-  const appProperties: Record<string, string> = {};
-  if (bundle.snapshotId) appProperties.snapshotId = bundle.snapshotId;
-  if (bundle.parentSnapshotId) appProperties.parentSnapshotId = bundle.parentSnapshotId;
-  if (bundle.deviceLabel) appProperties.deviceLabel = bundle.deviceLabel;
-  if (bundle.deviceId) appProperties.deviceId = bundle.deviceId;
+  const appProperties: Record<string, string> = {
+    snapshotId: meta.snapshotId,
+    deviceId: meta.deviceId,
+    deviceLabel: meta.deviceLabel,
+    ...(meta.parentSnapshotId && { parentSnapshotId: meta.parentSnapshotId }),
+  };
 
   const all = await listAll();
   const canonical = all.find((f) => f.name === CANONICAL_FILENAME) ?? null;
-  const canonicalUpload = await multipartUpload(
-    bundle,
+  const canonicalUpload = await multipartUploadDryj(
+    bytes,
     CANONICAL_FILENAME,
     canonical?.id ?? null,
     appProperties,
   );
   let historyFileId: string | null = null;
   if (!opts.skipHistory) {
-    const historyName = `${HISTORY_PREFIX}${timestampFragment()}-${safeFilenameFragment(
-      bundle.deviceLabel ?? 'device',
-    )}.json`;
-    const historyUpload = await multipartUpload(
-      bundle,
+    const historyName = `${HISTORY_PREFIX}${timestampFragment()}-${safeFilenameFragment(meta.deviceLabel)}.dryj`;
+    const historyUpload = await multipartUploadDryj(
+      bytes,
       historyName,
       null,
       appProperties,
@@ -276,7 +273,6 @@ export async function uploadSnapshot(
   return { canonicalFileId: canonicalUpload.fileId, historyFileId };
 }
 
-/** Keep only the 14 most-recent history files (by modifiedTime). */
 export async function pruneHistory(): Promise<void> {
   const all = await listAll();
   const history = all
@@ -287,8 +283,7 @@ export async function pruneHistory(): Promise<void> {
     try {
       await deleteFile(f.id);
     } catch {
-      // Best-effort prune — a stuck delete just leaves an extra file
-      // around for next time, never breaks the upload.
+      /* best-effort */
     }
   }
 }
@@ -297,7 +292,6 @@ export interface HistoryEntry {
   fileId: string;
   filename: string;
   modifiedTime: string;
-  /** Parsed from filename — best-effort, may be empty. */
   deviceLabel: string;
 }
 
@@ -315,8 +309,8 @@ export async function listHistory(): Promise<HistoryEntry[]> {
 }
 
 function parseDeviceLabelFromFilename(name: string): string {
-  // dayrail-snapshot-YYYYMMDD-HHMMSS-{label}.json
-  const m = name.match(/^dayrail-snapshot-\d{8}-\d{6}-(.+)\.json$/);
+  // dayrail-snapshot-YYYYMMDD-HHMMSS-{label}.dryj
+  const m = name.match(/^dayrail-snapshot-\d{8}-\d{6}-(.+)\.dryj$/);
   return m?.[1] ?? '';
 }
 

@@ -1,103 +1,92 @@
-// Backup import. Inverse of exportLocalData: read a JSON bundle,
-// validate it, and seed the store from the bundle instead of the
-// built-in sample data. The mechanism re-uses the OPFS-wipe path
-// (resetLocalData) — we stash the parsed bundle in sessionStorage
-// first, wipe + reload, and boot.ts picks the bundle up on next
-// cold start via `popPendingImport()`. The page reload guarantees
-// the SQLite worker releases its handles before we write new data.
+// Backup import (v0.7) — accept a `.dryj` Yjs container the user
+// either downloaded earlier (manual backup) or produced via the
+// migration script. Mechanism: stash the raw bytes in sessionStorage,
+// trigger resetLocalData (wipes OPFS, including the previous
+// `dayrail-state.dryj`), and the page reloads. boot.ts picks up the
+// stashed bytes via `popPendingImport()` and writes them to OPFS
+// before hydrate, so the new state is what loadYDocBytes returns.
 //
 // Two callers:
-//   1. Manual import (Settings → 高级 → 导入 JSON) via importLocalData.
-//   2. Boot gate apply-remote — the sync layer calls
-//      stashPendingImportAndReload with a bundle pulled from Drive.
-// In both cases, import OVERWRITES — restore-from-backup semantics,
-// not merge.
+//   1. Manual import: Settings → 同步 → "Import from snapshot".
+//   2. Sync layer: not used in v0.7 because pull is in-memory
+//      (Y.applyUpdate) and never reloads. Kept available for future
+//      "force reset to remote" flows if needed.
 
-import type { ExportBundle } from './exportData';
+import { decodeDryj } from '@dayrail/db/dryj';
 import { resetLocalData } from './resetLocalData';
+import {
+  bumpDirtyCount,
+  clearLocalIsSamplesOnly,
+} from './sync/identity';
 
 const PENDING_IMPORT_KEY = 'dayrail.pending-import';
 
-/** Read a user-picked File, validate it as a dayrail backup bundle,
- *  stash it for boot to pick up, then reset OPFS and reload. The
+/** Read a user-picked File, validate the .dryj container, stash the
+ *  raw bytes for boot to pick up, then reset OPFS and reload. The
  *  function never returns — the reload takes over. */
 export async function importLocalData(file: File): Promise<void> {
-  const text = await file.text();
-  let parsed: unknown;
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  // Validate the container header before reload so the user sees an
+  // immediate error rather than a silent boot into empty state.
   try {
-    parsed = JSON.parse(text);
+    decodeDryj(bytes);
   } catch (err) {
     throw new Error(
-      `这个文件不是合法 JSON：${(err as Error).message}`,
+      `这个文件不是合法的 .dryj 备份：${(err as Error).message}`,
     );
   }
-  const bundle = validateBundle(parsed);
-  sessionStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(bundle));
+  // Base64-encode for sessionStorage (which only stores strings).
+  const b64 = bytesToBase64(bytes);
+  sessionStorage.setItem(PENDING_IMPORT_KEY, b64);
+  // The user just brought in real data. Clear the samples-only flag
+  // pre-emptively (boot.ts won't re-seed when there's a pending
+  // import, but a stale flag from a prior boot would otherwise let
+  // ConnectDrivePanel destroy this import on its first Drive pull).
+  clearLocalIsSamplesOnly();
+  // Bump the dirty cursor so the imported state actually pushes to
+  // Drive on the next sync trigger. Without this, post-reload boot
+  // applies the .dryj with origin='opfs' (filtered by the
+  // afterTransaction listener), dirty stays 0, and no push trigger
+  // ever fires — the import would be stranded on this device unless
+  // the user happened to make another edit. localStorage survives
+  // resetLocalData's OPFS wipe, so the bump persists across the
+  // reload that this function triggers.
+  bumpDirtyCount();
   await resetLocalData(); // wipes OPFS + reload; boot picks up sessionStorage
 }
 
-/** Internal entry-point for the sync layer: stash a fully-validated
- *  bundle and reset+reload. The caller is expected to have validated
- *  the bundle (it came from our own upload). Caller may also persist
- *  any sync-layer cursors (lastPulledSnapshotId etc.) BEFORE invoking
- *  this — localStorage survives the OPFS reset and reload. */
-export async function stashPendingImportAndReload(
-  bundle: ExportBundle,
-): Promise<void> {
-  sessionStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(bundle));
-  await resetLocalData();
-}
-
-/** Called from boot.ts on every cold start. Returns the stashed
- *  bundle (and clears sessionStorage) if an import was queued; else
- *  undefined. Runs before hydrate so the snapshot write below
- *  happens against a fresh empty DB. */
-export function popPendingImport(): ExportBundle | undefined {
+/** Boot reads the stashed bytes here. Returns the raw .dryj container
+ *  the user supplied (or undefined when no import is pending). */
+export function popPendingImport(): Uint8Array | undefined {
   if (typeof window === 'undefined') return undefined;
   const raw = sessionStorage.getItem(PENDING_IMPORT_KEY);
   if (!raw) return undefined;
   sessionStorage.removeItem(PENDING_IMPORT_KEY);
   try {
-    return JSON.parse(raw) as ExportBundle;
+    return base64ToBytes(raw);
   } catch {
-    // Corrupted stash — silently drop. The user will see the app come
-    // up seeded from defaults, which is the safer failure mode than
-    // crashing boot.
+    // Corrupted stash — silently drop. boot will fall through to the
+    // empty-state path, which seeds from samples.
     return undefined;
   }
 }
 
-function validateBundle(raw: unknown): ExportBundle {
-  if (!raw || typeof raw !== 'object') {
-    throw new Error('文件内容不是对象。');
+function bytesToBase64(bytes: Uint8Array): string {
+  let s = '';
+  // Chunk to avoid stack overflow on very large arrays — Drive bundles
+  // are ~hundreds of KB, far below any practical limit, but the chunked
+  // approach is robust without measurable cost.
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    s += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
   }
-  const obj = raw as Record<string, unknown>;
-  if (obj.app !== 'dayrail') {
-    throw new Error('不是 dayrail 的备份文件（缺 app=dayrail 标记）。');
-  }
-  if (obj.schemaVersion !== 1) {
-    throw new Error(
-      `不支持的 schemaVersion: ${String(obj.schemaVersion)}（当前支持 1）。`,
-    );
-  }
-  if (!obj.state || typeof obj.state !== 'object') {
-    throw new Error('文件缺少 state 字段。');
-  }
-  // Shape-check the state record minimally — we trust the producer
-  // (dayrail itself) beyond this. A malformed bundle will surface as
-  // empty / weird UI state after reload, not a crash.
-  const state = obj.state as Record<string, unknown>;
-  const requiredMaps = [
-    'templates',
-    'rails',
-    'lines',
-    'tasks',
-    'habitBindings',
-  ];
-  for (const key of requiredMaps) {
-    if (!state[key] || typeof state[key] !== 'object') {
-      throw new Error(`state.${key} 不是对象 —— 文件已损坏。`);
-    }
-  }
-  return raw as ExportBundle;
+  return btoa(s);
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }

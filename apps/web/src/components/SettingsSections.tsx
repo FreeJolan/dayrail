@@ -10,7 +10,6 @@ import {
   Plus,
   Sparkles,
   Trash2,
-  Upload,
   X,
 } from 'lucide-react';
 import {
@@ -36,18 +35,16 @@ import {
 import {
   connectDrive,
   disconnectDrive,
-  isDriveConnected,
 } from '@/lib/sync/driveAuth';
 import {
-  applyRemoteBundle,
-  downloadRemoteAsBackup,
-  fetchRemoteBundle,
-  forcePushOverridingRemote,
+  applyRemoteDryj,
+  replaceLocalFromRemote,
+  runForcePush,
   runManualSync,
 } from '@/lib/sync/syncController';
 import {
   deleteHistoryEntry,
-  downloadBundleById,
+  downloadDryjById,
   getRemoteMeta,
   getRemoteSummary,
   listHistory,
@@ -55,16 +52,20 @@ import {
   type RemoteMeta,
 } from '@/lib/sync/driveBackend';
 import {
+  clearLocalIsSamplesOnly,
   getBootSyncChoice,
   getDeviceLabel,
   getDirtyCount,
   getLastPulledSnapshotId,
+  isLocalSamplesOnly,
   setBootSyncChoice,
   setDeviceLabel,
   type BootSyncChoice,
 } from '@/lib/sync/identity';
 import { syncStore, useSyncStatus } from '@/lib/sync/syncStore';
-import { downloadBundleAs } from '@/lib/exportData';
+import { applyImportedUpdate } from '@dayrail/core';
+import { decodeDryj } from '@dayrail/db/dryj';
+import { exportDryjSnapshot } from '@/lib/exportData';
 
 // ============ Appearance ============
 
@@ -199,13 +200,18 @@ function ConnectDrivePanel() {
       setPhase({ kind: 'probing' });
       const remote = await getRemoteMeta();
       if (!remote) {
-        // No canonical on Drive — first device for this Google
-        // account. Push current local state as the initial snapshot
-        // so subsequent diffs have a baseline. forcePushOverridingRemote
-        // is the right primitive: no parent + creates canonical +
-        // sets lastPulledSnapshotId.
+        // No canonical on Drive — first device. Push current local
+        // state as the initial snapshot. With Yjs every push is just
+        // an upload of the local doc; no special "force" primitive
+        // needed.
         setPhase({ kind: 'pushing-initial' });
-        await forcePushOverridingRemote();
+        await runManualSync();
+        // Belt-and-suspenders: regardless of what runManualSync did
+        // internally, the user has now connected Drive and committed
+        // their state — local is no longer samples-only. (runPush
+        // success also clears the flag, but if any inner path
+        // skipped or short-circuited, this catches it.)
+        clearLocalIsSamplesOnly();
         setPhase({ kind: 'idle' });
         return;
       }
@@ -222,8 +228,28 @@ function ConnectDrivePanel() {
     setPhase({ kind: 'pulling' });
     setErr(null);
     try {
-      const bundle = await fetchRemoteBundle(remote);
-      await applyRemoteBundle(bundle); // reloads
+      // Replace-vs-merge gate. The previous heuristic
+      // (lastPulledSnapshotId === null) destroyed migrated data: a
+      // user who ran tools/migrate + Settings → "Import from
+      // snapshot" lands here with null lastPulled but real data in
+      // local. Now: only replace when local IS actually
+      // sample-seeded (set by boot.ts.seedFromSamples, cleared by
+      // any user-authored write or by importLocalData). The
+      // migration import path correctly clears the flag, so it
+      // takes the merge branch and preserves the imported data.
+      if (isLocalSamplesOnly()) {
+        await replaceLocalFromRemote(remote);
+      } else {
+        await applyRemoteDryj(remote);
+      }
+      // Belt-and-suspenders: replaceLocalFromRemote clears the flag
+      // on success and applyRemoteDryj's path is only reached when
+      // the flag was already false, so this is redundant — but
+      // keeping it makes the user-visible "I clicked Pull and Drive
+      // is now my source of truth" intent durable against any inner
+      // path bug.
+      clearLocalIsSamplesOnly();
+      setPhase({ kind: 'idle' });
     } catch (e) {
       setErr((e as Error).message);
       setPhase({ kind: 'remote-exists', remote });
@@ -232,19 +258,24 @@ function ConnectDrivePanel() {
 
   const onOverwriteRemote = async () => {
     if (phase.kind !== 'remote-exists') return;
-    const remote = phase.remote;
     setErr(null);
+    setPhase({ kind: 'pushing' });
     try {
-      // Reversibility: download remote first, then overwrite.
-      // Mirrors the boot-gate diverged path.
-      await downloadRemoteAsBackup(remote);
-      await new Promise((r) => setTimeout(r, 400));
-      setPhase({ kind: 'pushing' });
-      await forcePushOverridingRemote();
+      // v0.7: runForcePush bypasses the runPush preflight pull-merge,
+      // so Drive's canonical becomes whatever this device has. The
+      // CRDT layer in remote devices will still preserve any LOCAL
+      // ops they had, but Drive's snapshot stops "remembering" the
+      // ops it carried before this push — useful as a §7.7 rollback
+      // escape hatch (user authored a snapshot via Settings → "Import
+      // from snapshot" or via the migration script and wants Drive
+      // to mirror it exactly).
+      await runForcePush();
+      // Belt-and-suspenders, same shape as onPullRemote.
+      clearLocalIsSamplesOnly();
       setPhase({ kind: 'idle' });
     } catch (e) {
       setErr((e as Error).message);
-      setPhase({ kind: 'remote-exists', remote });
+      setPhase({ kind: 'idle' });
     }
   };
 
@@ -414,6 +445,8 @@ function ConnectedSyncControls() {
       <DeviceLabelRow />
       <BootSyncChoiceRow />
       <SyncNowRow />
+      <DownloadSnapshotRow />
+      <ImportSnapshotRow />
       <DisconnectRow />
       <BackupHistoryRow />
     </div>
@@ -505,7 +538,7 @@ function RemoteStatePanel() {
             <KvLine k="状态" v="远端尚无主文件（首次推送后出现）" />
           ) : (
             <>
-              <KvLine k="文件" v="dayrail-snapshot.json" mono />
+              <KvLine k="文件" v="dayrail-snapshot.dryj" mono />
               <KvLine k="修改时间" v={fmtAbsoluteIso(remote.modifiedTime)} />
               <KvLine k="snapshotId" v={shortId(remote.snapshotId)} mono title={remote.snapshotId} />
               {remote.parentSnapshotId && (
@@ -563,8 +596,7 @@ type Verdict =
   | { kind: 'no-remote' }
   | { kind: 'in-sync' }
   | { kind: 'local-ahead'; n: number }
-  | { kind: 'remote-ahead'; remoteDevice: string }
-  | { kind: 'diverged'; remoteDevice: string }
+  | { kind: 'remote-ahead'; remoteDevice: string; localPending: number }
   | { kind: 'unknown' };
 
 function deriveVerdict(
@@ -577,9 +609,13 @@ function deriveVerdict(
   const equal = remote.snapshotId === localLastPulled;
   if (equal && localDirty === 0) return { kind: 'in-sync' };
   if (equal && localDirty > 0) return { kind: 'local-ahead', n: localDirty };
-  if (!equal && localDirty === 0)
-    return { kind: 'remote-ahead', remoteDevice: remote.deviceLabel ?? '另一台设备' };
-  return { kind: 'diverged', remoteDevice: remote.deviceLabel ?? '另一台设备' };
+  // v0.7: when both sides have changes, Yjs CRDT merges deterministically
+  // on pull — no diverged surface needed.
+  return {
+    kind: 'remote-ahead',
+    remoteDevice: remote.deviceLabel ?? '另一台设备',
+    localPending: localDirty,
+  };
 }
 
 function VerdictBanner({ verdict }: { verdict: Verdict }) {
@@ -599,18 +635,17 @@ function VerdictBanner({ verdict }: { verdict: Verdict }) {
           dot: 'bg-warn/70',
           text: `本地领先 ${verdict.n} 处 · 下次同步会推送`,
         };
-      case 'remote-ahead':
+      case 'remote-ahead': {
+        const localNote =
+          verdict.localPending > 0
+            ? `本地还有 ${verdict.localPending} 处未推送（CRDT 自动合并，不会丢）`
+            : '下次启动会拉取';
         return {
           tone: 'pending',
           dot: 'bg-warn/70',
-          text: `远端较新 · 来自 ${verdict.remoteDevice} · 下次启动会拉取`,
+          text: `远端较新 · 来自 ${verdict.remoteDevice} · ${localNote}`,
         };
-      case 'diverged':
-        return {
-          tone: 'warn',
-          dot: 'bg-warn',
-          text: `⚠ 已分叉 · 本地有未推送改动，且远端来自 ${verdict.remoteDevice} · 下次启动会弹冲突卡片`,
-        };
+      }
       case 'unknown':
         return {
           tone: 'idle',
@@ -747,24 +782,15 @@ function SyncNowRow() {
     setHint(null);
     try {
       const outcome = await runManualSync();
-      if (outcome.kind === 'diverged') {
-        // Hand off to RuntimeSyncDialog so the user gets the same
-        // conflict card the visibility probe would have surfaced. The
-        // dialog is mounted at the App level and listens for this
-        // event globally.
-        window.dispatchEvent(
-          new CustomEvent('dayrail-sync:show-diverged', {
-            detail: { remote: outcome.remote },
-          }),
-        );
-      } else if (outcome.kind === 'offline') {
+      if (outcome.kind === 'offline') {
         setErr('当前离线或 Drive 不可达');
       } else if (outcome.kind === 'noop') {
         setHint('已是最新');
+      } else if (outcome.kind === 'pulled') {
+        setHint('已合并云端改动');
       }
       // 'pushed' falls through silently — the topbar status row +
       // last-sync timestamp already reflect the result.
-      // 'pulling' is unreachable (the apply path reloads the page).
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -822,6 +848,127 @@ function DisconnectRow() {
         >
           {busy ? '断开中…' : '断开'}
         </button>
+      }
+    />
+  );
+}
+
+// v0.7 (ERD §7.7) safety net · download the live Y.Doc as a `.dryj`
+// container. Round-trips cleanly through `<ImportSnapshotRow />`,
+// the migration script's output, and the Drive history list. Useful
+// before risky operations (mass deletes, schema upgrades) or as a
+// pre-flight backup separate from Drive's rolling 14-snapshot history.
+function DownloadSnapshotRow() {
+  const [busy, setBusy] = useState(false);
+  const [hint, setHint] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const onClick = () => {
+    setBusy(true);
+    setErr(null);
+    setHint(null);
+    try {
+      const filename = exportDryjSnapshot(getDeviceLabel(), getDeviceLabel());
+      setHint(`已下载 ${filename}`);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Row
+      label="下载本地快照"
+      description="把当前本地 Y.Doc 导出成 .dryj 二进制文件留底。可通过下方「从快照导入」原样恢复。"
+      control={
+        <div className="flex flex-col items-end gap-1">
+          <button
+            type="button"
+            onClick={onClick}
+            disabled={busy}
+            className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary disabled:opacity-50"
+          >
+            {busy ? '生成中…' : '下载 .dryj'}
+          </button>
+          {hint && (
+            <span className="font-mono text-2xs text-ink-tertiary">{hint}</span>
+          )}
+          {err && (
+            <span className="font-mono text-2xs text-warn">{err}</span>
+          )}
+        </div>
+      }
+    />
+  );
+}
+
+// v0.7 (ERD §7.7) safety net · replace local Y.Doc from a `.dryj`
+// the user supplies. Three roles:
+//   1. v0.6 → v0.7 one-shot migration (after running the migration
+//      script in tools/migrate/).
+//   2. Manual recovery from a Drive history entry the user previously
+//      downloaded.
+//   3. Last-ditch rollback if Yjs ever produces a surprising merge
+//      (CRDT shouldn't, but this is the escape hatch the file-header
+//      "safety net" comment refers to).
+//
+// Importing replaces the local OPFS file and reloads the page so the
+// boot path picks up the new state cleanly. The previous local state
+// is gone after import — use "Download snapshot" first if you want a
+// fallback.
+function ImportSnapshotRow() {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const onPick = () => {
+    setErr(null);
+    inputRef.current?.click();
+  };
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-selecting the same file later
+    if (!file) return;
+    if (
+      !window.confirm(
+        `用 "${file.name}" 替换本地数据？\n\n会先把当前本地清空再载入快照，然后页面会自动刷新。建议先点「下载本地快照」留底。`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      // importLocalData stashes bytes, wipes OPFS, then reloads.
+      // Returns only when something fails before the reload kicks in.
+      await importLocalData(file);
+    } catch (e2) {
+      setErr((e2 as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <Row
+      label="从快照导入"
+      description="选一个 .dryj 文件（迁移脚本产物 / 历史快照下载 / 上方刚下载的留底），覆盖本地数据。"
+      control={
+        <div className="flex flex-col items-end gap-1">
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".dryj,application/octet-stream"
+            onChange={onFile}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={onPick}
+            disabled={busy}
+            className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary disabled:opacity-50"
+          >
+            {busy ? '导入中…' : '选择 .dryj'}
+          </button>
+          {err && (
+            <span className="font-mono text-2xs text-warn">{err}</span>
+          )}
+        </div>
       }
     />
   );
@@ -894,15 +1041,26 @@ function BackupHistoryItem({
   const onRestore = async () => {
     if (
       !window.confirm(
-        `从这份历史快照恢复？\n\n会覆盖本地当前数据（建议先点"下载"留底）。`,
+        `从这份历史快照合并到本地？\n\nv0.7 用 CRDT 合并（不覆盖）：历史快照里的数据会和当前本地的并集呈现。下一次推送会把合并结果同步到云端。`,
       )
     )
       return;
     setBusy('restore');
     setErr(null);
     try {
-      const bundle = await downloadBundleById(entry.fileId);
-      await applyRemoteBundle(bundle);
+      // v0.7: pulling a history `.dryj` merges into the local Y.Doc
+      // (no overwrite). Useful for "I want to recover something this
+      // history snapshot had that the current state lost".
+      const bytes = await downloadDryjById(entry.fileId);
+      // Validate the container before applying so a corrupt history
+      // file fails clean.
+      decodeDryj(bytes);
+      // applyImportedUpdate (NOT applyRemoteUpdate) so syncController's
+      // afterTransaction listener bumps the dirty cursor — the merged
+      // state is local-only until a push fires; with REMOTE_ORIGIN
+      // dirty would stay 0 and the restore would be stranded.
+      applyImportedUpdate(bytes);
+      setBusy(null);
     } catch (e) {
       setErr((e as Error).message);
       setBusy(null);
@@ -912,8 +1070,18 @@ function BackupHistoryItem({
     setBusy('download');
     setErr(null);
     try {
-      const bundle = await downloadBundleById(entry.fileId);
-      downloadBundleAs(bundle, entry.filename);
+      const bytes = await downloadDryjById(entry.fileId);
+      const blob = new Blob([bytes as BlobPart], {
+        type: 'application/octet-stream',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = entry.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -998,10 +1166,6 @@ function fmtAbsoluteIso(iso: string): string {
   }
 }
 
-// (Re-export to keep one source of truth for SyncSection consumers; the
-// real driveAuth check still gates connection.)
-void isDriveConnected;
-void fetchRemoteBundle; // referenced by the conflict-card path
 
 // ============ AI ============
 
@@ -1227,37 +1391,12 @@ export function AdvancedSection() {
 }
 
 function BackupSection() {
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [importing, setImporting] = useState(false);
-
-  const handleImportClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFileChosen = async (
-    e: React.ChangeEvent<HTMLInputElement>,
-  ) => {
-    const file = e.target.files?.[0];
-    // Reset the input so the same file can be picked twice in a row.
-    e.target.value = '';
-    if (!file) return;
-    const ok = window.confirm(
-      `导入会覆盖当前本地数据（不可撤销）。\n\n文件：${file.name}\n\n继续?`,
-    );
-    if (!ok) return;
-    setImporting(true);
-    try {
-      await importLocalData(file);
-      // importLocalData triggers a page reload; control won't return
-      // here in the happy path. If it does, something failed silently.
-    } catch (err) {
-      setImporting(false);
-      window.alert(
-        `导入失败：${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  };
-
+  // v0.7: JSON download stays as a human-readable inspection format
+  // (and v0.6 export-format compatibility for users still on v0.6).
+  // Round-trip restore uses .dryj instead — see Settings → 同步 →
+  // 「下载本地快照」/「从快照导入」for the binary path. v0.6 JSON
+  // backups must be converted via tools/migrate/migrate-json-to-yjs.ts
+  // before they can be re-imported into v0.7.
   return (
     <div className="hairline-t mt-1 pt-6">
       <div className="flex flex-col gap-3">
@@ -1265,12 +1404,13 @@ function BackupSection() {
           <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
             Backup
           </span>
-          <h3 className="text-sm text-ink-primary">导出 / 导入全部数据</h3>
+          <h3 className="text-sm text-ink-primary">导出 JSON（仅人读）</h3>
           <p className="text-xs text-ink-tertiary">
-            数据只在本地浏览器的 OPFS 里 —— 清缓存、换设备、浏览器崩溃都会
-            丢失。定期导出 JSON 到本地文件是唯一保险。导入会整体覆盖当前
-            数据（不是合并），适合"从备份恢复"或"把数据从一个浏览器搬到
-            另一个"。
+            v0.7 用 Yjs CRDT 后,带历史合并语义的"完整备份"走 .dryj 二进制
+            (Settings → 同步 → 「下载本地快照」/「从快照导入」)。这里的
+            JSON 仅用于用编辑器扫一眼数据结构,**无法**通过 v0.7 直接导入
+            还原 —— 想从 v0.6 JSON 恢复需要先跑 tools/migrate/migrate-
+            json-to-yjs.ts 转成 .dryj。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -1282,22 +1422,6 @@ function BackupSection() {
             <Archive className="h-3.5 w-3.5" strokeWidth={1.6} />
             下载 JSON
           </button>
-          <button
-            type="button"
-            onClick={handleImportClick}
-            disabled={importing}
-            className="inline-flex items-center gap-1.5 rounded-md border border-hairline/60 px-3 py-1.5 text-xs text-ink-secondary transition hover:border-ink-secondary hover:bg-surface-2 hover:text-ink-primary disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <Upload className="h-3.5 w-3.5" strokeWidth={1.6} />
-            {importing ? '导入中…' : '导入 JSON'}
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/json,.json"
-            className="hidden"
-            onChange={(e) => void handleFileChosen(e)}
-          />
         </div>
       </div>
     </div>

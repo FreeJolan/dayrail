@@ -16,9 +16,10 @@ import './index.css';
 injectThemeTokens();
 initTheme();
 
-// Boot the data layer before React takes over. OPFS init + event-log
-// replay typically finishes in <50 ms on a warm cache; first-ever
-// load may take ~150-200 ms while the WASM module compiles.
+// Boot the data layer before React takes over. v0.7 boot loads a
+// single .dryj from OPFS and seeds zustand from the resulting Y.Doc
+// — typically <30 ms on a warm cache; first-ever load is the
+// migration-script output or the v0.6 sample seed.
 const container = document.getElementById('root')!;
 const root = ReactDOM.createRoot(container);
 
@@ -77,13 +78,17 @@ function BootError({ error }: { error: Error }) {
       /* ignore */
     }
   };
-  const looksCorrupt = /SQLITE_CORRUPT|malformed|SQLITE_NOTADB/i.test(
-    `${error.name} ${error.message}`,
-  );
+  // v0.7: SQLite is gone; the only OPFS file we manage now is
+  // dayrail-state.dryj. "Looks corrupt" matches Yjs / .dryj-decode
+  // failures so the recovery hint stays accurate.
+  const looksCorrupt =
+    /\.dryj|DRYJ|invalid update|YjsUnexpectedCase|truncated/i.test(
+      `${error.name} ${error.message}`,
+    );
   const wipeAndReload = async () => {
     if (
       !window.confirm(
-        '清空本地 OPFS 里的事件 / 快照 / 缓存，然后刷新页面？\n此操作不可撤销。',
+        '清空本地 OPFS 里的 Y.Doc 状态？\n此操作不可撤销 —— 远端如果连接了 Drive，下次启动会从远端拉回来。',
       )
     ) {
       return;
@@ -144,8 +149,11 @@ function BootError({ error }: { error: Error }) {
           <li>WASM 模块未能加载（查看 Network 面板是否有 404）</li>
           {looksCorrupt && (
             <li>
-              <strong className="text-ink-secondary">SQLite 数据损坏</strong>
-              —— OPFS 里的数据库文件被截断 / 写坏。需要清空本地数据重启。
+              <strong className="text-ink-secondary">
+                OPFS 里的 .dryj 损坏
+              </strong>
+              —— Y.Doc 状态文件被截断 / 写坏。需要清空本地数据重启（连了
+              Drive 的话下次启动会从远端拉回）。
             </li>
           )}
         </ul>
@@ -168,7 +176,8 @@ function BootError({ error }: { error: Error }) {
           {resetting ? '正在清空…' : '清空本地数据并重新启动'}
         </button>
         <p className="text-2xs text-ink-tertiary">
-          会清掉 OPFS 里所有 DayRail 的事件 / 快照，刷新后按初始种子重跑。
+          会清掉 OPFS 里 dayrail-state.dryj，刷新后按初始种子重跑（连了
+          Drive 的话会优先从远端拉取已有快照）。
         </p>
         {resetError && (
           <p className="rounded-sm bg-surface-1 px-3 py-2 text-xs text-warn">

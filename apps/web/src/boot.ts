@@ -1,82 +1,84 @@
-// App bootstrap — opens the DB, replays events, seeds the default
-// templates + rails on first run. Called from `main.tsx` before
-// the React tree mounts; the app shell renders a loading veil while
+// App bootstrap (v0.7) — opens the Y.Doc-backed store from OPFS,
+// seeds defaults on first run. Called from `main.tsx` before the
+// React tree mounts; the app shell renders a loading veil while
 // this promise is pending.
 //
-// Seeding strategy: if the templates table is empty after replay we
-// emit the sample data as actual events (same path any user mutation
-// takes), so first-run state is indistinguishable from the output of
-// a user performing those same edits by hand.
+// Seeding strategy: if the templates table is empty after hydrate we
+// emit the sample data through the same action surface any user
+// mutation takes, so first-run state is indistinguishable from the
+// output of a user performing those same edits by hand.
 
 import {
-  currentClock,
   INBOX_LINE_ID,
   materializeAutoTasksForToday,
   toIsoDate,
   useStore,
-  writeSnapshot,
   type Line,
   type Rail,
   type RailColor,
 } from '@dayrail/core';
+import { saveYDocBytes } from '@dayrail/db/yjsPersistence';
 import {
   SAMPLE_RAILS_BY_TEMPLATE,
   SAMPLE_TEMPLATES,
 } from './data/sampleTemplate';
-import type { ExportBundle } from './lib/exportData';
 import { popPendingImport } from './lib/importData';
+import { setLocalIsSamplesOnly } from './lib/sync/identity';
 
 export async function boot(): Promise<void> {
-  // 0. Pre-flight capability probe. Catches common environment issues
-  //    (private browsing, missing OPFS, etc.) before we get deep into
-  //    sqlite-wasm and report a surprising error message.
+  // 0. Pre-flight capability probe.
   await preflight();
 
-  // 0.25. Request persistent storage so the browser doesn't evict OPFS
-  //       under disk pressure. Chrome/Edge auto-grant for installed
-  //       PWAs, silently refuse for one-off visits — either way we
-  //       never throw. Safari supports the API but its 7-day rule for
-  //       non-persisted origins is the bigger risk there (see docs/
-  //       ROADMAP.md "数据安全"). Fire-and-forget; no data path
-  //       depends on the outcome.
+  // 0.25. Request persistent storage so the browser doesn't evict
+  //       OPFS under disk pressure.
   void requestPersistentStorage();
 
-  // 0.5. Pending import from the previous page (user just clicked
-  //      "Import" in Settings → Advanced). We wrote a snapshot to the
-  //      freshly-wiped DB BEFORE hydrate so the normal load path picks
-  //      it up without touching the reducer.
+  // 0.5. Pending import from the previous page (user clicked "Import
+  //      from snapshot" in Settings, or finished a sync pull that
+  //      wanted a clean reload). The pending bytes are the `.dryj`
+  //      container the user supplied / the sync layer produced; we
+  //      write them straight to OPFS so hydrate's loadYDocBytes path
+  //      picks them up like any other persisted state.
   const pending = popPendingImport();
   if (pending) {
-    await writeImportedSnapshot(pending);
+    await saveYDocBytes(pending);
   }
 
-  // 1. Hydrate from DB
+  // 1. Hydrate from OPFS — load the .dryj if present, build the
+  //    Y.Doc, derive flat state into the zustand store.
   await useStore.getState().hydrate();
 
-  // 2. First-run seeding — skip when we just imported; the bundle's
-  //    state already populated everything.
+  // 2. First-run seeding — when local is empty AND we don't have a
+  //    pending import. Always seed in that case, regardless of
+  //    whether Drive is connected: the samples-only flag (set
+  //    below) tells BootGate's later applyRemoteDryj path that the
+  //    seed is disposable, so it'll use replaceLocalFromRemote
+  //    rather than CRDT-merging samples into the user's actual
+  //    cloud data. Earlier round-4 attempted to peek Drive here and
+  //    skip the seed if a canonical existed; that left users with
+  //    empty UI when Drive was connected but BootGate's apply hadn't
+  //    fired yet (or canonical was empty, or fetch failed silently).
+  //    Removing the peek; round 6's flag-based replace-vs-merge
+  //    gate is the correct mechanism.
   const s = useStore.getState();
   if (Object.keys(s.templates).length === 0 && !pending) {
     await seedFromSamples();
+    await ensureInbox();
+    await ensureBuiltinWeekdayRules();
+    // Mark local as "v0.7 sample seed only — safe to replace
+    // wholesale on first Drive connect / pull". Cleared by the
+    // syncController afterTransaction listener on the first user-
+    // authored transact, by importLocalData when a real .dryj is
+    // imported, and by runPush / runForcePush / replaceLocalFromRemote
+    // on success.
+    setLocalIsSamplesOnly();
+  } else {
+    // Cheap no-op after first run on a populated device.
+    await ensureInbox();
+    await ensureBuiltinWeekdayRules();
   }
 
-  // 3. Ensure the built-in Inbox Line exists. Runs every boot (cheap
-  //    no-op after first run); the Inbox is a system singleton so we
-  //    insist on its presence regardless of the user's Line edits.
-  await ensureInbox();
-
-  // 4. Seed the two built-in weekday rules (workday M–F / restday Sat-
-  //    Sun) matching the v0.2 hardcoded heuristic. Runs every boot —
-  //    no-op after the first. Users that deleted a weekday rule on
-  //    purpose won't have it re-added; we key on "templateKey-specific
-  //    rule exists" rather than "any weekday rule exists".
-  await ensureBuiltinWeekdayRules();
-
-  // 5. Materialise today's habit auto-tasks (§10.2 strategy Ⅱ).
-  //    Idempotent — deterministic ids + (habit, cycle) markers make
-  //    this a no-op after the first call within the same cycle. The
-  //    Cycle-View / rhythm-strip / Calendar triggers will later close
-  //    the week-wide window when the user opens those surfaces.
+  // 5. Materialise today's habit auto-tasks. Idempotent.
   const today = toIsoDate();
   await materializeAutoTasksForToday(today);
 }
@@ -107,11 +109,6 @@ async function ensureInbox(): Promise<void> {
   await store.createLine(inbox);
 }
 
-/** Ask the browser to mark this origin's storage as persistent. A
- *  granted request means the browser promises not to evict OPFS under
- *  disk pressure — the main defense against silent data loss on a
- *  self-use install. Never throws: API-missing / denied / already-
- *  granted all flow through without user-visible effect. */
 async function requestPersistentStorage(): Promise<void> {
   if (typeof navigator === 'undefined' || !('storage' in navigator)) return;
   const storage = navigator.storage;
@@ -122,8 +119,7 @@ async function requestPersistentStorage(): Promise<void> {
     if (already) return;
     await storage.persist();
   } catch {
-    // Older Firefox / unusual environments — swallow. Persistence is
-    // a best-effort hint, not a correctness requirement.
+    // best-effort
   }
 }
 
@@ -144,51 +140,6 @@ async function preflight(): Promise<void> {
   } catch (err) {
     throw new Error(`OPFS 根目录无法访问：${(err as Error).message}`);
   }
-}
-
-/** Write the imported bundle's state as a snapshot in the (fresh,
- *  empty) DB. Hydrate below will then read the snapshot as if it were
- *  a legitimate saved-state — no event replay needed. Bundle shape
- *  matches SnapshotPayload one-to-one.
- *
- *  §10.5 revision tables are optional on the bundle: v0.4 exports
- *  don't carry them; v0.5+ exports do. Either way, hydrate's
- *  sentinel-revision migration backfills any missing revisions on
- *  the first boot after the snapshot loads, preserving the "past =
- *  frozen" guarantee. */
-async function writeImportedSnapshot(bundle: ExportBundle): Promise<void> {
-  const state = bundle.state as Record<string, unknown>;
-  const asMap = (v: unknown): Record<string, unknown> =>
-    v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
-  await writeSnapshot(
-    {
-      templates: asMap(state.templates),
-      rails: asMap(state.rails),
-      signals: asMap(state.signals),
-      shifts: asMap(state.shifts),
-      lines: asMap(state.lines),
-      tasks: asMap(state.tasks),
-      adhocEvents: asMap(state.adhocEvents),
-      calendarRules: asMap(state.calendarRules),
-      cycles: asMap(state.cycles),
-      habitPhases: asMap(state.habitPhases),
-      habitBindings: asMap(state.habitBindings),
-      // §10.5 — round-trip the revision tables when the bundle was
-      // produced by v0.5+. Older bundles fall through with empty maps;
-      // the sentinel migration will rebuild a baseline.
-      railRevisions: asMap(state.railRevisions) as Record<string, never>,
-      templateRevisions: asMap(state.templateRevisions) as Record<string, never>,
-      calendarRuleRevisions: asMap(state.calendarRuleRevisions) as Record<string, never>,
-      habitBindingRevisions: asMap(state.habitBindingRevisions) as Record<string, never>,
-      railTombstones: asMap(state.railTombstones) as Record<string, never>,
-      templateTombstones: asMap(state.templateTombstones) as Record<string, never>,
-      calendarRuleTombstones: asMap(state.calendarRuleTombstones) as Record<string, never>,
-      habitBindingTombstones: asMap(state.habitBindingTombstones) as Record<string, never>,
-      v05MigrationApplied: state.v05MigrationApplied === true,
-    },
-    currentClock(),
-    /* eventCount */ 0,
-  );
 }
 
 async function seedFromSamples(): Promise<void> {

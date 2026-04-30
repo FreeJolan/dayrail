@@ -7,11 +7,16 @@
 // merge is the default (two devices changing different fields of the
 // same Task converge silently).
 //
-// Array fields are stored as plain JS arrays for simplicity (atomic
-// LWW, sufficient for tags/weekdays/mappings) except `Task.subItems`,
-// which uses Y.Array because users realistically tick/untick the
-// same subitem on two devices and we want per-subitem stability
-// under concurrent edits.
+// Array fields are stored as plain JS arrays — atomic LWW. Per-element
+// CRDT semantics for `Task.subItems` was considered (Y.Array with
+// per-element insert/delete/update ops) but the action layer's
+// "patch the whole array" calling convention degenerates Y.Array into
+// a delete-all-then-push pattern, which under concurrent edits
+// produces duplicates / interleaved garbage *worse* than plain LWW.
+// Until the action layer is rewritten to emit per-element ops,
+// subItems sticks with whole-list LWW. Acceptable for v0.7's single-
+// user workflow — the contested "two devices toggle subitems
+// concurrently" case is rare and the most-recent edit wins cleanly.
 //
 // Revision tables (railRevisions etc.) live as Y.Map<entityId,
 // Y.Array<plainRevisionObject>>. Concurrent appends on two devices
@@ -59,11 +64,11 @@ export const TOP_LEVEL_MAPS = [
 export type TopLevelMapName = (typeof TOP_LEVEL_MAPS)[number];
 
 /** Fields on each entity that should be stored as Y.Array (instead of
- *  a plain JS array atomic LWW). Only Task.subItems is contested
- *  enough in real use to warrant per-element CRDT semantics. */
-const Y_ARRAY_FIELDS: Record<string, ReadonlyArray<string>> = {
-  tasks: ['subItems'],
-};
+ *  a plain JS array atomic LWW). Currently empty — see file header
+ *  for why subItems was reverted to atomic LWW. Add an entry here
+ *  only after the action layer learns to emit per-element ops on the
+ *  inner Y.Array. */
+const Y_ARRAY_FIELDS: Record<string, ReadonlyArray<string>> = {};
 
 /** Top-level maps holding revision arrays (Y.Map<id, Y.Array<plain>>).*/
 const REVISION_MAPS: ReadonlySet<string> = new Set([
@@ -227,6 +232,45 @@ export function loadFlatStateIntoDoc(doc: Y.Doc, state: Partial<FlatState>): voi
   }, 'loadFlatStateIntoDoc');
 }
 
+/** Concurrent appends on two devices can both call
+ *  `appendRevision(arr, rev)` for the same `rev.id` — the helper's
+ *  in-place find/delete/push is idempotent against the *local* view
+ *  only. After the merge each device's Y.Array carries both copies
+ *  (same `id`, possibly different `authoredAt`). Dedupe at read time
+ *  by `id`, keeping the entry with the latest `authoredAt`.
+ *
+ *  Caveat: same-id revisions are NOT guaranteed to encode the same
+ *  content — two devices each running `updateRail(id, patchA)` and
+ *  `updateRail(id, patchB)` against their local view of the rail's
+ *  Y.Map produce two RailRevisions with the same id but different
+ *  bodies. The live state's field-level CRDT merge is fine
+ *  (entities are Y.Maps, fields converge). What's lost is *revision
+ *  history fidelity* — "what did this rail look like on date X"
+ *  returns the latest-authored device's body, not the merged truth.
+ *  For a single-user occasional-multi-device app this is acceptable;
+ *  if a real multi-user revision-history surface ever ships, the
+ *  schema needs a non-deterministic id (e.g. include deviceId) so
+ *  concurrent appends preserve both bodies. */
+function dedupRevisions(revs: unknown[]): unknown[] {
+  const byId = new Map<string, { rev: unknown; authoredAt: number }>();
+  const orderedIds: string[] = [];
+  for (const r of revs) {
+    if (!r || typeof r !== 'object') continue;
+    const obj = r as Record<string, unknown>;
+    const id = typeof obj.id === 'string' ? obj.id : null;
+    if (id === null) continue;
+    const authoredAt = typeof obj.authoredAt === 'number' ? obj.authoredAt : 0;
+    const prev = byId.get(id);
+    if (!prev) {
+      byId.set(id, { rev: r, authoredAt });
+      orderedIds.push(id);
+    } else if (authoredAt > prev.authoredAt) {
+      byId.set(id, { rev: r, authoredAt });
+    }
+  }
+  return orderedIds.map((id) => byId.get(id)!.rev);
+}
+
 /** Read the entire Y.Doc into a flat state snapshot — the shape the
  *  @dayrail/core zustand store consumes. Called on hydrate and on
  *  every Y.Doc observe (to refresh the derived store). */
@@ -259,7 +303,9 @@ export function readFlatStateFromDoc(doc: Y.Doc): FlatState {
     if (REVISION_MAPS.has(name)) {
       submap.forEach((value, id) => {
         if (value instanceof Y.Array) {
-          (target as Record<string, unknown[]>)[id] = (value as Y.Array<unknown>).toArray();
+          (target as Record<string, unknown[]>)[id] = dedupRevisions(
+            (value as Y.Array<unknown>).toArray(),
+          );
         }
       });
     } else if (TOMBSTONE_MAPS.has(name)) {

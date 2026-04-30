@@ -1,36 +1,35 @@
-// Boot gate UI — renders BEFORE the main app routes mount, on every
-// cold start. Implements the four-branch decision table from ERD
-// §7.6:
+// Boot gate UI (v0.7) — renders BEFORE the main app routes mount, on
+// every cold start. Implements a simplified branch table (ERD §7.7):
 //
 //   equal          → mount immediately
 //   no-remote      → first device on the account; mount immediately,
-//                    let the next user write trigger an upload
-//   linear-lead    → silent pull (default) OR show confirm card
-//                    (when user picked "ask each time")
-//   diverged       → forced conflict card, ignores remembered choice
+//                    next user write triggers an upload
+//   linear-lead    → CRDT pull (in-memory; merges with any local
+//                    changes) → mount. Default behavior is silent;
+//                    "ask each time" pops a confirm card.
 //   offline        → splash with "重试 / 继续使用本地"; continuing
 //                    mounts the app and the top-bar indicator shows
-//                    `⚠ 未同步` until a successful round-trip
+//                    `⚠ 未同步` until a successful round-trip.
 //
-// The gate lives outside the React-Router tree because it runs before
-// the app shell exists. It renders splash + dialogs in a self-
-// contained <div> shell with the same surface tokens as the main app.
+// v0.7 dropped the diverged conflict card: Yjs's CRDT merge handles
+// concurrent edits silently. Linear-lead pulls now apply via
+// `Y.applyUpdate` in memory — no page reload, no overwrite of local
+// pending writes.
 
 import { useEffect, useState } from 'react';
 import {
+  clearLocalIsSamplesOnly,
   getBootSyncChoice,
+  isLocalSamplesOnly,
   setBootSyncChoice,
   type BootSyncChoice,
 } from './identity';
 import { connectDrive, isDriveConnected } from './driveAuth';
 import { syncStore } from './syncStore';
 import {
-  applyRemoteBundle,
-  downloadLocalAsBackup,
-  downloadRemoteAsBackup,
-  fetchRemoteBundle,
-  forcePushOverridingRemote,
+  applyRemoteDryj,
   PROBE_TIMEOUTS,
+  replaceLocalFromRemote,
   runBootProbe,
   type BootProbeOutcome,
 } from './syncController';
@@ -39,10 +38,8 @@ import type { RemoteMeta } from './driveBackend';
 type Phase =
   | { kind: 'probing'; slow: boolean }
   | { kind: 'linear-confirm'; remote: RemoteMeta }
-  | { kind: 'diverged'; remote: RemoteMeta }
   | { kind: 'offline'; reason: string }
-  | { kind: 'applying' } // pull-and-replace running, reload imminent
-  | { kind: 'pushing' } // overwrite-remote running
+  | { kind: 'applying' } // pull running
   | { kind: 'done' };
 
 interface Props {
@@ -93,27 +90,40 @@ function handleProbeOutcome(
     const choice = getBootSyncChoice();
     if (choice === 'auto-pull') {
       setPhase({ kind: 'applying' });
-      void applyAndReload(outcome.remote, setPhase);
+      void pullAndMount(outcome.remote, setPhase);
       return;
     }
     setPhase({ kind: 'linear-confirm', remote: outcome.remote });
-    return;
-  }
-  if (outcome.kind === 'diverged') {
-    setPhase({ kind: 'diverged', remote: outcome.remote });
     return;
   }
   // offline
   setPhase({ kind: 'offline', reason: outcome.reason });
 }
 
-async function applyAndReload(
+async function pullAndMount(
   remote: RemoteMeta,
   setPhase: (p: Phase) => void,
 ): Promise<void> {
   try {
-    const bundle = await fetchRemoteBundle(remote);
-    await applyRemoteBundle(bundle); // never returns; page reloads
+    // Same gate as ConnectDrivePanel: when local is sample-seeded
+    // (boot.ts ran seedFromSamples on this cold start because the
+    // boot-time peek timed out OR Drive returned null OR Drive
+    // wasn't yet connected at boot), replacing wholesale beats
+    // CRDT-merging samples into the user's actual cloud data.
+    // Once the user authors anything, the flag is cleared and
+    // future pulls take the merge path.
+    if (isLocalSamplesOnly()) {
+      await replaceLocalFromRemote(remote);
+    } else {
+      await applyRemoteDryj(remote);
+    }
+    // Belt-and-suspenders: every successful pull (replace OR merge)
+    // commits this device to the canonical lineage; "samples-only"
+    // is no longer accurate. The inner functions clear too, but
+    // pinning the contract at the outer call site protects against
+    // any inner-path bug or stale-read race in isLocalSamplesOnly().
+    clearLocalIsSamplesOnly();
+    setPhase({ kind: 'done' });
   } catch (err) {
     setPhase({ kind: 'offline', reason: (err as Error).message });
   }
@@ -136,20 +146,14 @@ function BootGateShell({
         {phase.kind === 'linear-confirm' && (
           <LinearConfirmPanel remote={phase.remote} setPhase={setPhase} />
         )}
-        {phase.kind === 'diverged' && (
-          <DivergedPanel remote={phase.remote} setPhase={setPhase} />
-        )}
         {phase.kind === 'offline' && (
           <OfflinePanel reason={phase.reason} setPhase={setPhase} />
         )}
         {phase.kind === 'applying' && (
           <StatusPanel
             title="正在拉取最新数据…"
-            note="完成后页面会自动刷新一次。"
+            note="完成后会无刷新地回到主界面。"
           />
-        )}
-        {phase.kind === 'pushing' && (
-          <StatusPanel title="正在覆盖远端…" note="完成后会回到主界面。" />
         )}
       </div>
     </div>
@@ -210,10 +214,9 @@ function LinearConfirmPanel({
   const onPull = () => {
     if (remember) setBootSyncChoice('auto-pull');
     setPhase({ kind: 'applying' });
-    void applyAndReload(remote, setPhase);
+    void pullAndMount(remote, setPhase);
   };
   const onUseLocalOnce = () => {
-    // Non-memoizable on purpose. See ERD §7.6.
     setPhase({ kind: 'done' });
   };
   return (
@@ -229,7 +232,7 @@ function LinearConfirmPanel({
           </span>
         </p>
         <p className="text-2xs text-ink-tertiary">
-          本地没有未同步的改动，可以安全地拉取并覆盖本地。
+          v0.7 用 Yjs CRDT 自动合并，本地未推送的改动也会保留。
         </p>
       </div>
       <div className="flex items-center gap-2">
@@ -246,7 +249,7 @@ function LinearConfirmPanel({
           onClick={onUseLocalOnce}
           className="rounded-md bg-surface-2 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary"
         >
-          优先用本地（仅本次）
+          稍后处理（仅本次）
         </button>
       </div>
       <label className="flex items-center gap-2 text-xs text-ink-tertiary">
@@ -259,102 +262,6 @@ function LinearConfirmPanel({
         记住我的选择（拉取最新 · 之后启动自动拉，不再询问）
       </label>
     </section>
-  );
-}
-
-function DivergedPanel({
-  remote,
-  setPhase,
-}: {
-  remote: RemoteMeta;
-  setPhase: (p: Phase) => void;
-}) {
-  const [busy, setBusy] = useState<null | 'keep-remote' | 'overwrite' | 'cancel'>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const onKeepRemote = async () => {
-    setBusy('keep-remote');
-    setError(null);
-    try {
-      downloadLocalAsBackup();
-      // small pause so the download dialog actually fires before the
-      // page reloads — Safari aborts otherwise.
-      await new Promise((r) => setTimeout(r, 400));
-      setPhase({ kind: 'applying' });
-      const bundle = await fetchRemoteBundle(remote);
-      await applyRemoteBundle(bundle); // reloads
-    } catch (err) {
-      setError((err as Error).message);
-      setBusy(null);
-    }
-  };
-
-  const onOverwriteRemote = async () => {
-    setBusy('overwrite');
-    setError(null);
-    try {
-      await downloadRemoteAsBackup(remote);
-      await new Promise((r) => setTimeout(r, 400));
-      setPhase({ kind: 'pushing' });
-      await forcePushOverridingRemote();
-      setPhase({ kind: 'done' });
-    } catch (err) {
-      setError((err as Error).message);
-      setPhase({ kind: 'diverged', remote });
-      setBusy(null);
-    }
-  };
-
-  return (
-    <section className="flex flex-col gap-4 rounded-md bg-surface-1 px-4 py-4">
-      <div className="flex flex-col gap-1">
-        <span className="font-mono text-2xs uppercase tracking-widest text-warn">
-          本地与云端有冲突
-        </span>
-        <p className="text-sm text-ink-primary">
-          本地有未同步的改动，但云端也有另一台设备的新改动。请选择如何处理。
-        </p>
-      </div>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <Side title="本地" hint="此设备" />
-        <Side
-          title="云端"
-          hint={`${remote.deviceLabel ?? '另一台设备'} · ${fmtRelative(remote.modifiedTime)}`}
-        />
-      </div>
-      <div className="flex flex-col gap-2">
-        <button
-          type="button"
-          onClick={onKeepRemote}
-          disabled={busy !== null}
-          className="rounded-md bg-ink-primary px-3 py-2 text-xs font-medium text-surface-0 transition hover:brightness-95 disabled:opacity-50"
-        >
-          {busy === 'keep-remote' ? '正在保留远端…' : '保留远端、把本地导出留底'}
-        </button>
-        <button
-          type="button"
-          onClick={onOverwriteRemote}
-          disabled={busy !== null}
-          className="rounded-md bg-surface-2 px-3 py-2 text-xs font-medium text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary disabled:opacity-50"
-        >
-          {busy === 'overwrite' ? '正在覆盖远端…' : '覆盖远端（先把远端下载留底）'}
-        </button>
-      </div>
-      {error && (
-        <p className="rounded-sm bg-surface-0 px-3 py-2 text-2xs text-warn">{error}</p>
-      )}
-    </section>
-  );
-}
-
-function Side({ title, hint }: { title: string; hint: string }) {
-  return (
-    <div className="flex flex-col gap-1 rounded-sm bg-surface-0 px-3 py-2">
-      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-        {title}
-      </span>
-      <span className="text-xs text-ink-secondary">{hint}</span>
-    </div>
   );
 }
 
@@ -375,9 +282,6 @@ function OfflinePanel({
     setReconnecting(true);
     setReconnectErr(null);
     try {
-      // Runs from a button click → user gesture → consent popup is
-      // permitted. Once it lands a fresh token in memory, re-probe
-      // exactly like a normal cold start.
       await connectDrive();
       syncStore.setConnected(true);
       setPhase({ kind: 'probing', slow: false });
@@ -452,8 +356,6 @@ function friendlyReason(reason: string): string {
     return '同步探测超时（网络抖动或 Drive 慢响应）。可继续使用本地，顶栏会标记未同步。';
   }
   if (reason.includes('NEEDS_RECONNECT')) {
-    // Strip the prefix marker; what's left is the human-readable
-    // explanation we wrote in driveAuth's error_callback.
     return reason.replace(/^.*?NEEDS_RECONNECT\s*·\s*/, '');
   }
   return `同步探测失败：${reason}`;
