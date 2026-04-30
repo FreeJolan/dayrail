@@ -264,6 +264,7 @@ export function CycleSection({
                         date={d.date}
                         railId={rail.id}
                         railName={rail.name}
+                        isActiveDragTarget={isHover}
                         {...(onClearSlot && { onClearTask: onClearSlot })}
                         {...(onMarkTaskDone && { onMarkTaskDone })}
                         {...(onUndoTaskDone && { onUndoTaskDone })}
@@ -596,7 +597,13 @@ function RailRowLabel({
       <span
         aria-hidden
         className={clsx(
-          'font-mono text-[9px] uppercase tracking-widest text-cta transition-opacity',
+          // No transition: opacity used to fade in/out over ~150ms,
+          // and 60Hz dragover races the fade — every rail the cursor
+          // touched stayed mid-fade-out, painting a `→` trail. The
+          // arrow is opacity-animated for layout neutrality (always
+          // rendered so its presence doesn't shift cell width); just
+          // snap the opacity instead of animating it.
+          'font-mono text-[9px] uppercase tracking-widest text-cta',
           isDropTarget ? 'opacity-100' : 'opacity-0',
         )}
       >

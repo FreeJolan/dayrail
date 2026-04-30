@@ -76,6 +76,13 @@ interface Props {
    *  (`CycleSection`'s onDropTask) handles end-of-slot drops without
    *  a position (legacy append behavior). */
   onDropTaskAt?: (taskId: string, orderedTaskIds: string[]) => void;
+  /** True when this cell is the cycle's currently active drag target
+   *  (dragHoverKey === `${railId}|${date}`). When false, the cell
+   *  auto-clears its local insertion-line index — without this, every
+   *  cell the cursor passed retained the bg-cta line at wherever the
+   *  cursor was last seen inside it, painting a trail of insertion
+   *  bars across the whole grid. */
+  isActiveDragTarget?: boolean;
 }
 
 export function CycleCell({
@@ -95,14 +102,25 @@ export function CycleCell({
   onQuickCreate,
   lineLookup,
   onDropTaskAt,
+  isActiveDragTarget,
 }: Props) {
   // Insertion-line index for the drag-hover state. `null` = no
   // preview line; otherwise the line draws ABOVE the pill at this
   // index (so `tasks.length` means "below the last pill").
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
-  // Wipe the line on dragend / drop anywhere (mirrors the per-cell
-  // hover-drop pattern in CycleSection).
+  // The window-level dragend/drop listener catches the natural end
+  // of the gesture, but during a drag, only the cell currently under
+  // the cursor receives `dragover`. Without an active-target signal,
+  // every previously-visited cell kept its local hoverIndex and
+  // painted an insertion line at wherever the cursor last was inside
+  // it — producing the bg-cta trail visible across cells. Clearing
+  // on `isActiveDragTarget = false` makes only the active cell ever
+  // show an insertion line.
+  useEffect(() => {
+    if (!isActiveDragTarget) setHoverIndex(null);
+  }, [isActiveDragTarget]);
+
   useEffect(() => {
     if (!onDropTaskAt) return;
     const clear = () => setHoverIndex(null);
