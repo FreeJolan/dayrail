@@ -46,6 +46,8 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
   const calendarRules = useStore((s) => s.calendarRules);
   const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
   const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
+  const userDayNotes = useStore((s) => s.userDayNotes);
+  const userProfile = useStore((s) => s.userProfile);
   const adhocsMap = useStore((s) => s.adhocEvents);
   const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
   const scheduleTaskFreeTime = useStore((s) => s.scheduleTaskFreeTime);
@@ -81,6 +83,8 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
           calendarRules,
           calendarRuleRevisions,
           calendarRuleTombstones,
+          userDayNotes,
+          userProfile,
         },
         date,
       ),
@@ -89,6 +93,8 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
       calendarRules,
       calendarRuleRevisions,
       calendarRuleTombstones,
+      userDayNotes,
+      userProfile,
       date,
     ],
   );

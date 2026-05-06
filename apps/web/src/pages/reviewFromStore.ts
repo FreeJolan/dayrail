@@ -54,6 +54,8 @@ export function deriveReviewData(
     | 'shifts'
     | 'adhocEvents'
     | 'habitBindings'
+    | 'userDayNotes'
+    | 'userProfile'
   >,
   input: DeriveReviewInput,
 ): ReviewScopeData {

@@ -235,6 +235,8 @@ export function Calendar() {
                 calendarRules,
                 calendarRuleRevisions,
                 calendarRuleTombstones,
+                userDayNotes,
+                userProfile,
               },
               cell.date,
             ) ?? null;
