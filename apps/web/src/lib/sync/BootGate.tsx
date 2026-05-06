@@ -25,6 +25,10 @@ import {
   type BootSyncChoice,
 } from './identity';
 import { connectDrive, isDriveConnected } from './driveAuth';
+import {
+  isSyncProbeSuppressed,
+  setSyncProbeSuppressed,
+} from './identity';
 import { syncStore } from './syncStore';
 import {
   applyRemoteDryj,
@@ -48,7 +52,14 @@ interface Props {
 
 export function BootGate({ children }: Props) {
   const [phase, setPhase] = useState<Phase>(() =>
-    isDriveConnected() ? { kind: 'probing', slow: false } : { kind: 'done' },
+    // Skip auto-probe if (a) Drive isn't connected on this device, or
+    // (b) the user dismissed an auto-sync prompt earlier this session.
+    // The session suppression is set by OfflinePanel.onContinue below
+    // — without it, refreshing or returning to the tab would re-probe
+    // and pop the same Google popup again.
+    isDriveConnected() && !isSyncProbeSuppressed()
+      ? { kind: 'probing', slow: false }
+      : { kind: 'done' },
   );
 
   useEffect(() => {
@@ -277,7 +288,14 @@ function OfflinePanel({
   const [reconnectErr, setReconnectErr] = useState<string | null>(null);
 
   const onRetry = () => setPhase({ kind: 'probing', slow: false });
-  const onContinue = () => setPhase({ kind: 'done' });
+  const onContinue = () => {
+    // Persist the user's "use local" decision for this session so the
+    // next periodic / visibility / online probe doesn't re-trigger
+    // silent refresh (and potentially another Google popup). Permanent
+    // disconnect remains explicit via Settings → 同步 → 断开连接.
+    setSyncProbeSuppressed();
+    setPhase({ kind: 'done' });
+  };
   const onReconnect = async () => {
     setReconnecting(true);
     setReconnectErr(null);

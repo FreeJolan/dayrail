@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isDriveConnected } from './driveAuth';
+import { isSyncProbeSuppressed } from './identity';
 import { getBootSyncChoice } from './identity';
 import {
   applyRemoteDryj,
@@ -49,6 +50,11 @@ export function RuntimeSyncDialog() {
 
   const tryProbe = useCallback((silent: boolean) => {
     if (!isDriveConnected()) return;
+    // Honor the session-scoped "use local" decision from BootGate's
+    // OfflinePanel — without this gate, the periodic 5-min tick + the
+    // visibility/online listeners below would re-probe and surface
+    // the same Google-popup loop the user just dismissed.
+    if (isSyncProbeSuppressed()) return;
     if (probing.current) return;
     // A pull is already running through the sync controller (manual
     // 立即同步, BootGate apply, or a previous probe). Don't probe

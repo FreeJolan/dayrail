@@ -32,12 +32,69 @@ import type { RailColor } from '@/data/sample';
 // indirectly by the lib-pickTemplateForDate call chain.
 void INBOX_LINE_ID;
 
+// Persist the visible {year, month} in sessionStorage so navigating
+// to another tab (Cycle / Today / Review) and back keeps the user's
+// place. Without this, the component remounts and resets to current
+// month — annoying when the user is browsing a different month.
+// sessionStorage (not localStorage) so a fresh browser session lands
+// on the current month again, which matches "open the app today =
+// see today" expectations.
+const CALENDAR_MONTH_STORAGE_KEY = 'dayrail.calendar.viewedMonth';
+
+function readPersistedMonth(): { year: number; month: number } | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(CALENDAR_MONTH_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { year?: unknown; month?: unknown };
+    if (
+      typeof parsed.year === 'number' &&
+      typeof parsed.month === 'number' &&
+      parsed.month >= 1 &&
+      parsed.month <= 12
+    ) {
+      return { year: parsed.year, month: parsed.month };
+    }
+  } catch {
+    /* corrupt → ignore */
+  }
+  return null;
+}
+
+function persistMonth(value: { year: number; month: number }): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(
+      CALENDAR_MONTH_STORAGE_KEY,
+      JSON.stringify(value),
+    );
+  } catch {
+    /* private browsing — non-fatal */
+  }
+}
+
 export function Calendar() {
   const now = useMemo(() => new Date(), []);
-  const [{ year, month }, setMonth] = useState({
-    year: now.getFullYear(),
-    month: now.getMonth() + 1,
-  });
+  const [{ year, month }, setMonthState] = useState(() =>
+    readPersistedMonth() ?? {
+      year: now.getFullYear(),
+      month: now.getMonth() + 1,
+    },
+  );
+  const setMonth = (
+    updater:
+      | { year: number; month: number }
+      | ((prev: { year: number; month: number }) => {
+          year: number;
+          month: number;
+        }),
+  ) => {
+    setMonthState((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      persistMonth(next);
+      return next;
+    });
+  };
   const [drawerOpen, setDrawerOpen] = useState(false);
   const todayIso = toIsoDate(now);
 

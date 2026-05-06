@@ -7,19 +7,23 @@ import {
 } from './railColors';
 
 // ERD §14.1 — render a single ExternalEvent. Supports five kinds:
-//   - holiday        · solid fill (warm)
-//   - observance     · dashed outline (warm)
+//   - holiday        · solid CTA fill, white text (statutory off-day)
+//   - observance     · dashed CTA outline, no fill (cultural / traditional)
 //   - event          · neutral (reserved; no source ships this yet)
-//   - user-note      · outlined + user color (default neutral gray)
-//   - makeup-workday · solid cool (slate) fill (state council 调休)
+//   - user-note      · solid user color + white text (when color set);
+//                       outlined neutral (when no color)
+//   - makeup-workday · solid SLATE fill, white text (state council 调休)
 //
 // Visual axes:
-//   - warm vs cool      → "happy day off" vs "warning, working"
-//   - solid vs outlined → "official off-day" vs "personal/cultural"
+//   - warm vs cool          → holiday / observance vs makeup
+//   - filled vs outlined    → official statutory vs cultural / contextual
+//   - bold vs regular       → emphasized statutory presence vs subordinate
 //
-// The chip is intentionally compact and reuses the rail-color tokens
-// so notes feel native to DayRail's palette. Users pick from the same
-// 10-color set; default (no color) maps to a muted neutral.
+// Earlier iteration used a faint warm tint (`--cta` 0.12 alpha) for
+// holidays — invisible on RESTDAY-tinted cells. Now holidays use a
+// fully-saturated CTA fill so they read at-a-glance regardless of the
+// underlying template tint, and observances stay subordinate via the
+// dashed outline.
 
 type ChipShape = 'dot' | 'badge';
 
@@ -31,8 +35,6 @@ interface Props {
   shape: ChipShape;
   className?: string;
   onClick?: () => void;
-  /** Optional title override for the dot variant; defaults to event.label. */
-  title?: string;
 }
 
 /** Resolve the rail color for a user-note from its meta payload. */
@@ -49,47 +51,58 @@ function chipStyles(event: ExternalEvent): {
   background: string | undefined;
   border: string;
   color: string;
+  fontWeight?: number;
 } {
   if (event.kind === 'holiday') {
-    // Statutory off-day — solid warm fill, the most prominent style.
+    // Statutory off-day — fully-saturated warm fill, white text. The
+    // most prominent style; meant to read across any underlying cell
+    // tint (RESTDAY yellow / WORKDAY blue / etc.).
     return {
-      background: 'rgb(var(--cta) / 0.12)',
-      border: '1px solid rgb(var(--cta) / 0.55)',
-      color: 'rgb(var(--cta))',
+      background: 'rgb(var(--cta))',
+      border: '1px solid rgb(var(--cta))',
+      color: '#fff',
+      fontWeight: 600,
     };
   }
   if (event.kind === 'observance') {
+    // Cultural / traditional — outlined, subordinate to holidays.
     return {
       background: undefined,
-      border: '1px dashed rgb(var(--cta) / 0.55)',
-      color: 'rgb(var(--cta) / 0.85)',
+      border: '1px dashed rgb(var(--cta) / 0.75)',
+      color: 'rgb(var(--cta))',
     };
   }
   if (event.kind === 'user-note') {
     const railColor = resolveUserNoteColor(event);
     if (railColor) {
+      // User picked a color — render filled with that color so user
+      // notes feel as prominent as holidays. The user-color hue
+      // distinguishes them from the warm CTA holiday fill.
       return {
-        background: RAIL_COLOR_STEP_4[railColor],
-        border: `1px solid ${RAIL_COLOR_STEP_6[railColor]}`,
-        color: RAIL_COLOR_HEX[railColor],
+        background: RAIL_COLOR_HEX[railColor],
+        border: `1px solid ${RAIL_COLOR_HEX[railColor]}`,
+        color: '#fff',
+        fontWeight: 600,
       };
     }
-    // Default (neutral) chip — uses ink-tertiary tokens.
+    // Default (neutral) — outlined gray. Less prominent than a
+    // colored note but still visibly editable / personal.
     return {
       background: 'rgb(var(--surface-2))',
-      border: '1px solid rgb(var(--ink-tertiary) / 0.4)',
+      border: '1px solid rgb(var(--ink-tertiary) / 0.5)',
       color: 'rgb(var(--ink-secondary))',
     };
   }
   if (event.kind === 'makeup-workday') {
     // ERD §14 — "this looks like a weekend but you're working".
-    // Cool slate fill contrasts the warm holiday chips so adjacent
-    // days (Saturday makeup before a Spring-Festival block) read
-    // distinct at a glance.
+    // Cool slate-9 fill mirrors the holiday's prominence but in cool
+    // hue, so adjacent Saturday-makeup → Spring-Festival-block reads
+    // as two clearly-distinct kinds at a glance.
     return {
-      background: RAIL_COLOR_STEP_4['slate'],
-      border: `1px solid ${RAIL_COLOR_STEP_6['slate']}`,
-      color: RAIL_COLOR_HEX['slate'],
+      background: RAIL_COLOR_HEX['slate'],
+      border: `1px solid ${RAIL_COLOR_HEX['slate']}`,
+      color: '#fff',
+      fontWeight: 600,
     };
   }
   // 'event' — neutral
@@ -105,21 +118,20 @@ export function ExternalEventChip({
   shape,
   className,
   onClick,
-  title,
 }: Props) {
   const styles = chipStyles(event);
-  const tooltipTitle = title ?? event.label;
 
   if (shape === 'dot') {
-    // Small color marker — used in Cycle View date cell + Calendar
-    // top-right indicator stack. 6px dot, kind-aware style.
+    // Small color marker — kind-aware style. No `title` attribute on
+    // purpose: the only consumer (Cycle View date cell) wraps the
+    // entire button in a RadixHoverCard, and a native title would
+    // produce a second grey tooltip stacked under the custom one.
     return (
       <span
         aria-hidden
-        title={tooltipTitle}
         onClick={onClick}
         className={clsx(
-          'inline-block h-1.5 w-1.5 rounded-full',
+          'inline-block h-2 w-2 rounded-full',
           onClick && 'cursor-pointer',
           className,
         )}
@@ -131,6 +143,17 @@ export function ExternalEventChip({
     );
   }
 
+  // The label sits in an inner span with `truncate` (overflow:hidden +
+  // text-overflow:ellipsis + whitespace:nowrap) so a `max-w-*` from the
+  // caller's `className` actually clips long names like `调休·春节`
+  // into `调休·春…`. Putting truncate on the outer flex container
+  // doesn't work — inline-flex doesn't propagate text overflow to its
+  // children.
+  //
+  // No `title=` attribute — surfaces that need a hover preview (Cycle
+  // View date cell, Calendar month cell) wrap the chip with our own
+  // RadixHoverCard. A native `title` on top of that produces a second
+  // grey tooltip stacking under the custom popover.
   return (
     <span
       onClick={onClick}
@@ -143,47 +166,11 @@ export function ExternalEventChip({
         background: styles.background,
         border: styles.border,
         color: styles.color,
+        ...(styles.fontWeight !== undefined && { fontWeight: styles.fontWeight }),
       }}
     >
-      {event.label}
+      <span className="min-w-0 truncate">{event.label}</span>
     </span>
   );
 }
 
-/** Render a stacked group of chips for a date cell (Cycle View use).
- *  Up to `max` dots, then a `…+N` text fold. Hover surface (label
- *  list) is the consumer's responsibility. */
-export function ExternalEventDotStack({
-  events,
-  max = 3,
-  className,
-  onClick,
-}: {
-  events: ExternalEvent[];
-  max?: number;
-  className?: string;
-  onClick?: (event: ExternalEvent) => void;
-}) {
-  if (events.length === 0) return null;
-  const visible = events.slice(0, max);
-  const overflow = events.length - visible.length;
-  const hoverTitle = events.map((e) => e.label).join(' · ');
-  return (
-    <div
-      title={hoverTitle}
-      className={clsx('flex shrink-0 flex-col items-end gap-1', className)}
-    >
-      {visible.map((ev, i) => (
-        <ExternalEventChip
-          key={`${ev.sourceId}-${i}`}
-          event={ev}
-          shape="dot"
-          {...(onClick && { onClick: () => onClick(ev) })}
-        />
-      ))}
-      {overflow > 0 && (
-        <span className="font-mono text-2xs text-ink-tertiary">+{overflow}</span>
-      )}
-    </div>
-  );
-}

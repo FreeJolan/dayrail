@@ -209,3 +209,51 @@ export function clearLocalIsSamplesOnly(): void {
 export function isLocalSamplesOnly(): boolean {
   return safeGet(KEY_SAMPLES_ONLY) === '1';
 }
+
+// ============ Session-scoped sync probe suppression ============
+//
+// When the user has connected Drive in a prior browser session
+// (`KEY_CONNECTED='1'` persisted) but explicitly chooses "continue
+// local" on the BootGate offline / needs-reconnect panel, we don't
+// want to keep probing — every 5-minute periodic tick + every
+// visibility/online event would otherwise re-attempt silent token
+// refresh and surface another Google popup.
+//
+// The flag lives in **sessionStorage** so it scopes to the current
+// browser tab/session. Refreshing the tab clears it (deliberate: the
+// user might want sync to resume after a fresh start). For permanent
+// disconnect the user goes through Settings → 同步 → 断开连接, which
+// calls `disconnectDrive()` and clears `KEY_CONNECTED` outright.
+
+const KEY_PROBE_SUPPRESSED = 'dayrail.sync.bootProbeSuppressed';
+
+function safeSetSession(key: string, value: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(key, value);
+  } catch {
+    /* private mode / storage full — non-fatal */
+  }
+}
+
+function safeGetSession(key: string): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/** True when the user dismissed an auto-sync prompt in this session.
+ *  All sync-touching code paths (BootGate auto-probe, RuntimeSyncDialog
+ *  periodic probe, syncController push) skip when this is true. */
+export function isSyncProbeSuppressed(): boolean {
+  return safeGetSession(KEY_PROBE_SUPPRESSED) === '1';
+}
+
+/** Called when the user clicks "继续使用本地" on the BootGate offline
+ *  panel. Effective for the current session only. */
+export function setSyncProbeSuppressed(): void {
+  safeSetSession(KEY_PROBE_SUPPRESSED, '1');
+}

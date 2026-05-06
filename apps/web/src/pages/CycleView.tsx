@@ -715,23 +715,38 @@ function CyclePickerTrigger({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 text-left transition hover:bg-surface-2"
+          // ERD §5.3 — fixed min-width so the prev / next chevrons +
+          // the outer Today button stay put when the user clicks <
+          // or > rapidly. The label text width varies by ~50px
+          // (`六月` vs `十二月` vs `考研冲刺周`) and the "当前" badge
+          // appears/disappears as the user navigates around today —
+          // both shifts caused mis-clicks on Today previously.
+          className="inline-flex min-w-[260px] items-center gap-1.5 rounded-sm px-1.5 py-0.5 text-left transition hover:bg-surface-2"
         >
           <Calendar
-            className="h-3.5 w-3.5 text-ink-tertiary"
+            className="h-3.5 w-3.5 shrink-0 text-ink-tertiary"
             strokeWidth={1.6}
           />
-          <span className="font-mono text-sm tabular-nums text-ink-primary">
+          <span className="truncate font-mono text-sm tabular-nums text-ink-primary">
             {labelText}
           </span>
           <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
             · {rangeText}
           </span>
-          {isCurrentCycle && (
-            <span className="rounded-sm bg-ink-primary px-1 font-mono text-[9px] uppercase tracking-widest text-surface-0">
-              当前
-            </span>
-          )}
+          {/* `当前` badge always reserves its slot: rendered visible
+              when isCurrentCycle, and as an invisible placeholder of
+              identical box otherwise. Without this the prev/next
+              chevrons jump 30px every time you cross today. */}
+          <span
+            className={clsx(
+              'shrink-0 rounded-sm px-1 font-mono text-[9px] uppercase tracking-widest',
+              isCurrentCycle
+                ? 'bg-ink-primary text-surface-0'
+                : 'invisible',
+            )}
+          >
+            当前
+          </span>
         </button>
       </PopoverTrigger>
       <PopoverContent

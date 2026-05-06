@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { clsx } from 'clsx';
 import { Check, Plus, X, Pencil } from 'lucide-react';
+import * as RadixHoverCard from '@radix-ui/react-hover-card';
 import { Popover, PopoverContent, PopoverTrigger } from './primitives/Popover';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import type { RailColor } from '@/data/sample';
@@ -119,13 +120,31 @@ export function CalendarDayCell({
   const templateTint = template ? RAIL_COLOR_STEP_4[template.color] : undefined;
   const templateEdge = template ? RAIL_COLOR_STEP_6[template.color] : undefined;
 
+  // ERD §14 — hover preview. Cell shows at most 1 chip + `+N`; the
+  // hover card surfaces the full list. Single-chip days also benefit
+  // because the chip itself may be width-truncated (e.g. `调休·春…`)
+  // — the popover restores the full label. The card auto-suppresses
+  // when the editor popover is open (`open` controlled) so the two
+  // overlays never stack.
+  const hasEvents = externalEvents.length > 0;
+  const hoverDisabled = !hasEvents || !inMonth;
   return (
     <Popover open={open} onOpenChange={setOpen}>
+      <RadixHoverCard.Root
+        openDelay={300}
+        closeDelay={120}
+        open={hoverDisabled || open ? false : undefined}
+      >
+      <RadixHoverCard.Trigger asChild>
       <PopoverTrigger asChild>
         <button
           type="button"
           className={clsx(
-            'relative flex h-[104px] w-full flex-col items-start gap-2 overflow-hidden rounded-sm p-2 pl-4 pt-[10px] text-left transition',
+            // Cell height was 104px before §14 chips landed; bumped to
+            // 128px so a typical "user note + holiday + observance"
+            // stack fits above the template badge without truncation
+            // (the screenshot bug 端午节 + WORKDAY overflowing the cell).
+            'relative flex h-[128px] w-full flex-col items-start gap-1.5 overflow-hidden rounded-sm p-2 pl-4 pt-[10px] text-left transition',
             'hover:brightness-95',
             !inMonth && 'opacity-45',
             isToday && 'ring-2 ring-inset ring-ink-primary/70',
@@ -206,23 +225,28 @@ export function CalendarDayCell({
             )}
             {/* ERD §14 — external event chips (holidays / observances /
                 user notes / makeup workdays). Rendered above the
-                template badge so the day's "what's special" reads at
-                the same level as the day shape. Cap = 3 chips visible
-                + `+N` overflow; ordering is set by `selectExternalEventsOn`
-                (user-notes first → holidays/observances → makeup). */}
-            {externalEvents.length > 0 && (
-              <div className="flex w-full flex-wrap items-center gap-1">
-                {externalEvents.slice(0, 3).map((ev, i) => (
-                  <ExternalEventChip
-                    key={`${ev.sourceId}-${i}`}
-                    event={ev}
-                    shape="badge"
-                    className="max-w-full truncate"
-                  />
-                ))}
-                {externalEvents.length > 3 && (
-                  <span className="font-mono text-2xs text-ink-tertiary">
-                    +{externalEvents.length - 3}
+                template badge. Layout: at most ONE chip visible
+                inline + `+N` count for the rest; click the cell to
+                open the popover, which lists every event in full
+                (NonEditableContextRow at top for holidays/observances/
+                makeup, 备注 section below for user notes). The cell
+                is a glance surface, not a list — vertical real estate
+                is the constraint, and a single chip + count is the
+                most stable layout regardless of how many events the
+                day carries.
+                Ordering is set by `selectExternalEventsOn` (user-notes
+                first → holidays/observances → makeup), so the visible
+                chip is always the most-personally-relevant one. */}
+            {externalEvents.length > 0 && externalEvents[0] && (
+              <div className="flex w-full min-w-0 flex-nowrap items-center gap-1 overflow-hidden">
+                <ExternalEventChip
+                  event={externalEvents[0]}
+                  shape="badge"
+                  className="min-w-0 max-w-full truncate"
+                />
+                {externalEvents.length > 1 && (
+                  <span className="shrink-0 font-mono text-2xs text-ink-tertiary">
+                    +{externalEvents.length - 1}
                   </span>
                 )}
               </div>
@@ -243,6 +267,44 @@ export function CalendarDayCell({
           </div>
         </button>
       </PopoverTrigger>
+      </RadixHoverCard.Trigger>
+
+      {/* Hover preview — full event list, no editor controls. Click
+          (or focus + Enter) still opens the editor PopoverContent
+          below. */}
+      <RadixHoverCard.Portal>
+        <RadixHoverCard.Content
+          side="top"
+          align="start"
+          sideOffset={6}
+          className={clsx(
+            'z-50 flex flex-col gap-2 rounded-md bg-surface-1 p-3 text-ink-primary',
+            'shadow-[0_0_0_0.5px_theme(colors.hairline),0_8px_24px_-12px_rgba(0,0,0,0.18)]',
+            'outline-none',
+            'data-[state=open]:animate-[popoverIn_160ms_cubic-bezier(0.22,0.61,0.36,1)]',
+          )}
+          style={{ maxWidth: 280 }}
+        >
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              {date}
+            </span>
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              {WEEKDAY_SHORT_EN[weekday]}
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1">
+            {externalEvents.map((ev, i) => (
+              <ExternalEventChip
+                key={`hover-${ev.sourceId}-${i}`}
+                event={ev}
+                shape="badge"
+              />
+            ))}
+          </div>
+        </RadixHoverCard.Content>
+      </RadixHoverCard.Portal>
+      </RadixHoverCard.Root>
 
       <PopoverContent align="start" sideOffset={4} className="w-[220px] p-1">
         {/* ERD §14 — read-only context line. Surfaces the day's
@@ -640,19 +702,27 @@ function UserDayNoteForm({
         }}
         className="h-7 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
       />
-      <div className="flex flex-wrap items-center gap-1">
+      {/* Selected swatch is differentiated three ways: 2px ring +
+          inset Check icon + slight scale-up. 1px border alone (the
+          previous design) was too subtle to read against muted
+          background tones. */}
+      <div className="flex flex-wrap items-center gap-1.5">
         <button
           type="button"
           onClick={() => setColor(undefined)}
           aria-label="No color"
           className={clsx(
-            'h-4 w-4 rounded-full border transition',
+            'relative inline-flex h-5 w-5 items-center justify-center rounded-full border transition',
             color === undefined
-              ? 'border-ink-primary'
+              ? 'scale-110 border-ink-primary ring-2 ring-ink-primary ring-offset-1 ring-offset-surface-0'
               : 'border-hairline hover:border-ink-tertiary',
           )}
           style={{ background: 'rgb(var(--surface-2))' }}
-        />
+        >
+          {color === undefined && (
+            <Check className="h-3 w-3 text-ink-primary" strokeWidth={2.5} />
+          )}
+        </button>
         {NOTE_COLOR_CHOICES.map((c) => (
           <button
             key={c}
@@ -660,13 +730,17 @@ function UserDayNoteForm({
             onClick={() => setColor(c)}
             aria-label={c}
             className={clsx(
-              'h-4 w-4 rounded-full border transition',
+              'relative inline-flex h-5 w-5 items-center justify-center rounded-full border transition',
               color === c
-                ? 'border-ink-primary'
+                ? 'scale-110 border-ink-primary ring-2 ring-ink-primary ring-offset-1 ring-offset-surface-0'
                 : 'border-hairline hover:border-ink-tertiary',
             )}
             style={{ background: RAIL_COLOR_HEX[c] }}
-          />
+          >
+            {color === c && (
+              <Check className="h-3 w-3 text-white" strokeWidth={2.5} />
+            )}
+          </button>
         ))}
       </div>
       <div className="flex items-center justify-between gap-1.5 pt-0.5">

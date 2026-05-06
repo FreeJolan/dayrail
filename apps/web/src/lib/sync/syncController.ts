@@ -41,6 +41,7 @@ import {
   getDirtyCount,
   getLastPulledSnapshotId,
   isLocalSamplesOnly,
+  isSyncProbeSuppressed,
   setLastPulledSnapshotId,
   setLastSyncInfo,
 } from './identity';
@@ -142,9 +143,9 @@ export function startSyncBackgroundLoop(): void {
     window.addEventListener('beforeunload', onBeforeUnload);
   }
 
-  if (isDriveConnected() && getDirtyCount() > 0) {
+  if (isDriveConnected() && !isSyncProbeSuppressed() && getDirtyCount() > 0) {
     setTimeout(() => {
-      if (!isDriveConnected() || getDirtyCount() === 0) return;
+      if (!isDriveConnected() || isSyncProbeSuppressed() || getDirtyCount() === 0) return;
       void runPush({ trigger: 'recovery' }).catch((err) => {
         console.warn('[sync] recovery push failed:', err);
       });
@@ -154,6 +155,11 @@ export function startSyncBackgroundLoop(): void {
 
 function schedulePush(): void {
   if (!isDriveConnected()) return;
+  // Honor the user's "continue local" decision from BootGate's
+  // OfflinePanel for the duration of this session — pushes would
+  // otherwise re-trigger silent token refresh and surface another
+  // Google popup. (See identity.ts isSyncProbeSuppressed.)
+  if (isSyncProbeSuppressed()) return;
   if (pushTimer) clearTimeout(pushTimer);
   pushTimer = setTimeout(() => {
     pushTimer = null;
@@ -165,7 +171,7 @@ function schedulePush(): void {
 
 function onVisibilityChange(): void {
   if (document.visibilityState === 'hidden') {
-    if (getDirtyCount() > 0 && isDriveConnected()) {
+    if (getDirtyCount() > 0 && isDriveConnected() && !isSyncProbeSuppressed()) {
       void runPush({ trigger: 'visibilitychange' }).catch((err) => {
         console.warn('[sync] visibilitychange push failed:', err);
       });
@@ -174,7 +180,7 @@ function onVisibilityChange(): void {
 }
 
 function onPageHide(): void {
-  if (getDirtyCount() > 0 && isDriveConnected()) {
+  if (getDirtyCount() > 0 && isDriveConnected() && !isSyncProbeSuppressed()) {
     void runPush({ trigger: 'pagehide' }).catch(() => {
       /* leaving anyway */
     });
@@ -183,6 +189,7 @@ function onPageHide(): void {
 
 function onBeforeUnload(): void {
   if (getDirtyCount() === 0 || !isDriveConnected()) return;
+  if (isSyncProbeSuppressed()) return;
   void runPush({ trigger: 'beforeunload', keepalive: true }).catch(() => {
     /* ignore */
   });
