@@ -993,20 +993,33 @@ function PriorityOrderSection({
   );
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  // Track upper-half vs lower-half cursor position within the target
+  // row, so the user can drop a rule BOTH above and below any other
+  // rule — without this, the splice was hardcoded to "insert before
+  // target" and the very last position was unreachable. Also gives a
+  // direction-aware insertion line indicator.
+  const [dropPosition, setDropPosition] = useState<'above' | 'below' | null>(
+    null,
+  );
 
   const onDragStart = (id: string) => (e: React.DragEvent) => {
     setDraggingId(id);
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', id);
   };
-  const onDragOver = (id: string) => (e: React.DragEvent) => {
+  const onDragOver = (id: string) => (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pos: 'above' | 'below' =
+      e.clientY < rect.top + rect.height / 2 ? 'above' : 'below';
     if (overId !== id) setOverId(id);
+    if (dropPosition !== pos) setDropPosition(pos);
   };
   const onDragEnd = () => {
     setDraggingId(null);
     setOverId(null);
+    setDropPosition(null);
   };
   const onDrop = (targetId: string) => (e: React.DragEvent) => {
     e.preventDefault();
@@ -1015,7 +1028,8 @@ function PriorityOrderSection({
       return;
     }
     const next = sortedIds.filter((id) => id !== draggingId);
-    const targetIdx = next.indexOf(targetId);
+    let targetIdx = next.indexOf(targetId);
+    if (dropPosition === 'below') targetIdx += 1;
     next.splice(targetIdx, 0, draggingId);
     void setCalendarRuleOrder(next);
     onDragEnd();
@@ -1053,15 +1067,19 @@ function PriorityOrderSection({
               onDragEnd={onDragEnd}
               className={clsx(
                 'flex items-center gap-2 rounded-md bg-surface-1 px-2 py-1.5 transition',
-                // Bug fix v0.8.1.1: insertion line above the target
-                // row (not a ring around the whole row), so the user
-                // can see exactly where the dragged item will land.
-                // box-shadow avoids the layout shift a border-top
-                // would introduce.
+                // Insertion line above OR below the target row depending
+                // on the cursor's vertical half — gives the user a
+                // reachable "drop after the last item" path. box-shadow
+                // avoids the 2px layout shift a border would cause.
                 draggingId === id && 'opacity-40',
                 overId === id &&
                   draggingId !== id &&
+                  dropPosition === 'above' &&
                   'shadow-[0_-2px_0_0_rgb(var(--ink-primary))]',
+                overId === id &&
+                  draggingId !== id &&
+                  dropPosition === 'below' &&
+                  'shadow-[0_2px_0_0_rgb(var(--ink-primary))]',
               )}
             >
               <GripVertical
