@@ -101,7 +101,7 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 > 详细设计：ERD §14（外部事件源）/ §6.6（AI v0.8 实施说明）。详细计
 > 划：下方"🚧 v0.8 计划中"段。
 
-- **v0.8.0 · 外部事件源 v1 · 节假日内置数据集**（先上）—— `data/holidays/{regionCode}.json` bundle 路线，`ExternalEvent` 接口抽象，Settings 区域 multi-select，Cycle View + Calendar 渲染集成。理由：节假日数据一年改一次，ICS + CORS 反代是大锤打蚊子（详见 ERD §14.2）。
+- **v0.8.0 · 外部事件源 · 节假日 + 用户标注**（先上）—— 节假日（`data/holidays/{regionCode}.json` bundle + region multi-select，§14.2）+ 用户标注（`UserDayNote`，Calendar 上手动加备注，§14.3）共享 `ExternalEvent` 渲染层；都不进 task pipeline。三个 surface：Calendar / Cycle View / Today Track（Review · Day 顺手挂）。详见 ERD §14。
 - **v0.8.1 · AI MVP**（后上）—— 用户背景 Markdown blob（`userProfile.background`，对标 Claude Code `CLAUDE.md`）+ OpenAI-compat 通用接入（Settings → AI 三字段：base URL / API key / model name）+ §6 复盘场景 v1（Day 还是 Cycle 实施时再选）。**显式承认 CLI 桥接路径**（`claude-code-router` / `claude-bridge` / Ollama / LM Studio）—— 用户已有 Claude Code / Cursor 套餐，不再多花钱。
 
 ---
@@ -110,7 +110,7 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 
 | 项 | 触发条件 | 设计草稿位置 |
 |---|---|---|
-| ICS 订阅（外部事件源 v2） | 我或 beta 用户提出非节假日的外源日历需求 | ERD §14.3 草稿 |
+| ICS 订阅（外部事件源 v3） | 我或 beta 用户提出非节假日的外源日历需求 | ERD §14.4 草稿 |
 | HabitPhase 结构化目标（次数 / 强度 tag → match% 加权） | 真开始做分阶段训练计划 | ROADMAP 停车场 |
 | 键盘快捷键扩展（Pending `d` / `.` / `j-k`） | 键盘用得多嫌鼠标慢 | ROADMAP 停车场 |
 | Calendar 规则 inline 编辑（✎ 原地改） | 纯体验优化 | ROADMAP 停车场 |
@@ -305,35 +305,43 @@ seed / import / first-write / replace 四个生命周期点的开关。
 > ERD §14（外部事件源 · 新）+ §6.6（AI · 重写 §6.3）。两条路径互相
 > 独立，建议先 v0.8.0 节假日（warm-up）再 v0.8.1 AI MVP（大头）。
 
-### v0.8.0 · 外部事件源 v1 · 节假日内置数据集（先上）
+### v0.8.0 · 外部事件源 · 节假日 + 用户标注（先上）
 
-> ERD §14.1 + §14.2 设计：节假日数据一年改一次，用 ICS 订阅 + CORS +
-> 刷新调度是大锤打蚊子；走仓库内置数据集 + region multi-select 路线。
-> ICS 订阅留 v0.9+ 停车场（§14.3 草稿存档，避免将来再翻一遍）。
+> ERD §14 设计：v0.8.0 引入"日历这天上有什么事，但不是要做的事"这一
+> 类标注。两个 source 共上 —— **节假日**（§14.2，外源 bundle 数据集，
+> region multi-select）+ **用户标注**（§14.3 新，内源用户在 Calendar
+> 手动加备注）。共享 §14.1 `ExternalEvent` 抽象 + 渲染层；不进 task
+> pipeline。ICS 订阅留 v0.9+ 停车场（§14.4 草稿存档，避免将来再翻一遍）。
 
-- **`ExternalEvent` 抽象**（ERD §14.1 新增）—— `{ sourceId, date,
-  label, kind, regionCode? }`，渲染层只认这个接口；将来 ICS 订阅是
-  同接口的另一个 source，零渲染层改动
-- **内置节假日数据集** —— `data/holidays/{regionCode}.json`，首批
-  `zh-CN`（先把我自己用的覆盖了），按需扩 `en-US` / `ja-JP` /
-  `zh-HK` / `zh-TW` 等
-- **region multi-select** —— Settings → 外观 → 节假日 multi-select；
-  「跟随系统 region」按钮按 `Intl.DateTimeFormat().resolvedOptions().locale`
-  推断；选中的 region 进 Y.Doc `userProfile.enabledHolidayRegions`
-- **渲染集成** —— Cycle View 日期单元格右上角小色点（实色 holiday /
-  描线 observance，hover label 显示完整名 + region，多 region 同日
-  chip 横向最多 3 + 折叠）；Calendar 月视图日期数字下方 label；Today
-  Track 顶栏带节假日 label；Review Day / Cycle metadata 行 + 进 AI
-  复盘 prompt context
-- **不参与**：task 物化 / §10.3 purge / §10.5 revision / completion
-  stats —— ExternalEvent 是"日历这天的标签"，纯展示
-- **数据更新策略** —— 每年 12 月开 PR 加明年 JSON，版本号小升。运行
-  时不做网络刷新
+**通用基础设施**
 
-未覆盖（v0.8.1+）：
-- ICS 订阅（详见 ERD §14.3 v0.9+ 停车场草稿）
-- 自定义节假日（用户加自己单位放假日）—— 当前 §5.4 CalendarRule 系统
-  已能表达"指定日期改 template"，先用那个；真撞到痛点再独立做
+- **`ExternalEvent` 抽象**（ERD §14.1）—— `{ sourceId, date, label, kind, regionCode?, meta? }`，渲染层只认这个接口；`kind` enum 加 `'user-note'`（除了 `holiday | observance | event`）
+- **`selectExternalEventsOn(date)` selector** —— 聚合所有 source（holidays + user-notes，将来 + ICS）
+- **三个渲染 surface**（共用）：
+  - **Calendar 月视图**：节假日 label / 用户标注 chip 同日同时显
+  - **Cycle View 日期单元格**：节假日色点 + 用户标注色点叠加（多个折叠 `…+N`），hover 显完整列表
+  - **Today Track 顶栏**：metadata 行带今天的节假日 + 用户标注
+- **bonus**（v0.8.0 顺手做）：Review · Day metadata 行 + 进 AI 复盘 prompt context
+- **不参与**：task 物化 / §10.3 purge / §10.5 revision / completion stats / Auto-task pipeline
+
+**Source 1 · 节假日（§14.2）**
+
+- **内置数据集** —— `data/holidays/{regionCode}.json`，首批 `zh-CN`（先把我自己用的覆盖了），按需扩 `en-US` / `ja-JP` / `zh-HK` / `zh-TW` 等
+- **region multi-select** —— Settings → 外观 → 节假日 multi-select；「跟随系统 region」按钮按 `Intl.DateTimeFormat().resolvedOptions().locale` 推断；选中的 region 进 Y.Doc `userProfile.enabledHolidayRegions`
+- **数据更新策略** —— 每年 12 月开 PR 加明年 JSON，版本号小升。运行时不做网络刷新
+
+**Source 2 · 用户标注（§14.3 新）**
+
+- **`UserDayNote` 实体** —— `{ id (ULID), date, label, color?, createdAt, updatedAt }` 存 Y.Doc top-level `userDayNotes` Y.Map（**key = id，多 note 同日自然 CRDT 合并** —— 避免 keyed-by-date 撞 LWW 静默丢失）
+- **编辑入口** —— Calendar 月视图点日期 → 现有 popover 在 CalendarRule 区域上方加「备注」段：已有 chip 列表（点 chip 可改 / 删）+「+ 添加备注」按钮（label 必填 + color 可选，默认中性灰）
+- **chip 样式** —— 描线 + 用户色（`meta.color` 或默认中性），与节假日实色 chip 视觉区分但 chip 形态一致
+- **Cycle View 上点 chip** —— 跳到 Calendar 月视图聚焦该日（不在 Cycle 内编辑，避免模态复杂度）
+
+未覆盖（v0.8.x+）：
+- ICS 订阅（详见 ERD §14.4 v0.9+ 停车场草稿）
+- 自定义节假日（用户加自己单位放假日）—— 当前 §5.4 CalendarRule 已能表达"指定日期改 template"，先用那个；真撞到痛点再独立做
+- 用户标注的长描述 / Markdown body —— 用 §4.1 DailyReflection 替代
+- 用户标注的提醒 / 倒计时 / 跨年重复 / 跨多日同标注 —— 留 v0.8.x
 
 ### v0.8.1 · AI MVP（一次 ship 三件事）
 
@@ -380,7 +388,7 @@ seed / import / first-write / replace 四个生命周期点的开关。
 - **ICS 订阅 · 外部事件源 v2**（v0.9+）：用户填 `webcal://` 或
   `https://...ics` URL，`ical.js` 解析，ETag / If-Modified-Since 缓存，
   刷新间隔可配（默认 1 天）。CORS 走 Vercel serverless 反代
-  `/api/ics-proxy`。设计草稿见 ERD §14.3。触发条件：我或某个 beta 用
+  `/api/ics-proxy`。设计草稿见 ERD §14.4。触发条件：我或某个 beta 用
   户提了一个**非节假日**的外源日历需求（学校学期 / 球队赛程 / 单位
   会议室占用 / 周期性会议）—— 在那之前，节假日 bundle 已经覆盖 90%
   实际诉求。
@@ -516,10 +524,11 @@ seed / import / first-write / replace 四个生命周期点的开关。
 
 两条独立路径，建议按顺序：
 
-1. **v0.8.0 · 节假日数据集**（warm-up）—— `data/holidays/zh-CN.json`
-   先把我自己用的覆盖了 → `ExternalEvent` 渲染层抽象（参考 ERD §14.1）
-   → Cycle View + Calendar 集成 → Settings region picker（参考 ERD
-   §14.2）。挨个 PR 推。
+1. **v0.8.0 · 外部事件源 · 节假日 + 用户标注**（warm-up）—— `ExternalEvent`
+   渲染层抽象（ERD §14.1）→ 节假日 source（`data/holidays/zh-CN.json`
+   + region picker，§14.2）→ 用户标注 source（`UserDayNote` Y.Map +
+   Calendar 编辑 popover，§14.3）→ 三个 surface 渲染（Calendar / Cycle
+   View / Today Track，Review · Day 顺手挂）。挨个 PR 推。
 2. **v0.8.1 · AI MVP**（大头）—— ERD §6.6 重写过一遍 → Settings →
    AI 三字段（Base URL / API key / Model name）+ 用户背景 textarea
    （`userProfile.background`）→ `fetch` + SSE 通用客户端 → 一个 §6
