@@ -12,9 +12,9 @@
 DayRail v0.7 · **单设备自用 + Google Drive 同步（小范围 beta）**。
 
 不做对外发布、不做移动端适配、不做 AI 上线。多设备同步 v0.7 已开（仅
-作者本人 + 两台 macOS Chrome 的 Drive `appdata`），不扩展到其它用户。
-所有工作围绕"作者一个人每天用得爽 + 跨设备无感"展开。这个定位会持续，
-除非作者本人另行决定。
+我自己 + 两台 macOS Chrome 的 Drive `appdata`），不扩展到其它用户。
+所有工作围绕"我一个人每天用得爽 + 跨设备无感"展开。这个定位会持续，
+除非我另行决定。
 
 ---
 
@@ -177,7 +177,7 @@ revision、>= 该日的用新 revision）、tombstone 截止生效；§7.7 `.dry
 seed / import / first-write / replace 四个生命周期点的开关。
 
 未覆盖（已知缺口）：action 层 + syncController + samples-only flag 端到
-端集成测。单用户 beta 阶段接受作者手动验证；ERD §7.7 round 5/6/7 review
+端集成测。单用户 beta 阶段接受我自己手动验证；ERD §7.7 round 5/6/7 review
 都 flag 了这件事，扩用户基数前补。
 
 ---
@@ -188,9 +188,9 @@ seed / import / first-write / replace 四个生命周期点的开关。
 
 - **HabitPhase 结构化目标**：当前 Phase 只有 name + description + startDate。
   可加"目标次数 / 周"、"目标强度 tag"等 → Review 的 match% 可以按
-  phase 目标加权。触发条件：作者真开始做分阶段训练计划类。
+  phase 目标加权。触发条件：我真开始做分阶段训练计划类。
 - **键盘快捷键扩展**：Pending 行 `d`=完成、`.`=归档、`j/k` 上下移动；
-  Today Track 行级操作同理。触发条件：键盘派作者用得多嫌鼠标慢。
+  Today Track 行级操作同理。触发条件：键盘用得多嫌鼠标慢时。
 - **Calendar 规则 inline 编辑**：当前 delete + recreate，高级 drawer 里
   加 ✎ 按钮原地改。纯体验优化，非阻塞。
 
@@ -222,7 +222,7 @@ seed / import / first-write / replace 四个生命周期点的开关。
 3. **action 层 + syncController + samples-only flag 端到端集成测**
    —— ERD §7.7 round 5/6/7 review 都 flag 了这件事。Yjs 切换以来出过
    2 例数据破坏 bug（"round 3 修了但没修对" + "round 5 引入新 bug"），
-   作者手动验证没接住。Playwright 或 jsdom + 手搭，覆盖 first-connect /
+   手动验证没接住。Playwright 或 jsdom + 手搭，覆盖 first-connect /
    replace-vs-merge / force-push / undoEditSession 几个高风险路径。
 4. **Single-tab guard**（影响降级，仍可做）—— v0.6 时代的 OPFS
    sync-access handle 锁竞态在 v0.7 不存在了（IndexedDB 不持文件锁），
@@ -230,7 +230,7 @@ seed / import / first-write / replace 四个生命周期点的开关。
    IndexedDB 共享但 Y.Doc 实例独立）。`BroadcastChannel` 心跳 + 软门
    仍然是最便宜的解。
 
-> 触发条件：从"作者本人 + 两台 Chrome"扩到任何额外用户之前。
+> 触发条件：从"我自己 + 两台 Chrome"扩到任何额外用户之前。
 
 ### 明确不做 · 自用 scope 内没价值
 
