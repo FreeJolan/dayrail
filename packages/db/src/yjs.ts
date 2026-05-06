@@ -1,4 +1,4 @@
-// Y.Doc schema for DayRail v0.7 (ERD §7.7).
+// Y.Doc schema for DayRail v0.7 (ERD §7.7) + v0.8 additions (ERD §14).
 //
 // Layout: top-level Y.Doc holds one Y.Map per existing store (the
 // names mirror the keys on @dayrail/core's DayRailState shape so the
@@ -59,9 +59,22 @@ export const TOP_LEVEL_MAPS = [
   'calendarRuleTombstones',
   'habitBindingTombstones',
   'dailyReflections',
+  // ERD §14.3: user-defined day notes. Keyed by note.id (ULID), not by
+  // date — concurrent same-day creation on two devices both survive
+  // (keyed-by-date would LWW one of them away).
+  'userDayNotes',
+  // ERD §14.2 / §6.6.1: singleton Y.Map of user-profile fields.
+  // Stored as id-keyed entity at id 'singleton' so the existing
+  // load/read pipeline applies unchanged. Currently holds:
+  //   - enabledHolidayRegions: string[]  (v0.8.0, §14.2)
+  // v0.8.1 will add: aiBaseUrl / aiApiKey / aiModel / background.
+  'userProfile',
 ] as const;
 
 export type TopLevelMapName = (typeof TOP_LEVEL_MAPS)[number];
+
+/** Singleton id used for the userProfile Y.Map's only entity. */
+export const USER_PROFILE_SINGLETON_ID = 'singleton';
 
 /** Fields on each entity that should be stored as Y.Array (instead of
  *  a plain JS array atomic LWW). Currently empty — see file header
@@ -198,6 +211,8 @@ export interface FlatState {
   calendarRuleTombstones: Record<string, unknown>;
   habitBindingTombstones: Record<string, unknown>;
   dailyReflections: Record<string, unknown>;
+  userDayNotes: Record<string, unknown>;
+  userProfile: Record<string, unknown>;
 }
 
 /** Bulk-load a flat state snapshot into a fresh Y.Doc. Wraps the
@@ -296,6 +311,8 @@ export function readFlatStateFromDoc(doc: Y.Doc): FlatState {
     calendarRuleTombstones: {},
     habitBindingTombstones: {},
     dailyReflections: {},
+    userDayNotes: {},
+    userProfile: {},
   };
   for (const name of TOP_LEVEL_MAPS) {
     const submap = doc.getMap(name);

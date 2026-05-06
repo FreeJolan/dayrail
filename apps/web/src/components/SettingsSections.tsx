@@ -64,7 +64,13 @@ import {
   type BootSyncChoice,
 } from '@/lib/sync/identity';
 import { syncStore, useSyncStatus } from '@/lib/sync/syncStore';
-import { applyImportedUpdate } from '@dayrail/core';
+import {
+  applyImportedUpdate,
+  getHolidayDatasetDisplayName,
+  listHolidayRegions,
+  resolveEnabledHolidayRegions,
+  useStore,
+} from '@dayrail/core';
 import { decodeDryj } from '@dayrail/db/dryj';
 import { exportDryjSnapshot } from '@/lib/exportData';
 
@@ -114,7 +120,106 @@ export function AppearanceSection() {
           />
         }
       />
+      <HolidayRegionRow />
     </SettingsSectionShell>
+  );
+}
+
+// ERD §14.2 — region multi-select that drives which bundled holiday
+// datasets show up on Cycle View / Calendar / Today Track. Empty list
+// means "no holidays rendered". The `userProfile.enabledHolidayRegions`
+// field is part of the Y.Doc sync stream so a second device picks up
+// the same selection automatically.
+function HolidayRegionRow() {
+  const userProfile = useStore((s) => s.userProfile);
+  const setEnabled = useStore((s) => s.setEnabledHolidayRegions);
+  const enabled = resolveEnabledHolidayRegions(userProfile);
+  const allRegions = listHolidayRegions();
+  const toggle = (region: string) => {
+    const next = enabled.includes(region)
+      ? enabled.filter((r) => r !== region)
+      : [...enabled, region];
+    void setEnabled(next);
+  };
+  const matchSystem = () => {
+    const sys = (() => {
+      try {
+        return Intl.DateTimeFormat().resolvedOptions().locale;
+      } catch {
+        return 'en-US';
+      }
+    })();
+    // Best-effort match: exact code first, then language-prefix.
+    const exact = allRegions.find((r) => r === sys);
+    if (exact) {
+      void setEnabled([exact]);
+      return;
+    }
+    const lang = sys.split('-')[0];
+    const partial = allRegions.find((r) => r.startsWith(lang + '-'));
+    if (partial) {
+      void setEnabled([partial]);
+    } else {
+      window.alert(
+        `未识别系统 region "${sys}"，请手选。当前可选：${allRegions.join(' · ')}`,
+      );
+    }
+  };
+  return (
+    <Row
+      label="节假日"
+      description="勾选后，Cycle View / Calendar / Today Track 上会显示对应区域的节假日 chip。数据 bundle 在仓库里，每年 12 月由 PR 更新次年；详见 ERD §14.2。"
+      control={
+        <div className="flex flex-col items-end gap-1.5">
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
+            {allRegions.map((r) => {
+              const checked = enabled.includes(r);
+              const label =
+                getHolidayDatasetDisplayName(r, 'zh-CN') ?? r;
+              return (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => toggle(r)}
+                  className={clsx(
+                    'inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition',
+                    checked
+                      ? 'bg-ink-primary text-surface-0 hover:bg-ink-primary/90'
+                      : 'bg-surface-2 text-ink-secondary hover:bg-surface-3 hover:text-ink-primary',
+                  )}
+                >
+                  <span
+                    aria-hidden
+                    className={clsx(
+                      'h-1.5 w-1.5 rounded-full',
+                      checked ? 'bg-surface-0' : 'bg-ink-tertiary/50',
+                    )}
+                  />
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => void setEnabled([])}
+              disabled={enabled.length === 0}
+              className="rounded-sm px-2 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-ink-tertiary"
+            >
+              关闭全部
+            </button>
+            <button
+              type="button"
+              onClick={matchSystem}
+              className="rounded-sm px-2 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+            >
+              跟随系统 region
+            </button>
+          </div>
+        </div>
+      }
+    />
   );
 }
 

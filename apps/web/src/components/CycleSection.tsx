@@ -1,7 +1,9 @@
 import { clsx } from 'clsx';
 import { useMemo, useState } from 'react';
 import { Check, ChevronDown, NotebookPen } from 'lucide-react';
-import type { TaskPriority } from '@dayrail/core';
+import * as RadixHoverCard from '@radix-ui/react-hover-card';
+import type { ExternalEvent, TaskPriority } from '@dayrail/core';
+import { ExternalEventChip } from './ExternalEventChip';
 import {
   type CycleDay,
   type CycleSlot,
@@ -62,6 +64,9 @@ interface Props {
    *  Daily Reflection (§4.1). Drives the filled vs outlined chip — a
    *  Set keeps the per-day lookup O(1). */
   reflectedDates: ReadonlySet<string>;
+  /** ERD §14 — external events (holidays + user day notes) per date.
+   *  CycleView pre-computes this so each cell does an O(1) lookup. */
+  externalEventsByDate: Record<string, ExternalEvent[]>;
   /** Open the Daily Reflection editor for a specific date. Cycle View
    *  delegates the deep-link to the parent so we don't import
    *  react-router here. */
@@ -110,6 +115,7 @@ export function CycleSection({
   todayISO,
   templateChoices,
   reflectedDates,
+  externalEventsByDate,
   onOpenReflection,
   onOverride,
   onClearOverride,
@@ -178,6 +184,7 @@ export function CycleSection({
           todayISO={todayISO}
           templateChoices={templateChoices}
           reflectedDates={reflectedDates}
+          externalEventsByDate={externalEventsByDate}
           onOpenReflection={onOpenReflection}
           onOverride={onOverride}
           onClearOverride={onClearOverride}
@@ -353,6 +360,7 @@ function SectionMiniHeader({
   todayISO,
   templateChoices,
   reflectedDates,
+  externalEventsByDate,
   onOpenReflection,
   onOverride,
   onClearOverride,
@@ -363,6 +371,7 @@ function SectionMiniHeader({
   todayISO: string;
   templateChoices: TemplateChoice[];
   reflectedDates: ReadonlySet<string>;
+  externalEventsByDate: Record<string, ExternalEvent[]>;
   onOpenReflection: (date: string) => void;
   onOverride: (date: string, nextTemplate: TemplateKey) => void;
   onClearOverride: (date: string) => void;
@@ -399,6 +408,7 @@ function SectionMiniHeader({
                   day={d}
                   isToday={d.date === todayISO}
                   hasReflection={reflectedDates.has(d.date)}
+                  externalEvents={externalEventsByDate[d.date] ?? []}
                   templateChoices={templateChoices}
                   onOverride={(tpl) => onOverride(d.date, tpl)}
                   onClearOverride={() => onClearOverride(d.date)}
@@ -413,10 +423,42 @@ function SectionMiniHeader({
   );
 }
 
+/** Inline external-event chips for a Cycle View date cell. Earlier
+ *  iterations used 6-8px dots to keep the day-header tight, but they
+ *  read as decorative noise on tinted cells. Badge chips (mirroring
+ *  Calendar's footer) give the events a real label, and capping at
+ *  1 chip + `+N` keeps the day column from stretching. The wrapper's
+ *  `title` carries the full list as a native tooltip; clicking the
+ *  date opens the day popover whose NonEditableContextRow lists
+ *  everything in full. */
+function ExternalEventsInline({ events }: { events: ExternalEvent[] }) {
+  if (events.length === 0 || !events[0]) return null;
+  const overflow = events.length - 1;
+  // No `title=` on the wrapper either — the parent DayCellButton wraps
+  // the entire row in a RadixHoverCard that surfaces the full event
+  // list with our custom styling. A native title here would stack a
+  // grey browser tooltip under the custom popover.
+  return (
+    <span className="ml-1 inline-flex min-w-0 max-w-[110px] items-center gap-1">
+      <ExternalEventChip
+        event={events[0]}
+        shape="badge"
+        className="min-w-0 max-w-full truncate"
+      />
+      {overflow > 0 && (
+        <span className="shrink-0 font-mono text-2xs text-ink-tertiary">
+          +{overflow}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function DayCellButton({
   day,
   isToday,
   hasReflection,
+  externalEvents,
   templateChoices,
   onOverride,
   onClearOverride,
@@ -425,6 +467,7 @@ function DayCellButton({
   day: CycleDay;
   isToday: boolean;
   hasReflection: boolean;
+  externalEvents: ExternalEvent[];
   templateChoices: TemplateChoice[];
   onOverride: (tpl: TemplateKey) => void;
   onClearOverride: () => void;
@@ -432,8 +475,23 @@ function DayCellButton({
 }) {
   const [open, setOpen] = useState(false);
   const { weekday, dayNum } = formatDayLabel(day);
+  // ERD §14 — hover preview when the day carries external events.
+  // Mirrors Calendar's HoverCard treatment so users get a quick
+  // glance at the full list (chip is truncated to ~110px in-cell).
+  // Cycle View shows the hover even with a single event — the cell's
+  // chip is so width-constrained that long labels (`调休·春节`) get
+  // ellipsized; hover restores the full label. Calendar caps it
+  // differently (only when overflow > 0) since its inline chips have
+  // more horizontal room.
+  const hasEvents = externalEvents.length > 0;
   return (
     <Popover open={open} onOpenChange={setOpen}>
+      <RadixHoverCard.Root
+        openDelay={300}
+        closeDelay={120}
+        open={!hasEvents || open ? false : undefined}
+      >
+      <RadixHoverCard.Trigger asChild>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -478,6 +536,12 @@ function DayCellButton({
               strokeWidth={2}
             />
           )}
+          {/* ERD §14 — external events (holidays + user notes) as
+              compact dots inline with the day label. Up to 3 visible
+              + `+N` overflow; hover shows the full list. */}
+          {externalEvents.length > 0 && (
+            <ExternalEventsInline events={externalEvents} />
+          )}
           <ChevronDown
             aria-hidden
             className="ml-auto h-3 w-3 text-ink-tertiary opacity-0 transition group-hover:opacity-100"
@@ -485,7 +549,63 @@ function DayCellButton({
           />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" sideOffset={6} className="w-[200px] p-1">
+      </RadixHoverCard.Trigger>
+
+      {/* Hover preview — full event list (no truncation), mirrors
+          Calendar's HoverCard. Click still opens the editor popover. */}
+      <RadixHoverCard.Portal>
+        <RadixHoverCard.Content
+          side="top"
+          align="start"
+          sideOffset={6}
+          className={clsx(
+            'z-50 flex flex-col gap-2 rounded-md bg-surface-1 p-3 text-ink-primary',
+            'shadow-[0_0_0_0.5px_theme(colors.hairline),0_8px_24px_-12px_rgba(0,0,0,0.18)]',
+            'outline-none',
+            'data-[state=open]:animate-[popoverIn_160ms_cubic-bezier(0.22,0.61,0.36,1)]',
+          )}
+          style={{ maxWidth: 280 }}
+        >
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              {day.date}
+            </span>
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              {weekday}
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1">
+            {externalEvents.map((ev, i) => (
+              <ExternalEventChip
+                key={`hover-${ev.sourceId}-${i}`}
+                event={ev}
+                shape="badge"
+              />
+            ))}
+          </div>
+        </RadixHoverCard.Content>
+      </RadixHoverCard.Portal>
+      </RadixHoverCard.Root>
+
+      <PopoverContent align="start" sideOffset={6} className="w-[220px] p-1">
+        {/* ERD §14 — read-only context row. Mirrors Calendar's day
+            popover so users see holidays / observances / makeup
+            workdays without leaving Cycle View for the Calendar tab. */}
+        {externalEvents.length > 0 && (
+          <>
+            <div className="flex flex-wrap items-center gap-1 px-3 pb-1 pt-1.5">
+              {externalEvents.map((ev, i) => (
+                <ExternalEventChip
+                  key={`ctx-${ev.sourceId}-${i}`}
+                  event={ev}
+                  shape="badge"
+                  className="max-w-full truncate"
+                />
+              ))}
+            </div>
+            <div className="mx-3 my-1 h-px bg-surface-3" />
+          </>
+        )}
         <div className="px-3 pb-1 pt-1.5">
           <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
             Day template

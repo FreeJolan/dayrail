@@ -111,7 +111,10 @@ import type {
   TemplateKey,
   TemplateRevision,
   Tombstone,
+  UserDayNote,
+  UserProfile,
 } from './types';
+import { USER_PROFILE_ID } from './types';
 import { detectReschedule } from './reschedule';
 import { detectUnschedule } from './unschedule';
 import type { ReschedulePayload, UnschedulePayload, ShiftType } from './types';
@@ -148,6 +151,11 @@ export interface DayRailState {
   habitPhases: Record<string, HabitPhase>;
   reflections: Record<string, DailyReflection>;
   habitBindings: Record<string, HabitBinding>;
+  /** ERD §14.3 — user-defined day notes, keyed by note id. */
+  userDayNotes: Record<string, UserDayNote>;
+  /** ERD §14.2 / §6.6.1 — singleton user profile. `null` until first
+   *  write or hydrate from a doc with no profile yet. */
+  userProfile: UserProfile | null;
   railRevisions: Record<string, RailRevision[]>;
   templateRevisions: Record<TemplateKey, TemplateRevision[]>;
   calendarRuleRevisions: Record<string, CalendarRuleRevision[]>;
@@ -273,6 +281,19 @@ export interface DayRailActions {
   }) => Promise<string>;
   removeHabitPhase: (id: string) => Promise<void>;
   setReflection: (date: string, content: string) => Promise<void>;
+  /** ERD §14.3 — create / update a user day note. Pass `id` to update;
+   *  omit to create (fresh ULID + createdAt). Returns the id. */
+  upsertUserDayNote: (opts: {
+    id?: string;
+    date: string;
+    label: string;
+    color?: RailColor;
+  }) => Promise<string>;
+  /** ERD §14.3 — delete a user day note (hard delete, no soft-delete). */
+  removeUserDayNote: (id: string) => Promise<void>;
+  /** ERD §14.2 — replace the enabled-region list for the holiday
+   *  display layer. Empty array = nothing rendered. */
+  setEnabledHolidayRegions: (regions: string[]) => Promise<void>;
   upsertHabitBinding: (
     opts: {
       id?: string;
@@ -380,7 +401,18 @@ function cryptoUUID(): string {
   return `snap-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** Note id with a stable prefix so the entity is grep-friendly in
+ *  exported `.dryj` blobs. ERD §14.3. */
+function newNoteId(): string {
+  return `note-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function stateFromFlat(flat: FlatState): Omit<DayRailState, 'ready' | 'error' | 'sessions' | 'pendingShiftPrompt' | 'v05MigrationApplied'> {
+  const profileEntity = (flat.userProfile as Record<string, unknown>)[USER_PROFILE_ID];
+  const userProfile: UserProfile | null =
+    profileEntity && typeof profileEntity === 'object'
+      ? (profileEntity as UserProfile)
+      : null;
   return {
     templates: flat.templates as Record<TemplateKey, Template>,
     rails: flat.rails as Record<string, Rail>,
@@ -394,6 +426,8 @@ function stateFromFlat(flat: FlatState): Omit<DayRailState, 'ready' | 'error' | 
     habitPhases: flat.habitPhases as Record<string, HabitPhase>,
     reflections: flat.dailyReflections as Record<string, DailyReflection>,
     habitBindings: flat.habitBindings as Record<string, HabitBinding>,
+    userDayNotes: flat.userDayNotes as Record<string, UserDayNote>,
+    userProfile,
     railRevisions: flat.railRevisions as Record<string, RailRevision[]>,
     templateRevisions: flat.templateRevisions as Record<TemplateKey, TemplateRevision[]>,
     calendarRuleRevisions: flat.calendarRuleRevisions as Record<string, CalendarRuleRevision[]>,
@@ -725,6 +759,8 @@ const initialState: DayRailState = {
   habitPhases: {},
   reflections: {},
   habitBindings: {},
+  userDayNotes: {},
+  userProfile: null,
   railRevisions: {},
   templateRevisions: {},
   calendarRuleRevisions: {},
@@ -896,6 +932,69 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
         });
       }
     }, 'setReflection');
+  },
+
+  // ============ ERD §14.3 · User day notes ============
+
+  upsertUserDayNote: async ({ id, date, label, color }) => {
+    const doc = getYDoc();
+    const noteId = id ?? newNoteId();
+    const now = Date.now();
+    doc.transact(() => {
+      const map = getEntityMap(doc, 'userDayNotes');
+      const existing = map.get(noteId);
+      if (existing instanceof Y.Map) {
+        // Update path — preserve createdAt, bump updatedAt.
+        patchEntityYMap(existing as YMap<unknown>, {
+          date,
+          label,
+          color,
+          updatedAt: now,
+        });
+      } else {
+        // Create path.
+        const note: UserDayNote = {
+          id: noteId,
+          date,
+          label,
+          ...(color !== undefined && { color }),
+          createdAt: now,
+          updatedAt: now,
+        };
+        map.set(noteId, entityToYMap(note as unknown as Record<string, unknown>));
+      }
+    }, 'upsertUserDayNote');
+    return noteId;
+  },
+
+  removeUserDayNote: async (id) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      deleteEntity(doc, 'userDayNotes', id);
+    }, 'removeUserDayNote');
+  },
+
+  // ============ ERD §14.2 / §6.6.1 · User profile ============
+
+  setEnabledHolidayRegions: async (regions) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const map = getEntityMap(doc, 'userProfile');
+      const existing = map.get(USER_PROFILE_ID);
+      if (existing instanceof Y.Map) {
+        patchEntityYMap(existing as YMap<unknown>, {
+          enabledHolidayRegions: [...regions],
+        });
+      } else {
+        const profile: UserProfile = {
+          enabledHolidayRegions: [...regions],
+        };
+        map.set(
+          USER_PROFILE_ID,
+          entityToYMap(profile as unknown as Record<string, unknown>),
+        );
+      }
+    }, 'setEnabledHolidayRegions');
   },
 
   // ============ TODO — to be translated in subsequent commits ============

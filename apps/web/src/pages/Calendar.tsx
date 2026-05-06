@@ -3,9 +3,13 @@ import { ChevronLeft, ChevronRight, Settings2 } from 'lucide-react';
 import { pickTemplateForDate, toIsoDate } from './cycleFromStore';
 import {
   INBOX_LINE_ID,
+  resolveEnabledHolidayRegions,
+  selectExternalEventsOn,
+  selectUserDayNotesOn,
   singleDateRuleId,
   useStore,
   type AdhocEvent,
+  type RailColor as CoreRailColor,
 } from '@dayrail/core';
 import {
   CalendarDayCell,
@@ -28,12 +32,69 @@ import type { RailColor } from '@/data/sample';
 // indirectly by the lib-pickTemplateForDate call chain.
 void INBOX_LINE_ID;
 
+// Persist the visible {year, month} in sessionStorage so navigating
+// to another tab (Cycle / Today / Review) and back keeps the user's
+// place. Without this, the component remounts and resets to current
+// month — annoying when the user is browsing a different month.
+// sessionStorage (not localStorage) so a fresh browser session lands
+// on the current month again, which matches "open the app today =
+// see today" expectations.
+const CALENDAR_MONTH_STORAGE_KEY = 'dayrail.calendar.viewedMonth';
+
+function readPersistedMonth(): { year: number; month: number } | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(CALENDAR_MONTH_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { year?: unknown; month?: unknown };
+    if (
+      typeof parsed.year === 'number' &&
+      typeof parsed.month === 'number' &&
+      parsed.month >= 1 &&
+      parsed.month <= 12
+    ) {
+      return { year: parsed.year, month: parsed.month };
+    }
+  } catch {
+    /* corrupt → ignore */
+  }
+  return null;
+}
+
+function persistMonth(value: { year: number; month: number }): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(
+      CALENDAR_MONTH_STORAGE_KEY,
+      JSON.stringify(value),
+    );
+  } catch {
+    /* private browsing — non-fatal */
+  }
+}
+
 export function Calendar() {
   const now = useMemo(() => new Date(), []);
-  const [{ year, month }, setMonth] = useState({
-    year: now.getFullYear(),
-    month: now.getMonth() + 1,
-  });
+  const [{ year, month }, setMonthState] = useState(() =>
+    readPersistedMonth() ?? {
+      year: now.getFullYear(),
+      month: now.getMonth() + 1,
+    },
+  );
+  const setMonth = (
+    updater:
+      | { year: number; month: number }
+      | ((prev: { year: number; month: number }) => {
+          year: number;
+          month: number;
+        }),
+  ) => {
+    setMonthState((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      persistMonth(next);
+      return next;
+    });
+  };
   const [drawerOpen, setDrawerOpen] = useState(false);
   const todayIso = toIsoDate(now);
 
@@ -42,10 +103,18 @@ export function Calendar() {
   const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
   const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
   const adhocEvents = useStore((s) => s.adhocEvents);
+  const userDayNotes = useStore((s) => s.userDayNotes);
+  const userProfile = useStore((s) => s.userProfile);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
   const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
   const createAdhocEvent = useStore((s) => s.createAdhocEvent);
   const deleteAdhocEvent = useStore((s) => s.deleteAdhocEvent);
+  const upsertUserDayNote = useStore((s) => s.upsertUserDayNote);
+  const removeUserDayNote = useStore((s) => s.removeUserDayNote);
+  const enabledHolidayRegions = useMemo(
+    () => resolveEnabledHolidayRegions(userProfile),
+    [userProfile],
+  );
 
   const cells = useMemo(() => buildMonthGrid(year, month), [year, month]);
 
@@ -127,6 +196,23 @@ export function Calendar() {
     [deleteAdhocEvent],
   );
 
+  const handleUpsertNote = useCallback(
+    (
+      date: string,
+      opts: { id?: string; label: string; color?: CoreRailColor },
+    ) => {
+      void upsertUserDayNote({ date, ...opts });
+    },
+    [upsertUserDayNote],
+  );
+
+  const handleDeleteNote = useCallback(
+    (id: string) => {
+      void removeUserDayNote(id);
+    },
+    [removeUserDayNote],
+  );
+
   return (
     <div className="flex w-full flex-col pl-10 pr-10 xl:pl-14">
       <TopBar
@@ -155,6 +241,11 @@ export function Calendar() {
           const overridden = Boolean(
             calendarRules[singleDateRuleId(cell.date)],
           );
+          const externalEvents = selectExternalEventsOn(cell.date, {
+            enabledHolidayRegions,
+            userDayNotes,
+          });
+          const userNotesOnDate = selectUserDayNotesOn(cell.date, userDayNotes);
           return (
             <CalendarDayCell
               key={cell.date}
@@ -167,10 +258,14 @@ export function Calendar() {
               overridden={overridden}
               templateChoices={templateChoices}
               adhocs={adhocByDate.get(cell.date) ?? []}
+              externalEvents={externalEvents}
+              userNotes={userNotesOnDate}
               onOverride={handleOverride}
               onClearOverride={handleClearOverride}
               onCreateAdhoc={handleCreateAdhoc}
               onDeleteAdhoc={handleDeleteAdhoc}
+              onUpsertNote={handleUpsertNote}
+              onDeleteNote={handleDeleteNote}
             />
           );
         })}
