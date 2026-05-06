@@ -10,8 +10,11 @@ import {
   INBOX_LINE_ID,
   materializeAutoTasksForCycle,
   railAtDate,
+  resolveEnabledHolidayRegions,
+  selectExternalEventsOn,
   useStore,
   type EditSession,
+  type ExternalEvent,
 } from '@dayrail/core';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import { CycleSummaryStrip } from '@/components/CycleSummaryStrip';
@@ -91,6 +94,8 @@ export function CycleView() {
   const upsertCycle = useStore((s) => s.upsertCycle);
   const removeCycle = useStore((s) => s.removeCycle);
   const reflections = useStore((s) => s.reflections);
+  const userDayNotes = useStore((s) => s.userDayNotes);
+  const userProfile = useStore((s) => s.userProfile);
 
   // --- session bookkeeping (ERD §5.3.1) ---
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -168,6 +173,20 @@ export function CycleView() {
     }
     return set;
   }, [cycle.days, reflections]);
+
+  // ERD §14 — pre-compute external events per day in the visible cycle.
+  // The render-side DayCellButton just looks up its date in this map.
+  const externalEventsByDate = useMemo(() => {
+    const enabledHolidayRegions = resolveEnabledHolidayRegions(userProfile);
+    const map: Record<string, ExternalEvent[]> = {};
+    for (const day of cycle.days) {
+      map[day.date] = selectExternalEventsOn(day.date, {
+        enabledHolidayRegions,
+        userDayNotes,
+      });
+    }
+    return map;
+  }, [cycle.days, userDayNotes, userProfile]);
 
   const handleOpenReflection = useCallback(
     (date: string) => {
@@ -498,6 +517,7 @@ export function CycleView() {
                 todayISO={todayISO}
                 templateChoices={templateChoices}
                 reflectedDates={reflectedDates}
+                externalEventsByDate={externalEventsByDate}
                 onOpenReflection={handleOpenReflection}
                 onOverride={overrideDay}
                 onClearOverride={clearOverride}

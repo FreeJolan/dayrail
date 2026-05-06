@@ -1,14 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { clsx } from 'clsx';
-import { Check, Plus, X } from 'lucide-react';
+import { Check, Plus, X, Pencil } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from './primitives/Popover';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import type { RailColor } from '@/data/sample';
+import type { ExternalEvent, UserDayNote } from '@dayrail/core';
 import {
   RAIL_COLOR_HEX,
   RAIL_COLOR_STEP_4,
   RAIL_COLOR_STEP_6,
 } from './railColors';
+import { ExternalEventChip } from './ExternalEventChip';
 
 // Individual day cell on the Calendar month grid (ERD §5.4 F4).
 //  · Background tinted with the applied Template.color at ~12% opacity
@@ -57,6 +59,13 @@ interface Props {
   overridden: boolean;
   templateChoices: DayCellTemplateChoice[];
   adhocs: DayCellAdhoc[];
+  /** ERD §14 — holiday + user-note ExternalEvents rendered as chips
+   *  in the cell footer (below the template badge). */
+  externalEvents: ExternalEvent[];
+  /** ERD §14.3 — user notes for this date (passed through alongside
+   *  externalEvents so the popover's editor has the underlying entity
+   *  ids, not just the chip mapping). */
+  userNotes: UserDayNote[];
   onOverride: (date: string, tpl: TemplateKey) => void;
   onClearOverride: (date: string) => void;
   onCreateAdhoc: (
@@ -64,6 +73,11 @@ interface Props {
     opts: { name: string; startMinutes: number; durationMinutes: number },
   ) => void;
   onDeleteAdhoc: (id: string) => void;
+  onUpsertNote: (
+    date: string,
+    opts: { id?: string; label: string; color?: RailColor },
+  ) => void;
+  onDeleteNote: (id: string) => void;
 }
 
 const WEEKDAY_SHORT_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -78,13 +92,28 @@ export function CalendarDayCell({
   overridden,
   templateChoices,
   adhocs,
+  externalEvents,
+  userNotes,
   onOverride,
   onClearOverride,
   onCreateAdhoc,
   onDeleteAdhoc,
+  onUpsertNote,
+  onDeleteNote,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [adhocFormOpen, setAdhocFormOpen] = useState(false);
+  const [noteFormOpen, setNoteFormOpen] = useState(false);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  // Reset transient editor state when the popover closes so reopening
+  // a different cell starts clean.
+  useEffect(() => {
+    if (!open) {
+      setNoteFormOpen(false);
+      setEditingNoteId(null);
+      setAdhocFormOpen(false);
+    }
+  }, [open]);
   const template = templateChoices.find((t) => t.key === templateKey);
   const templateHex = template ? RAIL_COLOR_HEX[template.color] : undefined;
   const templateTint = template ? RAIL_COLOR_STEP_4[template.color] : undefined;
@@ -155,7 +184,7 @@ export function CalendarDayCell({
             </div>
           </div>
 
-          {/* Bottom: template label + ad-hoc titles */}
+          {/* Bottom: template label + ad-hoc titles + holiday/note chips */}
           <div className="mt-auto flex w-full flex-col items-start gap-0.5">
             {adhocs.slice(0, 2).map((a) => (
               <span
@@ -174,6 +203,26 @@ export function CalendarDayCell({
               <span className="font-mono text-2xs text-ink-tertiary">
                 +{adhocs.length - 2}
               </span>
+            )}
+            {/* ERD §14 — external event chips (holidays + user notes).
+                Rendered above the template badge so the day's "what's
+                special" reads at the same level as the day shape. */}
+            {externalEvents.length > 0 && (
+              <div className="flex w-full flex-wrap items-center gap-1">
+                {externalEvents.slice(0, 2).map((ev, i) => (
+                  <ExternalEventChip
+                    key={`${ev.sourceId}-${i}`}
+                    event={ev}
+                    shape="badge"
+                    className="max-w-full truncate"
+                  />
+                ))}
+                {externalEvents.length > 2 && (
+                  <span className="font-mono text-2xs text-ink-tertiary">
+                    +{externalEvents.length - 2}
+                  </span>
+                )}
+              </div>
             )}
             <span
               className={clsx(
@@ -231,6 +280,87 @@ export function CalendarDayCell({
             );
           })}
         </ul>
+
+        <div className="mx-3 my-1 h-px bg-surface-3" />
+
+        {/* ERD §14.3 — User day notes editor section. Above ad-hoc
+            events because notes are a lighter-weight concept (one-line
+            label, no time block) and users add them more often. */}
+        <div className="px-3 pb-1 pt-1.5">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            备注
+          </span>
+        </div>
+        <ul className="flex flex-col">
+          {userNotes.map((note) =>
+            editingNoteId === note.id ? (
+              <li key={note.id}>
+                <UserDayNoteForm
+                  initialLabel={note.label}
+                  initialColor={note.color}
+                  onSubmit={(opts) => {
+                    onUpsertNote(date, { id: note.id, ...opts });
+                    setEditingNoteId(null);
+                  }}
+                  onCancel={() => setEditingNoteId(null)}
+                  onDelete={() => {
+                    onDeleteNote(note.id);
+                    setEditingNoteId(null);
+                  }}
+                />
+              </li>
+            ) : (
+              <li
+                key={note.id}
+                className="flex items-center gap-2 rounded-md px-3 py-1 hover:bg-surface-2"
+              >
+                <span
+                  aria-hidden
+                  className="h-2 w-[2px] shrink-0 rounded-sm"
+                  style={{
+                    background: note.color
+                      ? RAIL_COLOR_HEX[note.color]
+                      : 'rgb(var(--ink-tertiary) / 0.4)',
+                  }}
+                />
+                <span className="min-w-0 flex-1 truncate text-xs text-ink-primary">
+                  {note.label}
+                </span>
+                <button
+                  type="button"
+                  aria-label="Edit note"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditingNoteId(note.id);
+                  }}
+                  className="rounded-sm p-0.5 text-ink-tertiary transition hover:bg-surface-3 hover:text-ink-primary"
+                >
+                  <Pencil className="h-3 w-3" strokeWidth={1.8} />
+                </button>
+              </li>
+            ),
+          )}
+        </ul>
+        {noteFormOpen ? (
+          <UserDayNoteForm
+            onSubmit={(opts) => {
+              onUpsertNote(date, opts);
+              setNoteFormOpen(false);
+            }}
+            onCancel={() => setNoteFormOpen(false)}
+          />
+        ) : (
+          editingNoteId === null && (
+            <button
+              type="button"
+              onClick={() => setNoteFormOpen(true)}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+            >
+              <Plus className="h-3 w-3" strokeWidth={1.8} />
+              添加备注
+            </button>
+          )
+        )}
 
         <div className="mx-3 my-1 h-px bg-surface-3" />
 
@@ -409,4 +539,128 @@ function parseHHMM(value: string): number | null {
   const min = Number(m[2]);
   if (h < 0 || h > 23 || min < 0 || min > 59) return null;
   return h * 60 + min;
+}
+
+const NOTE_COLOR_CHOICES: ReadonlyArray<RailColor> = [
+  'sand',
+  'sage',
+  'slate',
+  'brown',
+  'amber',
+  'teal',
+  'pink',
+  'grass',
+  'indigo',
+  'plum',
+];
+
+/** Inline editor for user-defined day notes (ERD §14.3). Form contract:
+ *   - `label` required (trimmed); empty submission is a no-op.
+ *   - `color` optional (one of Radix-10 RailColor; undefined = default neutral).
+ *   - `onDelete` shown only when editing an existing note.
+ *  Save / cancel / delete close the editor; the caller handles the
+ *  underlying state mutation. */
+function UserDayNoteForm({
+  initialLabel = '',
+  initialColor,
+  onSubmit,
+  onCancel,
+  onDelete,
+}: {
+  initialLabel?: string;
+  initialColor?: RailColor;
+  onSubmit: (opts: { label: string; color?: RailColor }) => void;
+  onCancel: () => void;
+  onDelete?: () => void;
+}) {
+  const [label, setLabel] = useState(initialLabel);
+  const [color, setColor] = useState<RailColor | undefined>(initialColor);
+  const submit = () => {
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    onSubmit({
+      label: trimmed,
+      ...(color !== undefined && { color }),
+    });
+  };
+  return (
+    <div className="flex flex-col gap-1.5 px-3 py-2">
+      <input
+        type="text"
+        autoFocus
+        value={label}
+        onChange={(e) => setLabel(e.target.value)}
+        placeholder="备注 (例如：妈妈生日)"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            submit();
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        className="h-7 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+      />
+      <div className="flex flex-wrap items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setColor(undefined)}
+          aria-label="No color"
+          className={clsx(
+            'h-4 w-4 rounded-full border transition',
+            color === undefined
+              ? 'border-ink-primary'
+              : 'border-hairline hover:border-ink-tertiary',
+          )}
+          style={{ background: 'rgb(var(--surface-2))' }}
+        />
+        {NOTE_COLOR_CHOICES.map((c) => (
+          <button
+            key={c}
+            type="button"
+            onClick={() => setColor(c)}
+            aria-label={c}
+            className={clsx(
+              'h-4 w-4 rounded-full border transition',
+              color === c
+                ? 'border-ink-primary'
+                : 'border-hairline hover:border-ink-tertiary',
+            )}
+            style={{ background: RAIL_COLOR_HEX[c] }}
+          />
+        ))}
+      </div>
+      <div className="flex items-center justify-between gap-1.5 pt-0.5">
+        {onDelete ? (
+          <button
+            type="button"
+            onClick={onDelete}
+            className="rounded-sm px-2 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-cta"
+          >
+            删除
+          </button>
+        ) : (
+          <span aria-hidden />
+        )}
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-sm px-2 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            className="rounded-sm bg-ink-primary px-2 py-0.5 text-2xs text-surface-0 transition hover:bg-ink-primary/90"
+          >
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

@@ -3,9 +3,13 @@ import { ChevronLeft, ChevronRight, Settings2 } from 'lucide-react';
 import { pickTemplateForDate, toIsoDate } from './cycleFromStore';
 import {
   INBOX_LINE_ID,
+  resolveEnabledHolidayRegions,
+  selectExternalEventsOn,
+  selectUserDayNotesOn,
   singleDateRuleId,
   useStore,
   type AdhocEvent,
+  type RailColor as CoreRailColor,
 } from '@dayrail/core';
 import {
   CalendarDayCell,
@@ -42,10 +46,18 @@ export function Calendar() {
   const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
   const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
   const adhocEvents = useStore((s) => s.adhocEvents);
+  const userDayNotes = useStore((s) => s.userDayNotes);
+  const userProfile = useStore((s) => s.userProfile);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
   const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
   const createAdhocEvent = useStore((s) => s.createAdhocEvent);
   const deleteAdhocEvent = useStore((s) => s.deleteAdhocEvent);
+  const upsertUserDayNote = useStore((s) => s.upsertUserDayNote);
+  const removeUserDayNote = useStore((s) => s.removeUserDayNote);
+  const enabledHolidayRegions = useMemo(
+    () => resolveEnabledHolidayRegions(userProfile),
+    [userProfile],
+  );
 
   const cells = useMemo(() => buildMonthGrid(year, month), [year, month]);
 
@@ -127,6 +139,23 @@ export function Calendar() {
     [deleteAdhocEvent],
   );
 
+  const handleUpsertNote = useCallback(
+    (
+      date: string,
+      opts: { id?: string; label: string; color?: CoreRailColor },
+    ) => {
+      void upsertUserDayNote({ date, ...opts });
+    },
+    [upsertUserDayNote],
+  );
+
+  const handleDeleteNote = useCallback(
+    (id: string) => {
+      void removeUserDayNote(id);
+    },
+    [removeUserDayNote],
+  );
+
   return (
     <div className="flex w-full flex-col pl-10 pr-10 xl:pl-14">
       <TopBar
@@ -155,6 +184,11 @@ export function Calendar() {
           const overridden = Boolean(
             calendarRules[singleDateRuleId(cell.date)],
           );
+          const externalEvents = selectExternalEventsOn(cell.date, {
+            enabledHolidayRegions,
+            userDayNotes,
+          });
+          const userNotesOnDate = selectUserDayNotesOn(cell.date, userDayNotes);
           return (
             <CalendarDayCell
               key={cell.date}
@@ -167,10 +201,14 @@ export function Calendar() {
               overridden={overridden}
               templateChoices={templateChoices}
               adhocs={adhocByDate.get(cell.date) ?? []}
+              externalEvents={externalEvents}
+              userNotes={userNotesOnDate}
               onOverride={handleOverride}
               onClearOverride={handleClearOverride}
               onCreateAdhoc={handleCreateAdhoc}
               onDeleteAdhoc={handleDeleteAdhoc}
+              onUpsertNote={handleUpsertNote}
+              onDeleteNote={handleDeleteNote}
             />
           );
         })}

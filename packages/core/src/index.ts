@@ -12,3 +12,4 @@ export * from './autoTask';
 export * from './reschedule';
 export * from './unschedule';
 export * from './revisions';
+export * from './externalEvents';

@@ -1,7 +1,8 @@
 import { clsx } from 'clsx';
 import { useMemo, useState } from 'react';
 import { Check, ChevronDown, NotebookPen } from 'lucide-react';
-import type { TaskPriority } from '@dayrail/core';
+import type { ExternalEvent, TaskPriority } from '@dayrail/core';
+import { ExternalEventChip } from './ExternalEventChip';
 import {
   type CycleDay,
   type CycleSlot,
@@ -62,6 +63,9 @@ interface Props {
    *  Daily Reflection (§4.1). Drives the filled vs outlined chip — a
    *  Set keeps the per-day lookup O(1). */
   reflectedDates: ReadonlySet<string>;
+  /** ERD §14 — external events (holidays + user day notes) per date.
+   *  CycleView pre-computes this so each cell does an O(1) lookup. */
+  externalEventsByDate: Record<string, ExternalEvent[]>;
   /** Open the Daily Reflection editor for a specific date. Cycle View
    *  delegates the deep-link to the parent so we don't import
    *  react-router here. */
@@ -110,6 +114,7 @@ export function CycleSection({
   todayISO,
   templateChoices,
   reflectedDates,
+  externalEventsByDate,
   onOpenReflection,
   onOverride,
   onClearOverride,
@@ -178,6 +183,7 @@ export function CycleSection({
           todayISO={todayISO}
           templateChoices={templateChoices}
           reflectedDates={reflectedDates}
+          externalEventsByDate={externalEventsByDate}
           onOpenReflection={onOpenReflection}
           onOverride={onOverride}
           onClearOverride={onClearOverride}
@@ -353,6 +359,7 @@ function SectionMiniHeader({
   todayISO,
   templateChoices,
   reflectedDates,
+  externalEventsByDate,
   onOpenReflection,
   onOverride,
   onClearOverride,
@@ -363,6 +370,7 @@ function SectionMiniHeader({
   todayISO: string;
   templateChoices: TemplateChoice[];
   reflectedDates: ReadonlySet<string>;
+  externalEventsByDate: Record<string, ExternalEvent[]>;
   onOpenReflection: (date: string) => void;
   onOverride: (date: string, nextTemplate: TemplateKey) => void;
   onClearOverride: (date: string) => void;
@@ -399,6 +407,7 @@ function SectionMiniHeader({
                   day={d}
                   isToday={d.date === todayISO}
                   hasReflection={reflectedDates.has(d.date)}
+                  externalEvents={externalEventsByDate[d.date] ?? []}
                   templateChoices={templateChoices}
                   onOverride={(tpl) => onOverride(d.date, tpl)}
                   onClearOverride={() => onClearOverride(d.date)}
@@ -413,10 +422,36 @@ function SectionMiniHeader({
   );
 }
 
+/** Compact inline rendering of external-event chips for a Cycle View
+ *  date cell. Up to 3 dots + `…+N` fold; hover the wrapper shows the
+ *  full list as a tooltip. */
+function ExternalEventsInline({ events }: { events: ExternalEvent[] }) {
+  const visible = events.slice(0, 3);
+  const overflow = events.length - visible.length;
+  const hoverTitle = events.map((e) => e.label).join(' · ');
+  return (
+    <span className="ml-1 inline-flex items-center gap-0.5" title={hoverTitle}>
+      {visible.map((ev, i) => (
+        <ExternalEventChip
+          key={`${ev.sourceId}-${i}`}
+          event={ev}
+          shape="dot"
+        />
+      ))}
+      {overflow > 0 && (
+        <span className="font-mono text-2xs text-ink-tertiary">
+          +{overflow}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function DayCellButton({
   day,
   isToday,
   hasReflection,
+  externalEvents,
   templateChoices,
   onOverride,
   onClearOverride,
@@ -425,6 +460,7 @@ function DayCellButton({
   day: CycleDay;
   isToday: boolean;
   hasReflection: boolean;
+  externalEvents: ExternalEvent[];
   templateChoices: TemplateChoice[];
   onOverride: (tpl: TemplateKey) => void;
   onClearOverride: () => void;
@@ -477,6 +513,12 @@ function DayCellButton({
               className="ml-1 h-3 w-3 text-ink-secondary"
               strokeWidth={2}
             />
+          )}
+          {/* ERD §14 — external events (holidays + user notes) as
+              compact dots inline with the day label. Up to 3 visible
+              + `+N` overflow; hover shows the full list. */}
+          {externalEvents.length > 0 && (
+            <ExternalEventsInline events={externalEvents} />
           )}
           <ChevronDown
             aria-hidden

@@ -11,8 +11,10 @@
 import {
   INBOX_LINE_ID,
   materializeAutoTasksForToday,
+  setHolidayDatasets,
   toIsoDate,
   useStore,
+  type HolidayDataset,
   type Line,
   type Rail,
   type RailColor,
@@ -22,12 +24,22 @@ import {
   SAMPLE_RAILS_BY_TEMPLATE,
   SAMPLE_TEMPLATES,
 } from './data/sampleTemplate';
+// ERD §14.2 — bundled holiday data sets. Each new region drops in a
+// JSON file here and gets registered. Updating: every December open a
+// PR adding next year's events to the relevant region's file.
+import HOLIDAYS_ZH_CN from './data/holidays/zh-CN.json';
 import { popPendingImport } from './lib/importData';
 import { setLocalIsSamplesOnly } from './lib/sync/identity';
 
 export async function boot(): Promise<void> {
   // 0. Pre-flight capability probe.
   await preflight();
+
+  // 0.1. Register bundled holiday datasets (synchronous, in-memory).
+  //      Done before hydrate so any first-render cycle that reads
+  //      external events sees the catalog. Order doesn't matter; the
+  //      core selector aggregates by enabled-region list.
+  setHolidayDatasets([HOLIDAYS_ZH_CN as HolidayDataset]);
 
   // 0.25. Request persistent storage so the browser doesn't evict
   //       OPFS under disk pressure.

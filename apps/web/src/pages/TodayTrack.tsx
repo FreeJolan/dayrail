@@ -2,14 +2,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { MoreHorizontal } from 'lucide-react';
 import {
   railAtDate,
+  resolveEnabledHolidayRegions,
   selectCheckinQueue,
+  selectExternalEventsOn,
   selectTodayTimeline,
   toIsoDate,
   useStore,
+  type ExternalEvent,
   type RailBoundTaskRow,
   type Task,
   type TimelineRow,
 } from '@dayrail/core';
+import { ExternalEventChip } from '@/components/ExternalEventChip';
 import {
   CheckInStrip,
   type CheckInAction,
@@ -53,6 +57,20 @@ export function TodayTrack() {
   const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
   const shifts = useStore((s) => s.shifts);
   const updateTask = useStore((s) => s.updateTask);
+  const userDayNotes = useStore((s) => s.userDayNotes);
+  const userProfile = useStore((s) => s.userProfile);
+  const enabledHolidayRegions = useMemo(
+    () => resolveEnabledHolidayRegions(userProfile),
+    [userProfile],
+  );
+  const externalEvents = useMemo(
+    () =>
+      selectExternalEventsOn(today, {
+        enabledHolidayRegions,
+        userDayNotes,
+      }),
+    [today, enabledHolidayRegions, userDayNotes],
+  );
 
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
 
@@ -203,7 +221,11 @@ export function TodayTrack() {
 
   return (
     <div className="flex w-full max-w-[780px] flex-col gap-8 py-10 pl-10 pr-10 lg:pl-14 xl:pl-20">
-      <PageHeader now={now} onResetDay={handleResetDay} />
+      <PageHeader
+        now={now}
+        externalEvents={externalEvents}
+        onResetDay={handleResetDay}
+      />
       <CheckInStrip queue={checkinQueue} onAction={handleCheckin} />
       <Timeline
         cards={timelineCards}
@@ -326,9 +348,11 @@ function taskToTimelineTask(
 
 function PageHeader({
   now,
+  externalEvents,
   onResetDay,
 }: {
   now: LiveNow;
+  externalEvents: ExternalEvent[];
   onResetDay: () => void;
 }) {
   const time = `${pad(now.hh)}:${pad(now.mm)}`;
@@ -352,6 +376,20 @@ function PageHeader({
             {weekday} · {dateStr}
           </span>
         </div>
+        {/* ERD §14 — today's external events (holidays + user notes).
+            Renders below the date so the day's "what's special"
+            doesn't compete with the time/date for the eye. */}
+        {externalEvents.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+            {externalEvents.map((ev, i) => (
+              <ExternalEventChip
+                key={`${ev.sourceId}-${i}`}
+                event={ev}
+                shape="badge"
+              />
+            ))}
+          </div>
+        )}
       </div>
       <div className="flex items-end gap-3">
         <DayProgressBar hh={now.hh} mm={now.mm} />

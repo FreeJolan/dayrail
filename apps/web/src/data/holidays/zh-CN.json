@@ -1,0 +1,40 @@
+{
+  "regionCode": "zh-CN",
+  "displayName": {
+    "zh-CN": "中国大陆",
+    "en": "Mainland China"
+  },
+  "events": [
+    { "date": "2026-01-01", "label": { "zh-CN": "元旦", "en": "New Year's Day" }, "kind": "holiday" },
+    { "date": "2026-02-17", "label": { "zh-CN": "春节（正月初一）", "en": "Spring Festival" }, "kind": "holiday" },
+    { "date": "2026-03-03", "label": { "zh-CN": "元宵节", "en": "Lantern Festival" }, "kind": "observance" },
+    { "date": "2026-03-08", "label": { "zh-CN": "妇女节", "en": "International Women's Day" }, "kind": "observance" },
+    { "date": "2026-04-05", "label": { "zh-CN": "清明节", "en": "Tomb-Sweeping Day" }, "kind": "holiday" },
+    { "date": "2026-05-01", "label": { "zh-CN": "劳动节", "en": "Labour Day" }, "kind": "holiday" },
+    { "date": "2026-05-10", "label": { "zh-CN": "母亲节", "en": "Mother's Day" }, "kind": "observance" },
+    { "date": "2026-06-19", "label": { "zh-CN": "端午节", "en": "Dragon Boat Festival" }, "kind": "holiday" },
+    { "date": "2026-06-21", "label": { "zh-CN": "父亲节", "en": "Father's Day" }, "kind": "observance" },
+    { "date": "2026-08-19", "label": { "zh-CN": "七夕", "en": "Qixi Festival" }, "kind": "observance" },
+    { "date": "2026-09-10", "label": { "zh-CN": "教师节", "en": "Teachers' Day" }, "kind": "observance" },
+    { "date": "2026-09-25", "label": { "zh-CN": "中秋节", "en": "Mid-Autumn Festival" }, "kind": "holiday" },
+    { "date": "2026-10-01", "label": { "zh-CN": "国庆节", "en": "National Day" }, "kind": "holiday" },
+    { "date": "2026-10-18", "label": { "zh-CN": "重阳节", "en": "Chongyang Festival" }, "kind": "observance" },
+    { "date": "2026-12-25", "label": { "zh-CN": "圣诞节", "en": "Christmas" }, "kind": "observance" },
+
+    { "date": "2027-01-01", "label": { "zh-CN": "元旦", "en": "New Year's Day" }, "kind": "holiday" },
+    { "date": "2027-02-06", "label": { "zh-CN": "春节（正月初一）", "en": "Spring Festival" }, "kind": "holiday" },
+    { "date": "2027-02-21", "label": { "zh-CN": "元宵节", "en": "Lantern Festival" }, "kind": "observance" },
+    { "date": "2027-03-08", "label": { "zh-CN": "妇女节", "en": "International Women's Day" }, "kind": "observance" },
+    { "date": "2027-04-05", "label": { "zh-CN": "清明节", "en": "Tomb-Sweeping Day" }, "kind": "holiday" },
+    { "date": "2027-05-01", "label": { "zh-CN": "劳动节", "en": "Labour Day" }, "kind": "holiday" },
+    { "date": "2027-05-09", "label": { "zh-CN": "母亲节", "en": "Mother's Day" }, "kind": "observance" },
+    { "date": "2027-06-09", "label": { "zh-CN": "端午节", "en": "Dragon Boat Festival" }, "kind": "holiday" },
+    { "date": "2027-06-20", "label": { "zh-CN": "父亲节", "en": "Father's Day" }, "kind": "observance" },
+    { "date": "2027-08-08", "label": { "zh-CN": "七夕", "en": "Qixi Festival" }, "kind": "observance" },
+    { "date": "2027-09-10", "label": { "zh-CN": "教师节", "en": "Teachers' Day" }, "kind": "observance" },
+    { "date": "2027-09-15", "label": { "zh-CN": "中秋节", "en": "Mid-Autumn Festival" }, "kind": "holiday" },
+    { "date": "2027-10-01", "label": { "zh-CN": "国庆节", "en": "National Day" }, "kind": "holiday" },
+    { "date": "2027-10-08", "label": { "zh-CN": "重阳节", "en": "Chongyang Festival" }, "kind": "observance" },
+    { "date": "2027-12-25", "label": { "zh-CN": "圣诞节", "en": "Christmas" }, "kind": "observance" }
+  ]
+}

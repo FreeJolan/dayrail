@@ -450,3 +450,82 @@ export interface Task {
    *  event payload for audit trails. */
   source?: 'auto-habit';
 }
+
+// ============ v0.8 · External Event Sources (ERD §14) ============
+
+/** ERD §14.1. The unified shape every "calendar annotation that
+ *  doesn't enter the task pipeline" gets rendered through. Three
+ *  kinds of source produce these in v0.8+:
+ *   - holidays (bundled JSON; §14.2)
+ *   - user-defined day notes (§14.3)
+ *   - ICS subscriptions (§14.4 v0.9+ parking)
+ *  Render layer (Cycle View / Calendar / Today Track / Review) only
+ *  knows this interface. ExternalEvents do NOT generate Tasks /
+ *  RailInstances / auto-tasks; they don't enter §10.2 materialization,
+ *  §10.3 purge, or §10.5 revision. They are pure labels on the day. */
+export interface ExternalEvent {
+  /** e.g. 'holidays:zh-CN' / 'user:note:<id>' / 'ics:<subId>'. */
+  sourceId: string;
+  /** ISO YYYY-MM-DD, in user's local calendar. */
+  date: string;
+  /** Display text. UI-locale-aware (per-source label rules). */
+  label: string;
+  /** Drives chip rendering — holiday solid / observance outlined /
+   *  event neutral / user-note outlined + user color. */
+  kind: 'holiday' | 'observance' | 'event' | 'user-note';
+  /** holidays-source only. */
+  regionCode?: string;
+  /** Per-source extension slot. user-note carries `color` / `createdAt` here. */
+  meta?: Record<string, unknown>;
+}
+
+/** ERD §14.3. A label the user manually attaches to a calendar day —
+ *  birthdays, dentist appointments, anniversaries. Doesn't generate a
+ *  Task; not part of any completion flow. Multiple notes per day are
+ *  natural (the Y.Map is keyed by `id`, not `date`).  */
+export interface UserDayNote {
+  id: string;
+  /** ISO YYYY-MM-DD. */
+  date: string;
+  /** User-written text, single-line (suggested < 30 chars). */
+  label: string;
+  /** Optional chip color (one of the Radix-10 RailColor palette).
+   *  Undefined = default neutral gray. */
+  color?: RailColor;
+  /** epoch ms. */
+  createdAt: number;
+  /** epoch ms. */
+  updatedAt: number;
+}
+
+/** ERD §14.2 / §6.6.1. Singleton record holding cross-cutting user
+ *  preferences that need to ride the Y.Doc sync stream. v0.8.0 only
+ *  populates `enabledHolidayRegions`; v0.8.1 will add AI-related fields
+ *  (`aiBaseUrl` / `aiApiKey` / `aiModel` / `background`). */
+export interface UserProfile {
+  /** ERD §14.2. Region codes for which bundled holiday data is shown
+   *  (e.g. ['zh-CN', 'en-US']). Empty array = no holidays rendered. */
+  enabledHolidayRegions?: string[];
+}
+
+/** Singleton id used by the underlying Y.Map of `userProfile`. */
+export const USER_PROFILE_ID = 'singleton';
+
+/** ERD §14.2. The shape of a bundled holiday data set after JSON
+ *  parsing. One file per region under `apps/web/src/data/holidays/`. */
+export interface HolidayDataset {
+  regionCode: string;
+  /** Locale dictionary; renderer reads `displayName[uiLocale] ?? displayName.en`. */
+  displayName: Record<string, string>;
+  events: HolidayDatasetEvent[];
+}
+
+export interface HolidayDatasetEvent {
+  /** ISO YYYY-MM-DD. */
+  date: string;
+  /** Locale dictionary; renderer reads `label[uiLocale] ?? label.en`. */
+  label: Record<string, string>;
+  /** `holiday` = statutory / public; `observance` = traditional/cultural
+   *  but not a public day off (e.g. Mother's Day in some locales). */
+  kind: 'holiday' | 'observance';
+}
