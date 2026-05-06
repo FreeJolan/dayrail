@@ -56,38 +56,12 @@ export function CalendarRulesDrawer({ open, onClose }: Props) {
     [templates],
   );
 
-  const { singleDate, dateRange, cycle, weekday, external } = useMemo(() => {
-    const single: CalendarRule[] = [];
-    const range: CalendarRule[] = [];
-    const cyc: CalendarRule[] = [];
-    const wd: CalendarRule[] = [];
-    const ext: CalendarRule[] = [];
-    for (const r of Object.values(calendarRules)) {
-      if (r.kind === 'single-date') single.push(r);
-      else if (r.kind === 'date-range') range.push(r);
-      else if (r.kind === 'cycle') cyc.push(r);
-      else if (r.kind === 'weekday') wd.push(r);
-      else if (r.kind === 'external-event') ext.push(r);
-    }
-    single.sort(byCreatedDesc);
-    range.sort(byCreatedDesc);
-    cyc.sort(byCreatedDesc);
-    ext.sort(byCreatedDesc);
-    // Weekday: sort by the first covered weekday ascending so Mon-Fri
-    // templates land above Sat-Sun in the common seeding.
-    wd.sort((a, b) => {
-      const aw = (a.value as CalendarRuleWeekday).weekdays[0] ?? 0;
-      const bw = (b.value as CalendarRuleWeekday).weekdays[0] ?? 0;
-      return aw - bw;
-    });
-    return {
-      singleDate: single,
-      dateRange: range,
-      cycle: cyc,
-      weekday: wd,
-      external: ext,
-    };
-  }, [calendarRules]);
+  // v0.8.1 — kind-specific buckets are no longer needed at the drawer
+  // level; the single PriorityOrderSection consumes Object.values()
+  // directly. The legacy per-kind section components (SingleDateSection
+  // etc.) remain in the file but are unreferenced, kept around as a
+  // reference for the unified row + form patterns until a future
+  // cleanup commit.
 
   if (!open) return null;
 
@@ -136,37 +110,16 @@ export function CalendarRulesDrawer({ open, onClose }: Props) {
         </div>
 
         <div className="mt-4 flex flex-1 flex-col gap-6 overflow-y-auto px-5 pb-6">
-          {/* v0.8.1 — top section: drag-to-reorder priority list of
-              ALL rules across kinds. Editing still happens in the
-              kind-specific sections below. */}
+          {/* v0.8.1 — single unified rules list. Drag to reorder
+              priority, ✎ to edit inline, ✕ to delete, "+ 添加规则"
+              at the bottom to create a new rule of any kind. The
+              older per-kind sections (SingleDateSection /
+              DateRangeSection / CycleSection / WeekdaySection /
+              ExternalEventSection) are no longer rendered — every
+              CRUD op goes through this section. */}
           <PriorityOrderSection
             rules={Object.values(calendarRules)}
             calendarRuleOrder={userProfile?.calendarRuleOrder ?? []}
-            templates={templatesList}
-            effectiveFrom={effectiveFrom}
-          />
-          <SingleDateSection
-            rules={singleDate}
-            templates={templatesList}
-            effectiveFrom={effectiveFrom}
-          />
-          <DateRangeSection
-            rules={dateRange}
-            templates={templatesList}
-            effectiveFrom={effectiveFrom}
-          />
-          <CycleSection
-            rules={cycle}
-            templates={templatesList}
-            effectiveFrom={effectiveFrom}
-          />
-          <WeekdaySection
-            rules={weekday}
-            templates={templatesList}
-            effectiveFrom={effectiveFrom}
-          />
-          <ExternalEventSection
-            rules={external}
             templates={templatesList}
             effectiveFrom={effectiveFrom}
           />
@@ -345,16 +298,20 @@ function SingleDateSection({
 
 function SingleDateForm({
   templates,
+  initial,
   onSubmit,
   onCancel,
 }: {
   templates: Template[];
+  initial?: { date: string; templateKey: string };
   onSubmit: (date: string, templateKey: string) => Promise<void>;
   onCancel: () => void;
 }) {
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(
+    () => initial?.date ?? new Date().toISOString().slice(0, 10),
+  );
   const [templateKey, setTemplateKey] = useState<string>(
-    templates[0]?.key ?? '',
+    initial?.templateKey ?? templates[0]?.key ?? '',
   );
   const submit = () => {
     if (!date || !templateKey) return;
@@ -1027,6 +984,13 @@ function PriorityOrderSection({
     return m;
   }, [rules]);
 
+  // Single-slot transient state — at most one row's edit form OR the
+  // add picker is open at any time. Keeps the drawer tidy even with
+  // 10+ rules.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [addingKind, setAddingKind] = useState<CalendarRule['kind'] | null>(
+    null,
+  );
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
 
@@ -1059,15 +1023,26 @@ function PriorityOrderSection({
 
   return (
     <SectionShell
-      title="整体优先级"
-      subtitle="拖拽排序 · 上面的优先 · 同一日期被多条规则命中时取第一条匹配的"
+      title="规则列表"
+      subtitle="拖拽排序优先级 · 上面的优先 · 点 ✎ 编辑 · 点底部 + 添加新规则"
     >
-      {sortedIds.length === 0 ? (
-        <EmptyHint text="暂无规则。下方各分区添加后会出现在这里。" />
+      {sortedIds.length === 0 && addingKind === null ? (
+        <EmptyHint text="暂无规则。点下方「+ 添加规则」开始。" />
       ) : (
         sortedIds.map((id) => {
           const r = ruleById.get(id);
           if (!r) return null;
+          if (editingId === id) {
+            return (
+              <RuleEditCard
+                key={id}
+                rule={r}
+                templates={templates}
+                effectiveFrom={effectiveFrom}
+                onClose={() => setEditingId(null)}
+              />
+            );
+          }
           return (
             <div
               key={id}
@@ -1078,8 +1053,15 @@ function PriorityOrderSection({
               onDragEnd={onDragEnd}
               className={clsx(
                 'flex items-center gap-2 rounded-md bg-surface-1 px-2 py-1.5 transition',
+                // Bug fix v0.8.1.1: insertion line above the target
+                // row (not a ring around the whole row), so the user
+                // can see exactly where the dragged item will land.
+                // box-shadow avoids the layout shift a border-top
+                // would introduce.
                 draggingId === id && 'opacity-40',
-                overId === id && draggingId !== id && 'ring-2 ring-ink-primary/30',
+                overId === id &&
+                  draggingId !== id &&
+                  'shadow-[0_-2px_0_0_rgb(var(--ink-primary))]',
               )}
             >
               <GripVertical
@@ -1090,13 +1072,272 @@ function PriorityOrderSection({
               <span className="min-w-0 flex-1 truncate text-xs text-ink-secondary">
                 {ruleSummary(r, templates)}
               </span>
+              <EditButton onClick={() => setEditingId(id)} />
               <RemoveButton id={id} effectiveFrom={effectiveFrom} />
             </div>
           );
         })
       )}
+
+      {/* Add-rule entry: kind picker → kind-specific form below. */}
+      {addingKind === null ? (
+        <AddRulePicker onPick={(kind) => setAddingKind(kind)} />
+      ) : (
+        <RuleAddCard
+          kind={addingKind}
+          templates={templates}
+          effectiveFrom={effectiveFrom}
+          onClose={() => setAddingKind(null)}
+        />
+      )}
     </SectionShell>
   );
+}
+
+const ADD_PICKER_KINDS: ReadonlyArray<{
+  kind: CalendarRule['kind'];
+  label: string;
+  hint: string;
+}> = [
+  { kind: 'single-date', label: '单日覆盖', hint: '某一天指定模板' },
+  { kind: 'date-range', label: '范围', hint: '一段日期内同一模板' },
+  { kind: 'cycle', label: '循环', hint: 'N 天循环模板（如 7 天班轮）' },
+  { kind: 'weekday', label: '星期', hint: '按星期几定模板' },
+  {
+    kind: 'external-event',
+    label: '属性匹配',
+    hint: '按节假日 / 调休 / 备注 等属性匹配',
+  },
+];
+
+function AddRulePicker({
+  onPick,
+}: {
+  onPick: (kind: CalendarRule['kind']) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-dashed border-ink-tertiary/40 p-3">
+      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+        + 添加规则
+      </span>
+      <div className="flex flex-wrap gap-1.5">
+        {ADD_PICKER_KINDS.map((opt) => (
+          <button
+            key={opt.kind}
+            type="button"
+            onClick={() => onPick(opt.kind)}
+            title={opt.hint}
+            className="inline-flex items-center gap-1 rounded-md bg-surface-2 px-2 py-1 text-xs text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary"
+          >
+            <Plus className="h-3 w-3" strokeWidth={1.8} />
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Inline form for editing an existing rule. Dispatches to the right
+ *  kind-specific form pre-filled with current values. Save calls the
+ *  same upsert action that creates the rule (id-stable). */
+function RuleEditCard({
+  rule,
+  templates,
+  effectiveFrom,
+  onClose,
+}: {
+  rule: CalendarRule;
+  templates: Template[];
+  effectiveFrom: string | undefined;
+  onClose: () => void;
+}) {
+  const overrideCycleDay = useStore((s) => s.overrideCycleDay);
+  const upsertWeekdayRule = useStore((s) => s.upsertWeekdayRule);
+  const upsertDateRangeRule = useStore((s) => s.upsertDateRangeRule);
+  const upsertCycleRule = useStore((s) => s.upsertCycleRule);
+  const upsertExternalEventRule = useStore((s) => s.upsertExternalEventRule);
+  switch (rule.kind) {
+    case 'single-date': {
+      const v = rule.value as CalendarRuleSingleDate;
+      return (
+        <SingleDateForm
+          templates={templates}
+          initial={{ date: v.date, templateKey: v.templateKey }}
+          onSubmit={async (date, templateKey) => {
+            await overrideCycleDay(date, templateKey, undefined, effectiveFrom);
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    }
+    case 'date-range': {
+      const v = rule.value as CalendarRuleDateRange;
+      return (
+        <DateRangeForm
+          templates={templates}
+          initial={{
+            from: v.from,
+            to: v.to,
+            templateKey: v.templateKey,
+            ...(v.label && { label: v.label }),
+          }}
+          onSubmit={async (opts) => {
+            await upsertDateRangeRule({
+              id: rule.id,
+              ...opts,
+              effectiveFrom,
+            });
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    }
+    case 'cycle': {
+      const v = rule.value as CalendarRuleCycle;
+      return (
+        <CycleForm
+          templates={templates}
+          initial={{
+            cycleLength: v.cycleLength,
+            anchor: v.anchor,
+            mapping: v.mapping,
+          }}
+          onSubmit={async (opts) => {
+            await upsertCycleRule({
+              id: rule.id,
+              ...opts,
+              effectiveFrom,
+            });
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    }
+    case 'weekday': {
+      const v = rule.value as CalendarRuleWeekday;
+      return (
+        <WeekdayForm
+          templates={templates}
+          initial={{ templateKey: v.templateKey, weekdays: v.weekdays }}
+          onSubmit={async (templateKey) => {
+            // Existing weekday rule id is `cr-weekday-{templateKey}`;
+            // editing the template key creates a new rule rather than
+            // updating in place. Acceptable: weekday rules are
+            // template-keyed by design (one per template).
+            await upsertWeekdayRule(
+              templateKey,
+              [...(rule.value as CalendarRuleWeekday).weekdays],
+              effectiveFrom,
+            );
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    }
+    case 'external-event': {
+      const v = rule.value as CalendarRuleExternalEvent;
+      return (
+        <ExternalEventForm
+          templates={templates}
+          initial={{
+            kinds: v.kinds,
+            regions: v.regions ?? [],
+            templateKey: v.templateKey,
+            label: v.label ?? '',
+          }}
+          onSubmit={async (opts) => {
+            await upsertExternalEventRule({
+              id: rule.id,
+              ...opts,
+              effectiveFrom,
+            });
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    }
+  }
+}
+
+function RuleAddCard({
+  kind,
+  templates,
+  effectiveFrom,
+  onClose,
+}: {
+  kind: CalendarRule['kind'];
+  templates: Template[];
+  effectiveFrom: string | undefined;
+  onClose: () => void;
+}) {
+  const overrideCycleDay = useStore((s) => s.overrideCycleDay);
+  const upsertWeekdayRule = useStore((s) => s.upsertWeekdayRule);
+  const upsertDateRangeRule = useStore((s) => s.upsertDateRangeRule);
+  const upsertCycleRule = useStore((s) => s.upsertCycleRule);
+  const upsertExternalEventRule = useStore((s) => s.upsertExternalEventRule);
+  switch (kind) {
+    case 'single-date':
+      return (
+        <SingleDateForm
+          templates={templates}
+          onSubmit={async (date, templateKey) => {
+            await overrideCycleDay(date, templateKey, undefined, effectiveFrom);
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    case 'date-range':
+      return (
+        <DateRangeForm
+          templates={templates}
+          onSubmit={async (opts) => {
+            await upsertDateRangeRule({ ...opts, effectiveFrom });
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    case 'cycle':
+      return (
+        <CycleForm
+          templates={templates}
+          onSubmit={async (opts) => {
+            await upsertCycleRule({ ...opts, effectiveFrom });
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    case 'weekday':
+      return (
+        <WeekdayForm
+          templates={templates}
+          onSubmit={async (templateKey, weekdays) => {
+            await upsertWeekdayRule(templateKey, weekdays, effectiveFrom);
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    case 'external-event':
+      return (
+        <ExternalEventForm
+          templates={templates}
+          onSubmit={async (opts) => {
+            await upsertExternalEventRule({ ...opts, effectiveFrom });
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+  }
 }
 
 const KIND_LABEL_ZH: Record<CalendarRule['kind'], string> = {
