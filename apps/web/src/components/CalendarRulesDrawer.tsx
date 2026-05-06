@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useId, useMemo, useRef, useState } from 'react';
 import { clsx } from 'clsx';
 import { GripVertical, Pencil, Plus, X } from 'lucide-react';
 import {
@@ -1460,17 +1460,18 @@ function ruleSummary(r: CalendarRule, templates: Template[]): string {
     }
     case 'external-event': {
       const v = r.value as CalendarRuleExternalEvent;
-      const kindNames = v.kinds
-        .map(
-          (k) =>
-            ({
-              holiday: '节假日',
-              observance: '节庆',
-              'makeup-workday': '调休',
-              'user-note': '备注',
-            })[k],
-        )
-        .join('+');
+      // Group display matches the form's 节假日 / 调休 / 备注 cards.
+      // 节假日 with both 假日 + 非假日 sub-flavors collapses to plain
+      // "节假日"; either alone shows the sub-flavor in parentheses.
+      const parts: string[] = [];
+      const hasHoliday = v.kinds.includes('holiday');
+      const hasObservance = v.kinds.includes('observance');
+      if (hasHoliday && hasObservance) parts.push('节假日');
+      else if (hasHoliday) parts.push('节假日(假日)');
+      else if (hasObservance) parts.push('节假日(非假日)');
+      if (v.kinds.includes('makeup-workday')) parts.push('调休');
+      if (v.kinds.includes('user-note')) parts.push('备注');
+      const kindNames = parts.join('+');
       const regionPart =
         v.regions && v.regions.length > 0 ? ` (${v.regions.join(',')})` : '';
       const noteFilterPart = v.noteLabelFilter?.query
@@ -1566,18 +1567,30 @@ function ExternalEventSection({
   );
 }
 
-const EXTERNAL_KIND_OPTIONS: ReadonlyArray<{
-  value: ExternalEventMatchKind;
+// "Condition group" presented in the form's UI. Each group
+// represents one kind of trigger; narrowing options (假日/非假日,
+// region filter, note label filter) are nested inside the relevant
+// group rather than floating loose at the form's top level.
+//
+// `holiday-or-observance` is a UI-only super-group that bundles the
+// underlying `holiday` + `observance` kinds together — they read as
+// "one calendar concept" to the user (节假日, with both 假日 and
+// 非假日 sub-flavors). The schema-level kinds[] still carries the
+// two-element granularity, so the rule's resolver behavior is
+// unchanged; the UI just groups them visually + lets the user sub-
+// multi-select which flavors apply.
+type ConditionGroupId =
+  | 'holiday-or-observance'
+  | 'makeup-workday'
+  | 'user-note';
+
+const ALL_CONDITION_GROUPS: ReadonlyArray<{
+  id: ConditionGroupId;
   label: string;
 }> = [
-  { value: 'holiday', label: '节假日' },
-  { value: 'makeup-workday', label: '调休' },
-  // observance kind covers cultural / commemorative dates that aren't
-  // statutory off-days (母亲节 / 父亲节 / 元宵 / 七夕 / 教师节 / 重阳
-  // / 圣诞 etc.). The UI label "节庆" reads more naturally in Chinese
-  // than the literal translation "观察日" — same underlying kind.
-  { value: 'observance', label: '节庆（母亲节 / 七夕 等）' },
-  { value: 'user-note', label: '我的备注' },
+  { id: 'holiday-or-observance', label: '节假日' },
+  { id: 'makeup-workday', label: '调休' },
+  { id: 'user-note', label: '我的备注' },
 ];
 
 function ExternalEventForm({
@@ -1603,8 +1616,9 @@ function ExternalEventForm({
   }) => Promise<void>;
   onCancel: () => void;
 }) {
+  const userDayNotes = useStore((s) => s.userDayNotes);
   const [kinds, setKinds] = useState<ExternalEventMatchKind[]>(
-    initial?.kinds ?? ['holiday'],
+    initial?.kinds ?? ['holiday', 'observance'],
   );
   const [regions, setRegions] = useState<string[]>(initial?.regions ?? []);
   const [noteFilterMode, setNoteFilterMode] = useState<'contains' | 'exact'>(
@@ -1618,8 +1632,61 @@ function ExternalEventForm({
   );
   const [label, setLabel] = useState(initial?.label ?? '');
   const allRegions = listHolidayRegions();
-  const userNoteSelected = kinds.includes('user-note');
-  const toggleKind = (k: ExternalEventMatchKind) => {
+  const noteLabelDatalistId = useId();
+
+  // Note-label autocomplete: every distinct label across all of the
+  // user's existing notes. Cheap — typical N is in the tens.
+  const noteLabelSuggestions = useMemo(() => {
+    const set = new Set<string>();
+    for (const n of Object.values(userDayNotes)) {
+      if (n.label.trim().length > 0) set.add(n.label);
+    }
+    return Array.from(set).sort();
+  }, [userDayNotes]);
+
+  // Each card represents a distinct trigger condition. Narrowing
+  // options (假日 / 非假日, 区域, 备注文本) live nested inside the
+  // owning card rather than free-floating at the form's top level.
+  const activeGroups: ConditionGroupId[] = useMemo(() => {
+    const out: ConditionGroupId[] = [];
+    if (kinds.includes('holiday') || kinds.includes('observance')) {
+      out.push('holiday-or-observance');
+    }
+    if (kinds.includes('makeup-workday')) out.push('makeup-workday');
+    if (kinds.includes('user-note')) out.push('user-note');
+    return out;
+  }, [kinds]);
+  const groupsToOffer = ALL_CONDITION_GROUPS.filter(
+    (g) => !activeGroups.includes(g.id),
+  );
+  const regionRelevant =
+    activeGroups.includes('holiday-or-observance') ||
+    activeGroups.includes('makeup-workday');
+  const userNoteSelected = activeGroups.includes('user-note');
+
+  const addGroup = (id: ConditionGroupId) => {
+    setKinds((prev) => {
+      const next = new Set(prev);
+      if (id === 'holiday-or-observance') {
+        // Default new "节假日" condition includes both 假日 + 非假日;
+        // user can sub-uncheck either inside the card.
+        next.add('holiday');
+        next.add('observance');
+      } else {
+        next.add(id);
+      }
+      return Array.from(next);
+    });
+  };
+  const removeGroup = (id: ConditionGroupId) => {
+    setKinds((prev) => {
+      if (id === 'holiday-or-observance') {
+        return prev.filter((k) => k !== 'holiday' && k !== 'observance');
+      }
+      return prev.filter((k) => k !== id);
+    });
+  };
+  const toggleHolidaySubKind = (k: 'holiday' | 'observance') => {
     setKinds((prev) =>
       prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k],
     );
@@ -1635,8 +1702,6 @@ function ExternalEventForm({
     await onSubmit({
       kinds,
       ...(regions.length > 0 && { regions }),
-      // Only forward the filter when the user actually picked
-      // user-note AND typed a non-empty query.
       ...(userNoteSelected &&
         trimmedNoteQuery.length > 0 && {
           noteLabelFilter: {
@@ -1649,97 +1714,145 @@ function ExternalEventForm({
     });
   };
   return (
-    <div className="flex flex-col gap-2 rounded-md bg-surface-1 px-3 py-3">
-      <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-3 rounded-md bg-surface-1 px-3 py-3">
+      {/* === Trigger conditions === */}
+      <div className="flex flex-col gap-1.5">
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          匹配 kind（至少选一个）
+          触发条件（任一满足即应用模板）
         </span>
-        <div className="flex flex-wrap gap-1.5">
-          {EXTERNAL_KIND_OPTIONS.map((opt) => {
-            const active = kinds.includes(opt.value);
-            return (
+        {activeGroups.length === 0 ? (
+          <EmptyHint text="点下方「+ 添加条件」开始" />
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {activeGroups.map((id) => {
+              if (id === 'holiday-or-observance') {
+                return (
+                  <ConditionCardShell
+                    key={id}
+                    title="节假日"
+                    onRemove={() => removeGroup(id)}
+                  >
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <SubChip
+                        active={kinds.includes('holiday')}
+                        onClick={() => toggleHolidaySubKind('holiday')}
+                      >
+                        假日
+                      </SubChip>
+                      <SubChip
+                        active={kinds.includes('observance')}
+                        onClick={() => toggleHolidaySubKind('observance')}
+                      >
+                        非假日（节庆）
+                      </SubChip>
+                    </div>
+                  </ConditionCardShell>
+                );
+              }
+              if (id === 'makeup-workday') {
+                return (
+                  <ConditionCardShell
+                    key={id}
+                    title="调休"
+                    onRemove={() => removeGroup(id)}
+                  />
+                );
+              }
+              return (
+                <ConditionCardShell
+                  key={id}
+                  title="我的备注"
+                  onRemove={() => removeGroup(id)}
+                >
+                  <div className="flex flex-col gap-1 pt-1">
+                    <span className="text-2xs text-ink-tertiary">
+                      备注内容（可选 · 留空 = 匹配任意备注）
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <SubChip
+                        active={noteFilterMode === 'contains'}
+                        onClick={() => setNoteFilterMode('contains')}
+                      >
+                        包含
+                      </SubChip>
+                      <SubChip
+                        active={noteFilterMode === 'exact'}
+                        onClick={() => setNoteFilterMode('exact')}
+                      >
+                        精确匹配
+                      </SubChip>
+                      <input
+                        type="text"
+                        value={noteFilterQuery}
+                        onChange={(e) => setNoteFilterQuery(e.target.value)}
+                        list={
+                          noteFilterMode === 'exact'
+                            ? noteLabelDatalistId
+                            : undefined
+                        }
+                        placeholder={
+                          noteFilterMode === 'contains'
+                            ? '例：生日'
+                            : '从已有备注选 / 自由输入'
+                        }
+                        className="h-7 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+                      />
+                      <datalist id={noteLabelDatalistId}>
+                        {noteLabelSuggestions.map((l) => (
+                          <option key={l} value={l} />
+                        ))}
+                      </datalist>
+                    </div>
+                  </div>
+                </ConditionCardShell>
+              );
+            })}
+          </div>
+        )}
+        {groupsToOffer.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            <span className="text-2xs text-ink-tertiary">+ 添加条件:</span>
+            {groupsToOffer.map((opt) => (
               <button
-                key={opt.value}
+                key={opt.id}
                 type="button"
-                onClick={() => toggleKind(opt.value)}
-                className={clsx(
-                  'rounded-md px-2 py-1 text-xs transition',
-                  active
-                    ? 'bg-ink-primary text-surface-0'
-                    : 'bg-surface-2 text-ink-secondary hover:bg-surface-3',
-                )}
+                onClick={() => addGroup(opt.id)}
+                className="inline-flex items-center gap-1 rounded-md bg-surface-2 px-2 py-0.5 text-xs text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary"
               >
+                <Plus className="h-3 w-3" strokeWidth={1.8} />
                 {opt.label}
               </button>
-            );
-          })}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
-      <div className="flex flex-col gap-1">
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          区域过滤（可选 · 不选 = 所有已启用区域）
-        </span>
-        <div className="flex flex-wrap gap-1.5">
-          {allRegions.map((r) => {
-            const active = regions.includes(r);
-            const display = getHolidayDatasetDisplayName(r, 'zh-CN') ?? r;
-            return (
-              <button
-                key={r}
-                type="button"
-                onClick={() => toggleRegion(r)}
-                className={clsx(
-                  'rounded-md px-2 py-1 text-xs transition',
-                  active
-                    ? 'bg-ink-primary text-surface-0'
-                    : 'bg-surface-2 text-ink-secondary hover:bg-surface-3',
-                )}
-              >
-                {display}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-      {userNoteSelected && (
+
+      {/* === Region filter (shared by 节假日 + 调休 cards when present) === */}
+      {regionRelevant && (
         <div className="flex flex-col gap-1">
           <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-            备注文本筛选（可选 · 留空 = 匹配任意备注）
+            区域过滤（节假日 + 调休 共用 · 留空 = 任意已启用区域）
           </span>
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => setNoteFilterMode('contains')}
-              className={clsx(
-                'shrink-0 rounded-md px-2 py-1 text-xs transition',
-                noteFilterMode === 'contains'
-                  ? 'bg-ink-primary text-surface-0'
-                  : 'bg-surface-2 text-ink-secondary hover:bg-surface-3',
-              )}
-            >
-              包含
-            </button>
-            <button
-              type="button"
-              onClick={() => setNoteFilterMode('exact')}
-              className={clsx(
-                'shrink-0 rounded-md px-2 py-1 text-xs transition',
-                noteFilterMode === 'exact'
-                  ? 'bg-ink-primary text-surface-0'
-                  : 'bg-surface-2 text-ink-secondary hover:bg-surface-3',
-              )}
-            >
-              精确匹配
-            </button>
-            <input
-              type="text"
-              value={noteFilterQuery}
-              onChange={(e) => setNoteFilterQuery(e.target.value)}
-              placeholder={
-                noteFilterMode === 'contains' ? '例：生日' : '例：看牙医'
-              }
-              className="h-7 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
-            />
+          <div className="flex flex-wrap gap-1.5">
+            {allRegions.map((r) => {
+              const active = regions.includes(r);
+              const display = getHolidayDatasetDisplayName(r, 'zh-CN') ?? r;
+              return (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => toggleRegion(r)}
+                  className={clsx(
+                    'rounded-md px-2 py-1 text-xs transition',
+                    active
+                      ? 'bg-ink-primary text-surface-0'
+                      : 'bg-surface-2 text-ink-secondary hover:bg-surface-3',
+                  )}
+                >
+                  {display}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -1778,5 +1891,61 @@ function ExternalEventForm({
         }}
       />
     </div>
+  );
+}
+
+/** Card frame for one trigger condition. Title + remove on the
+ *  header, narrowing options inside. Pure presentation; the parent
+ *  owns all state and adds/removes cards by mutating `kinds`. */
+function ConditionCardShell({
+  title,
+  onRemove,
+  children,
+}: {
+  title: string;
+  onRemove: () => void;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-md border border-hairline/60 bg-surface-0 px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-ink-primary">{title}</span>
+        <button
+          type="button"
+          aria-label="Remove condition"
+          onClick={onRemove}
+          className="rounded-sm p-0.5 text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          <X className="h-3 w-3" strokeWidth={1.8} />
+        </button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** Chip-style toggle button used inside ConditionCardShell. */
+function SubChip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        'shrink-0 rounded-md px-2 py-1 text-xs transition',
+        active
+          ? 'bg-ink-primary text-surface-0'
+          : 'bg-surface-2 text-ink-secondary hover:bg-surface-3',
+      )}
+    >
+      {children}
+    </button>
   );
 }
