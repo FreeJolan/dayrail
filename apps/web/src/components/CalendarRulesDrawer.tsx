@@ -1021,15 +1021,26 @@ function PriorityOrderSection({
     setOverId(null);
     setDropPosition(null);
   };
-  const onDrop = (targetId: string) => (e: React.DragEvent) => {
+  const onDrop = (targetId: string) => (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     if (!draggingId || draggingId === targetId) {
       onDragEnd();
       return;
     }
+    // WYSIWYG: compute "above vs below" FROM THIS DROP EVENT instead
+    // of reading the React `dropPosition` state. setState in
+    // onDragOver is async; if the user drops a few ms after the most
+    // recent dragOver tick, the closure here would read the
+    // previous-tick's value. Recomputing from `e.clientY` against
+    // `e.currentTarget.getBoundingClientRect()` makes the actual
+    // drop deterministic with what the cursor is currently doing —
+    // the visual indicator may briefly lag, but the drop result
+    // never disagrees with the cursor's current position.
+    const rect = e.currentTarget.getBoundingClientRect();
+    const dropAbove = e.clientY < rect.top + rect.height / 2;
     const next = sortedIds.filter((id) => id !== draggingId);
     let targetIdx = next.indexOf(targetId);
-    if (dropPosition === 'below') targetIdx += 1;
+    if (!dropAbove) targetIdx += 1;
     next.splice(targetIdx, 0, draggingId);
     void setCalendarRuleOrder(next);
     onDragEnd();
