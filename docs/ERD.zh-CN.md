@@ -1,6 +1,6 @@
 # DayRail 产品设计文档（ERD）
 
-> **状态**：活文档 —— 这里的任何决策都可以被推翻。最近更新 2026-05-06（v0.8 设计锁定 · 外部事件源 + AI 复盘）。当前状态快照 + 后续待办见 `docs/ROADMAP.md`。本轮锁定四件事：(1) 新增 §14 **外部事件源**：抽象 `ExternalEvent` 接口，v0.8.0 ship 内置节假日数据集（bundle 仓库内 JSON · region multi-select），ICS 订阅留 §14.3 v0.9+ 停车场草稿。(2) §6 AI 辅助从「明确不做」解封：新增 §6.6 **v0.8 实施说明**，§6.3 的 OpenRouter-only 接入扩为 **OpenAI-compatible 通用客户端**（Settings 三字段：base URL / API key / model name），覆盖 OpenRouter / Groq / Anthropic-via-proxy / Ollama / LM Studio / `claude-code-router` / `claude-bridge` 等所有兼容端点；显式承认用户已有 Claude Code / Cursor 套餐 + CLI 桥接的存量生态。(3) 新增 §6.6.1 **用户背景 `userProfile.background`**：单 Markdown blob，Y.Doc 同步流，AI 调用前 prepend 到 system prompt；心智对标 Claude Code 的 `CLAUDE.md`。「AI 优化我的背景」按钮停车，等 v0.8.0 ship 后看真实背景文本质量再决定。(4) §6.6.2 v0.8.0 复盘场景 v1 选 Day 还是 Cycle 留实施时拍板；Decompose / Observe 继续停车。§9.3 AI 选型表对齐：网关从 "OpenRouter" 改为 "OpenAI-compatible 协议（默认接入 OpenRouter，可改任意端点）"；fallback chain UI / 远端免费模型清单 / 多 provider 适配层全部明确不做。下方 History 节保留历史决策链。最近更新 2026-04-19（v0.4 实装推进一轮 · 自用 MVP 就绪）。本轮主要落地（habit-binding 重构之后）：(1) `rail.recurrence` **整段删掉** —— Template + CalendarRule + `HabitBinding.weekdays` 三层过滤够了；rail 级 weekday 过滤只制造空交集 trap。(2) 多 task 同 slot 从数据到 UI 彻底打通 —— CycleCell 堆叠 pill、Today Track 每 task 独立行 + 独立操作、Pending 逐条操作，§4.1 的 one-to-many 不变量在界面上看得见。(3) §5.5.0 B 节奏带点击回填接上。(4) §10.3 配置变更 purge 流程上线，HabitDetail 改 binding + Template Editor 删 rail 都带确认 + Edit Session 批量回滚。(5) Backlog drawer 从 Cycle View 提升到 App shell —— `g b` 快捷键、SideNav 入口、drawer 内 quick-create 带 Line picker。(6) `scheduleTaskToRail` / `scheduleTaskFreeTime` 在 deferred 任务被重排期时自动翻回 pending —— "改期 = 反悔 defer" 语义。(7) Review 加周期对比 match% delta + 每行 stats + 每 phase 段内 match%；HabitDetail 节奏带同步加 phase-band 叠加 + 每段 match%。(8) Cycle 格子任务 pill 可拖拽换日期 / rail。(9) Backup 导出/导入完成 · JSON 经 snapshot write + OPFS reset 完成回灌（Settings → 高级）。(10) 35 个 vitest case 分 3 个 suite 覆盖 materializer + §10.3 purge + timeline/check-in/pending 选择器。下方 History 节保留历史决策链。最近更新 2026-04-19（v0.4 habit 绑定收敛 + Task 编辑面铺开）。四件事一起定：(1) 新增 `HabitBinding` 实体（habitId + railId + 可选 weekdays 过滤器），取代原来 `Rail.defaultLineId === habit.id` 的绑定方式；修掉"两个 habit 同一时段不同 weekday 会在同一 template 里挤两条 rail"的结构性扭曲。(2) `Rail.defaultLineId` 字段彻底删除，曾承担的两个职责分别交给 `HabitBinding` 和"以后真需要再加"。Cycle quick-create 默认落 Inbox。(3) Today Track RailCard + Cycle View slot popover 都接入 TaskDetailDrawer，可以就地改备注 / 子任务 / 里程碑 / 排期。(4) Auto-task 的编辑权限表定稿：title / schedule / milestone 只读（它们是 habit 属性），note / subItems 可改（这是"本次上下文"）；habit 改名只影响未来新物化的 auto-task，老的因 materializer 幂等不会被回写。§5.5.0 / §10.2 / §10.3 / §10.4 / §5.2 / §5.3 一并更新。历史：2026-04-19（数据模型一致性大整理 · v0.4 基石）。合并发布六件事：(1) §10 新增"**三轴速览**" + "**完成状态归属规则**"——Line / Rail × Template × Time / Task 三轴正交，`Task.status` 成为所有完成语义的单一真源，RailInstance 收窄为"墙钟日志"（actualStart/End + Shift 标签），不再和 Task.status 并列承担"做没做"的问题。修掉 v0.3 遗留的"Tasks 页勾完成但 Today Track 仍显 pending"这类一致性裂缝。(2) habit 的"每次发生"改为一条 **auto-task**（幂等 id = `task-auto-{habitId}-{date}`，`lineId = habitId`，`title = habit.name`）。habit Line 硬约束"下不持有手工 Task"；NewTaskInput 永不暴露给 habit 详情页。habit 和 project 完全对齐完成路径 —— Today Track / Pending / Review 全部查 Task.status。(3) §10.2 定下 Auto-task 物化策略 Ⅱ · **按需 on-demand**，触发点：Today Track boot / Cycle View 切换 / 节奏带打开 / Calendar 翻月 / Review 切 scope / 节奏带点回填。每个 `(habitId, cycleId)` 物化一次就打标记，后续不重算；幂等 id 兜底。(4) §10.3 定下 Habit 配置变更规则：改 Rail 的 recurrence / 时间 / templateKey / defaultLineId 之一时，扫 `[今天, 最远已物化 cycle 末尾]`，**只影响** `status='pending' AND plannedStart > now` 的 auto-task（purge + 按新配置补齐），已完成 / 跳过 / 归档的保留。三类事件（task.purged + task.created + rail.updated）在同一个 Edit Session 下，一键回滚。保存前 confirm。(5) §5.5.0 加 **A+B 节奏带交互**：A 只读 + B 点击回填（done / skipped / shifted / clear），点未物化格子现场 upsert。主路（今天）在 Today Track，兜底（忘标 / 漏开 app / 事后补打）在节奏带原地。(6) §5.5.0 **明确关闭** "habit 和 Rail 合并为单一实体"的开放问题 —— 当前三轴分离是特性不是债：Template = 结构不同的一天，habit 是"安排*进*一天的活动"不是"凌驾*于*日历的 cron"，新建模板时重新安排 habit 本来就是 Template 的题中之义。原"跨模板抄很多 rail"、"请病假 habit 不 fire"、"新模板要手动迁移"三个 framing 统一翻转：这些都不是痛点，是设计。§5.6 / §5.7 / §5.8 写路径全部改为读写 Task.status，RailInstance.status 字段在 v0.4 进入 deprecated 状态（保留到 v0.5 清理）。历史：2026-04-18（§5.5.0 Habits 视图心智校正（v0.4 锚点）：用户视角 **habit = 一件反复发生的事**，不是"一堆 Task 的桶"。Project 是 N 个 Task 聚成一个目标；Habit 是 1 件带 recurrence 的事。Habit Line 增加硬约束"不持有 Task"；habit 详情页去 Project 化——去掉 NewTaskInput / FilterBar / GroupedTaskList，改为"名 + 色 + 当前 phase" → 近 14 天节奏带 → 绑定 Rail 列表 → Phase 时间线 → 备注 → Danger。曾讨论过的"habit 下折叠 Task 小抽屉"（B 方案）明确放弃，方向不一致的心智代价 > 杂事便利。`Line.kind='habit'` 最终是否并入 Rail 族合并为单实体留作 schema 级开放问题，本次不碰。历史：2026-04-18（§5.5.0 Habits 真实装（v0.3.3）：habit 分两档——"简单 habit"（默认，为保持固定强度而做，不暴露 phase 概念）和"进阶 habit"（opt-in，手动启用 phase 追踪后可加任意多个时间段标签）。HabitPhase 是纯用户定义的时间段 label（`{ name, description?, startDate }`），没有 endDate、没有预设枚举、没有自动升降、没有 streak / 完成率派生——这些都延到 v0.4 Review 集成。"启用 / 未启用"完全从关联 HabitPhase 记录数派生，不加 `Line.phaseEnabled` 冗余字段。§10 原先 over-engineered 的 `type Phase`（带 advanceRule / railOverrides）下架，换成 `type HabitPhase`；`type Line` 的 phases/currentPhaseId/tasks 内嵌字段拿掉，`kind` 作为 union discriminator，关联数据走独立实体；`Line.createdAt` / `archivedAt` / `deletedAt` 统一到 `number` (epoch ms) 对齐实装。新事件 `habit-phase.upserted` / `habit-phase.removed`。历史：2026-04-18（§5.3.1 Edit Session v0.3 扩到 Cycle View：进入 `/cycle` 开隐式会话；CycleDay 模板切换、Slot drag-drop 排 / 撤排、slot popover "移除排期" / "标记完成"、空格 quick-create、orphan 守护批量 unschedule 全部挂同一 `sessionId`；顶栏常驻"⤺ 撤销本次编辑 · N"按钮一键回滚整批，离开或 15 min idle 自动关。Core 侧对 `overrideCycleDay` / `clearCycleDayOverride` / `scheduleTaskToRail` / `unscheduleTask` / `createTask` / `updateTask` 全部加 optional `sessionId` 参数，appendEvent 带上后 `undoEditSession` 的 drop-session-events 直接一并回滚。单条撤销路径（slot popover 移除 / CycleDay 恢复默认）保留。历史：2026-04-18（§5.4 CalendarRule v0.3 高级规则开动：weekday / cycle / date-range 三种 kind 的 typed `value` + resolver + UI 全部上线。Resolver 按 priority desc 遍历所有规则（single-date 100 > date-range 50 > cycle 30 > weekday 10），miss 才回退内置启发。weekday 规则首次启动自动 seed（workday 覆盖周一-五 / restday 覆盖周末），行为与旧硬编码启发等价、无 breaking change、OPFS 不用清。"高级日历规则" drawer 重新挂上：四段（single-date / date-range / cycle / weekday），每段列表 + 新建 form + 删除；v0.3 采"删 + 重建"，真 in-place edit 留 v0.3.1；drawer **不**走 §5.3.1 Edit Session（即时持久化，与 Cycle View 同策略）。§10 CalendarRule 类型块补 typed value variants + v0.3 实装规矩；§5.4 drawer 小节同步细化。历史：2026-04-18（路由库 + URL 结构拍板：v0.2 用 `react-router-dom` v6，不上 `@tanstack/router`——类型化 params 的卖点对当前复杂度溢价过高；URL 结构 `/` / `/cycle` / `/tasks` + `/tasks/inbox` / `/tasks/line/:lineId` / `/tasks/archived` / `/tasks/trash` / `/review` / `/pending` / `/calendar` / `/templates` / `/templates/:key` / `/settings` / `/settings/:section`。进 URL 的状态：Tasks selection、Settings section、Template tab；搜索 / 过滤 chip / Cycle anchorDate 留本地 state 不入 URL。详见 `docs/v0.2-plan.md §3`。历史：2026-04-18（§5.3 Cycle View 顶部 DAYS 区块合并：原"顶部大 header（跨所有 section、唯一）"取消；section mini-header 从只读升级为**唯一**模板切换入口——每个日期格本身就是触发器，点开同一套 popover（模板列表 + 覆盖态时多一条"恢复默认"），overridden 指示点从顶部 DayButton 挪进 mini-header 的日期格。理由：两处 DAYS 行信息重复、顶部区块和 sticky summary strip 挤占纵向空间；保留"一件事一个入口"——只是入口从"顶部唯一 master"挪成"每个 section 的 mini-header 里自己那几天"。历史：2026-04-18（§5.3 Cycle View 切换模板时的 orphan-task 守护：旧模板下的 Rail 被新模板"切走"时，已排到这些 Rail 的 task 会被静默孤立；现在加一层确认——N=0 静默切，N>0 弹 `将移出 N 个已排任务 · 继续 / 取消`，continue 后批量 `task.unscheduled` 再写规则；"恢复默认"同规则。§5.5 Tasks 视图列表形态调整：状态 chip 从顶部移除，列表主体改为"未完成 / 已完成"两段折叠——未完成展开、已完成默认折叠、未完成空时已完成自动展开并在位置放"都搞定了 ✓"；Archived / Trash 仍只在左栏有入口；搜索命中时两段都展开。历史：2026-04-18（Cycle View CalendarRule 持久化：§5.3 的 CycleDay 模板切换从"本地 state"改为即时写 `calendar-rule.upserted` / `calendar-rule.removed` 事件；`cr-single-{date}` 去重 id；§5.3.1 Edit Session v0.2 范围收窄到只剩 Template Editor，Cycle View 会话级 undo 推迟到 v0.3，面内的误触回退由 Slot popover 的"移除排期" + CycleDay 的"恢复默认"两条单条动作承担；§10 CalendarRule 补 v0.2 实装细则——只 single-date 生效、id 规则、priority=100、事件形态）。历史：2026-04-18（§5.5 从 `Projects / Lines View` 重构为 `Tasks 视图`，定位为"任务管理主入口"—— 侧栏导航树（随手记 + Projects + Habits + 回收站）+ 跨 Project 的 task 列表 / 搜索 / 过滤 + 排期 popover 两种模式（绑 Rail · 默认 / 自由时间 · 逃生口）；新增内置 Inbox Line（`isDefault: true`、不可删）作为"不挑 Project"的 task 默认容器；全面可逆性 + 软删除模型（Task / Line / AdhocEvent 状态加 `'deleted'`，回收站入口 + 二次确认的硬删 `*.purged`）；`AdhocEvent` 加 `taskId` 字段承接自由时间模式排期；Project 进度条改为条件渲染（仅有 milestone task 时显示），任务数永远显示；开放式 Project（无 plannedEnd）明确不计为风险；§10 Task/Line/AdhocEvent 类型定义同步更新；术语精简：`Chunk` 统一改 `Task`（types + events + schema + UI + ERD 全路径改名），降低 jargon 负担；`Line` 作为内部容器类型保留（`kind: 'project' \| 'habit' \| 'group'` 的 union 父类），但**UI 里永远展示具体形态 Project / Habit / Group / Tag**，不再出现"Line"这个字；`Pending` view 改名 `待决定 / Unresolved` 和 `status='pending'` 解耦；§5.7 Pending 不做 24h 老化，成为"等待决定"全集，check-in 条是其"近 24h"的子集）。历史：2026-04-17（check-in 动作集简化：旧的 `完成/跳过/Shift/忽略` 四按钮 + 四子动作 sheet 合并为三按钮 `完成 / 以后再说 / 归档`；`RailInstance.status` 改为 `pending / done / deferred / archived`（`active / skipped` 弃用，"当前进行中"纯墙钟派生）；Shift sheet 替换为 6 秒 Reason toast（3 枚快速 tag chip + undo，无强制 reason）；Postpone / Replace / Swap / Resize 从 Shift 类型里下架，Postpone 交给 Cycle View 拖拽，其余留 v0.3 重评；Pending 队列重命名并收编 `deferred` 条目 + 超 24h stale 的 pending —— 两个来源一个出口；§5.8 Review 热力图三分语义改绑 `deferred / archived / pending-stale`）。历史：2026-04-16（A 组 UI 底线：同步状态徽章、Now View 节奏条、Ad-hoc 叠层、编辑会话通用化、Cycle 记号改 C1、日期格式表落地；B 组 Now View 结构：多 Task pill 行、Slot 三形态、Next Rail 视觉、去掉铁轨副视图、`CURRENT RAIL` chip、Now 顶栏 `Now` + Mono 副标；C 组 Today Track Shift 交互：Skipped 态改 hatching、桌面 hover 出动作栏、Active 主 CTA 改 tonal `Done`、统一 Shift 标签 sheet、去 bento 保留单条时间线；D 组 Cycle View 骨架：按 Template 堆叠 section、顶部 day header 唯一模板切换入口、Cycle pager picker、summary strip 聚合、`⤺ 撤销本次编辑` 按钮、hatching 三分语义、Backlog 变 split drawer；E 组 Template Editor：删 Save 按钮 / 首次进入 inline 引导、Radix 10 色 popover、顶栏 tab + 2px 色条 + dashed `+ 新建模板`、summary strip 聚合、card 式 Rail 行 + time pill popover picker、行间 gap chip `+ 填充 Rail`、`⋯` 行菜单放 Line 绑定 / check-in toggle；通知重审：删 OS push / Capacitor 通知 / 通知权限链路，Signal 塌缩为 `showInCheckin` 布尔，§5.6 / §5.7 合成一条主线 —— check-in 条 + Pending 队列是同一机制前后两个时态；F 组 缺失页面：Projects / Settings 共用 master-detail 形态，Review 单尺度瀑布 + 节奏匹配度热力图（状态染色 + hatching 三分语义），Pending 队列按日期反序 + 每行 4 动作 + 侧栏 `·` 小点不显数字，Calendar 月历网格 + 点日弹 popover + 高级规则 drawer 四 section，新增 §5.9 Settings 定 5 section + 主题三档默认跟随系统 + i18n 语言在外观 / 时间制 + AI locale 在高级；G 组 设计语言：Terracotta CTA 用 `orange-9/10/11` 三档纯色不用渐变；No-Line Rule 明文白名单（装饰色条 + sticky hairline + focus ring）；Surface 四档 `sand-1..4` 取代 `border` 表达层级；圆角 token `sharp / sm / md / lg` = `0 / 6 / 10 / 16`；整站零 glassmorphism；非对称为默认布局。视觉实装阶段调整：Rail 色板从原 10 色剔除 `olive / mauve / gray`（与 sage / slate 近乎同色、或失去色相识别度），换入 `grass / indigo / plum` 覆盖饱和绿 / 冷静蓝 / 创作紫空位，保持 10 色不变但辨识度拉满；CN 主字体从 PingFang 改为 Noto Sans SC（思源黑体）以获得跨平台一致渲染。Terracotta CTA 从 `orange-9` 实测过于鲜亮，改绑 `bronze-9` 以贴合 ERD 原意的 #C97B4A 暖赭石基调）。
+> **状态**：活文档 —— 这里的任何决策都可以被推翻。最近更新 2026-05-06（v0.8.0 加 §14.3 用户标注）。本轮单点扩展：v0.8.0 在节假日数据集之外再加一类**用户标注**（user-defined day notes），共享 §14.1 `ExternalEvent` 渲染层。新增 §14.3「v0.8.0 实施 — 用户标注」（`UserDayNote { id, date, label, color?, createdAt, updatedAt }`，Y.Doc top-level `userDayNotes` Y.Map keyed by id；UX 三个 surface：Calendar 月视图编辑入口 / Cycle View 日期单元格 chip 叠加 / Today Track 顶栏 metadata 行 · Review Day 顺手挂）。`ExternalEvent.kind` 加一档 `'user-note'`（描线 + 用户色，与节假日 chip 形态一致但视觉区分）。§14.0 动机段重写：把"外部"重新定义为"外部于 task pipeline"（不进物化 / purge / revision），而非"外部于用户"——两类 source（外源节假日 + 内源用户标注）都满足这个意义上的"外部"，共享渲染路径。原 §14.3 ICS 订阅停车场草稿顺序后挪到 §14.4。最近更新 2026-05-06（v0.8 设计锁定 · 外部事件源 + AI 复盘）。当前状态快照 + 后续待办见 `docs/ROADMAP.md`。本轮锁定四件事：(1) 新增 §14 **外部事件源**：抽象 `ExternalEvent` 接口，v0.8.0 ship 内置节假日数据集（bundle 仓库内 JSON · region multi-select），ICS 订阅留 §14.3 v0.9+ 停车场草稿。(2) §6 AI 辅助从「明确不做」解封：新增 §6.6 **v0.8 实施说明**，§6.3 的 OpenRouter-only 接入扩为 **OpenAI-compatible 通用客户端**（Settings 三字段：base URL / API key / model name），覆盖 OpenRouter / Groq / Anthropic-via-proxy / Ollama / LM Studio / `claude-code-router` / `claude-bridge` 等所有兼容端点；显式承认用户已有 Claude Code / Cursor 套餐 + CLI 桥接的存量生态。(3) 新增 §6.6.1 **用户背景 `userProfile.background`**：单 Markdown blob，Y.Doc 同步流，AI 调用前 prepend 到 system prompt；心智对标 Claude Code 的 `CLAUDE.md`。「AI 优化我的背景」按钮停车，等 v0.8.0 ship 后看真实背景文本质量再决定。(4) §6.6.2 v0.8.0 复盘场景 v1 选 Day 还是 Cycle 留实施时拍板；Decompose / Observe 继续停车。§9.3 AI 选型表对齐：网关从 "OpenRouter" 改为 "OpenAI-compatible 协议（默认接入 OpenRouter，可改任意端点）"；fallback chain UI / 远端免费模型清单 / 多 provider 适配层全部明确不做。下方 History 节保留历史决策链。最近更新 2026-04-19（v0.4 实装推进一轮 · 自用 MVP 就绪）。本轮主要落地（habit-binding 重构之后）：(1) `rail.recurrence` **整段删掉** —— Template + CalendarRule + `HabitBinding.weekdays` 三层过滤够了；rail 级 weekday 过滤只制造空交集 trap。(2) 多 task 同 slot 从数据到 UI 彻底打通 —— CycleCell 堆叠 pill、Today Track 每 task 独立行 + 独立操作、Pending 逐条操作，§4.1 的 one-to-many 不变量在界面上看得见。(3) §5.5.0 B 节奏带点击回填接上。(4) §10.3 配置变更 purge 流程上线，HabitDetail 改 binding + Template Editor 删 rail 都带确认 + Edit Session 批量回滚。(5) Backlog drawer 从 Cycle View 提升到 App shell —— `g b` 快捷键、SideNav 入口、drawer 内 quick-create 带 Line picker。(6) `scheduleTaskToRail` / `scheduleTaskFreeTime` 在 deferred 任务被重排期时自动翻回 pending —— "改期 = 反悔 defer" 语义。(7) Review 加周期对比 match% delta + 每行 stats + 每 phase 段内 match%；HabitDetail 节奏带同步加 phase-band 叠加 + 每段 match%。(8) Cycle 格子任务 pill 可拖拽换日期 / rail。(9) Backup 导出/导入完成 · JSON 经 snapshot write + OPFS reset 完成回灌（Settings → 高级）。(10) 35 个 vitest case 分 3 个 suite 覆盖 materializer + §10.3 purge + timeline/check-in/pending 选择器。下方 History 节保留历史决策链。最近更新 2026-04-19（v0.4 habit 绑定收敛 + Task 编辑面铺开）。四件事一起定：(1) 新增 `HabitBinding` 实体（habitId + railId + 可选 weekdays 过滤器），取代原来 `Rail.defaultLineId === habit.id` 的绑定方式；修掉"两个 habit 同一时段不同 weekday 会在同一 template 里挤两条 rail"的结构性扭曲。(2) `Rail.defaultLineId` 字段彻底删除，曾承担的两个职责分别交给 `HabitBinding` 和"以后真需要再加"。Cycle quick-create 默认落 Inbox。(3) Today Track RailCard + Cycle View slot popover 都接入 TaskDetailDrawer，可以就地改备注 / 子任务 / 里程碑 / 排期。(4) Auto-task 的编辑权限表定稿：title / schedule / milestone 只读（它们是 habit 属性），note / subItems 可改（这是"本次上下文"）；habit 改名只影响未来新物化的 auto-task，老的因 materializer 幂等不会被回写。§5.5.0 / §10.2 / §10.3 / §10.4 / §5.2 / §5.3 一并更新。历史：2026-04-19（数据模型一致性大整理 · v0.4 基石）。合并发布六件事：(1) §10 新增"**三轴速览**" + "**完成状态归属规则**"——Line / Rail × Template × Time / Task 三轴正交，`Task.status` 成为所有完成语义的单一真源，RailInstance 收窄为"墙钟日志"（actualStart/End + Shift 标签），不再和 Task.status 并列承担"做没做"的问题。修掉 v0.3 遗留的"Tasks 页勾完成但 Today Track 仍显 pending"这类一致性裂缝。(2) habit 的"每次发生"改为一条 **auto-task**（幂等 id = `task-auto-{habitId}-{date}`，`lineId = habitId`，`title = habit.name`）。habit Line 硬约束"下不持有手工 Task"；NewTaskInput 永不暴露给 habit 详情页。habit 和 project 完全对齐完成路径 —— Today Track / Pending / Review 全部查 Task.status。(3) §10.2 定下 Auto-task 物化策略 Ⅱ · **按需 on-demand**，触发点：Today Track boot / Cycle View 切换 / 节奏带打开 / Calendar 翻月 / Review 切 scope / 节奏带点回填。每个 `(habitId, cycleId)` 物化一次就打标记，后续不重算；幂等 id 兜底。(4) §10.3 定下 Habit 配置变更规则：改 Rail 的 recurrence / 时间 / templateKey / defaultLineId 之一时，扫 `[今天, 最远已物化 cycle 末尾]`，**只影响** `status='pending' AND plannedStart > now` 的 auto-task（purge + 按新配置补齐），已完成 / 跳过 / 归档的保留。三类事件（task.purged + task.created + rail.updated）在同一个 Edit Session 下，一键回滚。保存前 confirm。(5) §5.5.0 加 **A+B 节奏带交互**：A 只读 + B 点击回填（done / skipped / shifted / clear），点未物化格子现场 upsert。主路（今天）在 Today Track，兜底（忘标 / 漏开 app / 事后补打）在节奏带原地。(6) §5.5.0 **明确关闭** "habit 和 Rail 合并为单一实体"的开放问题 —— 当前三轴分离是特性不是债：Template = 结构不同的一天，habit 是"安排*进*一天的活动"不是"凌驾*于*日历的 cron"，新建模板时重新安排 habit 本来就是 Template 的题中之义。原"跨模板抄很多 rail"、"请病假 habit 不 fire"、"新模板要手动迁移"三个 framing 统一翻转：这些都不是痛点，是设计。§5.6 / §5.7 / §5.8 写路径全部改为读写 Task.status，RailInstance.status 字段在 v0.4 进入 deprecated 状态（保留到 v0.5 清理）。历史：2026-04-18（§5.5.0 Habits 视图心智校正（v0.4 锚点）：用户视角 **habit = 一件反复发生的事**，不是"一堆 Task 的桶"。Project 是 N 个 Task 聚成一个目标；Habit 是 1 件带 recurrence 的事。Habit Line 增加硬约束"不持有 Task"；habit 详情页去 Project 化——去掉 NewTaskInput / FilterBar / GroupedTaskList，改为"名 + 色 + 当前 phase" → 近 14 天节奏带 → 绑定 Rail 列表 → Phase 时间线 → 备注 → Danger。曾讨论过的"habit 下折叠 Task 小抽屉"（B 方案）明确放弃，方向不一致的心智代价 > 杂事便利。`Line.kind='habit'` 最终是否并入 Rail 族合并为单实体留作 schema 级开放问题，本次不碰。历史：2026-04-18（§5.5.0 Habits 真实装（v0.3.3）：habit 分两档——"简单 habit"（默认，为保持固定强度而做，不暴露 phase 概念）和"进阶 habit"（opt-in，手动启用 phase 追踪后可加任意多个时间段标签）。HabitPhase 是纯用户定义的时间段 label（`{ name, description?, startDate }`），没有 endDate、没有预设枚举、没有自动升降、没有 streak / 完成率派生——这些都延到 v0.4 Review 集成。"启用 / 未启用"完全从关联 HabitPhase 记录数派生，不加 `Line.phaseEnabled` 冗余字段。§10 原先 over-engineered 的 `type Phase`（带 advanceRule / railOverrides）下架，换成 `type HabitPhase`；`type Line` 的 phases/currentPhaseId/tasks 内嵌字段拿掉，`kind` 作为 union discriminator，关联数据走独立实体；`Line.createdAt` / `archivedAt` / `deletedAt` 统一到 `number` (epoch ms) 对齐实装。新事件 `habit-phase.upserted` / `habit-phase.removed`。历史：2026-04-18（§5.3.1 Edit Session v0.3 扩到 Cycle View：进入 `/cycle` 开隐式会话；CycleDay 模板切换、Slot drag-drop 排 / 撤排、slot popover "移除排期" / "标记完成"、空格 quick-create、orphan 守护批量 unschedule 全部挂同一 `sessionId`；顶栏常驻"⤺ 撤销本次编辑 · N"按钮一键回滚整批，离开或 15 min idle 自动关。Core 侧对 `overrideCycleDay` / `clearCycleDayOverride` / `scheduleTaskToRail` / `unscheduleTask` / `createTask` / `updateTask` 全部加 optional `sessionId` 参数，appendEvent 带上后 `undoEditSession` 的 drop-session-events 直接一并回滚。单条撤销路径（slot popover 移除 / CycleDay 恢复默认）保留。历史：2026-04-18（§5.4 CalendarRule v0.3 高级规则开动：weekday / cycle / date-range 三种 kind 的 typed `value` + resolver + UI 全部上线。Resolver 按 priority desc 遍历所有规则（single-date 100 > date-range 50 > cycle 30 > weekday 10），miss 才回退内置启发。weekday 规则首次启动自动 seed（workday 覆盖周一-五 / restday 覆盖周末），行为与旧硬编码启发等价、无 breaking change、OPFS 不用清。"高级日历规则" drawer 重新挂上：四段（single-date / date-range / cycle / weekday），每段列表 + 新建 form + 删除；v0.3 采"删 + 重建"，真 in-place edit 留 v0.3.1；drawer **不**走 §5.3.1 Edit Session（即时持久化，与 Cycle View 同策略）。§10 CalendarRule 类型块补 typed value variants + v0.3 实装规矩；§5.4 drawer 小节同步细化。历史：2026-04-18（路由库 + URL 结构拍板：v0.2 用 `react-router-dom` v6，不上 `@tanstack/router`——类型化 params 的卖点对当前复杂度溢价过高；URL 结构 `/` / `/cycle` / `/tasks` + `/tasks/inbox` / `/tasks/line/:lineId` / `/tasks/archived` / `/tasks/trash` / `/review` / `/pending` / `/calendar` / `/templates` / `/templates/:key` / `/settings` / `/settings/:section`。进 URL 的状态：Tasks selection、Settings section、Template tab；搜索 / 过滤 chip / Cycle anchorDate 留本地 state 不入 URL。详见 `docs/v0.2-plan.md §3`。历史：2026-04-18（§5.3 Cycle View 顶部 DAYS 区块合并：原"顶部大 header（跨所有 section、唯一）"取消；section mini-header 从只读升级为**唯一**模板切换入口——每个日期格本身就是触发器，点开同一套 popover（模板列表 + 覆盖态时多一条"恢复默认"），overridden 指示点从顶部 DayButton 挪进 mini-header 的日期格。理由：两处 DAYS 行信息重复、顶部区块和 sticky summary strip 挤占纵向空间；保留"一件事一个入口"——只是入口从"顶部唯一 master"挪成"每个 section 的 mini-header 里自己那几天"。历史：2026-04-18（§5.3 Cycle View 切换模板时的 orphan-task 守护：旧模板下的 Rail 被新模板"切走"时，已排到这些 Rail 的 task 会被静默孤立；现在加一层确认——N=0 静默切，N>0 弹 `将移出 N 个已排任务 · 继续 / 取消`，continue 后批量 `task.unscheduled` 再写规则；"恢复默认"同规则。§5.5 Tasks 视图列表形态调整：状态 chip 从顶部移除，列表主体改为"未完成 / 已完成"两段折叠——未完成展开、已完成默认折叠、未完成空时已完成自动展开并在位置放"都搞定了 ✓"；Archived / Trash 仍只在左栏有入口；搜索命中时两段都展开。历史：2026-04-18（Cycle View CalendarRule 持久化：§5.3 的 CycleDay 模板切换从"本地 state"改为即时写 `calendar-rule.upserted` / `calendar-rule.removed` 事件；`cr-single-{date}` 去重 id；§5.3.1 Edit Session v0.2 范围收窄到只剩 Template Editor，Cycle View 会话级 undo 推迟到 v0.3，面内的误触回退由 Slot popover 的"移除排期" + CycleDay 的"恢复默认"两条单条动作承担；§10 CalendarRule 补 v0.2 实装细则——只 single-date 生效、id 规则、priority=100、事件形态）。历史：2026-04-18（§5.5 从 `Projects / Lines View` 重构为 `Tasks 视图`，定位为"任务管理主入口"—— 侧栏导航树（随手记 + Projects + Habits + 回收站）+ 跨 Project 的 task 列表 / 搜索 / 过滤 + 排期 popover 两种模式（绑 Rail · 默认 / 自由时间 · 逃生口）；新增内置 Inbox Line（`isDefault: true`、不可删）作为"不挑 Project"的 task 默认容器；全面可逆性 + 软删除模型（Task / Line / AdhocEvent 状态加 `'deleted'`，回收站入口 + 二次确认的硬删 `*.purged`）；`AdhocEvent` 加 `taskId` 字段承接自由时间模式排期；Project 进度条改为条件渲染（仅有 milestone task 时显示），任务数永远显示；开放式 Project（无 plannedEnd）明确不计为风险；§10 Task/Line/AdhocEvent 类型定义同步更新；术语精简：`Chunk` 统一改 `Task`（types + events + schema + UI + ERD 全路径改名），降低 jargon 负担；`Line` 作为内部容器类型保留（`kind: 'project' \| 'habit' \| 'group'` 的 union 父类），但**UI 里永远展示具体形态 Project / Habit / Group / Tag**，不再出现"Line"这个字；`Pending` view 改名 `待决定 / Unresolved` 和 `status='pending'` 解耦；§5.7 Pending 不做 24h 老化，成为"等待决定"全集，check-in 条是其"近 24h"的子集）。历史：2026-04-17（check-in 动作集简化：旧的 `完成/跳过/Shift/忽略` 四按钮 + 四子动作 sheet 合并为三按钮 `完成 / 以后再说 / 归档`；`RailInstance.status` 改为 `pending / done / deferred / archived`（`active / skipped` 弃用，"当前进行中"纯墙钟派生）；Shift sheet 替换为 6 秒 Reason toast（3 枚快速 tag chip + undo，无强制 reason）；Postpone / Replace / Swap / Resize 从 Shift 类型里下架，Postpone 交给 Cycle View 拖拽，其余留 v0.3 重评；Pending 队列重命名并收编 `deferred` 条目 + 超 24h stale 的 pending —— 两个来源一个出口；§5.8 Review 热力图三分语义改绑 `deferred / archived / pending-stale`）。历史：2026-04-16（A 组 UI 底线：同步状态徽章、Now View 节奏条、Ad-hoc 叠层、编辑会话通用化、Cycle 记号改 C1、日期格式表落地；B 组 Now View 结构：多 Task pill 行、Slot 三形态、Next Rail 视觉、去掉铁轨副视图、`CURRENT RAIL` chip、Now 顶栏 `Now` + Mono 副标；C 组 Today Track Shift 交互：Skipped 态改 hatching、桌面 hover 出动作栏、Active 主 CTA 改 tonal `Done`、统一 Shift 标签 sheet、去 bento 保留单条时间线；D 组 Cycle View 骨架：按 Template 堆叠 section、顶部 day header 唯一模板切换入口、Cycle pager picker、summary strip 聚合、`⤺ 撤销本次编辑` 按钮、hatching 三分语义、Backlog 变 split drawer；E 组 Template Editor：删 Save 按钮 / 首次进入 inline 引导、Radix 10 色 popover、顶栏 tab + 2px 色条 + dashed `+ 新建模板`、summary strip 聚合、card 式 Rail 行 + time pill popover picker、行间 gap chip `+ 填充 Rail`、`⋯` 行菜单放 Line 绑定 / check-in toggle；通知重审：删 OS push / Capacitor 通知 / 通知权限链路，Signal 塌缩为 `showInCheckin` 布尔，§5.6 / §5.7 合成一条主线 —— check-in 条 + Pending 队列是同一机制前后两个时态；F 组 缺失页面：Projects / Settings 共用 master-detail 形态，Review 单尺度瀑布 + 节奏匹配度热力图（状态染色 + hatching 三分语义），Pending 队列按日期反序 + 每行 4 动作 + 侧栏 `·` 小点不显数字，Calendar 月历网格 + 点日弹 popover + 高级规则 drawer 四 section，新增 §5.9 Settings 定 5 section + 主题三档默认跟随系统 + i18n 语言在外观 / 时间制 + AI locale 在高级；G 组 设计语言：Terracotta CTA 用 `orange-9/10/11` 三档纯色不用渐变；No-Line Rule 明文白名单（装饰色条 + sticky hairline + focus ring）；Surface 四档 `sand-1..4` 取代 `border` 表达层级；圆角 token `sharp / sm / md / lg` = `0 / 6 / 10 / 16`；整站零 glassmorphism；非对称为默认布局。视觉实装阶段调整：Rail 色板从原 10 色剔除 `olive / mauve / gray`（与 sage / slate 近乎同色、或失去色相识别度），换入 `grass / indigo / plum` 覆盖饱和绿 / 冷静蓝 / 创作紫空位，保持 10 色不变但辨识度拉满；CN 主字体从 PingFang 改为 Noto Sans SC（思源黑体）以获得跨平台一致渲染。Terracotta CTA 从 `orange-9` 实测过于鲜亮，改绑 `bronze-9` 以贴合 ERD 原意的 #C97B4A 暖赭石基调）。
 >
 > 本文档描述 DayRail 的产品逻辑、交互设计与技术选型。它不是最终蓝图，而是设计意图与取舍的记录（包括我们考虑过又否决掉的方案），方便贡献者理解代码**为什么**长成这样。
 >
@@ -2767,32 +2767,33 @@ const { requestUpgrade, dialog } = useUpgradeFlow();
 
 ## 14. 外部事件源（v0.8 起）
 
-> 状态：2026-05-06 设计锁定，v0.8 ship 节假日数据集；ICS 订阅留 v0.9+ 停车场（草稿见 §14.3）。
+> 状态：2026-05-06 设计锁定，v0.8.0 ship **两个 source**（共用一套渲染层）：节假日数据集（§14.2）+ 用户标注（§14.3）；ICS 订阅留 v0.9+ 停车场（草稿见 §14.4）。
 
 ### 14.0 动机
 
-DayRail v0.7 之前的所有日历语义（Template / CalendarRule / Cycle / DailyReflection）都是**用户自己定义的内部数据**。v0.8 引入第一类**外部只读数据**：节假日。动机：
+DayRail v0.7 之前的所有日历语义（Template / CalendarRule / Cycle / DailyReflection）都是**进 task pipeline 的数据** —— 它们影响 Task 物化、completion 计算、Review 统计。v0.8 引入一类**不进 task pipeline 的日期标注**：日历这天上有什么"事"，但不是"要做的事"。这一类下面有三个 source：
 
-- 用户在 Cycle View / Calendar 里看到日期时，需要知道哪天是节假日（影响"任务为什么没做"的语义 —— 节假日完成度低不该被算成"我状态差"）。
-- AI 复盘（§6.6.2）拿到节假日上下文后能给出更准确的解读（"这天是中秋节，你完成度低很正常"）。
-- 用户也想偶尔订阅外源日历（学校学期表 / 球队赛程 / 单位会议室占用），不过这是 v0.9+ 的事。
+- **节假日**（§14.2 · v0.8.0 ship · 外源）—— 用户在 Cycle View / Calendar 里看到日期时，需要知道哪天是节假日（影响"任务为什么没做"的语义 —— 节假日完成度低不该被算成"我状态差"）。AI 复盘（§6.6.2）拿到节假日上下文后能给出更准确的解读（"这天是中秋节，你完成度低很正常"）。
+- **用户标注**（§14.3 · v0.8.0 ship · 内源）—— "下周二是我生日"、"去看牙医"、"妈妈生日" —— 用户希望在日历上看到提示，但这些事不该作为 Task 进 Today Track（不需要 check-in / done / 完成度）。
+- **ICS 订阅**（§14.4 · v0.9+ 停车场 · 外源）—— 用户想订阅外源日历（学校学期表 / 球队赛程 / 单位会议室占用），等真有非节假日的导入诉求再做。
 
-设计上把"节假日"当作"外部事件源 v1"，抽象出 `ExternalEvent` 接口，让将来的 ICS 订阅是同接口的另一个 source，不破坏渲染层。
+设计上把这三类统一抽象为 `ExternalEvent` 接口（§14.1），渲染层只认这个接口，所有 source 共享 Cycle View / Calendar / Today Track / Review 的 chip 渲染路径。**"外部"在这里指外部于 task pipeline**，而非外部于用户 —— 这是 v0.8.0 加 §14.3 用户标注时校准的语义。
 
 ### 14.1 `ExternalEvent` 抽象
 
 ```ts
 type ExternalEvent = {
-  sourceId: string;           // e.g. 'holidays:zh-CN' / 'ics:user-defined-1'
+  sourceId: string;           // e.g. 'holidays:zh-CN' / 'user:note:<id>' / 'ics:user-defined-1'
   date: string;               // ISO YYYY-MM-DD（事件归属日，按用户当地日期）
   label: string;              // 显示文本，UI locale-aware（参见各 source 的 label 规则）
-  kind: 'holiday' | 'observance' | 'event';  // 影响渲染：holiday 实色 / observance 描线 / event 中性
+  kind: 'holiday' | 'observance' | 'event' | 'user-note';
+  // 影响渲染：holiday 实色 / observance 描线 / event 中性 / user-note 描线 + 用户色
   regionCode?: string;        // 仅 holidays source 用，区分国家
-  meta?: Record<string, unknown>;  // 各 source 自留扩展槽
+  meta?: Record<string, unknown>;  // 各 source 自留扩展槽（user-note 走这里携带 color / createdAt）
 };
 ```
 
-**渲染层只认这个接口** —— Cycle View 日期单元格 / Calendar 月视图日期格子从一个 `selectExternalEventsOn(date)` selector 拿当天所有 events，叠 chip 渲染。selector 内部按 source 顺序聚合（先 holidays、再 future ICS）。
+**渲染层只认这个接口** —— Cycle View 日期单元格 / Calendar 月视图日期格子从一个 `selectExternalEventsOn(date)` selector 拿当天所有 events，叠 chip 渲染。selector 内部按 source 顺序聚合（先 holidays、再 user-notes、再 future ICS）。
 
 **不进 task 物化 pipeline** —— ExternalEvent **不**生成 Task / RailInstance / auto-task；不参与 §10.2 物化、§10.3 purge、§10.5 revision。它就是"日历这天的标签"，纯展示，不影响任何 status / 完成度 / Review 统计的计算路径（除了 AI 复盘 prompt 的上下文注入）。
 
@@ -2815,7 +2816,7 @@ type ExternalEvent = {
 
 ICS 订阅的复杂度对**节假日这个具体诉求**完全是浪费：节假日数据一年改一次，配置化刷新 + ETag + CORS 反代 + ical.js 解析全都用不上。bundle 路线在数据更新频率与产品节奏（一年至少发一次新版）天然对齐。
 
-ICS 订阅的真正价值（用户订外源日历）留到 §14.3 v0.9+ 停车场。
+ICS 订阅的真正价值（用户订外源日历）留到 §14.4 v0.9+ 停车场。
 
 **数据形态**
 
@@ -2893,7 +2894,120 @@ Settings → 外观 → 节假日（新分组，与"主题 / 字号"同 section�
 - `selectExternalEventsOn(date)` selector 单测，覆盖 region 选择 / 多 region 聚合 / 空选择路径
 - 不需要为每个节假日数据集写 unit test —— 数据 = 代码，靠 PR review
 
-### 14.3 ICS 订阅 · 停车场草稿（v0.9+）
+### 14.3 v0.8.0 实施 — 用户标注（user-defined day notes）
+
+> 状态：2026-05-06 设计锁定，与 §14.2 节假日数据集**同 v0.8.0 ship**，共享 §14.1 `ExternalEvent` 渲染层。
+
+**动机**
+
+§14.0 把"外部"定义为"外部于 task pipeline"（不进物化、不进 purge、不进 revision），而非"外部于用户"。节假日和用户标注都满足这个意义上的"外部" —— 前者数据来源在仓库、后者数据来源在用户自己的笔，但都不影响 task / habit / completion 这条主链。
+
+具体场景：
+
+- "下周二是我生日"
+- "去看牙医"
+- "妈妈生日"
+- "结婚纪念日"
+- "公司团建"
+
+这些事不该作为 Task 进 Today Track（不需要 check-in / done / 完成度），但用户希望在 Calendar / Cycle View 上看到提示，**用户标注**这条路就是为它们准备的。
+
+**与 §5.4 CalendarRule 的边界**
+
+CalendarRule 决定"这天用哪个 template"（workday / restday / cycle 推断）；UserDayNote 只是 label，不影响 template、不影响 task、不影响 completion。两者完全正交，可以叠加：
+
+> 例：`国庆这周用 restday template`（CalendarRule date-range）+ `10/1 是国庆节`（节假日 ExternalEvent）+ `10/1 公司团建`（UserDayNote）—— 三者在 Calendar 同一天上同时存在，互不干扰。
+
+**数据形态**
+
+```ts
+type UserDayNote = {
+  id: string;        // ULID
+  date: string;      // ISO YYYY-MM-DD
+  label: string;     // 用户文本（单行，建议 < 30 字）
+  color?: string;    // chip 颜色（Radix 10 色之一）；undefined = 默认中性灰
+  createdAt: number; // epoch ms
+  updatedAt: number; // epoch ms
+};
+```
+
+存 Y.Doc top-level `userDayNotes` Y.Map，`id` 作为 key。多 note 同日时不需要顺序保证（按 `createdAt` 升序渲染即可）。
+
+**为什么 keyed by id，不 keyed by date**
+
+两台设备同一天分别新建一条 note：
+
+- keyed by date：Yjs `Y.Map.set('2026-05-12', note)` 在两端会冲突，LWW 决胜，**另一条静默丢失**。
+- keyed by id（ULID）：两条 note 各有 unique id，自然共存，CRDT 合并零工作量。
+
+后者的副产品：**多 note 同日**变成自然结果，UI 只要按 `date` 索引查询即可。
+
+**映射进 `ExternalEvent`**
+
+```ts
+function userNoteToExternal(note: UserDayNote): ExternalEvent {
+  return {
+    sourceId: `user:note:${note.id}`,
+    date: note.date,
+    label: note.label,
+    kind: 'user-note',
+    meta: { color: note.color, createdAt: note.createdAt },
+  };
+}
+```
+
+`selectExternalEventsOn(date)` 内部调用上面这个 mapper，把 user notes 与 holidays 一起聚合。
+
+**渲染样式**
+
+`§14.1` 定义的 `kind` 加一档 `'user-note'`，渲染层：
+
+- `holiday`：实色填充 → 不变
+- `observance`：描线 → 不变
+- `event`：中性 → 不变
+- **`user-note`**：描线 + 用户色（`meta.color` 或默认中性灰） —— 视觉上与节假日有区分（描线而非实色），但 chip 形态一致
+
+**UX 入口（v0.8.0 三个 surface）**
+
+1. **Calendar 月视图**——点日期 → 现有 popover 在 CalendarRule 区域上方加一段「备注」：
+   - 已有 note 列表：每条一个 chip（user-note 样式），点 chip 进编辑模式（label textarea + color picker + 删除）
+   - 列表下方一个「+ 添加备注」按钮，点开输入 label（必填）+ color（可选，默认中性）+ 保存
+   - 保存 / 删除即时生效（不进 §5.3.1 Edit Session，与 CalendarRule drawer 同策略）
+
+2. **Cycle View 日期单元格**——节假日色点旁叠用户标注色点：
+   - 多个 note 时按 `createdAt` 升序排列，与节假日 chip 共用「最多 3 + `…+N` 折叠」规则
+   - hover 时显完整列表（节假日 + 用户标注，按 source 分组）
+   - 点击 chip → 跳到 Calendar 月视图聚焦该日（重用现有"打开 Calendar"路由）；不直接在 Cycle View 编辑（避免编辑模态在 Cycle 里增加复杂度）
+
+3. **Today Track 顶栏**——metadata 行带今天的 user notes：
+   - `今天 · 2026-05-12 · 周二 · 妈妈生日 · 看牙医`
+   - 节假日（如有）排在 user notes 前
+   - 多个 user notes 用 `·` 分隔；超过 3 条折叠 `…+N`
+
+附加（**不在 v0.8.0 ship 边界**，但渲染层会预留接口）：
+
+- **Review · Day metadata 行**：与 Today Track 同形态，进 AI 复盘 prompt 的 `metadata` 块（§6.6.2）。**这一条也在 v0.8.0 顺手做**，因为 selector 已经写了，渲染层多挂一个使用点不增加成本。
+
+**不做（v0.8.0 边界）**
+
+- **长描述 / Markdown body** —— 单行 label 够用；真要写长内容用 §4.1 DailyReflection（绑定到 reflection 的日期上，与 user note 的"日历标签"语义不同）。留 v0.8.x 看真实使用。
+- **提醒 / 倒计时 / N 天前提示** —— "10 天后是生日"这种主动提醒不做。理由：DayRail 整体不做 OS 推送（§5.6 既定边界），run-time 提醒只能塞进 Today Track 顶栏，价值低于实现成本。留 v0.8.x。
+- **跨年重复（"每年这天的生日"）** —— 当前每条 note 单日。复制即可（点旧 note → 「复制到下一年同日」按钮，这个按钮也留 v0.8.x）；真痛点了再做 RRULE-style 重复。
+- **AI 自动从 task / habit 名提取候选标注** —— 不主动猜。
+- **批量编辑 / 多日同标注** —— "国庆 7 天连续假期" 用法上是 7 条独立 note，不做"一次创建跨 7 天" surface。
+
+**与 §10.5 revision 模型的关系**
+
+UserDayNote **不进** revision 系统。Note 本身可以 update（改 label / color / date），改完直接覆盖 Y.Map 那条记录。理由：note 没有"过去日期不变"的语义（它就是用户写的标签，不是规划数据），§10.5 revision 链是为了"改 rail 不破坏过去任务"，note 不存在这个问题。
+
+**测试**
+
+- `userNoteToExternal` mapping 单测
+- `selectExternalEventsOn(date)` 在多 source（holidays + user-notes）共存时的聚合 + 排序
+- Y.Doc CRUD：create / update / delete 各 1 case
+- 多设备并发新建同日 note 的 CRDT 合并（两条都保留，不丢） —— 这条直接走现有 `yjs.test.ts` 的扩展
+
+### 14.4 ICS 订阅 · 停车场草稿（v0.9+）
 
 > 不在 v0.8 范围。这里只记**触发条件**和**已经想清楚的设计点**，等真要做时这一节直接升级到 v0.9 实施说明。
 
