@@ -93,9 +93,15 @@ import { decodeDryj } from '@dayrail/db/dryj';
 import type {
   AdhocEvent,
   CalendarRule,
+  CalendarRuleCycle,
+  CalendarRuleDateRange,
+  CalendarRuleExternalEvent,
   CalendarRuleRevision,
+  CalendarRuleSingleDate,
+  CalendarRuleWeekday,
   Cycle,
   DailyReflection,
+  ExternalEventMatchKind,
   HabitBinding,
   HabitBindingRevision,
   HabitPhase,
@@ -115,6 +121,7 @@ import type {
   UserProfile,
 } from './types';
 import { USER_PROFILE_ID } from './types';
+import { selectExternalEventsOn } from './externalEvents';
 import { detectReschedule } from './reschedule';
 import { detectUnschedule } from './unschedule';
 import type { ReschedulePayload, UnschedulePayload, ShiftType } from './types';
@@ -270,6 +277,23 @@ export interface DayRailActions {
     effectiveFrom?: string;
   }) => Promise<string>;
   removeCalendarRule: (id: string, effectiveFrom?: string) => Promise<void>;
+  /** ERD §5.4 v0.8.1 — create / update an attribute-match rule. Pass
+   *  `id` to update; omit to create (fresh ULID). */
+  upsertExternalEventRule: (opts: {
+    id?: string;
+    kinds: ExternalEventMatchKind[];
+    regions?: string[];
+    /** v0.8.1 — narrow `user-note` matching by note label. See
+     *  CalendarRuleExternalEvent.noteLabelFilter. */
+    noteLabelFilter?: { mode: 'contains' | 'exact'; query: string };
+    templateKey: TemplateKey;
+    label?: string;
+    effectiveFrom?: string;
+  }) => Promise<string>;
+  /** ERD §5.4 v0.8.1 — replace the user's CalendarRule priority list
+   *  (drag-to-reorder writes the full new order each time). Ids that
+   *  don't exist as rules are filtered out automatically. */
+  setCalendarRuleOrder: (orderedIds: string[]) => Promise<void>;
   upsertCycle: (opts: { startDate: string; label?: string }) => Promise<string>;
   removeCycle: (id: string) => Promise<void>;
   upsertHabitPhase: (opts: {
@@ -678,8 +702,13 @@ function buildHabitBindingRevisionY(
   };
 }
 
-// Calendar rule helpers — mirror the constants in store.ts.
-const CALENDAR_RULE_PRIORITY_Y: Record<CalendarRule['kind'], number> = {
+// Calendar rule helpers — mirror the constants in store.ts. Pre-v0.8.1
+// table; the new `external-event` kind has no fallback priority since
+// it only exists in v0.8.1+ where calendarRuleOrder is authoritative.
+const CALENDAR_RULE_PRIORITY_Y: Record<
+  Exclude<CalendarRule['kind'], 'external-event'>,
+  number
+> = {
   'single-date': 100,
   'date-range': 50,
   cycle: 30,
@@ -688,6 +717,59 @@ const CALENDAR_RULE_PRIORITY_Y: Record<CalendarRule['kind'], number> = {
 
 function singleDateRuleIdY(date: string): string {
   return `cr-single-${date}`;
+}
+
+// ============ userProfile.calendarRuleOrder helpers (v0.8.1) ============
+//
+// Persisted as a string[] field on the userProfile singleton Y.Map.
+// Maintaining it from the action layer (rather than UI-side) keeps
+// the store layer responsible for "every rule has a position" and
+// gives the resolver a single read path. The CRDT semantics here are
+// last-writer-wins on the array — concurrent reorders on two devices
+// resolve via Yjs internal LWW + Lamport clock; that's acceptable
+// since rule-priority changes are infrequent and the worst-case
+// outcome is the user's ordering reverting one drop, not data loss.
+
+function readCalendarRuleOrderY(doc: YDoc): string[] {
+  const profile = getEntityMap(doc, 'userProfile').get(USER_PROFILE_ID);
+  if (!(profile instanceof Y.Map)) return [];
+  const raw = (profile as YMap<unknown>).get('calendarRuleOrder');
+  return Array.isArray(raw) ? (raw as string[]) : [];
+}
+
+function writeCalendarRuleOrderY(doc: YDoc, order: string[]): void {
+  const map = getEntityMap(doc, 'userProfile');
+  const existing = map.get(USER_PROFILE_ID);
+  if (existing instanceof Y.Map) {
+    patchEntityYMap(existing as YMap<unknown>, {
+      calendarRuleOrder: [...order],
+    });
+  } else {
+    map.set(
+      USER_PROFILE_ID,
+      entityToYMap({
+        calendarRuleOrder: [...order],
+      } as Record<string, unknown>),
+    );
+  }
+}
+
+/** Idempotent: if `ruleId` is already in the list, no-op. New ids
+ *  prepend so the user's most-recent intent wins by default. */
+function prependToCalendarRuleOrderY(doc: YDoc, ruleId: string): void {
+  const current = readCalendarRuleOrderY(doc);
+  if (current.includes(ruleId)) return;
+  writeCalendarRuleOrderY(doc, [ruleId, ...current]);
+}
+
+/** Strip a deleted rule's id out of the priority list. */
+function removeFromCalendarRuleOrderY(doc: YDoc, ruleId: string): void {
+  const current = readCalendarRuleOrderY(doc);
+  if (!current.includes(ruleId)) return;
+  writeCalendarRuleOrderY(
+    doc,
+    current.filter((id) => id !== ruleId),
+  );
 }
 
 function addDaysIsoY(iso: string, n: number): string {
@@ -1321,6 +1403,10 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
           unknown
         >,
       );
+      // v0.8.1 — every new rule joins the user's priority list at the
+      // top by default. Idempotent for re-overrides on the same date
+      // (single-date rule id is deterministic per date).
+      prependToCalendarRuleOrderY(doc, id);
     }, sessionId ?? 'overrideCycleDay');
   },
 
@@ -1338,6 +1424,7 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
         at: Date.now(),
         ...(sessionId && { sessionId }),
       });
+      removeFromCalendarRuleOrderY(doc, id);
     }, sessionId ?? 'clearCycleDayOverride');
   },
 
@@ -1370,6 +1457,7 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
           unknown
         >,
       );
+      prependToCalendarRuleOrderY(doc, id);
     }, 'upsertWeekdayRule');
   },
 
@@ -1404,6 +1492,7 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
           unknown
         >,
       );
+      prependToCalendarRuleOrderY(doc, ruleId);
     }, 'upsertDateRangeRule');
     return ruleId;
   },
@@ -1439,6 +1528,7 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
           unknown
         >,
       );
+      prependToCalendarRuleOrderY(doc, ruleId);
     }, 'upsertCycleRule');
     return ruleId;
   },
@@ -1454,7 +1544,85 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
         effectiveFrom: ef,
         at: Date.now(),
       });
+      // Keep the user's priority order tidy — remove the deleted rule
+      // id so the drawer doesn't render a phantom drag handle.
+      removeFromCalendarRuleOrderY(doc, id);
     }, 'removeCalendarRule');
+  },
+
+  // ERD §5.4 v0.8.1
+  upsertExternalEventRule: async ({
+    id,
+    kinds,
+    regions,
+    noteLabelFilter,
+    templateKey,
+    label,
+    effectiveFrom,
+  }) => {
+    const doc = getYDoc();
+    const ruleId = id ?? ulidLite('cr-ext');
+    const ef = effectiveFrom ?? todayIso();
+    const existing = id
+      ? getEntityMap(doc, 'calendarRules').get(id)
+      : undefined;
+    const createdAt =
+      existing instanceof Y.Map
+        ? ((existing as YMap<unknown>).get('createdAt') as number) ??
+          Date.now()
+        : Date.now();
+    const trimmedNoteQuery = noteLabelFilter?.query.trim() ?? '';
+    const value: CalendarRuleExternalEvent = {
+      kinds: [...kinds],
+      ...(regions && regions.length > 0 && { regions: [...regions] }),
+      // Persist noteLabelFilter only when the user actually entered
+      // a non-empty query — an empty filter is equivalent to "match
+      // any note" and should not waste storage / clutter the rule
+      // summary.
+      ...(noteLabelFilter && trimmedNoteQuery.length > 0 && {
+        noteLabelFilter: {
+          mode: noteLabelFilter.mode,
+          query: trimmedNoteQuery,
+        },
+      }),
+      templateKey,
+      ...(label !== undefined && label.trim().length > 0 && { label }),
+    };
+    const rule: CalendarRule = {
+      id: ruleId,
+      kind: 'external-event',
+      value,
+      createdAt,
+      // Note: no `priority` set — v0.8.1 leaves that field undefined
+      // and lets userProfile.calendarRuleOrder decide precedence.
+    };
+    doc.transact(() => {
+      upsertEntity(doc, 'calendarRules', ruleId, { ...rule });
+      appendRevision(
+        doc,
+        'calendarRuleRevisions',
+        ruleId,
+        {
+          ...buildCalendarRuleRevisionY(rule, ef, undefined),
+        } as Record<string, unknown>,
+      );
+      // First write of this rule id → prepend to the user's priority
+      // list so the new rule wins by default. If the user already
+      // dragged it elsewhere we leave their position alone.
+      prependToCalendarRuleOrderY(doc, ruleId);
+    }, 'upsertExternalEventRule');
+    return ruleId;
+  },
+
+  setCalendarRuleOrder: async (orderedIds) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      // Filter out ids that don't exist as rules anymore (defensive
+      // against the UI passing a stale list across a tombstone).
+      const ruleMap = getEntityMap(doc, 'calendarRules');
+      const filtered = orderedIds.filter((id) => ruleMap.has(id));
+      writeCalendarRuleOrderY(doc, filtered);
+    }, 'setCalendarRuleOrder');
   },
 
   // ============ Cycles ============
@@ -1892,12 +2060,6 @@ const sessionUndoManagers = new Map<string, Y.UndoManager>();
 
 // ============ Calendar rule resolution (preserved from legacy store.ts) ============
 
-import type {
-  CalendarRuleSingleDate,
-  CalendarRuleWeekday,
-  CalendarRuleDateRange,
-  CalendarRuleCycle,
-} from './types';
 import { calendarRuleRevisionsActiveOn } from './revisions';
 
 /** Deterministic id for a `single-date` CalendarRule. Flipping the same
@@ -1907,10 +2069,17 @@ export function singleDateRuleId(date: string): string {
   return `cr-single-${date}`;
 }
 
-/** Default priorities per CalendarRule kind — §5.4 precedence order.
- *  Higher wins. single-date is the smallest-scope user override, so
- *  it sits at the top; weekday rules are the broadest, at the bottom. */
-export const CALENDAR_RULE_PRIORITY: Record<CalendarRule['kind'], number> = {
+/** Pre-v0.8.1 hardcoded priorities per CalendarRule kind. Kept around
+ *  for back-compat reads of legacy rules that still carry the field;
+ *  v0.8.1 writes leave `priority` undefined and let the user-controlled
+ *  `UserProfile.calendarRuleOrder` decide precedence (§5.4). New
+ *  `external-event` kind has no fallback priority — rules of that kind
+ *  exist only in v0.8.1+ where the order list is the single source of
+ *  truth. */
+export const CALENDAR_RULE_PRIORITY: Record<
+  Exclude<CalendarRule['kind'], 'external-event'>,
+  number
+> = {
   'single-date': 100,
   'date-range': 50,
   cycle: 30,
@@ -1919,8 +2088,19 @@ export const CALENDAR_RULE_PRIORITY: Record<CalendarRule['kind'], number> = {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Return true iff `rule` matches `date`. */
-export function calendarRuleApplies(rule: CalendarRule, date: string): boolean {
+/** Return true iff `rule` matches `date`. The `external-event` branch
+ *  needs the `userDayNotes` map and the `enabledHolidayRegions` filter
+ *  to query `selectExternalEventsOn`; callers without that context
+ *  (legacy non-resolver paths) should pass an empty `extCtx` and the
+ *  external-event branch will return false. */
+export function calendarRuleApplies(
+  rule: CalendarRule,
+  date: string,
+  extCtx?: {
+    userDayNotes: Record<string, UserDayNote>;
+    enabledHolidayRegions: string[];
+  },
+): boolean {
   switch (rule.kind) {
     case 'single-date': {
       const v = rule.value as CalendarRuleSingleDate;
@@ -1946,6 +2126,47 @@ export function calendarRuleApplies(rule: CalendarRule, date: string): boolean {
       if (diff < 0) return false;
       const idx = diff % v.cycleLength;
       return v.mapping[idx] != null;
+    }
+    case 'external-event': {
+      const v = rule.value as CalendarRuleExternalEvent;
+      if (v.kinds.length === 0) return false;
+      // Without a context (legacy callers / unit tests passing through
+      // `calendarRuleApplies` directly) we cannot resolve external
+      // events; treat as no-match rather than crashing.
+      if (!extCtx) return false;
+      const events = selectExternalEventsOn(date, {
+        enabledHolidayRegions: extCtx.enabledHolidayRegions,
+        userDayNotes: extCtx.userDayNotes,
+      });
+      const kindSet = new Set<ExternalEventMatchKind>(v.kinds);
+      const regionFilter =
+        v.regions && v.regions.length > 0 ? new Set(v.regions) : null;
+      // Pre-trim the note-label query so the per-event closure does
+      // a single .includes / equality check; empty query degrades to
+      // "match any note".
+      const noteFilter = v.noteLabelFilter;
+      const noteQuery = noteFilter?.query.trim() ?? '';
+      const noteFilterActive = noteFilter !== undefined && noteQuery.length > 0;
+      return events.some((ev) => {
+        if (!kindSet.has(ev.kind as ExternalEventMatchKind)) return false;
+        // user-note has no region; rule's regions filter is silently
+        // ignored for those (otherwise the user can never match notes
+        // when they've also restricted regions for holidays).
+        if (regionFilter && ev.regionCode) {
+          if (!regionFilter.has(ev.regionCode)) return false;
+        }
+        // Note-label filter applies only to user-note events; other
+        // kinds pass through unchanged.
+        if (ev.kind === 'user-note' && noteFilterActive) {
+          if (noteFilter!.mode === 'exact' && ev.label !== noteQuery) return false;
+          if (
+            noteFilter!.mode === 'contains' &&
+            !ev.label.includes(noteQuery)
+          )
+            return false;
+        }
+        return true;
+      });
     }
   }
 }
@@ -1973,38 +2194,74 @@ export function calendarRuleTemplate(
       if (diff < 0) return undefined;
       return v.mapping[diff % v.cycleLength];
     }
+    case 'external-event':
+      return (rule.value as CalendarRuleExternalEvent).templateKey;
   }
 }
 
 /** Resolve the active Template for `date` by walking every
- *  CalendarRule revision active on that date in priority-desc order. */
+ *  CalendarRule revision active on that date.
+ *
+ *  v0.8.1 ordering: `userProfile.calendarRuleOrder` is the user's
+ *  authoritative priority list (front = highest). Rules in the list
+ *  are tried first in their listed order; rules NOT yet in the list
+ *  fall back to the legacy numeric `priority` field (descending),
+ *  with `createdAt` desc as final tie-breaker. This dual mode lets
+ *  pre-v0.8.1 rules keep working until the user touches the
+ *  rules drawer, at which point the implicit migration writes the
+ *  full ordered list once and from then on the order list dominates. */
 export function resolveTemplateForDate(
   state: Pick<
     DayRailState,
     'calendarRules' | 'calendarRuleRevisions' | 'calendarRuleTombstones'
-  >,
+  > &
+    Partial<Pick<DayRailState, 'userDayNotes' | 'userProfile'>>,
   date: string,
   heuristic: (date: string) => TemplateKey | null,
 ): TemplateKey | null {
   const active = calendarRuleRevisionsActiveOn(state, date);
   if (active.length > 0) {
-    type Slot = { rule: CalendarRule; rev: CalendarRuleRevision };
+    type Slot = {
+      rule: CalendarRule;
+      rev: CalendarRuleRevision;
+      orderIdx: number;
+    };
+    const order = state.userProfile?.calendarRuleOrder ?? [];
+    const orderIdx = new Map<string, number>();
+    order.forEach((id, i) => orderIdx.set(id, i));
     const slots: Slot[] = [];
     for (const { ruleId, revision } of active) {
       const shell = state.calendarRules[ruleId];
       if (!shell) continue;
       slots.push({
-        rule: { ...shell, priority: revision.priority, value: revision.value },
+        rule: {
+          ...shell,
+          ...(revision.priority !== undefined && {
+            priority: revision.priority,
+          }),
+          value: revision.value,
+        },
         rev: revision,
+        orderIdx: orderIdx.get(ruleId) ?? Infinity,
       });
     }
-    const sorted = slots.sort(
-      (a, b) =>
-        b.rev.priority - a.rev.priority ||
-        b.rule.createdAt - a.rule.createdAt,
-    );
+    const sorted = slots.sort((a, b) => {
+      // 1. In the user's order list → ascending position (front wins).
+      if (a.orderIdx !== b.orderIdx) return a.orderIdx - b.orderIdx;
+      // 2. Legacy fallback: numeric priority desc.
+      const aP = a.rev.priority ?? a.rule.priority ?? 0;
+      const bP = b.rev.priority ?? b.rule.priority ?? 0;
+      if (aP !== bP) return bP - aP;
+      // 3. Final tie-breaker: createdAt desc (newest first).
+      return b.rule.createdAt - a.rule.createdAt;
+    });
+    const extCtx = {
+      userDayNotes: state.userDayNotes ?? {},
+      enabledHolidayRegions:
+        state.userProfile?.enabledHolidayRegions ?? [],
+    };
     for (const { rule } of sorted) {
-      if (!calendarRuleApplies(rule, date)) continue;
+      if (!calendarRuleApplies(rule, date, extCtx)) continue;
       const tpl = calendarRuleTemplate(rule, date);
       if (tpl) return tpl;
     }

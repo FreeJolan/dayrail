@@ -235,6 +235,8 @@ export function Calendar() {
                 calendarRules,
                 calendarRuleRevisions,
                 calendarRuleTombstones,
+                userDayNotes,
+                userProfile,
               },
               cell.date,
             ) ?? null;
@@ -270,8 +272,6 @@ export function Calendar() {
           );
         })}
       </div>
-
-      <Footer />
 
       <CalendarRulesDrawer
         open={drawerOpen}
@@ -380,13 +380,3 @@ function WeekdayHeader() {
   );
 }
 
-function Footer() {
-  return (
-    <footer className="flex items-center justify-between font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-      <span>
-        优先级 · 单日覆盖 → 星期启发
-      </span>
-      <span>ERD §5.4 · v0.2 live</span>
-    </footer>
-  );
-}

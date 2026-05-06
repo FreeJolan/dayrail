@@ -1,13 +1,17 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useId, useMemo, useRef, useState } from 'react';
 import { clsx } from 'clsx';
-import { Pencil, Plus, X } from 'lucide-react';
+import { GripVertical, Pencil, Plus, X } from 'lucide-react';
 import {
+  listHolidayRegions,
+  getHolidayDatasetDisplayName,
   useStore,
   type CalendarRule,
   type CalendarRuleCycle,
   type CalendarRuleDateRange,
+  type CalendarRuleExternalEvent,
   type CalendarRuleSingleDate,
   type CalendarRuleWeekday,
+  type ExternalEventMatchKind,
   type Template,
 } from '@dayrail/core';
 import type { RailColor } from '@/data/sample';
@@ -35,6 +39,7 @@ const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 export function CalendarRulesDrawer({ open, onClose }: Props) {
   const calendarRules = useStore((s) => s.calendarRules);
   const templates = useStore((s) => s.templates);
+  const userProfile = useStore((s) => s.userProfile);
 
   // §10.5 Phase 4 · drawer-wide picker. Same primitive as the
   // Template Editor; every rule edit / removal in this drawer threads
@@ -51,29 +56,12 @@ export function CalendarRulesDrawer({ open, onClose }: Props) {
     [templates],
   );
 
-  const { singleDate, dateRange, cycle, weekday } = useMemo(() => {
-    const single: CalendarRule[] = [];
-    const range: CalendarRule[] = [];
-    const cyc: CalendarRule[] = [];
-    const wd: CalendarRule[] = [];
-    for (const r of Object.values(calendarRules)) {
-      if (r.kind === 'single-date') single.push(r);
-      else if (r.kind === 'date-range') range.push(r);
-      else if (r.kind === 'cycle') cyc.push(r);
-      else if (r.kind === 'weekday') wd.push(r);
-    }
-    single.sort(byCreatedDesc);
-    range.sort(byCreatedDesc);
-    cyc.sort(byCreatedDesc);
-    // Weekday: sort by the first covered weekday ascending so Mon-Fri
-    // templates land above Sat-Sun in the common seeding.
-    wd.sort((a, b) => {
-      const aw = (a.value as CalendarRuleWeekday).weekdays[0] ?? 0;
-      const bw = (b.value as CalendarRuleWeekday).weekdays[0] ?? 0;
-      return aw - bw;
-    });
-    return { singleDate: single, dateRange: range, cycle: cyc, weekday: wd };
-  }, [calendarRules]);
+  // v0.8.1 — kind-specific buckets are no longer needed at the drawer
+  // level; the single PriorityOrderSection consumes Object.values()
+  // directly. The legacy per-kind section components (SingleDateSection
+  // etc.) remain in the file but are unreferenced, kept around as a
+  // reference for the unified row + form patterns until a future
+  // cleanup commit.
 
   if (!open) return null;
 
@@ -109,7 +97,9 @@ export function CalendarRulesDrawer({ open, onClose }: Props) {
         </header>
 
         <div className="px-5 pt-3 text-xs text-ink-tertiary">
-          优先级：<span className="text-ink-secondary">单日 → 范围 → 循环 → 星期几 → 内置启发</span>。改动即时落库；点规则右侧 ✎ 可原地编辑。
+          优先级由顶部「整体优先级」拖拽排序决定 ·
+          <span className="text-ink-secondary">v0.8.1 起</span>。改动即时落库；
+          点规则右侧 ✎ 可原地编辑。
         </div>
 
         <div className="flex items-center justify-end px-5 pt-3">
@@ -120,23 +110,16 @@ export function CalendarRulesDrawer({ open, onClose }: Props) {
         </div>
 
         <div className="mt-4 flex flex-1 flex-col gap-6 overflow-y-auto px-5 pb-6">
-          <SingleDateSection
-            rules={singleDate}
-            templates={templatesList}
-            effectiveFrom={effectiveFrom}
-          />
-          <DateRangeSection
-            rules={dateRange}
-            templates={templatesList}
-            effectiveFrom={effectiveFrom}
-          />
-          <CycleSection
-            rules={cycle}
-            templates={templatesList}
-            effectiveFrom={effectiveFrom}
-          />
-          <WeekdaySection
-            rules={weekday}
+          {/* v0.8.1 — single unified rules list. Drag to reorder
+              priority, ✎ to edit inline, ✕ to delete, "+ 添加规则"
+              at the bottom to create a new rule of any kind. The
+              older per-kind sections (SingleDateSection /
+              DateRangeSection / CycleSection / WeekdaySection /
+              ExternalEventSection) are no longer rendered — every
+              CRUD op goes through this section. */}
+          <PriorityOrderSection
+            rules={Object.values(calendarRules)}
+            calendarRuleOrder={userProfile?.calendarRuleOrder ?? []}
             templates={templatesList}
             effectiveFrom={effectiveFrom}
           />
@@ -315,16 +298,20 @@ function SingleDateSection({
 
 function SingleDateForm({
   templates,
+  initial,
   onSubmit,
   onCancel,
 }: {
   templates: Template[];
+  initial?: { date: string; templateKey: string };
   onSubmit: (date: string, templateKey: string) => Promise<void>;
   onCancel: () => void;
 }) {
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(
+    () => initial?.date ?? new Date().toISOString().slice(0, 10),
+  );
   const [templateKey, setTemplateKey] = useState<string>(
-    templates[0]?.key ?? '',
+    initial?.templateKey ?? templates[0]?.key ?? '',
   );
   const submit = () => {
     if (!date || !templateKey) return;
@@ -947,5 +934,1024 @@ function FormActions({
         保存
       </button>
     </div>
+  );
+}
+
+// ============ v0.8.1 priority-order section ============
+//
+// Single ordered list across all rule kinds. Drag-to-reorder writes
+// the new order to `userProfile.calendarRuleOrder` via the new
+// `setCalendarRuleOrder` action. Rules NOT yet in the user's order
+// list (legacy v0.8.0- rules with numeric priority) are appended in
+// priority desc + createdAt desc order — same fallback the resolver
+// uses, so the drawer's display matches what actually applies.
+//
+// Drag implementation uses HTML5 native drag-and-drop API. With
+// typical N=3-8 rules per user, no library is needed; every drag
+// transitions in-place and a final drop fires
+// `setCalendarRuleOrder` with the full new id list.
+
+function PriorityOrderSection({
+  rules,
+  calendarRuleOrder,
+  templates,
+  effectiveFrom,
+}: {
+  rules: CalendarRule[];
+  calendarRuleOrder: string[];
+  templates: Template[];
+  effectiveFrom: string | undefined;
+}) {
+  const setCalendarRuleOrder = useStore((s) => s.setCalendarRuleOrder);
+  const sortedIds = useMemo(() => {
+    const idSet = new Set(rules.map((r) => r.id));
+    const inOrder = calendarRuleOrder.filter((id) => idSet.has(id));
+    const inOrderSet = new Set(inOrder);
+    const outOfOrder = rules
+      .filter((r) => !inOrderSet.has(r.id))
+      .sort(
+        (a, b) =>
+          (b.priority ?? 0) - (a.priority ?? 0) ||
+          b.createdAt - a.createdAt,
+      )
+      .map((r) => r.id);
+    return [...inOrder, ...outOfOrder];
+  }, [rules, calendarRuleOrder]);
+
+  const ruleById = useMemo(() => {
+    const m = new Map<string, CalendarRule>();
+    for (const r of rules) m.set(r.id, r);
+    return m;
+  }, [rules]);
+
+  // Single-slot transient state — at most one row's edit form OR the
+  // add picker is open at any time. Keeps the drawer tidy even with
+  // 10+ rules.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [addingKind, setAddingKind] = useState<CalendarRule['kind'] | null>(
+    null,
+  );
+
+  // Drag state. The drag-and-drop handlers live on the container (not
+  // per-row), so the deadzones above the first row and below the last
+  // row no longer eat the gesture: the user can hover anywhere inside
+  // the container's padding — even far above or below the rows —
+  // and `computeDropIdx` snaps the indicator to the nearest gap.
+  //
+  // `dropIdx` is the index into the without-dragged list at which the
+  // dragged item will be reinserted. Range: 0 (top of list) ..
+  // ids.length (after the last row).
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropIdx, setDropIdx] = useState<number | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
+
+  const computeDropIdx = useCallback(
+    (clientY: number): number => {
+      const ids = sortedIds.filter((id) => id !== draggingId);
+      for (let i = 0; i < ids.length; i++) {
+        const el = rowRefs.current.get(ids[i]!);
+        if (!el) continue;
+        const rect = el.getBoundingClientRect();
+        if (clientY < rect.top + rect.height / 2) return i;
+      }
+      return ids.length;
+    },
+    [sortedIds, draggingId],
+  );
+
+  const onDragStart = (id: string) => (e: React.DragEvent) => {
+    setDraggingId(id);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', id);
+  };
+  const onContainerDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!draggingId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const idx = computeDropIdx(e.clientY);
+    if (dropIdx !== idx) setDropIdx(idx);
+  };
+  const onContainerDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    // Only clear if the cursor truly left the container (not just
+    // moved between child rows). The relatedTarget is the element
+    // entered next; if it's a descendant of the container, we're
+    // still inside.
+    if (
+      containerRef.current &&
+      e.relatedTarget instanceof Node &&
+      containerRef.current.contains(e.relatedTarget)
+    ) {
+      return;
+    }
+    setDropIdx(null);
+  };
+  const onDragEnd = () => {
+    setDraggingId(null);
+    setDropIdx(null);
+  };
+  const onContainerDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!draggingId) {
+      onDragEnd();
+      return;
+    }
+    e.preventDefault();
+    // WYSIWYG: recompute the drop index from THIS drop event's
+    // clientY rather than reading `dropIdx` from React state, which
+    // is async. The visual indicator may briefly lag, but the
+    // committed drop always matches the cursor at the moment of
+    // release.
+    const idx = computeDropIdx(e.clientY);
+    const ids = sortedIds.filter((id) => id !== draggingId);
+    ids.splice(idx, 0, draggingId);
+    void setCalendarRuleOrder(ids);
+    onDragEnd();
+  };
+
+  // Without-dragged list is the basis for `dropIdx` math.
+  const idsWithoutDragged = useMemo(
+    () => sortedIds.filter((id) => id !== draggingId),
+    [sortedIds, draggingId],
+  );
+
+  return (
+    <SectionShell
+      title="规则列表"
+      subtitle="拖拽排序优先级 · 上面的优先 · 点 ✎ 编辑 · 点底部 + 添加新规则"
+    >
+      {/* Container catches drag events anywhere inside its padded
+          area, not just on individual rows. py-2 gives a generous
+          drop-zone above the first row and below the last row, so
+          dragging "to position 0" or "to last" works even when the
+          cursor is slightly outside the row's own bounding box. */}
+      <div
+        ref={containerRef}
+        onDragOver={onContainerDragOver}
+        onDragLeave={onContainerDragLeave}
+        onDrop={onContainerDrop}
+        className="flex flex-col gap-1.5 py-2"
+      >
+        {sortedIds.length === 0 && addingKind === null ? (
+          <EmptyHint text="暂无规则。点下方「+ 添加规则」开始。" />
+        ) : (
+          sortedIds.map((id) => {
+            const r = ruleById.get(id);
+            if (!r) return null;
+            if (editingId === id) {
+              return (
+                <RuleEditCard
+                  key={id}
+                  rule={r}
+                  templates={templates}
+                  effectiveFrom={effectiveFrom}
+                  onClose={() => setEditingId(null)}
+                />
+              );
+            }
+            const isDragged = id === draggingId;
+            const undragIdx = idsWithoutDragged.indexOf(id);
+            // Indicator on this row when dragging:
+            //   `above` if dropIdx points to this row's slot
+            //   `below` only on the last row when dropIdx === length
+            //           (the "drop after the last row" case)
+            const showAbove = !isDragged && dropIdx === undragIdx;
+            const showBelow =
+              !isDragged &&
+              undragIdx === idsWithoutDragged.length - 1 &&
+              dropIdx === idsWithoutDragged.length;
+            return (
+              <div
+                key={id}
+                ref={(el) => {
+                  rowRefs.current.set(id, el);
+                }}
+                draggable
+                onDragStart={onDragStart(id)}
+                onDragEnd={onDragEnd}
+                className={clsx(
+                  'flex items-center gap-2 rounded-md bg-surface-1 px-2 py-1.5 transition',
+                  isDragged && 'opacity-40',
+                  showAbove && 'shadow-[0_-2px_0_0_rgb(var(--ink-primary))]',
+                  showBelow && 'shadow-[0_2px_0_0_rgb(var(--ink-primary))]',
+                )}
+              >
+                <GripVertical
+                  className="h-3.5 w-3.5 shrink-0 cursor-grab text-ink-tertiary"
+                  strokeWidth={1.6}
+                />
+                <KindBadge kind={r.kind} />
+                <span
+                  className="min-w-0 flex-1 truncate text-xs text-ink-secondary"
+                  title={ruleSummary(r, templates)}
+                >
+                  {ruleSummary(r, templates)}
+                </span>
+                <EditButton onClick={() => setEditingId(id)} />
+                <RemoveButton id={id} effectiveFrom={effectiveFrom} />
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Add-rule entry: kind picker → kind-specific form below. */}
+      {addingKind === null ? (
+        <AddRulePicker onPick={(kind) => setAddingKind(kind)} />
+      ) : (
+        <RuleAddCard
+          kind={addingKind}
+          templates={templates}
+          effectiveFrom={effectiveFrom}
+          onClose={() => setAddingKind(null)}
+        />
+      )}
+    </SectionShell>
+  );
+}
+
+const ADD_PICKER_KINDS: ReadonlyArray<{
+  kind: CalendarRule['kind'];
+  label: string;
+  hint: string;
+}> = [
+  { kind: 'single-date', label: '单日覆盖', hint: '某一天指定模板' },
+  { kind: 'date-range', label: '范围', hint: '一段日期内同一模板' },
+  { kind: 'cycle', label: '循环', hint: 'N 天循环模板（如 7 天班轮）' },
+  { kind: 'weekday', label: '星期', hint: '按星期几定模板' },
+  {
+    kind: 'external-event',
+    label: '属性匹配',
+    hint: '按节假日 / 调休 / 备注 等属性匹配',
+  },
+];
+
+function AddRulePicker({
+  onPick,
+}: {
+  onPick: (kind: CalendarRule['kind']) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-dashed border-ink-tertiary/40 p-3">
+      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+        + 添加规则
+      </span>
+      <div className="flex flex-wrap gap-1.5">
+        {ADD_PICKER_KINDS.map((opt) => (
+          <button
+            key={opt.kind}
+            type="button"
+            onClick={() => onPick(opt.kind)}
+            title={opt.hint}
+            className="inline-flex items-center gap-1 rounded-md bg-surface-2 px-2 py-1 text-xs text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary"
+          >
+            <Plus className="h-3 w-3" strokeWidth={1.8} />
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Inline form for editing an existing rule. Dispatches to the right
+ *  kind-specific form pre-filled with current values. Save calls the
+ *  same upsert action that creates the rule (id-stable). */
+function RuleEditCard({
+  rule,
+  templates,
+  effectiveFrom,
+  onClose,
+}: {
+  rule: CalendarRule;
+  templates: Template[];
+  effectiveFrom: string | undefined;
+  onClose: () => void;
+}) {
+  const overrideCycleDay = useStore((s) => s.overrideCycleDay);
+  const upsertWeekdayRule = useStore((s) => s.upsertWeekdayRule);
+  const upsertDateRangeRule = useStore((s) => s.upsertDateRangeRule);
+  const upsertCycleRule = useStore((s) => s.upsertCycleRule);
+  const upsertExternalEventRule = useStore((s) => s.upsertExternalEventRule);
+  switch (rule.kind) {
+    case 'single-date': {
+      const v = rule.value as CalendarRuleSingleDate;
+      return (
+        <SingleDateForm
+          templates={templates}
+          initial={{ date: v.date, templateKey: v.templateKey }}
+          onSubmit={async (date, templateKey) => {
+            await overrideCycleDay(date, templateKey, undefined, effectiveFrom);
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    }
+    case 'date-range': {
+      const v = rule.value as CalendarRuleDateRange;
+      return (
+        <DateRangeForm
+          templates={templates}
+          initial={{
+            from: v.from,
+            to: v.to,
+            templateKey: v.templateKey,
+            ...(v.label && { label: v.label }),
+          }}
+          onSubmit={async (opts) => {
+            await upsertDateRangeRule({
+              id: rule.id,
+              ...opts,
+              effectiveFrom,
+            });
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    }
+    case 'cycle': {
+      const v = rule.value as CalendarRuleCycle;
+      return (
+        <CycleForm
+          templates={templates}
+          initial={{
+            cycleLength: v.cycleLength,
+            anchor: v.anchor,
+            mapping: v.mapping,
+          }}
+          onSubmit={async (opts) => {
+            await upsertCycleRule({
+              id: rule.id,
+              ...opts,
+              effectiveFrom,
+            });
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    }
+    case 'weekday': {
+      const v = rule.value as CalendarRuleWeekday;
+      return (
+        <WeekdayForm
+          templates={templates}
+          initial={{ templateKey: v.templateKey, weekdays: v.weekdays }}
+          onSubmit={async (templateKey) => {
+            // Existing weekday rule id is `cr-weekday-{templateKey}`;
+            // editing the template key creates a new rule rather than
+            // updating in place. Acceptable: weekday rules are
+            // template-keyed by design (one per template).
+            await upsertWeekdayRule(
+              templateKey,
+              [...(rule.value as CalendarRuleWeekday).weekdays],
+              effectiveFrom,
+            );
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    }
+    case 'external-event': {
+      const v = rule.value as CalendarRuleExternalEvent;
+      return (
+        <ExternalEventForm
+          templates={templates}
+          initial={{
+            kinds: v.kinds,
+            regions: v.regions ?? [],
+            ...(v.noteLabelFilter && { noteLabelFilter: v.noteLabelFilter }),
+            templateKey: v.templateKey,
+            label: v.label ?? '',
+          }}
+          onSubmit={async (opts) => {
+            await upsertExternalEventRule({
+              id: rule.id,
+              ...opts,
+              effectiveFrom,
+            });
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    }
+  }
+}
+
+function RuleAddCard({
+  kind,
+  templates,
+  effectiveFrom,
+  onClose,
+}: {
+  kind: CalendarRule['kind'];
+  templates: Template[];
+  effectiveFrom: string | undefined;
+  onClose: () => void;
+}) {
+  const overrideCycleDay = useStore((s) => s.overrideCycleDay);
+  const upsertWeekdayRule = useStore((s) => s.upsertWeekdayRule);
+  const upsertDateRangeRule = useStore((s) => s.upsertDateRangeRule);
+  const upsertCycleRule = useStore((s) => s.upsertCycleRule);
+  const upsertExternalEventRule = useStore((s) => s.upsertExternalEventRule);
+  switch (kind) {
+    case 'single-date':
+      return (
+        <SingleDateForm
+          templates={templates}
+          onSubmit={async (date, templateKey) => {
+            await overrideCycleDay(date, templateKey, undefined, effectiveFrom);
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    case 'date-range':
+      return (
+        <DateRangeForm
+          templates={templates}
+          onSubmit={async (opts) => {
+            await upsertDateRangeRule({ ...opts, effectiveFrom });
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    case 'cycle':
+      return (
+        <CycleForm
+          templates={templates}
+          onSubmit={async (opts) => {
+            await upsertCycleRule({ ...opts, effectiveFrom });
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    case 'weekday':
+      return (
+        <WeekdayForm
+          templates={templates}
+          onSubmit={async (templateKey, weekdays) => {
+            await upsertWeekdayRule(templateKey, weekdays, effectiveFrom);
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+    case 'external-event':
+      return (
+        <ExternalEventForm
+          templates={templates}
+          onSubmit={async (opts) => {
+            await upsertExternalEventRule({ ...opts, effectiveFrom });
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      );
+  }
+}
+
+const KIND_LABEL_ZH: Record<CalendarRule['kind'], string> = {
+  'single-date': '单日',
+  'date-range': '范围',
+  cycle: '循环',
+  weekday: '星期',
+  'external-event': '属性',
+};
+
+function KindBadge({ kind }: { kind: CalendarRule['kind'] }) {
+  return (
+    <span className="shrink-0 rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+      {KIND_LABEL_ZH[kind]}
+    </span>
+  );
+}
+
+/** Human-readable one-line summary for a rule, displayed in the
+ *  priority list. Each kind's summary is hand-written rather than
+ *  generic so users can identify rules at a glance. */
+function ruleSummary(r: CalendarRule, templates: Template[]): string {
+  const tplName = (key: string) =>
+    templates.find((t) => t.key === key)?.name ?? key;
+  switch (r.kind) {
+    case 'single-date': {
+      const v = r.value as CalendarRuleSingleDate;
+      return `${v.date} → ${tplName(v.templateKey)}`;
+    }
+    case 'date-range': {
+      const v = r.value as CalendarRuleDateRange;
+      const label = v.label ? `${v.label} · ` : '';
+      return `${label}${v.from} – ${v.to} → ${tplName(v.templateKey)}`;
+    }
+    case 'weekday': {
+      const v = r.value as CalendarRuleWeekday;
+      const days = v.weekdays
+        .map((d) => ['日', '一', '二', '三', '四', '五', '六'][d])
+        .join('');
+      return `周${days} → ${tplName(v.templateKey)}`;
+    }
+    case 'cycle': {
+      const v = r.value as CalendarRuleCycle;
+      return `${v.cycleLength} 天循环 (锚点 ${v.anchor}) → ${v.mapping
+        .map((m) => tplName(m))
+        .join(' / ')}`;
+    }
+    case 'external-event': {
+      const v = r.value as CalendarRuleExternalEvent;
+      // Group display matches the form's 节假日 / 调休 / 备注 cards.
+      // 节假日 with both 假日 + 非假日 sub-flavors collapses to plain
+      // "节假日"; either alone shows the sub-flavor in parentheses.
+      const parts: string[] = [];
+      const hasHoliday = v.kinds.includes('holiday');
+      const hasObservance = v.kinds.includes('observance');
+      if (hasHoliday && hasObservance) parts.push('节假日');
+      else if (hasHoliday) parts.push('节假日(假日)');
+      else if (hasObservance) parts.push('节假日(非假日)');
+      if (v.kinds.includes('makeup-workday')) parts.push('调休');
+      if (v.kinds.includes('user-note')) parts.push('备注');
+      const kindNames = parts.join('+');
+      const regionPart =
+        v.regions && v.regions.length > 0 ? ` (${v.regions.join(',')})` : '';
+      const noteFilterPart = v.noteLabelFilter?.query
+        ? ` 备注${v.noteLabelFilter.mode === 'exact' ? '=' : '⊇'}「${v.noteLabelFilter.query}」`
+        : '';
+      const labelPart = v.label ? `${v.label} · ` : '';
+      return `${labelPart}${kindNames}${regionPart}${noteFilterPart} → ${tplName(v.templateKey)}`;
+    }
+  }
+}
+
+// ============ v0.8.1 external-event section ============
+
+function ExternalEventSection({
+  rules,
+  templates,
+  effectiveFrom,
+}: {
+  rules: CalendarRule[];
+  templates: Template[];
+  effectiveFrom: string | undefined;
+}) {
+  const upsertExternalEventRule = useStore((s) => s.upsertExternalEventRule);
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  return (
+    <SectionShell
+      title="属性匹配"
+      subtitle="按日期属性（节假日 / 调休 / 观察日 / 备注）匹配 · v0.8.1 新"
+      addCTA="新建属性规则"
+      onAdd={() => {
+        setFormOpen((v) => !v);
+        setEditingId(null);
+      }}
+    >
+      {formOpen && (
+        <ExternalEventForm
+          templates={templates}
+          onSubmit={async (opts) => {
+            await upsertExternalEventRule({ ...opts, effectiveFrom });
+            setFormOpen(false);
+          }}
+          onCancel={() => setFormOpen(false)}
+        />
+      )}
+      {rules.length === 0 && !formOpen ? (
+        <EmptyHint text="暂无属性匹配规则" />
+      ) : (
+        rules.map((r) => {
+          const v = r.value as CalendarRuleExternalEvent;
+          const editing = editingId === r.id;
+          if (editing) {
+            return (
+              <ExternalEventForm
+                key={r.id}
+                templates={templates}
+                initial={{
+                  kinds: v.kinds,
+                  regions: v.regions ?? [],
+                  templateKey: v.templateKey,
+                  label: v.label ?? '',
+                }}
+                onSubmit={async (opts) => {
+                  await upsertExternalEventRule({
+                    id: r.id,
+                    ...opts,
+                    effectiveFrom,
+                  });
+                  setEditingId(null);
+                }}
+                onCancel={() => setEditingId(null)}
+              />
+            );
+          }
+          return (
+            <div
+              key={r.id}
+              className="flex items-center justify-between gap-2 rounded-md bg-surface-1 px-3 py-1.5"
+            >
+              <span
+                className="min-w-0 flex-1 truncate text-xs text-ink-secondary"
+                title={ruleSummary(r, templates)}
+              >
+                {ruleSummary(r, templates)}
+              </span>
+              <div className="flex items-center gap-2">
+                <TemplateTag templates={templates} templateKey={v.templateKey} />
+                <EditButton onClick={() => setEditingId(r.id)} />
+                <RemoveButton id={r.id} effectiveFrom={effectiveFrom} />
+              </div>
+            </div>
+          );
+        })
+      )}
+    </SectionShell>
+  );
+}
+
+// "Condition group" presented in the form's UI. Each group
+// represents one kind of trigger; narrowing options (假日/非假日,
+// region filter, note label filter) are nested inside the relevant
+// group rather than floating loose at the form's top level.
+//
+// `holiday-or-observance` is a UI-only super-group that bundles the
+// underlying `holiday` + `observance` kinds together — they read as
+// "one calendar concept" to the user (节假日, with both 假日 and
+// 非假日 sub-flavors). The schema-level kinds[] still carries the
+// two-element granularity, so the rule's resolver behavior is
+// unchanged; the UI just groups them visually + lets the user sub-
+// multi-select which flavors apply.
+type ConditionGroupId =
+  | 'holiday-or-observance'
+  | 'makeup-workday'
+  | 'user-note';
+
+const ALL_CONDITION_GROUPS: ReadonlyArray<{
+  id: ConditionGroupId;
+  label: string;
+}> = [
+  { id: 'holiday-or-observance', label: '节假日' },
+  { id: 'makeup-workday', label: '调休' },
+  { id: 'user-note', label: '我的备注' },
+];
+
+function ExternalEventForm({
+  templates,
+  initial,
+  onSubmit,
+  onCancel,
+}: {
+  templates: Template[];
+  initial?: {
+    kinds: ExternalEventMatchKind[];
+    regions: string[];
+    noteLabelFilter?: { mode: 'contains' | 'exact'; query: string };
+    templateKey: string;
+    label: string;
+  };
+  onSubmit: (opts: {
+    kinds: ExternalEventMatchKind[];
+    regions?: string[];
+    noteLabelFilter?: { mode: 'contains' | 'exact'; query: string };
+    templateKey: string;
+    label?: string;
+  }) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const userDayNotes = useStore((s) => s.userDayNotes);
+  const [kinds, setKinds] = useState<ExternalEventMatchKind[]>(
+    initial?.kinds ?? ['holiday', 'observance'],
+  );
+  const [regions, setRegions] = useState<string[]>(initial?.regions ?? []);
+  const [noteFilterMode, setNoteFilterMode] = useState<'contains' | 'exact'>(
+    initial?.noteLabelFilter?.mode ?? 'contains',
+  );
+  const [noteFilterQuery, setNoteFilterQuery] = useState<string>(
+    initial?.noteLabelFilter?.query ?? '',
+  );
+  const [templateKey, setTemplateKey] = useState<string>(
+    initial?.templateKey ?? templates[0]?.key ?? '',
+  );
+  const [label, setLabel] = useState(initial?.label ?? '');
+  const allRegions = listHolidayRegions();
+  const noteLabelDatalistId = useId();
+
+  // Note-label autocomplete: every distinct label across all of the
+  // user's existing notes. Cheap — typical N is in the tens.
+  const noteLabelSuggestions = useMemo(() => {
+    const set = new Set<string>();
+    for (const n of Object.values(userDayNotes)) {
+      if (n.label.trim().length > 0) set.add(n.label);
+    }
+    return Array.from(set).sort();
+  }, [userDayNotes]);
+
+  // Each card represents a distinct trigger condition. Narrowing
+  // options (假日 / 非假日, 区域, 备注文本) live nested inside the
+  // owning card rather than free-floating at the form's top level.
+  const activeGroups: ConditionGroupId[] = useMemo(() => {
+    const out: ConditionGroupId[] = [];
+    if (kinds.includes('holiday') || kinds.includes('observance')) {
+      out.push('holiday-or-observance');
+    }
+    if (kinds.includes('makeup-workday')) out.push('makeup-workday');
+    if (kinds.includes('user-note')) out.push('user-note');
+    return out;
+  }, [kinds]);
+  const groupsToOffer = ALL_CONDITION_GROUPS.filter(
+    (g) => !activeGroups.includes(g.id),
+  );
+  const regionRelevant =
+    activeGroups.includes('holiday-or-observance') ||
+    activeGroups.includes('makeup-workday');
+  const userNoteSelected = activeGroups.includes('user-note');
+
+  const addGroup = (id: ConditionGroupId) => {
+    setKinds((prev) => {
+      const next = new Set(prev);
+      if (id === 'holiday-or-observance') {
+        // Default new "节假日" condition includes both 假日 + 非假日;
+        // user can sub-uncheck either inside the card.
+        next.add('holiday');
+        next.add('observance');
+      } else {
+        next.add(id);
+      }
+      return Array.from(next);
+    });
+  };
+  const removeGroup = (id: ConditionGroupId) => {
+    setKinds((prev) => {
+      if (id === 'holiday-or-observance') {
+        return prev.filter((k) => k !== 'holiday' && k !== 'observance');
+      }
+      return prev.filter((k) => k !== id);
+    });
+  };
+  const toggleHolidaySubKind = (k: 'holiday' | 'observance') => {
+    setKinds((prev) =>
+      prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k],
+    );
+  };
+  const toggleRegion = (r: string) => {
+    setRegions((prev) =>
+      prev.includes(r) ? prev.filter((x) => x !== r) : [...prev, r],
+    );
+  };
+  const submit = async () => {
+    if (kinds.length === 0 || !templateKey) return;
+    const trimmedNoteQuery = noteFilterQuery.trim();
+    await onSubmit({
+      kinds,
+      ...(regions.length > 0 && { regions }),
+      ...(userNoteSelected &&
+        trimmedNoteQuery.length > 0 && {
+          noteLabelFilter: {
+            mode: noteFilterMode,
+            query: trimmedNoteQuery,
+          },
+        }),
+      templateKey,
+      ...(label.trim() && { label: label.trim() }),
+    });
+  };
+  return (
+    <div className="flex flex-col gap-3 rounded-md bg-surface-1 px-3 py-3">
+      {/* === Trigger conditions === */}
+      <div className="flex flex-col gap-1.5">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          触发条件（任一满足即应用模板）
+        </span>
+        {activeGroups.length === 0 ? (
+          <EmptyHint text="点下方「+ 添加条件」开始" />
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {activeGroups.map((id) => {
+              if (id === 'holiday-or-observance') {
+                return (
+                  <ConditionCardShell
+                    key={id}
+                    title="节假日"
+                    onRemove={() => removeGroup(id)}
+                  >
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <SubChip
+                        active={kinds.includes('holiday')}
+                        onClick={() => toggleHolidaySubKind('holiday')}
+                      >
+                        假日
+                      </SubChip>
+                      <SubChip
+                        active={kinds.includes('observance')}
+                        onClick={() => toggleHolidaySubKind('observance')}
+                      >
+                        非假日（节庆）
+                      </SubChip>
+                    </div>
+                  </ConditionCardShell>
+                );
+              }
+              if (id === 'makeup-workday') {
+                return (
+                  <ConditionCardShell
+                    key={id}
+                    title="调休"
+                    onRemove={() => removeGroup(id)}
+                  />
+                );
+              }
+              return (
+                <ConditionCardShell
+                  key={id}
+                  title="我的备注"
+                  onRemove={() => removeGroup(id)}
+                >
+                  <div className="flex flex-col gap-1 pt-1">
+                    <span className="text-2xs text-ink-tertiary">
+                      备注内容（可选 · 留空 = 匹配任意备注）
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <SubChip
+                        active={noteFilterMode === 'contains'}
+                        onClick={() => setNoteFilterMode('contains')}
+                      >
+                        包含
+                      </SubChip>
+                      <SubChip
+                        active={noteFilterMode === 'exact'}
+                        onClick={() => setNoteFilterMode('exact')}
+                      >
+                        精确匹配
+                      </SubChip>
+                      <input
+                        type="text"
+                        value={noteFilterQuery}
+                        onChange={(e) => setNoteFilterQuery(e.target.value)}
+                        list={
+                          noteFilterMode === 'exact'
+                            ? noteLabelDatalistId
+                            : undefined
+                        }
+                        placeholder={
+                          noteFilterMode === 'contains'
+                            ? '例：生日'
+                            : '从已有备注选 / 自由输入'
+                        }
+                        className="h-7 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+                      />
+                      <datalist id={noteLabelDatalistId}>
+                        {noteLabelSuggestions.map((l) => (
+                          <option key={l} value={l} />
+                        ))}
+                      </datalist>
+                    </div>
+                  </div>
+                </ConditionCardShell>
+              );
+            })}
+          </div>
+        )}
+        {groupsToOffer.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            <span className="text-2xs text-ink-tertiary">+ 添加条件:</span>
+            {groupsToOffer.map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => addGroup(opt.id)}
+                className="inline-flex items-center gap-1 rounded-md bg-surface-2 px-2 py-0.5 text-xs text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary"
+              >
+                <Plus className="h-3 w-3" strokeWidth={1.8} />
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* === Region filter (shared by 节假日 + 调休 cards when present) === */}
+      {regionRelevant && (
+        <div className="flex flex-col gap-1">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            区域过滤（节假日 + 调休 共用 · 留空 = 任意已启用区域）
+          </span>
+          <div className="flex flex-wrap gap-1.5">
+            {allRegions.map((r) => {
+              const active = regions.includes(r);
+              const display = getHolidayDatasetDisplayName(r, 'zh-CN') ?? r;
+              return (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => toggleRegion(r)}
+                  className={clsx(
+                    'rounded-md px-2 py-1 text-xs transition',
+                    active
+                      ? 'bg-ink-primary text-surface-0'
+                      : 'bg-surface-2 text-ink-secondary hover:bg-surface-3',
+                  )}
+                >
+                  {display}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          应用模板
+        </span>
+        <select
+          value={templateKey}
+          onChange={(e) => setTemplateKey(e.target.value)}
+          className="h-7 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none focus:border-ink-secondary"
+        >
+          {templates.map((t) => (
+            <option key={t.key} value={t.key}>
+              {t.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          名字（可选）
+        </span>
+        <input
+          type="text"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="例：节假日休息"
+          className="h-7 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+        />
+      </div>
+      <FormActions
+        onCancel={onCancel}
+        onSubmit={() => {
+          void submit();
+        }}
+      />
+    </div>
+  );
+}
+
+/** Card frame for one trigger condition. Title + remove on the
+ *  header, narrowing options inside. Pure presentation; the parent
+ *  owns all state and adds/removes cards by mutating `kinds`. */
+function ConditionCardShell({
+  title,
+  onRemove,
+  children,
+}: {
+  title: string;
+  onRemove: () => void;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-md border border-hairline/60 bg-surface-0 px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-ink-primary">{title}</span>
+        <button
+          type="button"
+          aria-label="Remove condition"
+          onClick={onRemove}
+          className="rounded-sm p-0.5 text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          <X className="h-3 w-3" strokeWidth={1.8} />
+        </button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** Chip-style toggle button used inside ConditionCardShell. */
+function SubChip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        'shrink-0 rounded-md px-2 py-1 text-xs transition',
+        active
+          ? 'bg-ink-primary text-surface-0'
+          : 'bg-surface-2 text-ink-secondary hover:bg-surface-3',
+      )}
+    >
+      {children}
+    </button>
   );
 }

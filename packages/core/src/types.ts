@@ -327,7 +327,18 @@ export interface Cycle {
 /** ERD §5.4 rule that decides which Template applies to a given date.
  *  All four kinds are live from v0.3: resolver walks rules by
  *  priority desc and returns the first match. */
-export type CalendarRuleKind = 'weekday' | 'cycle' | 'date-range' | 'single-date';
+export type CalendarRuleKind =
+  | 'weekday'
+  | 'cycle'
+  | 'date-range'
+  | 'single-date'
+  // ERD §5.4 v0.8.1 — match dates by ExternalEvent attributes (e.g.
+  // "every statutory holiday → restday template", "user-noted days +
+  // makeup workdays → workday"). Resolver queries the ExternalEvent
+  // sources at the date in question; if any match the rule's
+  // `match.kinds` (and optionally `match.regions`), apply
+  // `templateKey`. See `CalendarRuleExternalEvent` below.
+  | 'external-event';
 
 export interface CalendarRuleSingleDate {
   date: string; // YYYY-MM-DD
@@ -362,17 +373,71 @@ export interface CalendarRuleCycle {
   mapping: TemplateKey[];
 }
 
+/** ERD §5.4 / §14 v0.8.1 — attribute-match rule. Triggers when the
+ *  date carries an `ExternalEvent` whose `kind` is in `match.kinds`
+ *  (and `regionCode`, if present, is in `match.regions` when that
+ *  optional filter is set). Lets the user say things like "every
+ *  statutory holiday is a restday for me" without listing dates one
+ *  by one. The resolver pulls candidate events via §14.1's
+ *  `selectExternalEventsOn`, so adding a new ExternalEvent source
+ *  (future ICS subscriptions, §14.4) automatically extends what this
+ *  rule can match. */
+export type ExternalEventMatchKind =
+  | 'holiday'
+  | 'observance'
+  | 'makeup-workday'
+  | 'user-note';
+
+export interface CalendarRuleExternalEvent {
+  /** At least one of these kinds must match the date's events for the
+   *  rule to fire. Empty array = never fires (treated as a no-op). */
+  kinds: ExternalEventMatchKind[];
+  /** Optional region filter, applies only to `holiday` / `observance`
+   *  / `makeup-workday` kinds (which carry `regionCode`). Undefined
+   *  or empty = match any enabled region. `user-note` events have no
+   *  region and ignore this field. */
+  regions?: string[];
+  /** Narrow `user-note` matching by the note's label (the user's own
+   *  text). Only applies when `'user-note'` is in `kinds`; other
+   *  kinds ignore it. Undefined / empty `query` = match every note.
+   *
+   *  Use cases the user asked for:
+   *    - `{ mode: 'contains', query: '生日' }`
+   *      "every note that mentions 生日 → restday"
+   *    - `{ mode: 'exact', query: '看牙医' }`
+   *      "only notes whose exact text is 看牙医 → workday"
+   *
+   *  v0.8.1 ships these two modes; regex / case-insensitive variants
+   *  are out of scope. */
+  noteLabelFilter?: {
+    mode: 'contains' | 'exact';
+    query: string;
+  };
+  templateKey: TemplateKey;
+  /** Optional human-readable label shown in the rules drawer
+   *  ("我的法定节假日") — purely for the user's bookkeeping; the
+   *  resolver doesn't read this. */
+  label?: string;
+}
+
 export interface CalendarRule {
   id: string;
   kind: CalendarRuleKind;
-  /** Higher wins. Defaults by kind (§5.4): single-date 100 ·
-   *  date-range 50 · cycle 30 · weekday 10. */
-  priority: number;
+  /** **Deprecated as of v0.8.1.** Pre-v0.8.1 rules carried a numeric
+   *  priority (`single-date` 100 / `date-range` 50 / `cycle` 30 /
+   *  `weekday` 10) hardcoded by kind. v0.8.1 replaces that with a
+   *  user-controllable order list (`UserProfile.calendarRuleOrder`);
+   *  the resolver consults the order list first and falls back to
+   *  this field only for legacy rules not yet in the order list. New
+   *  v0.8.1 writes leave it undefined; existing rules keep their
+   *  number until the user touches the rule again. */
+  priority?: number;
   value:
     | CalendarRuleSingleDate
     | CalendarRuleWeekday
     | CalendarRuleDateRange
-    | CalendarRuleCycle;
+    | CalendarRuleCycle
+    | CalendarRuleExternalEvent;
   createdAt: number;
 }
 
@@ -385,12 +450,16 @@ export interface CalendarRuleRevision {
   id: string;
   ruleId: string;
   effectiveFrom: EffectiveDate;
-  priority: number;
+  /** Same deprecation note as `CalendarRule.priority`. v0.8.1 writes
+   *  leave it undefined; pre-v0.8.1 revisions keep their number
+   *  immortally because revisions are append-only (§10.5). */
+  priority?: number;
   value:
     | CalendarRuleSingleDate
     | CalendarRuleWeekday
     | CalendarRuleDateRange
-    | CalendarRuleCycle;
+    | CalendarRuleCycle
+    | CalendarRuleExternalEvent;
   authoredAt: number;
   sessionId?: string;
 }
@@ -514,6 +583,15 @@ export interface UserProfile {
   /** ERD §14.2. Region codes for which bundled holiday data is shown
    *  (e.g. ['zh-CN', 'en-US']). Empty array = no holidays rendered. */
   enabledHolidayRegions?: string[];
+  /** ERD §5.4 v0.8.1 — user-controllable CalendarRule priority order.
+   *  Rule ids in the order they should be tried (front = highest
+   *  priority). Rules not in this list fall back to the legacy
+   *  numeric `priority` field (and below them in priority). The list
+   *  is maintained by the rules-drawer drag-to-reorder UI; rules
+   *  added through other UI surfaces (e.g. Cycle View's CycleDay
+   *  template switch) prepend their id automatically so the user's
+   *  most recent intention naturally wins. */
+  calendarRuleOrder?: string[];
 }
 
 /** Singleton id used by the underlying Y.Map of `userProfile`. */

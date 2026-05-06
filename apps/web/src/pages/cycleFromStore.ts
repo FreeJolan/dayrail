@@ -50,7 +50,15 @@ export function startOfWeekMonday(d: Date = new Date()): Date {
 /** Pick a Template for a given date. CalendarRules (single-date, v0.2)
  *  win; otherwise fall back to the weekday heuristic:
  *    Mon–Fri → `workday` / first builtIn / first Template
- *    Sat / Sun → `restday` / first builtIn / first Template */
+ *    Sat / Sun → `restday` / first builtIn / first Template
+ *
+ *  v0.8.1: type widened to require `userDayNotes` + `userProfile` so
+ *  the resolver can read `calendarRuleOrder` for user-controlled
+ *  priority and `enabledHolidayRegions` / `userDayNotes` for the
+ *  `external-event` rule kind. Callers that previously passed only
+ *  the four template/calendar fields silently lost the v0.8.1
+ *  ordering — without these fields, `state.userProfile` was
+ *  undefined and the resolver fell back to legacy numeric priority. */
 export function pickTemplateForDate(
   state: Pick<
     DayRailState,
@@ -58,6 +66,8 @@ export function pickTemplateForDate(
     | 'calendarRules'
     | 'calendarRuleRevisions'
     | 'calendarRuleTombstones'
+    | 'userDayNotes'
+    | 'userProfile'
   >,
   date: string,
 ): TemplateKey | null {
@@ -111,6 +121,8 @@ export function deriveCycleFromStore(
     | 'calendarRuleTombstones'
     | 'railRevisions'
     | 'railTombstones'
+    | 'userDayNotes'
+    | 'userProfile'
   >,
   startDate: Date,
 ): DerivedCycle {

@@ -143,6 +143,8 @@ export function CycleView() {
           calendarRules,
           calendarRuleRevisions,
           calendarRuleTombstones,
+          userDayNotes,
+          userProfile,
         },
         weekStart,
       ),
@@ -156,6 +158,8 @@ export function CycleView() {
       calendarRules,
       calendarRuleRevisions,
       calendarRuleTombstones,
+      userDayNotes,
+      userProfile,
       weekStart,
     ],
   );

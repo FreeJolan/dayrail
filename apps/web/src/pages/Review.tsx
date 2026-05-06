@@ -124,6 +124,8 @@ export function Review() {
   const lines = useStore((s) => s.lines);
   const habitPhases = useStore((s) => s.habitPhases);
   const habitBindings = useStore((s) => s.habitBindings);
+  const userDayNotes = useStore((s) => s.userDayNotes);
+  const userProfile = useStore((s) => s.userProfile);
 
   const habits = useMemo<Line[]>(
     () =>
@@ -146,6 +148,8 @@ export function Review() {
       shifts,
       adhocEvents,
       habitBindings,
+      userDayNotes,
+      userProfile,
     }),
     [
       rails,
@@ -159,6 +163,8 @@ export function Review() {
       shifts,
       adhocEvents,
       habitBindings,
+      userDayNotes,
+      userProfile,
     ],
   );
 

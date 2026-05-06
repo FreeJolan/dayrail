@@ -96,13 +96,14 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 
 ---
 
-### 🚧 v0.8 · 外部事件源 + AI 复盘（在路上）
+### 🚧 v0.8 · 外部事件源 + 日历规则重构 + AI 复盘（在路上）
 
-> 详细设计：ERD §14（外部事件源）/ §6.6（AI v0.8 实施说明）。详细计
-> 划：下方"🚧 v0.8 计划中"段。
+> 详细设计：ERD §14（外部事件源）/ §5.4（日历规则）/ §6.6（AI v0.8
+> 实施说明）。
 
-- **v0.8.0 · 外部事件源 · 节假日 + 用户标注**（先上）—— 节假日（`data/holidays/{regionCode}.json` bundle + region multi-select，§14.2）+ 用户标注（`UserDayNote`，Calendar 上手动加备注，§14.3）共享 `ExternalEvent` 渲染层；都不进 task pipeline。三个 surface：Calendar / Cycle View / Today Track（Review · Day 顺手挂）。详见 ERD §14。
-- **v0.8.1 · AI MVP**（后上）—— 用户背景 Markdown blob（`userProfile.background`，对标 Claude Code `CLAUDE.md`）+ OpenAI-compat 通用接入（Settings → AI 三字段：base URL / API key / model name）+ §6 复盘场景 v1（Day 还是 Cycle 实施时再选）。**显式承认 CLI 桥接路径**（`claude-code-router` / `claude-bridge` / Ollama / LM Studio）—— 用户已有 Claude Code / Cursor 套餐，不再多花钱。
+- ✅ **v0.8.0 · 外部事件源 · 节假日 + 用户标注**（已 ship）—— 节假日（`data/holidays/{regionCode}.json` bundle + region multi-select，§14.2）+ 用户标注（`UserDayNote`，Calendar 上手动加备注，§14.3）共享 `ExternalEvent` 渲染层；都不进 task pipeline。三个 surface：Calendar / Cycle View / Today Track。详见 ERD §14。
+- 🚧 **v0.8.1 · §5.4 日历规则重构** —— 优先级从硬编码改为用户控制的全局排序（`UserProfile.calendarRuleOrder` 拖拽列表）+ 新加 `external-event` rule kind（按节假日/调休/观察日/备注属性匹配 → 应用模板，例："所有节假日 → restday"一条规则覆盖所有日期）。详见 ERD §5.4 + History 顶部条目。
+- **v0.8.2 · AI MVP**（后上，原 v0.8.1）—— 用户背景 Markdown blob（`userProfile.background`，对标 Claude Code `CLAUDE.md`）+ OpenAI-compat 通用接入（Settings → AI 三字段：base URL / API key / model name）+ §6 复盘场景 v1（Day 还是 Cycle 实施时再选）。**显式承认 CLI 桥接路径**（`claude-code-router` / `claude-bridge` / Ollama / LM Studio）—— 用户已有 Claude Code / Cursor 套餐，不再多花钱。
 
 ---
 
@@ -117,8 +118,8 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 | `Task.subItems` 重新拆 per-element Y.Array op | action 层愿意改成 insert/delete/update on inner Y.Array | ERD §7.7 + ROADMAP |
 | Single-tab guard（`BroadcastChannel`） | 撞到第二例多 tab 数据打架 | ROADMAP 数据安全段 |
 | IndexedDB 启动 sanity check + Error boundary | 撞到第一例 Y.Doc 反序列化失败 | ROADMAP 数据安全段 |
-| AI 多场景全开（Day + Cycle + Habit phase） | v0.8.1 一个场景跑通后体验真有用 | ERD §6 |
-| 「AI 优化我的背景」按钮 | v0.8.1 ship 后看用户写的背景文本质量 | ERD §6.6.1 |
+| AI 多场景全开（Day + Cycle + Habit phase） | v0.8.2 一个场景跑通后体验真有用 | ERD §6 |
+| 「AI 优化我的背景」按钮 | v0.8.2 ship 后看用户写的背景文本质量 | ERD §6.6.1 |
 | 定时自动备份 · 用户可见可配置 | 扩用户基数前 | ROADMAP 数据安全段 |
 | action 层 + syncController 端到端集成测 | 扩用户基数前 | ERD §7.7 round 5/6/7 |
 
@@ -345,7 +346,7 @@ seed / import / first-write / replace 四个生命周期点的开关。
 
 ### v0.8.1 · AI MVP（一次 ship 三件事）
 
-> 缺一件都不算 v0.8.1 完。详细设计见 ERD §6.6 / §6.6.1 / §6.6.2。
+> 缺一件都不算 v0.8.2 完。详细设计见 ERD §6.6 / §6.6.1 / §6.6.2。
 
 - **用户背景 Markdown**（ERD §6.6.1 新增）—— Settings → AI → 「我的背景」
   textarea + preview · 单 Markdown blob · 存 Y.Doc
@@ -362,7 +363,7 @@ seed / import / first-write / replace 四个生命周期点的开关。
   Day · 与 §4.1 DailyReflection 联动；次选 Cycle）。prompt 模板含三块：
   用户背景 + 当前数据切片 + 输出指引。具体 Day 还是 Cycle 实施时拍板
 - **「AI 优化我的背景」按钮** —— 写完上面三件事再决定；不进 v0.8.1
-  ship 边界，停车场触发条件：v0.8.1 ship 后看真实背景文本质量
+  ship 边界，停车场触发条件：v0.8.2 ship 后看真实背景文本质量
 
 未做 / 留 v0.8.1+：
 - AI 多场景（Day / Cycle / Habit phase 全开）
@@ -394,7 +395,7 @@ seed / import / first-write / replace 四个生命周期点的开关。
   实际诉求。
 - **「AI 优化我的背景」按钮**（v0.8.1+）：用户随手写"我是研究生 / 周
   末跑步 / 备考"，按一下让 AI 扩成结构化版本。设计草稿见 ERD §6.6.1。
-  触发条件：v0.8.1 ship 后看真实用户写的背景文本质量。
+  触发条件：v0.8.2 ship 后看真实用户写的背景文本质量。
 - **AI 多场景全开（Day / Cycle / Habit phase）**（v0.8.1+）：v0.8.1 只
   做一个，剩下的两个等第一个跑通后体验真有用再开。设计骨架在 ERD
   §6.1 / §6.6.2。

@@ -6,11 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from './primitives/Popover';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import type { RailColor } from '@/data/sample';
 import type { ExternalEvent, UserDayNote } from '@dayrail/core';
-import {
-  RAIL_COLOR_HEX,
-  RAIL_COLOR_STEP_4,
-  RAIL_COLOR_STEP_6,
-} from './railColors';
+import { RAIL_COLOR_HEX, RAIL_COLOR_STEP_3 } from './railColors';
 import { ExternalEventChip } from './ExternalEventChip';
 
 // Individual day cell on the Calendar month grid (ERD §5.4 F4).
@@ -117,8 +113,12 @@ export function CalendarDayCell({
   }, [open]);
   const template = templateChoices.find((t) => t.key === templateKey);
   const templateHex = template ? RAIL_COLOR_HEX[template.color] : undefined;
-  const templateTint = template ? RAIL_COLOR_STEP_4[template.color] : undefined;
-  const templateEdge = template ? RAIL_COLOR_STEP_6[template.color] : undefined;
+  // v0.8.1.x visual refinement: cell tint moved from step-4 → step-3
+  // (much paler) and the redundant left strip + top border + solid
+  // step-9 template badge are dropped. Template identity is conveyed
+  // by the gentle tint plus a small dot prefix on the badge text;
+  // the cell no longer reads as a 90s-spreadsheet heatmap.
+  const templateTint = template ? RAIL_COLOR_STEP_3[template.color] : undefined;
 
   // ERD §14 — hover preview. Cell shows at most 1 chip + `+N`; the
   // hover card surfaces the full list. Single-chip days also benefit
@@ -144,25 +144,19 @@ export function CalendarDayCell({
             // 128px so a typical "user note + holiday + observance"
             // stack fits above the template badge without truncation
             // (the screenshot bug 端午节 + WORKDAY overflowing the cell).
-            'relative flex h-[128px] w-full flex-col items-start gap-1.5 overflow-hidden rounded-sm p-2 pl-4 pt-[10px] text-left transition',
+            'relative flex h-[128px] w-full flex-col items-start gap-1.5 overflow-hidden rounded-md p-2 pt-[10px] text-left transition',
             'hover:brightness-95',
             !inMonth && 'opacity-45',
             isToday && 'ring-2 ring-inset ring-ink-primary/70',
           )}
           style={{
             background: templateTint,
-            borderTop: templateEdge ? `2px solid ${templateEdge}` : undefined,
           }}
         >
-          {/* Left color strip — step-9 at 5px, prominent enough to
-              read at a glance across the whole month grid. */}
-          {templateHex && (
-            <span
-              aria-hidden
-              className="absolute inset-y-0 left-0 w-[5px]"
-              style={{ background: templateHex }}
-            />
-          )}
+          {/* Left color strip / top border edge: removed in v0.8.1.x.
+              The pale tint + the dot-prefixed badge below already
+              identify the template; the strip + border were a third
+              redundant cue and made the grid feel saturated. */}
           {/* Top row: weekday label + OVR dot / ad-hoc dots */}
           <div className="flex w-full items-start justify-between gap-1">
             <div className="flex flex-col items-start leading-tight">
@@ -251,17 +245,25 @@ export function CalendarDayCell({
                 )}
               </div>
             )}
+            {/* Template badge: dot + text rather than the previous
+                solid step-9 pill. The dot carries the template's
+                color identity, the text reads it out, and the
+                surrounding cell tint reinforces both — without the
+                heavy filled-button vibe. */}
             <span
               className={clsx(
-                'inline-flex items-center rounded-sm px-1.5 py-0.5 font-mono text-2xs font-medium uppercase tracking-widest',
+                'inline-flex items-center gap-1.5 font-mono text-2xs font-medium uppercase tracking-widest',
                 !inMonth && 'opacity-60',
               )}
-              style={
-                inMonth && templateHex
-                  ? { background: templateHex, color: '#fff' }
-                  : { color: 'rgb(var(--ink-tertiary))' }
-              }
+              style={{ color: 'rgb(var(--ink-secondary))' }}
             >
+              {templateHex && (
+                <span
+                  aria-hidden
+                  className="inline-block h-1.5 w-1.5 rounded-full"
+                  style={{ background: templateHex }}
+                />
+              )}
               {template?.label ?? templateKey ?? '—'}
             </span>
           </div>
