@@ -1,6 +1,6 @@
 # DayRail Product Design Document (ERD)
 
-> **Status**: living document — any decision here can be overturned. Last updated 2026-04-19 (v0.4 implementation pass · self-use MVP ready). See `docs/ROADMAP.md` for the current-state snapshot and parked-work list. Session summary (post-habit-binding-refactor): (1) `rail.recurrence` **removed** — Template + CalendarRule + `HabitBinding.weekdays` are the three canonical filter layers; the rail-level weekday filter produced empty-intersection traps. (2) Multi-task per `(rail, date)` slot is now fully honoured end-to-end — CycleCell stacks per-task pills, Today Track renders per-task rows with independent state + actions, Pending acts on each task individually, §4.1 invariant is visible in UI. (3) §5.5.0 B rhythm-strip click-to-backfill wired. (4) §10.3 config-change purge live with confirm + Edit Session batching (HabitDetail binding edits + Template Editor rail delete). (5) Backlog drawer lifted to App shell — `g b` shortcut, SideNav entry, in-drawer quick-create with Line picker. (6) `scheduleTaskToRail` / `scheduleTaskFreeTime` auto-flip `deferred → pending` on new slot. (7) Review gains period-over-period match% delta + per-row stats + per-phase band stats; HabitDetail rhythm strip gets matching phase-band overlay + per-phase match%. (8) Cycle cells are draggable for reschedule. (9) Backup export/import round-trip via snapshot write + OPFS reset (Settings → Advanced). (10) 35 vitest cases across three suites cover materializer + §10.3 purge + timeline/check-in/pending selectors. Later history entries below capture earlier decisions. Last updated 2026-04-19 (v0.4 habit-binding refactor + task editing surface). Four bundled changes: (1) New `HabitBinding` entity (habitId + railId + optional weekdays filter) replacing the old `Rail.defaultLineId === habit.id` binding mechanism. Fixes the structural awkwardness of "two habits on the same time-slot different weekdays stack as two overlapping rails in one template". (2) `Rail.defaultLineId` is removed outright — its two jobs are absorbed by `HabitBinding` and "re-add with a real picker if needed" respectively. Cycle-View quick-create defaults to Inbox. (3) Today Track RailCard and Cycle View slot popover both gain a path into `TaskDetailDrawer` for inline edits of note / sub-items / milestone / schedule. (4) Auto-task editability matrix is fixed: title / schedule / milestone are read-only (they are habit-level properties); note / sub-items are editable (they are per-occurrence context). Renaming a habit only affects future auto-tasks; historical ones keep their name thanks to materializer idempotency. §5.5.0 / §10.2 / §10.3 / §10.4 / §5.2 / §5.3 all updated in this pass. History: 2026-04-19 (major data-model consistency pass · v0.4 foundation). Six changes bundled: (1) §10 gains a **three-axis overview** + **completion-status ownership rule** — Line / Rail-Template-Time / Task are three orthogonal axes, `Task.status` is the sole source of truth for all completion semantics, and RailInstance narrows to a "wall-clock log" (actualStart/End + Shift tags). This closes the v0.3 cracks where `Task.status` and `RailInstance.status` both existed and could drift apart ("ticked done in Tasks but Today Track still shows pending"). (2) Habit "each occurrence" becomes an **auto-task** (idempotent id `task-auto-{habitId}-{date}`, `lineId = habitId`, `title = habit.name`). Habit Line gains the hard "no hand-built Tasks" constraint; NewTaskInput never renders for habits. Habit and Project converge on the same completion path — Today Track / Pending / Review all query Task.status. (3) §10.2 fixes the auto-task materialization strategy at Ⅱ · **on-demand**, triggered by: Today Track boot / Cycle View switch / rhythm strip open / Calendar month page / Review scope switch / rhythm-strip click-to-backfill. Each `(habitId, cycleId)` materializes once and is marked; idempotent ids prevent duplicate rows. (4) §10.3 defines habit configuration-change rules: when a Rail's recurrence / time / templateKey / defaultLineId changes, we scan `[today, end of furthest materialized cycle]` and **only touch** auto-tasks matching `status='pending' AND plannedStart > now` (purge + top up under the new config); completed / skipped / archived ones stay. All three event types (task.purged + task.created + rail.updated) sit under one Edit Session for one-click undo. Confirm dialog before save. (5) §5.5.0 adds **A+B rhythm-strip interactions**: A is read-only, B lets the user click any cell for `done / skipped / shifted / clear`, upserting (materializing on demand) as needed. Primary path (today) is Today Track; safety net (missed / forgot / retroactive) is inline on the strip. (6) §5.5.0 **explicitly closes** the open question on "collapse habit and Rail into one entity" — the current three-axis separation is a feature: Template = structurally different days, a habit is "an activity scheduled *into* a day" not "a cron over the calendar", and re-planning habits when adding a new template is *the point* of having Templates. The three old framings ("cross-template means copying rails", "sick-day flip makes habit not fire", "new template requires manual migration") all invert: these are not pain points, they are the design. §5.6 / §5.7 / §5.8 write paths are all updated to read/write Task.status; `RailInstance.status` is deprecated in v0.4 and scheduled for cleanup in v0.5. History: 2026-04-18 (§5.5.0 Habit view mental-model correction (v0.4 anchor): from the user's perspective **a habit is one recurring thing**, not a bucket of Tasks. A Project aggregates N Tasks toward a goal; a Habit is one thing with recurrence. Habit Lines gain a hard "hold zero Tasks" constraint; the habit detail page is de-Project-ified — NewTaskInput / FilterBar / GroupedTaskList are removed and replaced with name+color+current-phase → 14-day rhythm strip → bound Rails list → phase timeline → notes → Danger. The previously-discussed "folded Tasks drawer under habit" (Option B) is explicitly rejected — the mental-model cost of a mixed surface outweighs the "where do buy-shoes go" ergonomic. Whether `Line.kind='habit'` eventually collapses into Rail (habit = a Rail family with phase/color, no Line) stays a deferred schema-level open question and is not part of this change. History: 2026-04-18 (§5.5.0 Habits go live (v0.3.3): habits split into two tiers — "simple habits" (default, fixed-intensity, phase concept stays hidden) and "progressive habits" (opt-in; after `+ 启用 phase 追踪` the user can add any number of time-segment labels). HabitPhase is a user-defined time-segment label (`{ name, description?, startDate }`) — no endDate, no preset enum, no auto-advance, no streak / completion-rate derivation (that's v0.4 Review work). Enabled/disabled is derived from count of associated HabitPhase records (≥ 1 = enabled); no `Line.phaseEnabled` flag. §10 replaces the earlier over-engineered `type Phase` (with `advanceRule` / `railOverrides`) with `type HabitPhase`; `type Line` drops the inline `phases` / `currentPhaseId` / `tasks` fields in favor of `kind` as the union discriminator + associated entities; `Line.createdAt` / `archivedAt` / `deletedAt` normalize to `number` (epoch ms) matching the implementation. New events `habit-phase.upserted` / `habit-phase.removed`. History: 2026-04-18 (§5.3.1 Edit Session expanded to Cycle View in v0.3: entering `/cycle` opens an implicit session; CycleDay template switches, Slot drag-drop scheduling / unscheduling, slot-popover "Remove" and "Mark done", quick-create tasks, and orphan-guard batch unscheduling all tag the same `sessionId`; the top bar carries a persistent "⤺ Undo this edit · N" button that rolls the whole batch back in one click (leave / 15-min idle closes the session). Core-side: `overrideCycleDay` / `clearCycleDayOverride` / `scheduleTaskToRail` / `unscheduleTask` / `createTask` / `updateTask` all gain an optional `sessionId` param — `appendEvent` carries it through, and `undoEditSession`'s drop-session-events walker reverts the lot. Per-action rollback entries (slot popover Remove, CycleDay popover Restore default) stay as a finer-grained safety net. History: 2026-04-18 (§5.4 CalendarRule v0.3 advanced rules go live: typed `value` variants for `weekday` / `cycle` / `date-range` + resolver + UI all landed. Resolver walks rules by priority desc (single-date 100 > date-range 50 > cycle 30 > weekday 10), falling back to the built-in heuristic only when every rule misses. Weekday rules are seeded on first boot (workday covers Mon–Fri / restday covers weekends) — behavior matches the old hardcoded heuristic, so no breaking change and OPFS doesn't need wiping. The "Advanced Calendar Rules" drawer returns: four sections (single-date / date-range / cycle / weekday) with list + create-form + delete per section; v0.3 uses a "delete + re-create" edit model (in-place edit lands in v0.3.1); the drawer **does not** enter the §5.3.1 Edit Session — same immediate-apply stance as Cycle View. §10 `type CalendarRule` gains typed value variants + v0.3 implementation notes; §5.4 drawer subsection tightened to match. History: 2026-04-18 (Routing library + URL scheme locked in: v0.2 uses `react-router-dom` v6, not `@tanstack/router` — the typed-params upside is priced above its current complexity payoff. URL scheme: `/` / `/cycle` / `/tasks` + `/tasks/inbox` / `/tasks/line/:lineId` / `/tasks/archived` / `/tasks/trash` / `/review` / `/pending` / `/calendar` / `/templates` / `/templates/:key` / `/settings` / `/settings/:section`. What goes in the URL: Tasks selection, Settings section, Template tab. What stays in component state: search query, filter chips, Cycle View anchorDate — complexity vs payoff doesn't clear the bar for v0.2. See `docs/v0.2-plan.md §3`. History: 2026-04-18 (§5.3 Cycle View top-DAYS block folded into the section mini-headers: the former "top-level day header (single, spans all sections)" is retired; each section mini-header is now the **sole** CycleDay template-switch entry — every date cell is itself the trigger, opening the same popover (template list + a "Restore default" footer when the day is overridden). The overridden indicator dot moves from the top DayButton into the mini-header's date cell. Rationale: two DAYS rows duplicated information and the top block + sticky summary strip ate vertical space; "one action, one entry point" is preserved — the entry just moved from "one top-level master" to "each section's own days within its mini-header". History: 2026-04-18 (§5.3 Cycle View orphan-task guard on template switch: flipping a CycleDay's template could silently orphan Tasks scheduled to the old template's Rails (`task.slot` still pointed at a Rail the new template doesn't render). Now gated: N=0 flips silently; N>0 triggers a small confirm `Switching will remove N scheduled tasks · Continue / Cancel`, which on continue batch-unschedules those Tasks before writing the rule. "Restore default" follows the same guard. §5.5 Tasks view list shape change: Status chips are gone from the top row; the list body now renders as two collapsible groups — "Open" (expanded) and "Completed" (collapsed by default). Open being empty flips Completed open automatically and shows "All clear ✓" in Open's slot. Archived / Trash still live only in the left-column nav; an active search expands both groups. History: 2026-04-18 (Cycle View CalendarRule persistence: §5.3's CycleDay template switch now writes `calendar-rule.upserted` / `calendar-rule.removed` events instead of living in local state, deduplicated by `cr-single-{date}` id; §5.3.1 Edit Session scope for v0.2 narrows to Template Editor only — Cycle View's session-level undo pushes to v0.3, with in-view mistakes walked back via the Slot popover's "Remove assignment" + CycleDay popover's "Restore default" as single-action rollbacks; §10 CalendarRule gains a v0.2-implementation note — only `single-date` kind is live, id convention + priority=100 + event shapes). History: 2026-04-18 (§5.5 refactored from `Projects / Lines View` → `Tasks View`, positioned as the primary task-management surface — left-column nav tree (Inbox + Projects + Habits + Trash) + cross-Project task list with search / filter + a scheduling popover offering two modes (Bind-to-Rail · default / Free-time · escape hatch); a built-in Inbox Line (`isDefault: true`, undeletable) becomes the default container for tasks created without a Project; comprehensive reversibility + soft-delete model (Task / Line / AdhocEvent `status` gains `'deleted'`, Trash entry + a confirmed `*.purged` hard delete); `AdhocEvent` gains `taskId` to back the free-time scheduling mode; Project progress bar becomes conditional (only rendered when at least one task has a milestone), task count always visible; open-ended Projects (missing `plannedEnd`) are explicitly NOT a risk signal; §10 Task/Line/AdhocEvent types updated; terminology audit: `Chunk` renamed to `Task` end-to-end (types + events + schema + UI + ERD) to retire an internal-only jargon term; `Line` stays as an internal umbrella type (`kind: 'project' \| 'habit' \| 'group'`) but **the word "Line" never appears in UI copy** — surfaces always show the concrete Project / Habit / Tag; the `Pending` view is renamed `待决定 / Unresolved` so it no longer overloads the `status='pending'` enum; §5.7 Pending drops its 24h aging filter — it's now the complete "awaiting a decision" set, with the check-in strip serving as the "last-24h" subset view). History: 2026-04-17 (check-in action set simplified: the old four-button `Done / Skip / Shift / Ignore` + four-sub-action sheet collapses into three buttons `Done / Later / Archive`; `RailInstance.status` becomes `pending / done / deferred / archived` (`active` and `skipped` retired — "currently happening" is wall-clock-derived); Shift sheet replaced by a 6-second Reason toast (3 quick-reason tag chips + Undo, no mandatory reason); Postpone / Replace / Swap / Resize removed from the Shift types — within-day postponing is handled by Cycle-View drag, the rest deferred to v0.3; Pending queue renamed and now absorbs both explicit `deferred` items and stale-`pending` items > 24h — two sources, one exit; §5.8 Review heatmap's three-part hatching semantics rebound to `deferred / archived / pending-stale`). History: 2026-04-16 (Group A UI baseline: sync-status badge, Now-View rhythm bar, Ad-hoc overlay, generalized Edit Sessions, Cycle notation → C1, per-view date-format table; Group B Now-View structure: multi-task pill row, three Slot shapes, Next-Rail visual spec, removal of the left rail visualizer, `CURRENT RAIL` chip, Now top-bar `Now` + Mono subtitle; Group C Today-Track Shift interactions: Skipped state via hatching, desktop hover-revealed action bar, Active main CTA → tonal `Done`, unified Shift-tag sheet, single timeline with no bento; Group D Cycle-View skeleton: per-template stacked sections, top day-header as the sole template-switch entry, Cycle pager picker, summary-strip aggregates, `⤺ Undo this edit` button, three-part hatching semantics, Backlog as split drawer; Group E Template Editor: no Save button + first-run inline banner, Radix 10-color popover, sticky tab bar + 2px color strip + dashed `+ New template`, summary strip, card-style Rail row + time-pill popover picker, inter-row gap chip `+ Fill Rail`, `⋯` row menu carrying Line binding / check-in toggle; notification rework: drop OS push / Capacitor notifications / permission pipeline, Signal collapses to a `showInCheckin` boolean, §5.6 and §5.7 unified — the check-in strip and the pending-decisions queue are two tenses of one mechanism; Group F missing screens: Projects / Settings share the master-detail form, Review per-scope waterfall + rhythm-match heatmap (state tints + the three-part hatching semantics), pending-decisions queue is date-reverse grouped with four inline actions per row and the side-nav shows a `·` dot without a number, Calendar is a standard month grid + per-date popover + Advanced-rules drawer with four sections, new §5.9 Settings defines five sections + a three-way theme toggle defaulting to follow-system + Language in Appearance / Time format + AI output-locale in Advanced; Group G design language: Terracotta CTA uses `orange-9/10/11` three solid tones (no gradients); No-Line Rule with explicit whitelist (decorative color strips + sticky hairline + focus rings); four-tier Surface tokens `sand-1..4` replace `border`-based hierarchy; radius tokens `sharp / sm / md / lg` = `0 / 6 / 10 / 16`; zero glassmorphism app-wide; Intentional Asymmetry as the default layout principle. Visual-implementation adjustments: Rail palette drops `olive / mauve / gray` (visually too close to sage / slate, or identity-less), swaps in `grass / indigo / plum` to fill the missing saturated-green / cool-blue / creative-purple slots — still 10 colors but every one perceptibly distinct. CN primary font swapped PingFang → Noto Sans SC (Source Han Sans SC) for cross-platform consistency. Terracotta CTA re-bound from `orange-9` to `bronze-9` — `orange-9` read as SaaS-vivid on screen; `bronze-9` sits much closer to the ERD's original #C97B4A "warm terracotta" intent).
+> **Status**: living document — any decision here can be overturned. Last updated 2026-05-06 (v0.8 design lock · external event sources + AI assistance unparked). See `docs/ROADMAP.md` for the current-state snapshot and parked-work list. This pass locks four things: (1) New §14 **External Event Sources**: introduces an `ExternalEvent` interface; v0.8.0 ships an in-repo holiday data set (bundled JSON · region multi-select); ICS subscriptions stay parked as a §14.3 v0.9+ design draft. (2) §6 AI Assistance leaves the "explicitly not doing" list: new §6.6 **v0.8 implementation note** widens §6.3's OpenRouter-only integration to a **generic OpenAI-compatible client** (Settings → AI takes three fields: base URL / API key / model name), covering OpenRouter / Groq / Anthropic-via-proxy / Ollama / LM Studio / `claude-code-router` / `claude-bridge` and any other compatible endpoint; this explicitly acknowledges the existing ecosystem of users with Claude Code / Cursor subscriptions + CLI bridge software. (3) New §6.6.1 **user background `userProfile.background`**: a single Markdown blob, in the Y.Doc sync stream, prepended to every AI call's system prompt; mental model lifted from Claude Code's `CLAUDE.md`. The "have AI optimize my background" button is parked — we'll see what real users actually write before designing it. (4) §6.6.2 v0.8.0 review scenario v1 (Day vs Cycle) is left to be picked at implementation time; Decompose / Observe stay parked. §9.3 AI tech-stack table is realigned: gateway moves from "OpenRouter" to "OpenAI-compatible protocol (default endpoint OpenRouter, any base URL accepted)"; the fallback-chain UI / remote free-model manifest / multi-provider adapter layer are now explicitly out of scope. Older history entries below preserve earlier decisions. Last updated 2026-04-19 (v0.4 implementation pass · self-use MVP ready). Session summary (post-habit-binding-refactor): (1) `rail.recurrence` **removed** — Template + CalendarRule + `HabitBinding.weekdays` are the three canonical filter layers; the rail-level weekday filter produced empty-intersection traps. (2) Multi-task per `(rail, date)` slot is now fully honoured end-to-end — CycleCell stacks per-task pills, Today Track renders per-task rows with independent state + actions, Pending acts on each task individually, §4.1 invariant is visible in UI. (3) §5.5.0 B rhythm-strip click-to-backfill wired. (4) §10.3 config-change purge live with confirm + Edit Session batching (HabitDetail binding edits + Template Editor rail delete). (5) Backlog drawer lifted to App shell — `g b` shortcut, SideNav entry, in-drawer quick-create with Line picker. (6) `scheduleTaskToRail` / `scheduleTaskFreeTime` auto-flip `deferred → pending` on new slot. (7) Review gains period-over-period match% delta + per-row stats + per-phase band stats; HabitDetail rhythm strip gets matching phase-band overlay + per-phase match%. (8) Cycle cells are draggable for reschedule. (9) Backup export/import round-trip via snapshot write + OPFS reset (Settings → Advanced). (10) 35 vitest cases across three suites cover materializer + §10.3 purge + timeline/check-in/pending selectors. Later history entries below capture earlier decisions. Last updated 2026-04-19 (v0.4 habit-binding refactor + task editing surface). Four bundled changes: (1) New `HabitBinding` entity (habitId + railId + optional weekdays filter) replacing the old `Rail.defaultLineId === habit.id` binding mechanism. Fixes the structural awkwardness of "two habits on the same time-slot different weekdays stack as two overlapping rails in one template". (2) `Rail.defaultLineId` is removed outright — its two jobs are absorbed by `HabitBinding` and "re-add with a real picker if needed" respectively. Cycle-View quick-create defaults to Inbox. (3) Today Track RailCard and Cycle View slot popover both gain a path into `TaskDetailDrawer` for inline edits of note / sub-items / milestone / schedule. (4) Auto-task editability matrix is fixed: title / schedule / milestone are read-only (they are habit-level properties); note / sub-items are editable (they are per-occurrence context). Renaming a habit only affects future auto-tasks; historical ones keep their name thanks to materializer idempotency. §5.5.0 / §10.2 / §10.3 / §10.4 / §5.2 / §5.3 all updated in this pass. History: 2026-04-19 (major data-model consistency pass · v0.4 foundation). Six changes bundled: (1) §10 gains a **three-axis overview** + **completion-status ownership rule** — Line / Rail-Template-Time / Task are three orthogonal axes, `Task.status` is the sole source of truth for all completion semantics, and RailInstance narrows to a "wall-clock log" (actualStart/End + Shift tags). This closes the v0.3 cracks where `Task.status` and `RailInstance.status` both existed and could drift apart ("ticked done in Tasks but Today Track still shows pending"). (2) Habit "each occurrence" becomes an **auto-task** (idempotent id `task-auto-{habitId}-{date}`, `lineId = habitId`, `title = habit.name`). Habit Line gains the hard "no hand-built Tasks" constraint; NewTaskInput never renders for habits. Habit and Project converge on the same completion path — Today Track / Pending / Review all query Task.status. (3) §10.2 fixes the auto-task materialization strategy at Ⅱ · **on-demand**, triggered by: Today Track boot / Cycle View switch / rhythm strip open / Calendar month page / Review scope switch / rhythm-strip click-to-backfill. Each `(habitId, cycleId)` materializes once and is marked; idempotent ids prevent duplicate rows. (4) §10.3 defines habit configuration-change rules: when a Rail's recurrence / time / templateKey / defaultLineId changes, we scan `[today, end of furthest materialized cycle]` and **only touch** auto-tasks matching `status='pending' AND plannedStart > now` (purge + top up under the new config); completed / skipped / archived ones stay. All three event types (task.purged + task.created + rail.updated) sit under one Edit Session for one-click undo. Confirm dialog before save. (5) §5.5.0 adds **A+B rhythm-strip interactions**: A is read-only, B lets the user click any cell for `done / skipped / shifted / clear`, upserting (materializing on demand) as needed. Primary path (today) is Today Track; safety net (missed / forgot / retroactive) is inline on the strip. (6) §5.5.0 **explicitly closes** the open question on "collapse habit and Rail into one entity" — the current three-axis separation is a feature: Template = structurally different days, a habit is "an activity scheduled *into* a day" not "a cron over the calendar", and re-planning habits when adding a new template is *the point* of having Templates. The three old framings ("cross-template means copying rails", "sick-day flip makes habit not fire", "new template requires manual migration") all invert: these are not pain points, they are the design. §5.6 / §5.7 / §5.8 write paths are all updated to read/write Task.status; `RailInstance.status` is deprecated in v0.4 and scheduled for cleanup in v0.5. History: 2026-04-18 (§5.5.0 Habit view mental-model correction (v0.4 anchor): from the user's perspective **a habit is one recurring thing**, not a bucket of Tasks. A Project aggregates N Tasks toward a goal; a Habit is one thing with recurrence. Habit Lines gain a hard "hold zero Tasks" constraint; the habit detail page is de-Project-ified — NewTaskInput / FilterBar / GroupedTaskList are removed and replaced with name+color+current-phase → 14-day rhythm strip → bound Rails list → phase timeline → notes → Danger. The previously-discussed "folded Tasks drawer under habit" (Option B) is explicitly rejected — the mental-model cost of a mixed surface outweighs the "where do buy-shoes go" ergonomic. Whether `Line.kind='habit'` eventually collapses into Rail (habit = a Rail family with phase/color, no Line) stays a deferred schema-level open question and is not part of this change. History: 2026-04-18 (§5.5.0 Habits go live (v0.3.3): habits split into two tiers — "simple habits" (default, fixed-intensity, phase concept stays hidden) and "progressive habits" (opt-in; after `+ 启用 phase 追踪` the user can add any number of time-segment labels). HabitPhase is a user-defined time-segment label (`{ name, description?, startDate }`) — no endDate, no preset enum, no auto-advance, no streak / completion-rate derivation (that's v0.4 Review work). Enabled/disabled is derived from count of associated HabitPhase records (≥ 1 = enabled); no `Line.phaseEnabled` flag. §10 replaces the earlier over-engineered `type Phase` (with `advanceRule` / `railOverrides`) with `type HabitPhase`; `type Line` drops the inline `phases` / `currentPhaseId` / `tasks` fields in favor of `kind` as the union discriminator + associated entities; `Line.createdAt` / `archivedAt` / `deletedAt` normalize to `number` (epoch ms) matching the implementation. New events `habit-phase.upserted` / `habit-phase.removed`. History: 2026-04-18 (§5.3.1 Edit Session expanded to Cycle View in v0.3: entering `/cycle` opens an implicit session; CycleDay template switches, Slot drag-drop scheduling / unscheduling, slot-popover "Remove" and "Mark done", quick-create tasks, and orphan-guard batch unscheduling all tag the same `sessionId`; the top bar carries a persistent "⤺ Undo this edit · N" button that rolls the whole batch back in one click (leave / 15-min idle closes the session). Core-side: `overrideCycleDay` / `clearCycleDayOverride` / `scheduleTaskToRail` / `unscheduleTask` / `createTask` / `updateTask` all gain an optional `sessionId` param — `appendEvent` carries it through, and `undoEditSession`'s drop-session-events walker reverts the lot. Per-action rollback entries (slot popover Remove, CycleDay popover Restore default) stay as a finer-grained safety net. History: 2026-04-18 (§5.4 CalendarRule v0.3 advanced rules go live: typed `value` variants for `weekday` / `cycle` / `date-range` + resolver + UI all landed. Resolver walks rules by priority desc (single-date 100 > date-range 50 > cycle 30 > weekday 10), falling back to the built-in heuristic only when every rule misses. Weekday rules are seeded on first boot (workday covers Mon–Fri / restday covers weekends) — behavior matches the old hardcoded heuristic, so no breaking change and OPFS doesn't need wiping. The "Advanced Calendar Rules" drawer returns: four sections (single-date / date-range / cycle / weekday) with list + create-form + delete per section; v0.3 uses a "delete + re-create" edit model (in-place edit lands in v0.3.1); the drawer **does not** enter the §5.3.1 Edit Session — same immediate-apply stance as Cycle View. §10 `type CalendarRule` gains typed value variants + v0.3 implementation notes; §5.4 drawer subsection tightened to match. History: 2026-04-18 (Routing library + URL scheme locked in: v0.2 uses `react-router-dom` v6, not `@tanstack/router` — the typed-params upside is priced above its current complexity payoff. URL scheme: `/` / `/cycle` / `/tasks` + `/tasks/inbox` / `/tasks/line/:lineId` / `/tasks/archived` / `/tasks/trash` / `/review` / `/pending` / `/calendar` / `/templates` / `/templates/:key` / `/settings` / `/settings/:section`. What goes in the URL: Tasks selection, Settings section, Template tab. What stays in component state: search query, filter chips, Cycle View anchorDate — complexity vs payoff doesn't clear the bar for v0.2. See `docs/v0.2-plan.md §3`. History: 2026-04-18 (§5.3 Cycle View top-DAYS block folded into the section mini-headers: the former "top-level day header (single, spans all sections)" is retired; each section mini-header is now the **sole** CycleDay template-switch entry — every date cell is itself the trigger, opening the same popover (template list + a "Restore default" footer when the day is overridden). The overridden indicator dot moves from the top DayButton into the mini-header's date cell. Rationale: two DAYS rows duplicated information and the top block + sticky summary strip ate vertical space; "one action, one entry point" is preserved — the entry just moved from "one top-level master" to "each section's own days within its mini-header". History: 2026-04-18 (§5.3 Cycle View orphan-task guard on template switch: flipping a CycleDay's template could silently orphan Tasks scheduled to the old template's Rails (`task.slot` still pointed at a Rail the new template doesn't render). Now gated: N=0 flips silently; N>0 triggers a small confirm `Switching will remove N scheduled tasks · Continue / Cancel`, which on continue batch-unschedules those Tasks before writing the rule. "Restore default" follows the same guard. §5.5 Tasks view list shape change: Status chips are gone from the top row; the list body now renders as two collapsible groups — "Open" (expanded) and "Completed" (collapsed by default). Open being empty flips Completed open automatically and shows "All clear ✓" in Open's slot. Archived / Trash still live only in the left-column nav; an active search expands both groups. History: 2026-04-18 (Cycle View CalendarRule persistence: §5.3's CycleDay template switch now writes `calendar-rule.upserted` / `calendar-rule.removed` events instead of living in local state, deduplicated by `cr-single-{date}` id; §5.3.1 Edit Session scope for v0.2 narrows to Template Editor only — Cycle View's session-level undo pushes to v0.3, with in-view mistakes walked back via the Slot popover's "Remove assignment" + CycleDay popover's "Restore default" as single-action rollbacks; §10 CalendarRule gains a v0.2-implementation note — only `single-date` kind is live, id convention + priority=100 + event shapes). History: 2026-04-18 (§5.5 refactored from `Projects / Lines View` → `Tasks View`, positioned as the primary task-management surface — left-column nav tree (Inbox + Projects + Habits + Trash) + cross-Project task list with search / filter + a scheduling popover offering two modes (Bind-to-Rail · default / Free-time · escape hatch); a built-in Inbox Line (`isDefault: true`, undeletable) becomes the default container for tasks created without a Project; comprehensive reversibility + soft-delete model (Task / Line / AdhocEvent `status` gains `'deleted'`, Trash entry + a confirmed `*.purged` hard delete); `AdhocEvent` gains `taskId` to back the free-time scheduling mode; Project progress bar becomes conditional (only rendered when at least one task has a milestone), task count always visible; open-ended Projects (missing `plannedEnd`) are explicitly NOT a risk signal; §10 Task/Line/AdhocEvent types updated; terminology audit: `Chunk` renamed to `Task` end-to-end (types + events + schema + UI + ERD) to retire an internal-only jargon term; `Line` stays as an internal umbrella type (`kind: 'project' \| 'habit' \| 'group'`) but **the word "Line" never appears in UI copy** — surfaces always show the concrete Project / Habit / Tag; the `Pending` view is renamed `待决定 / Unresolved` so it no longer overloads the `status='pending'` enum; §5.7 Pending drops its 24h aging filter — it's now the complete "awaiting a decision" set, with the check-in strip serving as the "last-24h" subset view). History: 2026-04-17 (check-in action set simplified: the old four-button `Done / Skip / Shift / Ignore` + four-sub-action sheet collapses into three buttons `Done / Later / Archive`; `RailInstance.status` becomes `pending / done / deferred / archived` (`active` and `skipped` retired — "currently happening" is wall-clock-derived); Shift sheet replaced by a 6-second Reason toast (3 quick-reason tag chips + Undo, no mandatory reason); Postpone / Replace / Swap / Resize removed from the Shift types — within-day postponing is handled by Cycle-View drag, the rest deferred to v0.3; Pending queue renamed and now absorbs both explicit `deferred` items and stale-`pending` items > 24h — two sources, one exit; §5.8 Review heatmap's three-part hatching semantics rebound to `deferred / archived / pending-stale`). History: 2026-04-16 (Group A UI baseline: sync-status badge, Now-View rhythm bar, Ad-hoc overlay, generalized Edit Sessions, Cycle notation → C1, per-view date-format table; Group B Now-View structure: multi-task pill row, three Slot shapes, Next-Rail visual spec, removal of the left rail visualizer, `CURRENT RAIL` chip, Now top-bar `Now` + Mono subtitle; Group C Today-Track Shift interactions: Skipped state via hatching, desktop hover-revealed action bar, Active main CTA → tonal `Done`, unified Shift-tag sheet, single timeline with no bento; Group D Cycle-View skeleton: per-template stacked sections, top day-header as the sole template-switch entry, Cycle pager picker, summary-strip aggregates, `⤺ Undo this edit` button, three-part hatching semantics, Backlog as split drawer; Group E Template Editor: no Save button + first-run inline banner, Radix 10-color popover, sticky tab bar + 2px color strip + dashed `+ New template`, summary strip, card-style Rail row + time-pill popover picker, inter-row gap chip `+ Fill Rail`, `⋯` row menu carrying Line binding / check-in toggle; notification rework: drop OS push / Capacitor notifications / permission pipeline, Signal collapses to a `showInCheckin` boolean, §5.6 and §5.7 unified — the check-in strip and the pending-decisions queue are two tenses of one mechanism; Group F missing screens: Projects / Settings share the master-detail form, Review per-scope waterfall + rhythm-match heatmap (state tints + the three-part hatching semantics), pending-decisions queue is date-reverse grouped with four inline actions per row and the side-nav shows a `·` dot without a number, Calendar is a standard month grid + per-date popover + Advanced-rules drawer with four sections, new §5.9 Settings defines five sections + a three-way theme toggle defaulting to follow-system + Language in Appearance / Time format + AI output-locale in Advanced; Group G design language: Terracotta CTA uses `orange-9/10/11` three solid tones (no gradients); No-Line Rule with explicit whitelist (decorative color strips + sticky hairline + focus rings); four-tier Surface tokens `sand-1..4` replace `border`-based hierarchy; radius tokens `sharp / sm / md / lg` = `0 / 6 / 10 / 16`; zero glassmorphism app-wide; Intentional Asymmetry as the default layout principle. Visual-implementation adjustments: Rail palette drops `olive / mauve / gray` (visually too close to sage / slate, or identity-less), swaps in `grass / indigo / plum` to fill the missing saturated-green / cool-blue / creative-purple slots — still 10 colors but every one perceptibly distinct. CN primary font swapped PingFang → Noto Sans SC (Source Han Sans SC) for cross-platform consistency. Terracotta CTA re-bound from `orange-9` to `bronze-9` — `orange-9` read as SaaS-vivid on screen; `bronze-9` sits much closer to the ERD's original #C97B4A "warm terracotta" intent).
 >
 > This describes DayRail's product logic, interaction design, and tech choices. It is not a final blueprint — it captures intent and trade-offs (including paths we considered and rejected) so contributors can see *why* the code looks the way it does.
 >
@@ -1148,7 +1148,92 @@ Pending is the *complete* set of "awaiting a decision"; §5.6's check-in strip i
 
 - Every AI call shows a summary of the outgoing payload and asks for confirmation before dispatch.
 - Only minimal necessary fields are sent (Rail names can be redacted; time data preserved).
-- No raw DB upload. OpenRouter's retention policy is user-configurable on their side.
+- No raw DB upload. The provider's retention policy is user-configurable on their side.
+
+### 6.6 v0.8 Implementation Note — OpenAI-compatible Generic Client + User Background
+
+> Status: design locked 2026-05-06, ships in v0.8. Carries forward §6.1's three-scenario framework, §6.2's prompt-design philosophy, §6.4's off-by-default policy, and §6.5's privacy boundaries — those continue to apply. **§6.3's OpenRouter-only integration is unparked in v0.8 and widened into a generic OpenAI-compatible client.** Other parked items (multi-provider adapter layers / fallback-chain UI / per-AI sync toggles under §7.2.1) stay parked; see the end of this section.
+
+**v0.8 trigger**
+
+§6 sat on the "explicitly not doing" list ever since the v0.4 design, on the rationale that sync / data-model / steady-state UX were higher priority. After v0.7, all three of those landed, and Review can only meaningfully grow upward into AI territory — no amount of hand-written summary touches "give me a reading of this calibrated to who I am". A second factor surfaced over the past half year: many users already pay monthly for Claude Code / Cursor and have no appetite for adding a separate OpenRouter subscription just to use DayRail's AI. The OpenAI-compat protocol plus mature CLI-bridge tooling (`claude-code-router` / `claude-bridge` / various local LLM backends) effectively lets users redirect their existing AI capacity into DayRail — an ecosystem that didn't exist when §6.3 was first designed in v0.4. v0.8 redoes the integration layer to ride that wave.
+
+**Integration model · supersedes §6.3**
+
+Settings → AI → three fields, covering every provider:
+
+| Field | Default | Notes |
+|---|---|---|
+| Base URL | `https://openrouter.ai/api/v1` | Any endpoint compatible with OpenAI's `/chat/completions`. Placeholder cycles a handful of common values (OpenRouter / Groq / local Ollama 11434 / Anthropic-via-proxy). |
+| API key | (empty) | Held in browser memory + persisted to Y.Doc `userProfile.aiApiKey` (part of the sync stream; same scope as §6.5 privacy boundary). |
+| Model name | `meta-llama/llama-3.1-8b-instruct:free` (OpenRouter default free model) | Free-form text, no dropdown — every provider has its own model-id namespace, hardcoding goes stale fast. |
+
+A single `fetch` + SSE parser covers all of: OpenRouter / Groq / Together / Mistral / Anthropic-via-proxy / Ollama / LM Studio / vLLM / `claude-code-router` / `claude-bridge`. **Simpler than locking to OpenRouter**: no OpenRouter-specific fallback-chain metadata to maintain, no per-provider code branches.
+
+**CLI-bridge paths are explicitly supported**: a user can run `claude-code-router` locally to wrap their Claude Code subscription as `localhost:8001/v1/chat/completions`, or run Ollama to expose local models as `localhost:11434/v1`. They paste that URL into Settings; DayRail is none the wiser. The docs include a single line: "If you use a local CLI bridge, make sure it allows CORS from the PWA's origin" — that's an ops detail on the user's side, not ours.
+
+**Fallback-chain UI is explicitly out of scope** — the v0.4 §6.3 design ("multi-select from a curated list, drag to reorder, paid models inserted anywhere") doesn't ship in v0.8. Reasons: (1) once we accept OpenAI-compat, fallback belongs in the endpoint layer (`claude-code-router` does it natively, OpenRouter does it natively) — DayRail rebuilding that layer is duplicate engineering; (2) the UI complexity is unjustified for self-use scope; (3) when failures do happen, a single failure is loud enough on its own — no three-tier safety net needed.
+
+#### 6.6.1 User Background · `userProfile.background` (new in v0.8)
+
+> Mental model is lifted from Claude Code's `CLAUDE.md`: a single Markdown blob the user maintains, prepended to every AI call's system prompt.
+
+**Why we need it**
+
+§6.1's three scenarios (Decompose / Observe / Review) share a ceiling: without user context, prompts can only frame things in terms of "generic work-life rhythm" common sense. Whether the user is a grad student / full-time parent / runner / exam-prepper / programmer is exactly what determines whether "low completion" should read as "overcommitted" vs. "low motivation". Forcing the AI to back-derive context from task / habit names is high-variance and easy to get insulting — letting the user just tell it directly is the cheapest, most accurate path.
+
+**Shape**
+
+- Settings → AI → "My Background" section · top half: textarea (Markdown); bottom half: preview (react-markdown, same `MarkdownField` component as §5.5.4).
+- Defaults to empty. When empty, AI calls take the "no background" path (the placeholder block in the prompt template is omitted).
+- A single `userProfile.background: string` field, stored in the top-level `userProfile` Y.Map (alongside `aiBaseUrl` / `aiApiKey` / `aiModel`); syncs across devices automatically.
+- No history / multiple versions / per-context override — one global background covers all §6.1 scenarios; we'll split when there's a real need for scenario-specific overrides.
+
+**Injection point**
+
+Before each AI call, the prompt builder concatenates the system message in this order:
+
+```
+[built-in §6.2 system prompt (tone, JSON schema, locale constraints)]
+[{outputLocale} translation directive]
+---
+USER BACKGROUND (if non-empty):
+{userProfile.background}
+---
+[scenario-specific framing: Decompose / Observe / Review]
+```
+
+`userProfile.background` is **not** sanitized or truncated before going into the prompt — the user wrote it, the user owns its content; length is uncapped (let the provider enforce its own token limit and surface its own error to the user).
+
+**"Have AI optimize my background" button · parked**
+
+We discussed: user types something casual like "grad student / runs on weekends / studying for exam", taps a button, AI expands it into a structured version. Explicitly **not in v0.8.0 ship**: (1) this is a polish on top of the basic loop, not a basic capability; (2) shipping it early risks making users feel they "have to AI-optimize to get good results", which conflicts with "tools should be quiet"; (3) the privacy implications of an AI-seen vs unseen version (do they need to be stored separately?) deserve their own design pass and shouldn't be rushed. **Trigger condition**: after v0.8.0 ships, look at the actual quality of what users write — if it's universally short / vague / underperforming, design this surface then.
+
+#### 6.6.2 v0.8.0 Review Scenario v1 (picked at implementation time)
+
+§6.1 lists three scenarios (Decompose / Observe / Review). v0.8.0 doesn't open all three at once — it ships one full closed loop:
+
+- **Preferred: Review · Day reflection** — wires into §4.1 DailyReflection. After the user writes their daily journal, they tap "let AI take a look"; the prompt has three blocks (background + day data slice: completed / deferred / pending tasks + reflection text + output guidance: use `outputLocale`, observation tone not judgmental).
+- **Alternate: Review · Cycle reflection** — triggered on cycle boundaries (every N days), longer-span retrospective; same prompt shape but the data slice is the whole cycle's timeline + match% + concatenated reflection text.
+- **Not in first ship**: Decompose (breaking down a Project / Habit) — this was the v0.4-era center of §6.1, but in practice users would rather write the habit / project themselves and ask AI to refine, with diminishing returns. Observe (pattern detection) — highest value but heaviest implementation, needs cross-cycle statistical prompt design.
+
+Day vs Cycle gets picked at implementation time (it affects prompt template + UI surface entry). Both prompt templates share the §6.6.1 user-background injection path.
+
+**v0.8 explicitly not doing (still parked)**
+
+- §6.1 Decompose / Observe scenarios.
+- v0.4 §6.3's fallback-chain UI (multi-select + drag-reorder + remote JSON manifest).
+- AI multi-provider dedicated clients (hardcoded Anthropic SDK / OpenAI SDK split) — one OpenAI-compat fetch covers 99%.
+- §7.2.1 three-tier sync toggle exposing "AI settings only" — `userProfile.background` / `aiApiKey` ride the unified Y.Doc stream.
+- Routing AI calls through a DayRail-operated backend proxy — browser-direct + user BYOK, the no-backend stance holds in v0.8.
+- "Have AI optimize my background" button (see §6.6.1 footer).
+
+**v0.4 designs that still apply in v0.8**
+
+- §6.1 three-scenario framework — shipping one in v0.8.0 doesn't retire the other two.
+- §6.2 prompt-design philosophy — single canonical English version, ships with releases, invisible to users, JSON-schema constrained, tone-constrained.
+- §6.4 off by default + one-time intro — the first-launch AI card still surfaces only once.
+- §6.5 privacy boundary — pre-call summary / minimal necessary fields / no raw DB upload / `userProfile.background` is treated under the same rules.
 
 ---
 
@@ -1590,10 +1675,13 @@ Three more review rounds caught real bugs at the data-flow edges:
 
 | Item | Choice |
 | --- | --- |
-| Gateway | OpenRouter (user BYOK) |
-| Default model | An OpenRouter free model + fallback chain |
-| Paid options | Any OpenRouter-supported model (GPT / Claude / Gemini / …) |
+| Protocol | OpenAI-compatible `/v1/chat/completions` + SSE streaming (see §6.6) |
+| Default endpoint | OpenRouter (user BYOK); Settings → AI lets the base URL be changed to any compatible endpoint |
+| Compatible providers | OpenRouter / Groq / Together / Mistral / Anthropic-via-proxy / Ollama / LM Studio / `claude-code-router` / `claude-bridge` and any other compatible endpoint |
+| User background | `userProfile.background` Markdown blob (v0.8+, §6.6.1) — prepended to every AI call's system prompt |
 | Prompt layer | Thin custom wrapper, stable I/O schema, invisible to users |
+
+> Pre-v0.8 this section listed OpenRouter-only + a remote free-model manifest + fallback-chain UI; §6.6 widens it to a generic OpenAI-compat protocol, with fallback delegated to the endpoint layer (`claude-code-router` / OpenRouter natively) instead of being rebuilt inside DayRail.
 
 ### 9.4 Sync
 
@@ -2901,6 +2989,174 @@ Two call sites share it:
 - **Not** reusing `window.confirm()`: it can't represent three buttons + a checkbox.
 - **Not** pulling in Radix Dialog: the repo doesn't depend on it today, and adding a dependency for one one-shot modal isn't worth it. A plain `fixed inset-0` overlay is sufficient.
 - **Not** building scheduled / automatic backups: backup-coupled-to-upgrade is a narrow case; a general backup cadence is a separate product decision and out of scope here.
+
+---
+
+## 14. External Event Sources (from v0.8)
+
+> Status: design locked 2026-05-06; v0.8 ships the bundled holiday data set; ICS subscriptions stay parked for v0.9+ (draft in §14.3).
+
+### 14.0 Motivation
+
+Every calendar concept in DayRail through v0.7 (Template / CalendarRule / Cycle / DailyReflection) is **user-defined internal data**. v0.8 introduces the first class of **external read-only data**: holidays. Why:
+
+- When a user looks at a date in Cycle View / Calendar, they need to know it's a holiday — that affects how "I didn't get this done" reads (low completion on a holiday shouldn't count as "I'm slipping").
+- AI reflection (§6.6.2) reads better with holiday context ("you weren't hitting your numbers — it was Mid-Autumn Festival, that tracks").
+- Users will eventually want to subscribe to external calendars (school term schedule / sports schedule / shared meeting-room calendar), but that's a v0.9+ concern.
+
+Design-wise, "holidays" becomes "external event source v1" — we abstract an `ExternalEvent` interface so that future ICS subscriptions are just another source under the same interface, with no rendering-layer rewrite needed.
+
+### 14.1 The `ExternalEvent` interface
+
+```ts
+type ExternalEvent = {
+  sourceId: string;           // e.g. 'holidays:zh-CN' / 'ics:user-defined-1'
+  date: string;               // ISO YYYY-MM-DD (event-attribution date, in user's local calendar)
+  label: string;              // display text, UI-locale-aware (per-source label rules)
+  kind: 'holiday' | 'observance' | 'event';  // affects rendering: holiday solid / observance outlined / event neutral
+  regionCode?: string;        // holidays-source only, distinguishes countries
+  meta?: Record<string, unknown>;  // per-source extension slot
+};
+```
+
+**The render layer only knows this interface.** Cycle View date cells / Calendar month cells pull events for a given date from a `selectExternalEventsOn(date)` selector and stack chips. Internally the selector aggregates by source order (holidays first, future ICS second).
+
+**Outside the task materialization pipeline.** ExternalEvents do **not** generate Tasks / RailInstances / auto-tasks; they don't participate in §10.2 materialization, §10.3 purge, or §10.5 revisions. They are pure "labels on the calendar day" — no effect on any status / completion / Review-stat compute path (with the single exception of injecting context into AI reflection prompts).
+
+### 14.2 v0.8.0 Implementation — Bundled Holiday Data Sets (the bundle path)
+
+> Design choice: **bundled JSON data sets in the repo** + **region multi-select**, **not** ICS subscriptions.
+
+**Why bundle, not ICS**
+
+We considered two paths: A — user enters an ICS URL, the app fetches / parses / caches at runtime; B — region-keyed JSON files bundled in the repo, user multi-selects regions.
+
+| Dimension | A · ICS subscription | B · bundled JSON |
+|---|---|---|
+| Data update frequency | Holidays change once a year | Once a year (December PR adds next year's data) |
+| Network dependency | Yes (refresh schedule + error recovery) | No (data is part of the code) |
+| CORS exposure | High (most public ICS feeds don't open CORS — needs a self-hosted reverse proxy) | None |
+| Parsing complexity | Medium (needs ical.js, RRULE / VTIMEZONE handling) | None (plain JSON) |
+| Data trust | Depends on upstream maintainer | Repo-PR review |
+| Flexibility | High (any external source) | Low (only what we bundle) |
+
+ICS-subscription complexity is wasted on the holidays use case specifically: holiday data changes once a year, and configurable refresh + ETag + CORS proxy + ical.js parsing are all overhead we don't need. The bundle approach aligns naturally with the data-update cadence (we ship a new release at least once a year anyway).
+
+ICS subscriptions retain their real value (subscribing to arbitrary external calendars), parked for §14.3 v0.9+.
+
+**Data shape**
+
+```
+data/holidays/
+  zh-CN.json    # Mainland China statutory holidays + traditional festivals
+  en-US.json    # US federal holidays
+  ja-JP.json    # Japan public holidays
+  zh-HK.json    # Hong Kong public holidays
+  zh-TW.json    # Taiwan public holidays
+  …(extend as needed)
+```
+
+Per-region JSON:
+
+```json
+{
+  "regionCode": "zh-CN",
+  "displayName": {
+    "zh-CN": "中国大陆",
+    "en": "Mainland China"
+  },
+  "events": [
+    { "date": "2026-01-01", "label": { "zh-CN": "元旦", "en": "New Year's Day" }, "kind": "holiday" },
+    { "date": "2026-02-17", "label": { "zh-CN": "春节", "en": "Spring Festival" }, "kind": "holiday" }
+  ]
+}
+```
+
+`label` is a locale dictionary (with at least the two UI-locale keys); the renderer reads `label[uiLocale] ?? label['en']` as a fallback.
+
+**Initial coverage**: `zh-CN` (the core self-use case) + `en-US` / `ja-JP` / `zh-HK` / `zh-TW` (high-probability secondary needs). Others added by issue / PR.
+
+**Region multi-select**
+
+Settings → Appearance → Holidays (a new sub-section alongside "Theme / Font size"):
+
+```
+┌─ Holidays ────────────────────────────────────┐
+│  Show holidays on Cycle View and Calendar:    │
+│   ☑ Mainland China                            │
+│   ☐ United States                             │
+│   ☐ Japan                                     │
+│   ☐ Hong Kong                                 │
+│   ☐ Taiwan                                    │
+│  [ Disable all ]  [ Match system region ]     │
+└────────────────────────────────────────────────┘
+```
+
+**"Match system region" button**: derives from `Intl.DateTimeFormat().resolvedOptions().locale`; when uncertain, prompts the user to pick manually (does not silently overwrite an existing selection).
+
+Stored as `userProfile.enabledHolidayRegions: string[]` (in the Y.Doc sync stream). An empty array means "no holidays shown".
+
+**Render integration**
+
+- **Cycle View** — top-right of each date cell shows a small dot (solid = `holiday`, outlined = `observance`); hover label gives the full name + region. When multiple regions hit the same day, chips lay out horizontally up to 3; beyond that, fold to `…+N`.
+- **Calendar** — month-view cell shows the holiday label below the date number (multiple regions joined by `·`), without crowding out the CalendarRule template-color block.
+- **Today Track** — the top bar `Today · 2026-05-01 · Friday · Labour Day` includes the holiday label; only the **first match** across enabled regions is shown (multi-region same-day collisions are rare; UI simplicity wins).
+- **Review** — Day / Cycle views show the holiday label in the top-right metadata row, with multiple regions joined by `·`; this also feeds into the AI reflection prompt's `metadata` block (§6.6.2).
+
+**Paths that aren't affected**
+
+- §10.2 auto-task materialization — does not read ExternalEvents.
+- §10.3 purge / §10.5 revisions — holidays don't enter the version system.
+- §5.4 CalendarRule — a user defining "use restday template across National Day week" still goes through CalendarRule; CalendarRule and ExternalEvent coexist orthogonally.
+- check-in / Pending / completion stats — none of these are aware of holidays; everything stays driven by task / habit `status`.
+
+**Data update strategy**
+
+Each December, I (or a contributor) open a PR adding next year's JSON; minor version bump (e.g. 0.8.x → 0.8.{x+1}). No runtime refresh. Users get the new data on their next PWA update.
+
+**Tests**
+
+- JSON-schema validation on `data/holidays/*.json` (runs during lint / typecheck).
+- `selectExternalEventsOn(date)` selector unit tests covering region-selection branches / multi-region aggregation / empty-selection paths.
+- We don't write per-data-set unit tests — data = code, PR review carries the load.
+
+### 14.3 ICS Subscriptions · Parked Draft (v0.9+)
+
+> Out of scope for v0.8. This section captures **trigger conditions** and **design points already thought through**, so when we do open it up, the section can graduate to the v0.9 implementation note without re-deriving anything.
+
+**Trigger condition**: I or a beta user surfaces a real **non-holiday** external-calendar need (school term schedule / sports schedule / shared meeting-room calendar / recurring meetings, etc.). Until then, the bundled holiday data set covers ~90% of actual demand.
+
+**Design points already thought through**
+
+- **Data shape**: in Settings → Sync (or a new "External calendars" sub-section), the user adds an ICS subscription → fills in URL → names it + picks a chip color → saves. In the Y.Doc:
+
+  ```ts
+  type IcsSubscription = {
+    id: string;                    // ULID
+    url: string;                   // ICS feed URL
+    label: string;                 // user-chosen name
+    color: string;                 // chip color (one of the Radix 10)
+    refreshIntervalSec: number;    // default 86400 (1 day)
+    lastFetchedAt: number;         // epoch ms
+    etag?: string;                 // HTTP ETag, for next If-None-Match
+    lastModified?: string;         // HTTP Last-Modified
+    cachedEvents: ExternalEvent[]; // parsed events, cached in the Y.Doc
+  };
+  ```
+
+- **Refresh policy**: when `lastFetchedAt + refreshIntervalSec < now`, attempt a refresh; the HTTP request carries `If-None-Match: <etag>` / `If-Modified-Since: <lastModified>`; 304 is a no-op; 200 reparses and replaces `cachedEvents`. On failure (offline / CORS / 5xx) we keep using the cache and surface "last refreshed N days ago".
+- **CORS**: most public ICS feeds don't open CORS, so a Vercel serverless reverse proxy (`/api/ics-proxy?url=<encoded>`) is required. The proxy doesn't cache (browser ETag does that) and doesn't persist (zero PII). Users with their own proxy can paste their own URL into a "custom proxy URL" input.
+- **Parser**: `ical.js` (Mozilla-maintained), handles RRULE / VTIMEZONE / DST. Bundle ~80KB gzip, lazy-loaded only when a user adds their first subscription.
+- **Mapping into `ExternalEvent`**: each ICS event becomes `{ sourceId: 'ics:<subId>', date: <YYYY-MM-DD>, label: <SUMMARY>, kind: 'event' }`. Multi-day events expand into one single-day event per day (matching how the ICS spec fires them).
+- **Y.Doc footprint**: a subscription with thousands of cached events (years of meeting history) inflates the single Y.Doc significantly. Cap design: each subscription retains events only inside `[today-30d, today+365d]`; refresh trims to the window.
+- **"Refresh now" button**: per subscription, forces a fetch (ignores `refreshIntervalSec`).
+- **Failure visibility**: after 3 consecutive failed refreshes, the subscription entry highlights, the Settings drawer flags it red, and auto-refresh pauses (so we don't get IP-blocked); the user clicks "Retry" to resume.
+
+**Explicitly not doing** (even when v0.9 ships ICS)
+
+- Bidirectional ICS (writing back to Google Calendar etc.) — DayRail is a read-only consumer.
+- Field-level CRDT on ICS subscriptions — `cachedEvents` is derived remote data; LWW (whole-list overwrite on each refresh) is fine in the Y.Doc.
+- Surfaces for editing complex RRULEs — users can't modify external calendars from here; the only "edit" is unsubscribe + re-subscribe.
 
 ---
 

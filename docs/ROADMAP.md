@@ -9,12 +9,128 @@
 
 ## 定位
 
-DayRail v0.7 · **单设备自用 + Google Drive 同步（小范围 beta）**。
+DayRail v0.7 · **单设备自用 + Google Drive 同步（小范围 beta）**；
+v0.8 在路上 · 外部事件源（节假日）+ AI 复盘。
 
-不做对外发布、不做移动端适配、不做 AI 上线。多设备同步 v0.7 已开（仅
-我自己 + 两台 macOS Chrome 的 Drive `appdata`），不扩展到其它用户。
-所有工作围绕"我一个人每天用得爽 + 跨设备无感"展开。这个定位会持续，
-除非我另行决定。
+不做对外发布、不做移动端适配。多设备同步 v0.7 已开（仅我自己 + 两台
+macOS Chrome 的 Drive `appdata`），不扩展到其它用户。AI v0.8 解封（详
+见下方"v0.8 计划"），但保持 OpenAI-compat 通用接入 + 默认关闭，不绑
+定任何特定 provider，也不引入云端依赖。所有工作围绕"我一个人每天用
+得爽 + 跨设备无感 + AI 真有帮助时再开"展开。
+
+---
+
+## 🗺 整条路线图（从 v0.1 到 v0.8+）
+
+> 单页大局观。每个版本一段 + 主题 + 核心交付。已落地的标 ✓，计划中的
+> 标 🚧。详细当下状态见下方"✅ 已落地（v0.7）"段；v0.8 详细计划见
+> "🚧 v0.8 计划中"段；停车场触发条件见"🅿️ 停车场"段。
+
+### ✓ v0.1 · 静态 UI + 双语 ERD（产品形态拍板）
+
+把所有页面用静态 mock 跑一遍，敲定视觉系统：Terracotta CTA、No-Line
+Rule、四档 Surface tonal layering、圆角 token、非对称布局、Noto Sans
+SC + Inter + JetBrains Mono 字体三件套、10 色 Rail 调色板、零
+glassmorphism。Today Track / Cycle / Template Editor / Calendar /
+Tasks / Pending / Review / Settings 八个视图都有 v1 静态形态。
+
+### ✓ v0.2 · 数据层 + 事件流 + 真 check-in
+
+接通真数据：SQLite-WASM + OPFS 存储、HLC 时钟、event-sourced reducer、
+snapshot cadence。Today Track 接活 RailInstances，Reason toast（3 chip
++ Undo）上线，Edit Session v1（Template Editor 内批量回滚），React
+Router v6 路由结构定型。**§5.5 大重构**：原 Projects view 改名 Tasks
+view，Inbox built-in line，软删除 + Trash 全套。Chunk → Task 改名扫尾。
+
+### ✓ v0.3 · Cycle Edit Session + 高级日历规则
+
+Edit Session v2 扩到 Cycle View（CycleDay 切模板 / Slot drag-drop /
+quick-create / orphan 守护全挂同 sessionId）。§5.4 CalendarRule 三种
+kind（weekday / cycle / date-range）+ resolver + 高级 drawer 上线。
+**v0.3.3**：Habits 真实装，HabitPhase 实体（简单 / 进阶两档）。
+
+### ✓ v0.4 · 自用 MVP（每日真用）
+
+心智校正 + 数据一致性大整理。**§5.5.0 锁定 habit 心智**："habit = 一
+件反复发生的事"，不是任务桶。**§10 三轴速览 + §10.1**：Task.status
+成完成状态单一真源。**§10.2 auto-task on-demand 物化**。**§10.3 配置
+变更 purge 流程**（scope 可窄到 rail）。`HabitBinding` 实体取代
+`Rail.defaultLineId`。多 task 同 slot 数据到 UI 全打通，TaskDetailDrawer
+接入 Today / Cycle。**v0.4.1**：reschedule / unschedule 的 Review 记账
+（§5.5.6）。**v0.4.3**：Daily Reflection 每日 Markdown journal（§4.1）。
+**v0.4.4**：用户拖拽排序 `Task.slotOrder`。35 vitest cases 上线。
+
+### ✓ v0.5 · effective-from revision 模型（§10.5）
+
+"改 rail 之后过去日期完全不变" 实装。Rail / Template / CalendarRule /
+HabitBinding 全部拆**身份壳 + revision 链**，13 个 writer 接受
+`effectiveFrom?`，`EffectiveFromPicker` primitive 接到 Template Editor
+/ Calendar drawer / Habit binding。所有核心选择器（materializer /
+timeline / pending / autoTaskPlannedWindow / Review heatmap）revision-based。
+
+### ✓ v0.6 · Google Drive 同步 · 快照通道（§7.6）
+
+云端兜底落地。GIS token client + FedCM、access token 持久化、JSON
+snapshot 推到 Drive `appdata` 隐藏文件夹（每用户自己的 Drive，不是部
+署者的）。Push 触发四路：60s debounce / `visibilitychange='hidden'` /
+`pagehide` / `beforeunload` keepalive。Pull 触发 v0.6.1 起补上：可见
+性 probe + 连接 probe（之前只在冷启动）。**v0.6.2**：access token
+持久化 + FedCM 启用 + popup-blocked 分类、dirty work 恢复 + 推送重试、
+双向「立即同步」。冲突 surface = forced "diverged" 卡片（保留远端 / 覆盖远端）。
+
+### ✓ v0.7 · Yjs CRDT 字段级合并（§7.7）· **当前**
+
+v0.6 暴露的两个稳态痛点（后台拉取盲区 + 冲突只能整盘覆盖）促成 wire
+format 全量切换。**Yjs Y.Doc 单文档 + IndexedDB persistence + `.dryj`
+wire format**（4-byte magic + 容器 version + meta +
+`Y.encodeStateAsUpdate` 二进制）。冲突由 Yjs LWW + Lamport clock 自动
+消解，**v0.6 那张分叉冲突卡片整段下线**。Pull 不再 reload。新增 5
+分钟周期 metadata probe + `online` 事件即时 probe。「立即同步」改双
+向。Settings → 同步加「下载本地快照」+「从快照导入」逃生口（同时承担
+v0.6→v0.7 一次性迁移落地）。`runForcePush` + `samples-only` flag。
+**~4600 行 SQLite-WASM/OPFS/HLC/event-sourced reducer 删除**，Drizzle
+/ `@sqlite.org/sqlite-wasm` / `immer` 三个 dep 跟着移除。Edit Session
+从 SQL 表改成内存 `Y.UndoManager`。dailyReflections 进同步流。**104
+vitest cases**。Cycle UI 一连串打磨（off-rail row、contiguous-run
+grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line 清理）。
+
+---
+
+### 🚧 v0.8 · 外部事件源 + AI 复盘（在路上）
+
+> 详细设计：ERD §14（外部事件源）/ §6.6（AI v0.8 实施说明）。详细计
+> 划：下方"🚧 v0.8 计划中"段。
+
+- **v0.8.0 · 外部事件源 v1 · 节假日内置数据集**（先上）—— `data/holidays/{regionCode}.json` bundle 路线，`ExternalEvent` 接口抽象，Settings 区域 multi-select，Cycle View + Calendar 渲染集成。理由：节假日数据一年改一次，ICS + CORS 反代是大锤打蚊子（详见 ERD §14.2）。
+- **v0.8.1 · AI MVP**（后上）—— 用户背景 Markdown blob（`userProfile.background`，对标 Claude Code `CLAUDE.md`）+ OpenAI-compat 通用接入（Settings → AI 三字段：base URL / API key / model name）+ §6 复盘场景 v1（Day 还是 Cycle 实施时再选）。**显式承认 CLI 桥接路径**（`claude-code-router` / `claude-bridge` / Ollama / LM Studio）—— 用户已有 Claude Code / Cursor 套餐，不再多花钱。
+
+---
+
+### 🅿️ v0.9+ 停车场（触发条件明确，捡起来不用从头想）
+
+| 项 | 触发条件 | 设计草稿位置 |
+|---|---|---|
+| ICS 订阅（外部事件源 v2） | 我或 beta 用户提出非节假日的外源日历需求 | ERD §14.3 草稿 |
+| HabitPhase 结构化目标（次数 / 强度 tag → match% 加权） | 真开始做分阶段训练计划 | ROADMAP 停车场 |
+| 键盘快捷键扩展（Pending `d` / `.` / `j-k`） | 键盘用得多嫌鼠标慢 | ROADMAP 停车场 |
+| Calendar 规则 inline 编辑（✎ 原地改） | 纯体验优化 | ROADMAP 停车场 |
+| `Task.subItems` 重新拆 per-element Y.Array op | action 层愿意改成 insert/delete/update on inner Y.Array | ERD §7.7 + ROADMAP |
+| Single-tab guard（`BroadcastChannel`） | 撞到第二例多 tab 数据打架 | ROADMAP 数据安全段 |
+| IndexedDB 启动 sanity check + Error boundary | 撞到第一例 Y.Doc 反序列化失败 | ROADMAP 数据安全段 |
+| AI 多场景全开（Day + Cycle + Habit phase） | v0.8.1 一个场景跑通后体验真有用 | ERD §6 |
+| 「AI 优化我的背景」按钮 | v0.8.1 ship 后看用户写的背景文本质量 | ERD §6.6.1 |
+| 定时自动备份 · 用户可见可配置 | 扩用户基数前 | ROADMAP 数据安全段 |
+| action 层 + syncController 端到端集成测 | 扩用户基数前 | ERD §7.7 round 5/6/7 |
+
+### ❌ 明确不做（自用 + 小范围 beta scope 内没价值）
+
+- §7.3 多后端（iCloud / WebDAV / Dropbox）· Drive `appdata` 已够用
+- §7.5 端到端加密 / passphrase / 恢复码 / 双写 E2E 迁移
+- §7.2.1 三档 `{仅数据 / 仅设置 / 全部}` 同步开关
+- 字段级真冲突 UI（Yjs LWW + Lamport 自动决）
+- §6 多 provider 适配层（OpenAI-compat 已覆盖 99%，特殊功能走桥接软件）
+- AI 调用走 DayRail 自建后端代理（浏览器直连 + 用户 BYOK，没后端这事 v0.8 不变）
+- 移动端响应式 / 首次运行引导 / Tauri 桌面壳 / E2E 测试框架
 
 ---
 
@@ -182,6 +298,74 @@ seed / import / first-write / replace 四个生命周期点的开关。
 
 ---
 
+## 🚧 v0.8 计划中
+
+> v0.8 把"自用 scope"从"任务调度 + 同步"扩到"任务调度 + 同步 + 外部
+> 事件源 + AI 复盘"。这是定位段里说的那次"我另行决定"。设计动机见
+> ERD §14（外部事件源 · 新）+ §6.6（AI · 重写 §6.3）。两条路径互相
+> 独立，建议先 v0.8.0 节假日（warm-up）再 v0.8.1 AI MVP（大头）。
+
+### v0.8.0 · 外部事件源 v1 · 节假日内置数据集（先上）
+
+> ERD §14.1 + §14.2 设计：节假日数据一年改一次，用 ICS 订阅 + CORS +
+> 刷新调度是大锤打蚊子；走仓库内置数据集 + region multi-select 路线。
+> ICS 订阅留 v0.9+ 停车场（§14.3 草稿存档，避免将来再翻一遍）。
+
+- **`ExternalEvent` 抽象**（ERD §14.1 新增）—— `{ sourceId, date,
+  label, kind, regionCode? }`，渲染层只认这个接口；将来 ICS 订阅是
+  同接口的另一个 source，零渲染层改动
+- **内置节假日数据集** —— `data/holidays/{regionCode}.json`，首批
+  `zh-CN`（先把我自己用的覆盖了），按需扩 `en-US` / `ja-JP` /
+  `zh-HK` / `zh-TW` 等
+- **region multi-select** —— Settings → 外观 → 节假日 multi-select；
+  「跟随系统 region」按钮按 `Intl.DateTimeFormat().resolvedOptions().locale`
+  推断；选中的 region 进 Y.Doc `userProfile.enabledHolidayRegions`
+- **渲染集成** —— Cycle View 日期单元格右上角小色点（实色 holiday /
+  描线 observance，hover label 显示完整名 + region，多 region 同日
+  chip 横向最多 3 + 折叠）；Calendar 月视图日期数字下方 label；Today
+  Track 顶栏带节假日 label；Review Day / Cycle metadata 行 + 进 AI
+  复盘 prompt context
+- **不参与**：task 物化 / §10.3 purge / §10.5 revision / completion
+  stats —— ExternalEvent 是"日历这天的标签"，纯展示
+- **数据更新策略** —— 每年 12 月开 PR 加明年 JSON，版本号小升。运行
+  时不做网络刷新
+
+未覆盖（v0.8.1+）：
+- ICS 订阅（详见 ERD §14.3 v0.9+ 停车场草稿）
+- 自定义节假日（用户加自己单位放假日）—— 当前 §5.4 CalendarRule 系统
+  已能表达"指定日期改 template"，先用那个；真撞到痛点再独立做
+
+### v0.8.1 · AI MVP（一次 ship 三件事）
+
+> 缺一件都不算 v0.8.1 完。详细设计见 ERD §6.6 / §6.6.1 / §6.6.2。
+
+- **用户背景 Markdown**（ERD §6.6.1 新增）—— Settings → AI → 「我的背景」
+  textarea + preview · 单 Markdown blob · 存 Y.Doc
+  `userProfile.background` · AI 调用前 prepend 到 system prompt ·
+  心智对标 Claude Code `CLAUDE.md`
+- **OpenAI-compatible 通用接入**（ERD §6.6 重写 §6.3）—— Settings →
+  AI 三字段：Base URL（默认 `https://openrouter.ai/api/v1`）/ API key
+  / Model name。一份 `fetch` + SSE 解析覆盖 OpenRouter / Groq /
+  Together / Anthropic-via-proxy / Ollama / LM Studio /
+  `claude-code-router` / `claude-bridge` 等所有兼容端点。**显式承认
+  CLI 桥接路径**，用户已有 Claude Code / Cursor 套餐，不再多花钱。
+  文档说一句"如果你用本地 CLI 桥接，请确认它对 PWA origin 开了 CORS"
+- **§6 复盘场景 v1** —— Review 视图里挑一个真用得上的切入（首选
+  Day · 与 §4.1 DailyReflection 联动；次选 Cycle）。prompt 模板含三块：
+  用户背景 + 当前数据切片 + 输出指引。具体 Day 还是 Cycle 实施时拍板
+- **「AI 优化我的背景」按钮** —— 写完上面三件事再决定；不进 v0.8.1
+  ship 边界，停车场触发条件：v0.8.1 ship 后看真实背景文本质量
+
+未做 / 留 v0.8.1+：
+- AI 多场景（Day / Cycle / Habit phase 全开）
+- Streaming UI 的精细 surface（先按"loading → 完整出"做，够用就不
+  打磨）
+- Provider 特有功能（OpenRouter fallback chain / Anthropic prompt
+  caching）—— 用户要的话自己在 endpoint 那一层做（`claude-code-router`
+  自带）
+
+---
+
 ## 🅿️ 停车场（随时可以捡起来）
 
 ### 值得做 · 自用体验提升
@@ -193,6 +377,19 @@ seed / import / first-write / replace 四个生命周期点的开关。
   Today Track 行级操作同理。触发条件：键盘用得多嫌鼠标慢时。
 - **Calendar 规则 inline 编辑**：当前 delete + recreate，高级 drawer 里
   加 ✎ 按钮原地改。纯体验优化，非阻塞。
+- **ICS 订阅 · 外部事件源 v2**（v0.9+）：用户填 `webcal://` 或
+  `https://...ics` URL，`ical.js` 解析，ETag / If-Modified-Since 缓存，
+  刷新间隔可配（默认 1 天）。CORS 走 Vercel serverless 反代
+  `/api/ics-proxy`。设计草稿见 ERD §14.3。触发条件：我或某个 beta 用
+  户提了一个**非节假日**的外源日历需求（学校学期 / 球队赛程 / 单位
+  会议室占用 / 周期性会议）—— 在那之前，节假日 bundle 已经覆盖 90%
+  实际诉求。
+- **「AI 优化我的背景」按钮**（v0.8.1+）：用户随手写"我是研究生 / 周
+  末跑步 / 备考"，按一下让 AI 扩成结构化版本。设计草稿见 ERD §6.6.1。
+  触发条件：v0.8.1 ship 后看真实用户写的背景文本质量。
+- **AI 多场景全开（Day / Cycle / Habit phase）**（v0.8.1+）：v0.8.1 只
+  做一个，剩下的两个等第一个跑通后体验真有用再开。设计骨架在 ERD
+  §6.1 / §6.6.2。
 
 ### 防回归 · 可做可不做
 
@@ -234,13 +431,19 @@ seed / import / first-write / replace 四个生命周期点的开关。
 
 ### 明确不做 · 自用 scope 内没价值
 
-- ❌ §6 AI 集成（OpenRouter 真调用 / 流式 / fallback 链）· 真想要再接
 - ❌ §7.3 多后端（iCloud / WebDAV / Dropbox）· Drive `appdata` 已够用
 - ❌ §7.5 端到端加密 / passphrase / 恢复码 / 双写 E2E 迁移 · 单用户威
   胁模型未变
 - ❌ §7.2.1 三档 `{仅数据 / 仅设置 / 全部}` 同步开关
 - ❌ 字段级真冲突 UI（"两端改同一字段且新值不等"）· Yjs LWW + Lamport
   自动决，体感出问题再独立设计 surface
+- ❌ §6 多 provider 适配层（hardcoded Anthropic SDK / OpenAI SDK 区分）·
+  OpenAI-compat 一份 fetch 已覆盖 99%，特殊功能走桥接软件
+- ❌ AI 调用走 DayRail 自建后端代理 · 浏览器直连 + 用户 BYOK，没后端
+  这事 v0.8 不变
+- ❌ §6 v0.4 §6.3 的 fallback chain UI（多模型多选 + 拖拽排序 + 远端 JSON
+  清单）· fallback 改由 endpoint 层（`claude-code-router` / OpenRouter
+  自身）承担，不在 DayRail 重做
 - ❌ 移动端响应式
 - ❌ 首次运行引导 / 空状态文案 / 新手教程
 - ❌ 桌面端 Tauri 壳
@@ -309,7 +512,21 @@ seed / import / first-write / replace 四个生命周期点的开关。
 
 ## 🧭 下一轮起点（如果还有）
 
-如果未来某天又回来迭代，建议按这个顺序摸一遍手感：
+### v0.8 主线（当下）
+
+两条独立路径，建议按顺序：
+
+1. **v0.8.0 · 节假日数据集**（warm-up）—— `data/holidays/zh-CN.json`
+   先把我自己用的覆盖了 → `ExternalEvent` 渲染层抽象（参考 ERD §14.1）
+   → Cycle View + Calendar 集成 → Settings region picker（参考 ERD
+   §14.2）。挨个 PR 推。
+2. **v0.8.1 · AI MVP**（大头）—— ERD §6.6 重写过一遍 → Settings →
+   AI 三字段（Base URL / API key / Model name）+ 用户背景 textarea
+   （`userProfile.background`）→ `fetch` + SSE 通用客户端 → 一个 §6
+   复盘场景跑通（实施时选 Day 还是 Cycle）→ 手动验证 OpenRouter +
+   本地 `claude-code-router` 两条路径都能调通。
+
+### 通用回归 checklist（每轮迭代结束都跑一遍）
 
 1. `pnpm dev` · 打开 Today Track，把今天当一天用一遍（check-in、改期、
    完成、归档）· 验证没有破
