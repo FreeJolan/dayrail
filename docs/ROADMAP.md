@@ -1,6 +1,6 @@
 # DayRail · 当前状态 & 后续迭代
 
-> 最后整理：2026-05-06
+> 最后整理：2026-05-06（v0.8.1 ship 后）
 > 本文档与 `ERD.*.md` 分工：ERD 是设计意图 + 历史决策链（append-only
 > 记录），本文档是**当下状态快照** + **待办停车场** + **迭代注记**。
 > 每次大迭代开始前读这里拿到起点，结束后更新这里。
@@ -78,7 +78,7 @@ snapshot 推到 Drive `appdata` 隐藏文件夹（每用户自己的 Drive，不
 持久化 + FedCM 启用 + popup-blocked 分类、dirty work 恢复 + 推送重试、
 双向「立即同步」。冲突 surface = forced "diverged" 卡片（保留远端 / 覆盖远端）。
 
-### ✓ v0.7 · Yjs CRDT 字段级合并（§7.7）· **当前**
+### ✓ v0.7 · Yjs CRDT 字段级合并（§7.7）
 
 v0.6 暴露的两个稳态痛点（后台拉取盲区 + 冲突只能整盘覆盖）促成 wire
 format 全量切换。**Yjs Y.Doc 单文档 + IndexedDB persistence + `.dryj`
@@ -102,8 +102,8 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 > 实施说明）。
 
 - ✅ **v0.8.0 · 外部事件源 · 节假日 + 用户标注**（已 ship）—— 节假日（`data/holidays/{regionCode}.json` bundle + region multi-select，§14.2）+ 用户标注（`UserDayNote`，Calendar 上手动加备注，§14.3）共享 `ExternalEvent` 渲染层；都不进 task pipeline。三个 surface：Calendar / Cycle View / Today Track。详见 ERD §14。
-- 🚧 **v0.8.1 · §5.4 日历规则重构** —— 优先级从硬编码改为用户控制的全局排序（`UserProfile.calendarRuleOrder` 拖拽列表）+ 新加 `external-event` rule kind（按节假日/调休/观察日/备注属性匹配 → 应用模板，例："所有节假日 → restday"一条规则覆盖所有日期）。详见 ERD §5.4 + History 顶部条目。
-- **v0.8.2 · AI MVP**（后上，原 v0.8.1）—— 用户背景 Markdown blob（`userProfile.background`，对标 Claude Code `CLAUDE.md`）+ OpenAI-compat 通用接入（Settings → AI 三字段：base URL / API key / model name）+ §6 复盘场景 v1（Day 还是 Cycle 实施时再选）。**显式承认 CLI 桥接路径**（`claude-code-router` / `claude-bridge` / Ollama / LM Studio）—— 用户已有 Claude Code / Cursor 套餐，不再多花钱。
+- ✅ **v0.8.1 · §5.4 日历规则重构**（已 ship）—— 优先级从硬编码改为用户控制的全局排序（`UserProfile.calendarRuleOrder` drag-to-reorder）+ 新加 `external-event` rule kind 按属性匹配（节假日 / 调休 / 节庆 / 备注 + region 过滤 + 备注文本 contains/exact 筛选）。CalendarRulesDrawer 重做成单一规则列表 + 条件组形式的属性编辑器（节假日卡片 + 假日/非假日 子选 + 调休 + 我的备注卡 + 备注文本 datalist autocomplete）。drag handler 抬到 container 级别消除死区 + WYSIWYG drop。Calendar 单元格视觉减负（step-4 tint → step-3 + 删左 strip + 删顶 border + 实色 badge → 文字 + 小色点）。详见 ERD §5.4 + History 顶部条目。
+- **v0.8.2 · AI MVP**（后上）—— 用户背景 Markdown blob（`userProfile.background`，对标 Claude Code `CLAUDE.md`）+ OpenAI-compat 通用接入（Settings → AI 三字段：base URL / API key / model name）+ §6 复盘场景 v1（Day 还是 Cycle 实施时再选）。**显式承认 CLI 桥接路径**（`claude-code-router` / `claude-bridge` / Ollama / LM Studio）—— 用户已有 Claude Code / Cursor 套餐，不再多花钱。
 
 ---
 
@@ -299,14 +299,16 @@ seed / import / first-write / replace 四个生命周期点的开关。
 
 ---
 
-## 🚧 v0.8 计划中
+## v0.8 详情
 
 > v0.8 把"自用 scope"从"任务调度 + 同步"扩到"任务调度 + 同步 + 外部
-> 事件源 + AI 复盘"。这是定位段里说的那次"我另行决定"。设计动机见
-> ERD §14（外部事件源 · 新）+ §6.6（AI · 重写 §6.3）。两条路径互相
-> 独立，建议先 v0.8.0 节假日（warm-up）再 v0.8.1 AI MVP（大头）。
+> 事件源 + 日历规则重构 + AI 复盘"。设计动机见 ERD §14（外部事件源）
+> / §5.4（日历规则 v0.8.1 重构）/ §6.6（AI v0.8.2 实施说明）。
+>
+> v0.8.0 + v0.8.1 已 ship · v0.8.2 在路上。下面三个子段保留各自的实
+> 施细节作为档案。
 
-### v0.8.0 · 外部事件源 · 节假日 + 用户标注（先上）
+### ✅ v0.8.0 · 外部事件源 · 节假日 + 用户标注（已 ship）
 
 > ERD §14 设计：v0.8.0 引入"日历这天上有什么事，但不是要做的事"这一
 > 类标注。两个 source 共上 —— **节假日**（§14.2，外源 bundle 数据集，
@@ -344,7 +346,52 @@ seed / import / first-write / replace 四个生命周期点的开关。
 - 用户标注的长描述 / Markdown body —— 用 §4.1 DailyReflection 替代
 - 用户标注的提醒 / 倒计时 / 跨年重复 / 跨多日同标注 —— 留 v0.8.x
 
-### v0.8.1 · AI MVP（一次 ship 三件事）
+### ✅ v0.8.1 · §5.4 日历规则重构（已 ship）
+
+> ERD §5.4 重构 + §10 类型变更。设计动机：硬编码 priority（single-date
+> 100 > date-range 50 > cycle 30 > weekday 10）无法表达用户的实际偏好；
+> 同时缺少"按属性匹配"的规则形式来表达"所有节假日 → restday"这种
+> 跨多日的约束。
+
+**优先级模型重写**
+
+- `CalendarRule.priority` / `CalendarRuleRevision.priority` 改可选（弃用）
+- 新增 `UserProfile.calendarRuleOrder: string[]` —— 用户拖拽出的全局优先级链
+- Resolver：先按 order list 走，未在 list 中的退回 legacy `priority` + `createdAt`（隐式迁移，老 rule 直到用户碰一下规则抽屉才被纳入）
+- 5 个 upsert action（overrideCycleDay / upsertWeekdayRule / upsertDateRangeRule / upsertCycleRule / upsertExternalEventRule）自动 `prependToCalendarRuleOrderY`（idempotent）；2 个 remove action（removeCalendarRule / clearCycleDayOverride）自动 filter 出 order list
+
+**`external-event` 第五种 rule kind**
+
+- `CalendarRuleExternalEvent` value：`{ kinds: ExternalEventMatchKind[], regions?, noteLabelFilter?, templateKey, label? }`
+- `ExternalEventMatchKind = 'holiday' | 'observance' | 'makeup-workday' | 'user-note'`
+- 命中条件：当天 ExternalEvent 至少一条匹配 `kinds` + 可选 region 过滤 + 可选 note label 过滤（`{ mode: 'contains' | 'exact', query }`，仅对 user-note kind 生效；空 query 降级"匹配任意备注"）
+- 即"所有节假日 → restday"一条规则覆盖所有日期，将来 §14.4 ICS 订阅 ship 也自动可被这条规则匹配（resolver 不用改）
+
+**CalendarRulesDrawer · 全单一规则列表 + 条件组**
+
+- 顶部仅一个「规则列表」section · 全 CRUD：drag-to-reorder + ✎ inline edit + ✕ delete + + 添加规则 picker
+- 5 个 form 都接受 `initial?` props 支持原地编辑（id-stable upsert，不删了重建）
+- 拖拽 handler 抬到 container 级别：消除原来 per-row handler 的死区（光标飘出第一行上方 / 末行下方就触发不到 dragOver）；上 / 下半区检测决定插到 target **之前**或**之后**
+- WYSIWYG drop：drop 时不读 React state（async），从事件 `clientY` + `currentTarget.getBoundingClientRect()` 重新算落点；视觉指示器可能短暂滞后但落点永远跟光标一致
+- ExternalEventForm 改条件组：节假日卡片（含 假日 / 非假日 二级 multi-select，对应 holiday / observance kinds 拆分）/ 调休 / 我的备注卡（含 contains / exact toggle + 输入框 + datalist autocomplete 拉用户已写的备注 label）+ 区域过滤共用段（仅在节假日 / 调休 卡存在时显示）
+- ruleSummary 跟分组对齐：`节假日`（含两子）/ `节假日(假日)` / `节假日(非假日)` / `调休` / `备注⊇「query」` 等
+
+**Calendar 视觉减负**
+
+- cell tint step-4 → step-3（更淡），删左 5px strip + 删顶 2px border + 实色 step-9 badge
+- 模板 badge 改 dot + ink-secondary 文字，去掉热力图感
+- 删 stale Footer（"优先级 · 单日覆盖 → 星期启发"已过时；"ERD §5.4 · v0.2 live"是 dev-internal）
+
+**测试**：`calendarRulePriority.test.ts` 14 case，覆盖：
+- external-event 各 kind 匹配 + 区域过滤 + noteLabelFilter contains/exact
+- resolver 在 calendarRuleOrder / legacy priority / 缺 userProfile / 任意 fallback 各分支
+- 总数 147 / 13 suites（v0.8.0 是 129 / 12 → +14 case + 2 个其它 suite 调整）
+
+未覆盖（v0.8.x+）：
+- 同一 rule 用不同条件做不同 narrowing（per-condition regions 等）—— 当前数据模型 regions / noteLabelFilter 是 rule 级共用
+- AI 多 provider 适配层 / fallback chain UI
+
+### 🚧 v0.8.2 · AI MVP（一次 ship 三件事）
 
 > 缺一件都不算 v0.8.2 完。详细设计见 ERD §6.6 / §6.6.1 / §6.6.2。
 
@@ -523,24 +570,15 @@ seed / import / first-write / replace 四个生命周期点的开关。
 
 ### v0.8 主线（当下）
 
-两条独立路径，建议按顺序：
-
-1. **v0.8.0 · 外部事件源 · 节假日 + 用户标注**（warm-up）—— `ExternalEvent`
-   渲染层抽象（ERD §14.1）→ 节假日 source（`data/holidays/zh-CN.json`
-   + region picker，§14.2）→ 用户标注 source（`UserDayNote` Y.Map +
-   Calendar 编辑 popover，§14.3）→ 三个 surface 渲染（Calendar / Cycle
-   View / Today Track，Review · Day 顺手挂）。挨个 PR 推。
-2. **v0.8.1 · AI MVP**（大头）—— ERD §6.6 重写过一遍 → Settings →
-   AI 三字段（Base URL / API key / Model name）+ 用户背景 textarea
-   （`userProfile.background`）→ `fetch` + SSE 通用客户端 → 一个 §6
-   复盘场景跑通（实施时选 Day 还是 Cycle）→ 手动验证 OpenRouter +
-   本地 `claude-code-router` 两条路径都能调通。
+- ✅ **v0.8.0 · 外部事件源 · 节假日 + 用户标注** —— PR #5 已 ship
+- ✅ **v0.8.1 · §5.4 日历规则重构** —— PR #6 已 ship；后续 PR #7 修了 off-rail label 列宽溢出
+- 🚧 **v0.8.2 · AI MVP** —— ERD §6.6 重写过一遍 → Settings → AI 三字段（Base URL / API key / Model name）+ 用户背景 textarea（`userProfile.background`）→ `fetch` + SSE 通用客户端 → 一个 §6 复盘场景跑通（实施时选 Day 还是 Cycle）→ 手动验证 OpenRouter + 本地 `claude-code-router` 两条路径都能调通
 
 ### 通用回归 checklist（每轮迭代结束都跑一遍）
 
 1. `pnpm dev` · 打开 Today Track，把今天当一天用一遍（check-in、改期、
    完成、归档）· 验证没有破
-2. `pnpm test` · 104 个测试都绿
+2. `pnpm test` · 147 个测试都绿
 3. Settings → 同步 → 「下载本地快照」保存一份 `.dryj`（v0.7 起的兜底
    口径；v0.6 那个 JSON 导出在 Settings → 高级仍然在）
 4. Settings → 同步 → 「从快照导入」用刚保存的 `.dryj` 走一遍 round-trip
