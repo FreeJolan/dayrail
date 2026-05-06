@@ -1,6 +1,6 @@
 # DayRail · 当前状态 & 后续迭代
 
-> 最后整理：2026-04-27
+> 最后整理：2026-05-06
 > 本文档与 `ERD.*.md` 分工：ERD 是设计意图 + 历史决策链（append-only
 > 记录），本文档是**当下状态快照** + **待办停车场** + **迭代注记**。
 > 每次大迭代开始前读这里拿到起点，结束后更新这里。
@@ -9,20 +9,27 @@
 
 ## 定位
 
-DayRail v0.5 · **单设备 · 自用 MVP**。
+DayRail v0.7 · **单设备自用 + Google Drive 同步（小范围 beta）**。
 
-不做多设备同步、不做对外发布、不做移动端适配、不做 AI 上线。所有工作
-围绕"作者一个人每天用得爽"展开。这个定位会持续，除非作者本人另行决
-定。
+不做对外发布、不做移动端适配、不做 AI 上线。多设备同步 v0.7 已开（仅
+作者本人 + 两台 macOS Chrome 的 Drive `appdata`），不扩展到其它用户。
+所有工作围绕"作者一个人每天用得爽 + 跨设备无感"展开。这个定位会持续，
+除非作者本人另行决定。
 
 ---
 
-## ✅ 已落地（v0.5 · 可用）
+## ✅ 已落地（v0.7 · 可用）
 
 ### 数据模型（§10）
 
-- Event-sourced 存储：SQLite-WASM + OPFS + HLC 时钟 + snapshot cadence
-- Edit Session 机制（§5.3.1）· 一键回滚整批
+- **Yjs Y.Doc 单文档** + IndexedDB persistence + `.dryj` wire format
+  （`packages/db/src/{yjs,dryj,yjsPersistence}.ts`）
+- 顶层 `Y.Map` 对应每个 store（templates / rails / lines / tasks /
+  signals / shifts / adhocEvents / calendarRules / cycles /
+  habitPhases / habitBindings / dailyReflections + revision 表）；
+  Zustand 通过 Y.Doc observer 派生 UI state
+- Edit Session 机制（§5.3.1）· 改成 **Y.UndoManager 内存级回滚**，按
+  `transact origin = sessionId` 收集，不再持久化（单用户 scope 可接受）
 - Task.status 是所有完成状态的单一真源（§10.1）
 - `HabitBinding` 实体承担 habit ↔ rail 关系
 - Line(kind=habit) + HabitPhase 承担 habit 的名称 / 阶段
@@ -31,6 +38,9 @@ DayRail v0.5 · **单设备 · 自用 MVP**。
 - `Rail.recurrence` **已移除** —— Template + CalendarRule + Binding.weekdays 三层足够
 - `Rail.defaultLineId` **已移除** —— 让位给 HabitBinding
 - `RailInstance` 概念在 v0.4 不存在；历史表在 schema 中早已清理
+- **v0.7 切换时下线**：SQLite-WASM + OPFS + HLC 时钟 + event-sourced
+  reducer + sessions 表 + snapshot 缓存全部删除；Drizzle /
+  `@sqlite.org/sqlite-wasm` / `immer` 三个 dep 跟着移除（净 ~4600 行）
 
 ### §10.5 effective-from revision 模型（v0.5 ·已落地）
 
@@ -73,13 +83,47 @@ DayRail v0.5 · **单设备 · 自用 MVP**。
   upsertDateRangeRule / upsertCycleRule / removeCalendarRule /
   upsertHabitBinding / removeHabitBinding。
 
-未做（v0.5.1+）：
+未做（v0.7.1+）：
 - Power-user 模式 "edit the most recent revision in place" —— 默认
   路径覆盖 99% 用例，留作开放问题。
 - 同 session 相邻 revision 合并 —— 实测 revision 表大小后再决定。
-- 旧 mutable 字段彻底从身份壳类型上移除 —— 代码层去 v0.6 整理；
-  当前 `state.rails`/`state.templates` 等 mirror 仍在维护，作为
-  current-state 便利访问 + 历史事件 replay 的兼容层。
+- `Task.subItems` 重新拆 per-element Y.Array op —— v0.7 切换期暂时回退
+  到原子 LWW（详见 §7.7 落地纪要），等 action 层改成 insert/delete/update
+  on inner Y.Array 再开 CRDT 字段级合并。
+
+### 同步（§7.6 / §7.7）
+
+- **v0.6 · Google Drive `appdata` 快照通道** —— GIS token client + FedCM、
+  access token 持久化、debounce 60s push、`visibilitychange='hidden'` /
+  `pagehide` / `beforeunload` keepalive 三路推送触发器、cold-start
+  BootGate splash + "记住启动同步选择" radio
+- **v0.7 · Yjs CRDT 字段级合并（全量切换）** —— wire format 从
+  `dayrail-snapshot.json` 升级到 `dayrail-snapshot.dryj`（DRYJ magic +
+  容器 version + meta + `Y.encodeStateAsUpdate` 二进制）；冲突由 Yjs
+  LWW + Lamport clock 自动消解，**v0.6 那张分叉冲突卡片整段下线**
+- **拉取触发器**（§7.7 新增）—— 5 分钟周期 metadata probe（仅
+  visible + online 时跑） + `online` 事件即时 probe；承接 v0.6 已有的
+  `visibilitychange='visible'` + 连接 probe
+- **「立即同步」改双向** —— 先轻量 metadata 探测，远端领先则先 pull
+  自动合并、再按本地 dirty 决定是否 push；状态条上 `⚠ 远端有更新` 与
+  按钮链接同一动作
+- **Pull 不再 reload** —— `applyRemoteDryj` 在内存里 `Y.applyUpdate`，
+  保留 scroll 位置 / 弹窗 / in-flight 表单输入；BootGate linear-lead 同路径
+- **逃生口（Settings → 同步）** —— 「下载本地快照」(`.dryj` 二进制) +
+  「从快照导入」（替换本地 Y.Doc，走 stash + reset + reload）；同时承担
+  v0.6→v0.7 一次性迁移落地、用户主动从 Drive history 回滚、Yjs 自动合并
+  意外结果的兜底
+- **`runForcePush`** —— "用本地覆盖云端" 按钮，跳过 preflight pull-merge，
+  detached lineage 上传；进入时清掉所有 mid-flight push timer 防止 60s
+  后旧 timer 把 rollback 抹掉
+- **`samples-only` flag**（`identity.ts`）—— 区分"刚装样本数据"与"刚导
+  入真数据"两个空快照场景，决定首次 connect Drive 走 replace 还是 merge；
+  三个 pull surface（ConnectDrivePanel / BootGate / RuntimeSyncDialog）
+  都走这个门
+- **dailyReflections 进同步流** —— 单 Y.Doc + 单 wire 简洁性优先，
+  appdata scope 隔离仍然成立；多用户场景再用 Yjs sub-document 做局部过滤
+- 同步指示灯（SideNav 状态点：idle / syncing / warn / ok）+ Settings 同步页
+  连接面板 + 备份历史 14 行滚动保留
 
 ### 核心界面
 
@@ -93,8 +137,9 @@ DayRail v0.5 · **单设备 · 自用 MVP**。
 | Review（§5.8） | ✓ | Day/Cycle/Month 切换、period-over-period delta、per-row + per-phase stats |
 | Calendar（§5.4） | ✓ | 月视图 + 4 种 rule CRUD（delete+recreate） |
 | Template Editor（§5.4） | ✓ | Tab + 时间轴 + Gap chip + §5.3.1 会话回滚 |
-| Settings（§5.9） | ✓ | 外观 / 同步占位 / AI 占位 / 高级（含备份）/ 关于 |
+| Settings（§5.9） | ✓ | 外观 / 同步（v0.6 Drive · v0.7 Yjs CRDT）/ AI 占位 / 高级（含备份 + 升级备份对话）/ 关于 |
 | Backlog drawer（§5.3 D8） | ✓ | 已升格为全局 · `g b` 快捷键 · SideNav 入口 · Line picker 快速建 |
+| Daily Reflection | ✓ | 每日 Markdown journal · Today Track + Cycle View 内联 + Review（Cycle / Month）展开 |
 
 ### Cross-cutting
 
@@ -108,22 +153,32 @@ DayRail v0.5 · **单设备 · 自用 MVP**。
 
 ### 测试
 
-6 个 suite · 65 个 case（`pnpm test` 从 repo 根跑）：
+10 个 suite · 104 个 case（`pnpm test` 从 repo 根跑）：
 
 ```
 packages/core/src/__tests__/
-├── autoTask.test.ts      · 11 case · §10.3 purge selectors
-├── materializer.test.ts  · 12 case · auto-task 生成路径 + §10.5 freeze
-├── reschedule.test.ts    ·  8 case · §5.5.6 reschedule 触发规则
-├── revisions.test.ts     · 12 case · §10.5 atDate 选择器
-├── today.test.ts         · 15 case · timeline / check-in / pending
-└── unschedule.test.ts    ·  7 case · §5.5.6 unschedule 触发规则
+├── autoTask.test.ts          · 11 case · §10.3 purge selectors
+├── dryj.test.ts              · 10 case · §7.7 .dryj 容器 codec round-trip
+├── materializer.test.ts      · 12 case · auto-task 生成路径 + §10.5 freeze
+├── reflection.test.ts        ·  2 case · 每日 Markdown journal CRUD
+├── reschedule.test.ts        ·  8 case · §5.5.6 reschedule 触发规则
+├── revisions.test.ts         · 12 case · §10.5 atDate 选择器
+├── samplesOnlyFlag.test.ts   · 11 case · §7.7 samples-only 生命周期
+├── today.test.ts             · 15 case · timeline / check-in / pending
+├── unschedule.test.ts        ·  7 case · §5.5.6 unschedule 触发规则
+└── yjs.test.ts               · 16 case · Y.Doc ↔ flat state hydrate / dedupRevisions
 ```
 
 覆盖重点：多任务排序、状态过滤、时间窗口、binding × template × weekdays
 三层交集、`binding.createdAt` 日期 floor、§10.5 跨 cutover 的 freeze
 （rail 改 effectiveFrom='YYYY-MM-DD' 后，物化窗口 < 该日的 task 用旧
-revision、>= 该日的用新 revision）、tombstone 截止生效。
+revision、>= 该日的用新 revision）、tombstone 截止生效；§7.7 `.dryj`
+容器编解码一致性、Y.Doc 与 flat state 双向 hydrate、samples-only flag 在
+seed / import / first-write / replace 四个生命周期点的开关。
+
+未覆盖（已知缺口）：action 层 + syncController + samples-only flag 端到
+端集成测。单用户 beta 阶段接受作者手动验证；ERD §7.7 round 5/6/7 review
+都 flag 了这件事，扩用户基数前补。
 
 ---
 
@@ -141,54 +196,51 @@ revision、>= 该日的用新 revision）、tombstone 截止生效。
 
 ### 防回归 · 可做可不做
 
-- **Backup round-trip 集成测**：export → reset → import → 状态对比。
-  涉及 OPFS / IndexedDB / `location.reload` 比较难纯单测，需要
-  Playwright 或 jsdom + 手搭。
+- **Backup round-trip 集成测**：「下载本地快照」`.dryj` → 「从快照导入」
+  → 状态对比。涉及 IndexedDB / `location.reload` 比较难纯单测，需要
+  Playwright 或 jsdom + 手搭。这条与上一节"数据安全 / 弹性"第 3 项
+  集成测覆盖范围有交集。
 - **Error boundary**：当前崩了白屏。自用可以接受，真要加就
-  `react-error-boundary` 包一下主 `<main>` 并给个"重载 / 清空数据"
-  逃生口。
+  `react-error-boundary` 包一下主 `<main>` 并给个"重载 / 清空数据 /
+  从快照导入"逃生口。
 
-### 数据安全 / 弹性 · 对外发布前应当补（按性价比排序）
+### 数据安全 / 弹性 · 对外发布前应当补
 
-> 触发条件：从"自用 beta"扩到任何额外用户之前。自用阶段单事件概率
-> 低，但月级累积概率不可忽略 —— 真正的兜底是 §7 同步通道（远端副本
-> 不依赖 OPFS 完整性），那个上线前下面四项是性价比最高的护栏。
-> 现实诱因：多 tab 锁竞态、浏览器/标签崩溃在写中段、强退、OPFS 配额
-> 耗尽、Chrome OPFS 自身 bug（2024-2025 期间 Chromium issue tracker
-> 有数例）。
+> v0.7 切到 Yjs + IndexedDB + Drive `.dryj` 之后，原本的几条 SQLite/OPFS
+> 专属护栏（`PRAGMA integrity_check`、OPFS sync-access handle 锁竞态、
+> SQLITE_CORRUPT 兜底）都不再适用。**真正的远端兜底（§7 同步）已经在
+> v0.7 上线**，所以这一节从"上线同步前的护栏"改成"扩用户基数前补的
+> 边角"。剩下值得做的：
 
-1. **Single-tab guard** —— `BroadcastChannel` 心跳，第二个 tab 落地
-   时显示"已在另一个标签打开，关闭它再来"软门。**挡掉最大单一原因**
-   （OPFS sync access handle 文件级独占锁的竞态），几十行代码。
-2. **启动时 `PRAGMA integrity_check`** + 坏库时跳"从备份/snapshot
-   恢复"页 —— 让 corruption 不再表现为"白屏 + console 报错"。
-   可与上面的 Error boundary 项合并实现。
-3. **定时自动备份 · 正式能力**（不只是后台兜底，做成 Settings →
-   高级里**用户可见可配置**的功能）：
-   - **频率可选**：关闭 / 每天 / 每周 / 每月 / 自定义间隔（最少 1 天）。
-     默认开启 = 每周。
-   - **目的地两路**：
-     - **OPFS 第二个文件**（与主库分开 → 主库坏不连累备份），滚动
-       保留最近 N 份（N 可配，默认 4）。
-     - 可选的**自动下载到本地 Downloads**（每次生成新备份就触发
-       `<a download>`），把"忘了手动导出"那类风险消掉。
-   - **Settings UI**：开关 + 频率 picker + retention 数 + 上次备份时间
-     戳 + `立即备份一次` 按钮 + 备份列表（OPFS 内的可单点恢复 / 删除）。
-   - **触发器**：app 启动后比对 `lastBackupAt` vs 当前频率，过期则
-     在 idle callback 里跑一次（避开主写路径，复用现有 Backup 导出
-     管线）。
-   - **失败处理**：备份失败 toast + 写一条 `backup.failed` 事件，下次
-     启动重试；连续 3 次失败弹一条不可忽略的 banner。
-4. **同步通道**（ERD §7）—— 真正的远端兜底，但工作量大；上面三项
-   是同步上线前的最后一道防线。
+1. **`PRAGMA integrity_check` 的 IndexedDB 等价物** —— 启动时对 Y.Doc
+   反序列化做一次 sanity check（top-level Y.Map 都在 / 关键 store 不为
+   空 / `dedupRevisions` 跑得通）。失败时跳"从 Drive / `.dryj` 恢复"页，
+   而不是白屏。
+2. **Error boundary** —— 当前崩了白屏。自用可以接受，真要加就
+   `react-error-boundary` 包一下主 `<main>`，给个"重载 / 从快照导入 /
+   连 Drive 拉远端"三个逃生口；与上一项合并实现。
+3. **action 层 + syncController + samples-only flag 端到端集成测**
+   —— ERD §7.7 round 5/6/7 review 都 flag 了这件事。Yjs 切换以来出过
+   2 例数据破坏 bug（"round 3 修了但没修对" + "round 5 引入新 bug"），
+   作者手动验证没接住。Playwright 或 jsdom + 手搭，覆盖 first-connect /
+   replace-vs-merge / force-push / undoEditSession 几个高风险路径。
+4. **Single-tab guard**（影响降级，仍可做）—— v0.6 时代的 OPFS
+   sync-access handle 锁竞态在 v0.7 不存在了（IndexedDB 不持文件锁），
+   但多 tab 同时编辑还是会让 Yjs observer 在两个 tab 之间打架（同源
+   IndexedDB 共享但 Y.Doc 实例独立）。`BroadcastChannel` 心跳 + 软门
+   仍然是最便宜的解。
 
-实现一项就上一道，不必一次做齐。Issue 触发：作者拿到第二例
-SQLITE_CORRUPT 报告。
+> 触发条件：从"作者本人 + 两台 Chrome"扩到任何额外用户之前。
 
 ### 明确不做 · 自用 scope 内没价值
 
 - ❌ §6 AI 集成（OpenRouter 真调用 / 流式 / fallback 链）· 真想要再接
-- ❌ §7 Sync（Google Drive / iCloud / WebDAV）· 单设备没必要
+- ❌ §7.3 多后端（iCloud / WebDAV / Dropbox）· Drive `appdata` 已够用
+- ❌ §7.5 端到端加密 / passphrase / 恢复码 / 双写 E2E 迁移 · 单用户威
+  胁模型未变
+- ❌ §7.2.1 三档 `{仅数据 / 仅设置 / 全部}` 同步开关
+- ❌ 字段级真冲突 UI（"两端改同一字段且新值不等"）· Yjs LWW + Lamport
+  自动决，体感出问题再独立设计 surface
 - ❌ 移动端响应式
 - ❌ 首次运行引导 / 空状态文案 / 新手教程
 - ❌ 桌面端 Tauri 壳
@@ -200,26 +252,37 @@ SQLITE_CORRUPT 报告。
 
 ### 数据安全
 
-- 所有数据在 **OPFS**（`navigator.storage.getDirectory()`）· 清浏览器缓存 /
-  换设备 / 浏览器崩都可能丢
-- 唯一保险：Settings → 高级 → **定期导出 JSON** 到电脑本地
-- 导入是**整体覆盖**，不是合并 —— 用"从备份恢复"的心智用它
-- **`SQLITE_CORRUPT` 复盘**：dev 模式撞过一次。我们这边没有破坏性 schema
-  改动 —— 诱因在浏览器侧（HMR 撞写、强退、多 tab 锁竞态、OPFS bug）。
-  恢复路径：DevTools → Application → OPFS → 删 `dayrail` → 刷新重建。
-  对外发布前的护栏方案见上方"数据安全 / 弹性"停车场条目。
+- v0.7 起本地存 **IndexedDB**（`yjsPersistence.ts` 把 Y.Doc 序列化到
+  IndexedDB），Drive `appdata` 里同步一份 `.dryj`。两边都丢才丢数据。
+- 单设备保险：Settings → 同步 → **「下载本地快照」**（`.dryj` 二进制）；
+  v0.6 那个 Settings → 高级 → JSON 导出仍然在，作为可读格式留底
+- 「从快照导入」是**整体覆盖**，不是合并 —— 用"从备份恢复"的心智用它；
+  pull-from-Drive 走的是 `Y.applyUpdate` 自动合并，不会覆盖
+- **`.dryj` 容器版本兼容**：reader 看到不认识的容器 version 直接报错并
+  指引升级，而不是误读（`packages/db/src/dryj.ts`）。Y.Doc 内部 schema
+  改动靠 Yjs 自身的 LWW + 字段宽容兜底
+- **v0.6 → v0.7 迁移路径**：一次性脚本 `tools/migrate/migrate-json-to-yjs.ts`
+  + Settings 「从快照导入」上传产物 `.dryj`。产品代码**不**带"检测旧
+  schema → 自动转换"逻辑（详见 ERD §7.7）
+- **历史 `SQLITE_CORRUPT` 事件已不复发生**（v0.7 没有 SQLite 也没有
+  OPFS sync-access handle）。新的 corruption 表面会是 IndexedDB 读出
+  的 Y.Doc 反序列化失败 —— 暂未撞到，护栏见上方停车场第 1 项
 
 ### 会炸的边界
 
-- **OPFS 锁定**：同源的另一个 tab 打开过 DayRail 的话，`resetLocalData`
-  会失败（sqlite-wasm 的 sync-access handle 冲突）· 报错文案已提示关
-  其它 tab。**发生过真事**。
-- **事件日志向前兼容**：每次改 event payload 字段都要保证老快照能 replay
-  出来。reducer 侧用 `| undefined` 宽容。要彻底断向前兼容就提示用户
-  export + reset + import。
-- **sessionStorage 承接 import**：`importLocalData` 靠 sessionStorage 暂存
-  bundle，调 `resetLocalData` 刷掉 OPFS。如果 sessionStorage 也清了，
-  import 会静默失败，页面按默认种子启动。发生概率低但不是零。
+- **多 tab 同源**：v0.7 没有 OPFS 锁了，`importLocalData` 不会因为另
+  一个 tab 在用而 reset 失败；但两个 tab 同时编辑会让 Yjs observer 在
+  两个独立 Y.Doc 实例间打架（同源 IndexedDB 共享、Y.Doc 不共享），
+  最后一次 persist 赢。Single-tab guard 还没做（停车场第 4 项）
+- **`Task.subItems` 是原子 LWW，不是 CRDT**：v0.7 切换期回退，并发改
+  同一 task 的 subItems 会按 Yjs LWW 选一边，另一边丢。详见 ERD §7.7
+  落地纪要 + 上文"未做（v0.7.1+）"
+- **Y.Doc payload 宽容**：每次给 `Y.Map` 加新字段时确保 `readFlatStateFromDoc`
+  能容忍老 doc 没这个字段。v0.5+ 的 reducer "字段 `?.` / `??` 兜底"
+  心智在 Y.Doc 读路径继续生效
+- **sessionStorage 承接 import**：`importLocalData` 靠 sessionStorage
+  暂存 bundle，刷掉 IndexedDB 后再读。如果 sessionStorage 也清了，
+  import 会静默失败，页面按默认种子启动。发生概率低但不是零
 
 ### 不该重蹈的坑
 
@@ -238,8 +301,9 @@ SQLITE_CORRUPT 报告。
 - **Zustand selector 规则**：`useStore((s) => s.rails)` 订阅 raw map，
   派生过的 array / object 走 `useMemo`。否则每次 render 都返回新引用，
   React 18 下会无限 rerender。踩过两次，memory 里记着。
-- **事件 payload 宽容**：reducer 对 payload 字段宽容（`?.` / `??`），
-  因为历史事件里字段可能不存在。
+- **Y.Doc 字段宽容**：`readFlatStateFromDoc` 对 Y.Map 字段宽容（`?.` /
+  `??`），因为老 doc / 多设备 partial state 上字段可能不存在。这取代
+  了 v0.6 之前 reducer 对历史 event payload 的宽容心智，原则不变。
 
 ---
 
@@ -249,9 +313,11 @@ SQLITE_CORRUPT 报告。
 
 1. `pnpm dev` · 打开 Today Track，把今天当一天用一遍（check-in、改期、
    完成、归档）· 验证没有破
-2. `pnpm test` · 35 个测试都绿
-3. Settings → 高级 → 导出 JSON → 保存一份
-4. Settings → 高级 → 清空并重载 → 导入刚导出的 JSON · 验 round-trip
+2. `pnpm test` · 104 个测试都绿
+3. Settings → 同步 → 「下载本地快照」保存一份 `.dryj`（v0.7 起的兜底
+   口径；v0.6 那个 JSON 导出在 Settings → 高级仍然在）
+4. Settings → 同步 → 「从快照导入」用刚保存的 `.dryj` 走一遍 round-trip
+   （`importLocalData` → reset + reload）
 5. 读 `ERD.*.md` 的 Status 行里上一轮 History · 看上一次停在哪
 
 新需求进来时：
