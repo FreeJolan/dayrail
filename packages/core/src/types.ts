@@ -470,9 +470,17 @@ export interface ExternalEvent {
   date: string;
   /** Display text. UI-locale-aware (per-source label rules). */
   label: string;
-  /** Drives chip rendering — holiday solid / observance outlined /
-   *  event neutral / user-note outlined + user color. */
-  kind: 'holiday' | 'observance' | 'event' | 'user-note';
+  /** Drives chip rendering:
+   *   - `holiday`        — solid warm fill (statutory off-day)
+   *   - `observance`     — dashed warm outline (cultural / traditional)
+   *   - `event`          — neutral (generic external feed; reserved)
+   *   - `user-note`      — outlined + user color (per-note `meta.color`)
+   *   - `makeup-workday` — solid cool fill, label prefixed `调休·`
+   *                        (the day looks like a weekend but is a
+   *                        working day because of an adjacent holiday
+   *                        extension; sourced from the State Council
+   *                        notice via the holiday-cn dataset). */
+  kind: 'holiday' | 'observance' | 'event' | 'user-note' | 'makeup-workday';
   /** holidays-source only. */
   regionCode?: string;
   /** Per-source extension slot. user-note carries `color` / `createdAt` here. */
@@ -525,7 +533,9 @@ export interface HolidayDatasetEvent {
   date: string;
   /** Locale dictionary; renderer reads `label[uiLocale] ?? label.en`. */
   label: Record<string, string>;
-  /** `holiday` = statutory / public; `observance` = traditional/cultural
-   *  but not a public day off (e.g. Mother's Day in some locales). */
-  kind: 'holiday' | 'observance';
+  /** `holiday` = statutory / public off-day; `observance` =
+   *  traditional / cultural but not a public day off (e.g. Mother's
+   *  Day, 七夕); `makeup-workday` = a calendar workday created by
+   *  the State Council to bracket a multi-day holiday block. */
+  kind: 'holiday' | 'observance' | 'makeup-workday';
 }

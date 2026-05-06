@@ -20,6 +20,10 @@ import type {
   UserProfile,
 } from './types';
 
+// Re-exported so callers (selectors / UI) reading the registry can
+// type their kind-pass arrays without re-importing from types.
+export type { HolidayDatasetEvent } from './types';
+
 // ============ Holiday dataset registry ============
 //
 // The `apps/web` layer registers parsed holiday JSONs at boot via
@@ -95,10 +99,21 @@ function holidayEventToExternal(
 // ============ Date selectors ============
 
 /** ERD §14.1. The single render-layer entry point. Aggregates all
- *  external sources for `date` and returns them in source-priority
- *  order: holidays → user-notes → (future) ICS. Within a source,
- *  ordering is the source's natural order — holidays by region code
- *  ascending; user-notes by `createdAt` ascending. */
+ *  external sources for `date`. Returns events in **render-priority
+ *  order** (most user-relevant first):
+ *
+ *   1. user-notes (createdAt asc) — most personal, takes the
+ *      visible-chip slots on overflow-capped surfaces (e.g. Calendar
+ *      cell footer's 3-chip cap).
+ *   2. holidays + observances (within bundle, in declared order;
+ *      across regions, alpha by region code) — global context.
+ *   3. makeup-workdays — warning / contextual; least prominent.
+ *   4. ICS subscriptions — v0.9+ (§14.4 parked).
+ *
+ *  This ordering choice is documented in ERD §14.3's
+ *  multi-attribute-display section: when a day has both `父亲节` and
+ *  the user's `李明生日`, the personal note should win the prominent
+ *  slot, not the public observance the user already knows about. */
 export function selectExternalEventsOn(
   date: string,
   opts: {
@@ -110,19 +125,7 @@ export function selectExternalEventsOn(
   const out: ExternalEvent[] = [];
   const uiLocale = opts.uiLocale ?? 'zh-CN';
 
-  // 1. Holidays — for each enabled region, every event matching `date`.
-  const sortedRegions = [...opts.enabledHolidayRegions].sort();
-  for (const regionCode of sortedRegions) {
-    const ds = holidayDatasetRegistry.get(regionCode);
-    if (!ds) continue;
-    for (const ev of ds.events) {
-      if (ev.date === date) {
-        out.push(holidayEventToExternal(ev, regionCode, uiLocale));
-      }
-    }
-  }
-
-  // 2. User-defined day notes — every note matching `date`, oldest first.
+  // 1. User-defined day notes — most personal; lead the stack.
   const matchingNotes: UserDayNote[] = [];
   for (const note of Object.values(opts.userDayNotes)) {
     if (note.date === date) matchingNotes.push(note);
@@ -130,7 +133,28 @@ export function selectExternalEventsOn(
   matchingNotes.sort((a, b) => a.createdAt - b.createdAt);
   for (const note of matchingNotes) out.push(userNoteToExternal(note));
 
-  // 3. ICS subscriptions — v0.9+ (§14.4 parked).
+  // 2-4. Holidays / observances / makeup-workdays — three passes by
+  //      kind priority so the render order is deterministic regardless
+  //      of how the bundled dataset declares them.
+  const sortedRegions = [...opts.enabledHolidayRegions].sort();
+  const KIND_PASSES: Array<HolidayDatasetEvent['kind']> = [
+    'holiday',
+    'observance',
+    'makeup-workday',
+  ];
+  for (const passKind of KIND_PASSES) {
+    for (const regionCode of sortedRegions) {
+      const ds = holidayDatasetRegistry.get(regionCode);
+      if (!ds) continue;
+      for (const ev of ds.events) {
+        if (ev.date === date && ev.kind === passKind) {
+          out.push(holidayEventToExternal(ev, regionCode, uiLocale));
+        }
+      }
+    }
+  }
+
+  // 4. ICS subscriptions — v0.9+ (§14.4 parked).
 
   return out;
 }

@@ -6,11 +6,16 @@ import {
   RAIL_COLOR_STEP_6,
 } from './railColors';
 
-// ERD §14.1 — render a single ExternalEvent. Supports four kinds:
-//   - holiday   · solid fill (warm)
-//   - observance · outlined (warm)
-//   - event     · neutral (no source-specific shipping uses this yet)
-//   - user-note · outlined + user color (default neutral gray)
+// ERD §14.1 — render a single ExternalEvent. Supports five kinds:
+//   - holiday        · solid fill (warm)
+//   - observance     · dashed outline (warm)
+//   - event          · neutral (reserved; no source ships this yet)
+//   - user-note      · outlined + user color (default neutral gray)
+//   - makeup-workday · solid cool (slate) fill (state council 调休)
+//
+// Visual axes:
+//   - warm vs cool      → "happy day off" vs "warning, working"
+//   - solid vs outlined → "official off-day" vs "personal/cultural"
 //
 // The chip is intentionally compact and reuses the rail-color tokens
 // so notes feel native to DayRail's palette. Users pick from the same
@@ -38,16 +43,15 @@ function resolveUserNoteColor(event: ExternalEvent): RailColor | null {
   return typeof c === 'string' ? (c as RailColor) : null;
 }
 
-/** Visual treatment per kind — the design point in ERD §14.3
- *  ("user-note: outlined + user color") + the legacy holiday pattern
- *  ("holiday solid / observance outlined"). */
+/** Visual treatment per kind. Style axes documented at the top of
+ *  the file; per-kind values are the actual rendering. */
 function chipStyles(event: ExternalEvent): {
   background: string | undefined;
   border: string;
   color: string;
 } {
   if (event.kind === 'holiday') {
-    // Holiday-warm uses a system token, not a per-event color.
+    // Statutory off-day — solid warm fill, the most prominent style.
     return {
       background: 'rgb(var(--cta) / 0.12)',
       border: '1px solid rgb(var(--cta) / 0.55)',
@@ -75,6 +79,17 @@ function chipStyles(event: ExternalEvent): {
       background: 'rgb(var(--surface-2))',
       border: '1px solid rgb(var(--ink-tertiary) / 0.4)',
       color: 'rgb(var(--ink-secondary))',
+    };
+  }
+  if (event.kind === 'makeup-workday') {
+    // ERD §14 — "this looks like a weekend but you're working".
+    // Cool slate fill contrasts the warm holiday chips so adjacent
+    // days (Saturday makeup before a Spring-Festival block) read
+    // distinct at a glance.
+    return {
+      background: RAIL_COLOR_STEP_4['slate'],
+      border: `1px solid ${RAIL_COLOR_STEP_6['slate']}`,
+      color: RAIL_COLOR_HEX['slate'],
     };
   }
   // 'event' — neutral

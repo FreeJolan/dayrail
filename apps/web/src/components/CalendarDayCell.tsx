@@ -204,12 +204,15 @@ export function CalendarDayCell({
                 +{adhocs.length - 2}
               </span>
             )}
-            {/* ERD §14 — external event chips (holidays + user notes).
-                Rendered above the template badge so the day's "what's
-                special" reads at the same level as the day shape. */}
+            {/* ERD §14 — external event chips (holidays / observances /
+                user notes / makeup workdays). Rendered above the
+                template badge so the day's "what's special" reads at
+                the same level as the day shape. Cap = 3 chips visible
+                + `+N` overflow; ordering is set by `selectExternalEventsOn`
+                (user-notes first → holidays/observances → makeup). */}
             {externalEvents.length > 0 && (
               <div className="flex w-full flex-wrap items-center gap-1">
-                {externalEvents.slice(0, 2).map((ev, i) => (
+                {externalEvents.slice(0, 3).map((ev, i) => (
                   <ExternalEventChip
                     key={`${ev.sourceId}-${i}`}
                     event={ev}
@@ -217,9 +220,9 @@ export function CalendarDayCell({
                     className="max-w-full truncate"
                   />
                 ))}
-                {externalEvents.length > 2 && (
+                {externalEvents.length > 3 && (
                   <span className="font-mono text-2xs text-ink-tertiary">
-                    +{externalEvents.length - 2}
+                    +{externalEvents.length - 3}
                   </span>
                 )}
               </div>
@@ -242,6 +245,12 @@ export function CalendarDayCell({
       </PopoverTrigger>
 
       <PopoverContent align="start" sideOffset={4} className="w-[220px] p-1">
+        {/* ERD §14 — read-only context line. Surfaces the day's
+            holidays / observances / makeup-workdays (everything
+            non-editable) so the popover reads as a complete day
+            summary, not just an editor for what the user can change. */}
+        <NonEditableContextRow events={externalEvents} />
+
         <div className="flex items-baseline justify-between px-3 pb-1 pt-1.5">
           <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
             Day template
@@ -539,6 +548,34 @@ function parseHHMM(value: string): number | null {
   const min = Number(m[2]);
   if (h < 0 || h > 23 || min < 0 || min > 59) return null;
   return h * 60 + min;
+}
+
+/** Read-only context row shown at the very top of the day popover.
+ *  Lists every non-editable ExternalEvent on the day (holidays,
+ *  observances, makeup-workdays) — user notes are excluded because
+ *  the popover already has a dedicated editable "备注" section for
+ *  them. Returns null when there's nothing to show, keeping the
+ *  popover clean for empty days. */
+function NonEditableContextRow({ events }: { events: ExternalEvent[] }) {
+  const contextual = events.filter(
+    (e) => e.kind === 'holiday' || e.kind === 'observance' || e.kind === 'makeup-workday',
+  );
+  if (contextual.length === 0) return null;
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-1 px-3 pb-1 pt-1.5">
+        {contextual.map((ev, i) => (
+          <ExternalEventChip
+            key={`${ev.sourceId}-${i}`}
+            event={ev}
+            shape="badge"
+            className="max-w-full truncate"
+          />
+        ))}
+      </div>
+      <div className="mx-3 my-1 h-px bg-surface-3" />
+    </>
+  );
 }
 
 const NOTE_COLOR_CHOICES: ReadonlyArray<RailColor> = [

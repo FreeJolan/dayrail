@@ -93,8 +93,11 @@ importers:
   tools/build-holidays:
     specifiers:
       '@types/node': 20.16.14
+      lunar-typescript: ^1.7.6
       tsx: ^4.19.0
       typescript: 5.6.3
+    dependencies:
+      lunar-typescript: 1.8.6
     devDependencies:
       '@types/node': 20.16.14
       tsx: 4.21.0
@@ -4181,6 +4184,10 @@ packages:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0-rc
     dependencies:
       react: 18.3.1
+    dev: false
+
+  /lunar-typescript/1.8.6:
+    resolution: {integrity: sha512-5Eo4T/cnuXfrgO4k5LCpOGHIUOuz5hCF/IfNv0T29WY2shR36Hiz+ecN9WjnUuxUKhql9gbOkPaQoqLFKtPRNA==}
     dev: false
 
   /magic-string/0.25.9:
