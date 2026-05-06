@@ -1,13 +1,17 @@
 import { useMemo, useState } from 'react';
 import { clsx } from 'clsx';
-import { Pencil, Plus, X } from 'lucide-react';
+import { GripVertical, Pencil, Plus, X } from 'lucide-react';
 import {
+  listHolidayRegions,
+  getHolidayDatasetDisplayName,
   useStore,
   type CalendarRule,
   type CalendarRuleCycle,
   type CalendarRuleDateRange,
+  type CalendarRuleExternalEvent,
   type CalendarRuleSingleDate,
   type CalendarRuleWeekday,
+  type ExternalEventMatchKind,
   type Template,
 } from '@dayrail/core';
 import type { RailColor } from '@/data/sample';
@@ -35,6 +39,7 @@ const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 export function CalendarRulesDrawer({ open, onClose }: Props) {
   const calendarRules = useStore((s) => s.calendarRules);
   const templates = useStore((s) => s.templates);
+  const userProfile = useStore((s) => s.userProfile);
 
   // §10.5 Phase 4 · drawer-wide picker. Same primitive as the
   // Template Editor; every rule edit / removal in this drawer threads
@@ -51,20 +56,23 @@ export function CalendarRulesDrawer({ open, onClose }: Props) {
     [templates],
   );
 
-  const { singleDate, dateRange, cycle, weekday } = useMemo(() => {
+  const { singleDate, dateRange, cycle, weekday, external } = useMemo(() => {
     const single: CalendarRule[] = [];
     const range: CalendarRule[] = [];
     const cyc: CalendarRule[] = [];
     const wd: CalendarRule[] = [];
+    const ext: CalendarRule[] = [];
     for (const r of Object.values(calendarRules)) {
       if (r.kind === 'single-date') single.push(r);
       else if (r.kind === 'date-range') range.push(r);
       else if (r.kind === 'cycle') cyc.push(r);
       else if (r.kind === 'weekday') wd.push(r);
+      else if (r.kind === 'external-event') ext.push(r);
     }
     single.sort(byCreatedDesc);
     range.sort(byCreatedDesc);
     cyc.sort(byCreatedDesc);
+    ext.sort(byCreatedDesc);
     // Weekday: sort by the first covered weekday ascending so Mon-Fri
     // templates land above Sat-Sun in the common seeding.
     wd.sort((a, b) => {
@@ -72,7 +80,13 @@ export function CalendarRulesDrawer({ open, onClose }: Props) {
       const bw = (b.value as CalendarRuleWeekday).weekdays[0] ?? 0;
       return aw - bw;
     });
-    return { singleDate: single, dateRange: range, cycle: cyc, weekday: wd };
+    return {
+      singleDate: single,
+      dateRange: range,
+      cycle: cyc,
+      weekday: wd,
+      external: ext,
+    };
   }, [calendarRules]);
 
   if (!open) return null;
@@ -109,7 +123,9 @@ export function CalendarRulesDrawer({ open, onClose }: Props) {
         </header>
 
         <div className="px-5 pt-3 text-xs text-ink-tertiary">
-          优先级：<span className="text-ink-secondary">单日 → 范围 → 循环 → 星期几 → 内置启发</span>。改动即时落库；点规则右侧 ✎ 可原地编辑。
+          优先级由顶部「整体优先级」拖拽排序决定 ·
+          <span className="text-ink-secondary">v0.8.1 起</span>。改动即时落库；
+          点规则右侧 ✎ 可原地编辑。
         </div>
 
         <div className="flex items-center justify-end px-5 pt-3">
@@ -120,6 +136,15 @@ export function CalendarRulesDrawer({ open, onClose }: Props) {
         </div>
 
         <div className="mt-4 flex flex-1 flex-col gap-6 overflow-y-auto px-5 pb-6">
+          {/* v0.8.1 — top section: drag-to-reorder priority list of
+              ALL rules across kinds. Editing still happens in the
+              kind-specific sections below. */}
+          <PriorityOrderSection
+            rules={Object.values(calendarRules)}
+            calendarRuleOrder={userProfile?.calendarRuleOrder ?? []}
+            templates={templatesList}
+            effectiveFrom={effectiveFrom}
+          />
           <SingleDateSection
             rules={singleDate}
             templates={templatesList}
@@ -137,6 +162,11 @@ export function CalendarRulesDrawer({ open, onClose }: Props) {
           />
           <WeekdaySection
             rules={weekday}
+            templates={templatesList}
+            effectiveFrom={effectiveFrom}
+          />
+          <ExternalEventSection
+            rules={external}
             templates={templatesList}
             effectiveFrom={effectiveFrom}
           />
@@ -946,6 +976,425 @@ function FormActions({
       >
         保存
       </button>
+    </div>
+  );
+}
+
+// ============ v0.8.1 priority-order section ============
+//
+// Single ordered list across all rule kinds. Drag-to-reorder writes
+// the new order to `userProfile.calendarRuleOrder` via the new
+// `setCalendarRuleOrder` action. Rules NOT yet in the user's order
+// list (legacy v0.8.0- rules with numeric priority) are appended in
+// priority desc + createdAt desc order — same fallback the resolver
+// uses, so the drawer's display matches what actually applies.
+//
+// Drag implementation uses HTML5 native drag-and-drop API. With
+// typical N=3-8 rules per user, no library is needed; every drag
+// transitions in-place and a final drop fires
+// `setCalendarRuleOrder` with the full new id list.
+
+function PriorityOrderSection({
+  rules,
+  calendarRuleOrder,
+  templates,
+  effectiveFrom,
+}: {
+  rules: CalendarRule[];
+  calendarRuleOrder: string[];
+  templates: Template[];
+  effectiveFrom: string | undefined;
+}) {
+  const setCalendarRuleOrder = useStore((s) => s.setCalendarRuleOrder);
+  const sortedIds = useMemo(() => {
+    const idSet = new Set(rules.map((r) => r.id));
+    const inOrder = calendarRuleOrder.filter((id) => idSet.has(id));
+    const inOrderSet = new Set(inOrder);
+    const outOfOrder = rules
+      .filter((r) => !inOrderSet.has(r.id))
+      .sort(
+        (a, b) =>
+          (b.priority ?? 0) - (a.priority ?? 0) ||
+          b.createdAt - a.createdAt,
+      )
+      .map((r) => r.id);
+    return [...inOrder, ...outOfOrder];
+  }, [rules, calendarRuleOrder]);
+
+  const ruleById = useMemo(() => {
+    const m = new Map<string, CalendarRule>();
+    for (const r of rules) m.set(r.id, r);
+    return m;
+  }, [rules]);
+
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+
+  const onDragStart = (id: string) => (e: React.DragEvent) => {
+    setDraggingId(id);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', id);
+  };
+  const onDragOver = (id: string) => (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (overId !== id) setOverId(id);
+  };
+  const onDragEnd = () => {
+    setDraggingId(null);
+    setOverId(null);
+  };
+  const onDrop = (targetId: string) => (e: React.DragEvent) => {
+    e.preventDefault();
+    if (!draggingId || draggingId === targetId) {
+      onDragEnd();
+      return;
+    }
+    const next = sortedIds.filter((id) => id !== draggingId);
+    const targetIdx = next.indexOf(targetId);
+    next.splice(targetIdx, 0, draggingId);
+    void setCalendarRuleOrder(next);
+    onDragEnd();
+  };
+
+  return (
+    <SectionShell
+      title="整体优先级"
+      subtitle="拖拽排序 · 上面的优先 · 同一日期被多条规则命中时取第一条匹配的"
+    >
+      {sortedIds.length === 0 ? (
+        <EmptyHint text="暂无规则。下方各分区添加后会出现在这里。" />
+      ) : (
+        sortedIds.map((id) => {
+          const r = ruleById.get(id);
+          if (!r) return null;
+          return (
+            <div
+              key={id}
+              draggable
+              onDragStart={onDragStart(id)}
+              onDragOver={onDragOver(id)}
+              onDrop={onDrop(id)}
+              onDragEnd={onDragEnd}
+              className={clsx(
+                'flex items-center gap-2 rounded-md bg-surface-1 px-2 py-1.5 transition',
+                draggingId === id && 'opacity-40',
+                overId === id && draggingId !== id && 'ring-2 ring-ink-primary/30',
+              )}
+            >
+              <GripVertical
+                className="h-3.5 w-3.5 shrink-0 cursor-grab text-ink-tertiary"
+                strokeWidth={1.6}
+              />
+              <KindBadge kind={r.kind} />
+              <span className="min-w-0 flex-1 truncate text-xs text-ink-secondary">
+                {ruleSummary(r, templates)}
+              </span>
+              <RemoveButton id={id} effectiveFrom={effectiveFrom} />
+            </div>
+          );
+        })
+      )}
+    </SectionShell>
+  );
+}
+
+const KIND_LABEL_ZH: Record<CalendarRule['kind'], string> = {
+  'single-date': '单日',
+  'date-range': '范围',
+  cycle: '循环',
+  weekday: '星期',
+  'external-event': '属性',
+};
+
+function KindBadge({ kind }: { kind: CalendarRule['kind'] }) {
+  return (
+    <span className="shrink-0 rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+      {KIND_LABEL_ZH[kind]}
+    </span>
+  );
+}
+
+/** Human-readable one-line summary for a rule, displayed in the
+ *  priority list. Each kind's summary is hand-written rather than
+ *  generic so users can identify rules at a glance. */
+function ruleSummary(r: CalendarRule, templates: Template[]): string {
+  const tplName = (key: string) =>
+    templates.find((t) => t.key === key)?.name ?? key;
+  switch (r.kind) {
+    case 'single-date': {
+      const v = r.value as CalendarRuleSingleDate;
+      return `${v.date} → ${tplName(v.templateKey)}`;
+    }
+    case 'date-range': {
+      const v = r.value as CalendarRuleDateRange;
+      const label = v.label ? `${v.label} · ` : '';
+      return `${label}${v.from} – ${v.to} → ${tplName(v.templateKey)}`;
+    }
+    case 'weekday': {
+      const v = r.value as CalendarRuleWeekday;
+      const days = v.weekdays
+        .map((d) => ['日', '一', '二', '三', '四', '五', '六'][d])
+        .join('');
+      return `周${days} → ${tplName(v.templateKey)}`;
+    }
+    case 'cycle': {
+      const v = r.value as CalendarRuleCycle;
+      return `${v.cycleLength} 天循环 (锚点 ${v.anchor}) → ${v.mapping
+        .map((m) => tplName(m))
+        .join(' / ')}`;
+    }
+    case 'external-event': {
+      const v = r.value as CalendarRuleExternalEvent;
+      const kindNames = v.kinds
+        .map(
+          (k) =>
+            ({
+              holiday: '节假日',
+              observance: '观察日',
+              'makeup-workday': '调休',
+              'user-note': '备注',
+            })[k],
+        )
+        .join('+');
+      const regionPart =
+        v.regions && v.regions.length > 0 ? ` (${v.regions.join(',')})` : '';
+      const labelPart = v.label ? `${v.label} · ` : '';
+      return `${labelPart}${kindNames}${regionPart} → ${tplName(v.templateKey)}`;
+    }
+  }
+}
+
+// ============ v0.8.1 external-event section ============
+
+function ExternalEventSection({
+  rules,
+  templates,
+  effectiveFrom,
+}: {
+  rules: CalendarRule[];
+  templates: Template[];
+  effectiveFrom: string | undefined;
+}) {
+  const upsertExternalEventRule = useStore((s) => s.upsertExternalEventRule);
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  return (
+    <SectionShell
+      title="属性匹配"
+      subtitle="按日期属性（节假日 / 调休 / 观察日 / 备注）匹配 · v0.8.1 新"
+      addCTA="新建属性规则"
+      onAdd={() => {
+        setFormOpen((v) => !v);
+        setEditingId(null);
+      }}
+    >
+      {formOpen && (
+        <ExternalEventForm
+          templates={templates}
+          onSubmit={async (opts) => {
+            await upsertExternalEventRule({ ...opts, effectiveFrom });
+            setFormOpen(false);
+          }}
+          onCancel={() => setFormOpen(false)}
+        />
+      )}
+      {rules.length === 0 && !formOpen ? (
+        <EmptyHint text="暂无属性匹配规则" />
+      ) : (
+        rules.map((r) => {
+          const v = r.value as CalendarRuleExternalEvent;
+          const editing = editingId === r.id;
+          if (editing) {
+            return (
+              <ExternalEventForm
+                key={r.id}
+                templates={templates}
+                initial={{
+                  kinds: v.kinds,
+                  regions: v.regions ?? [],
+                  templateKey: v.templateKey,
+                  label: v.label ?? '',
+                }}
+                onSubmit={async (opts) => {
+                  await upsertExternalEventRule({
+                    id: r.id,
+                    ...opts,
+                    effectiveFrom,
+                  });
+                  setEditingId(null);
+                }}
+                onCancel={() => setEditingId(null)}
+              />
+            );
+          }
+          return (
+            <div
+              key={r.id}
+              className="flex items-center justify-between gap-2 rounded-md bg-surface-1 px-3 py-1.5"
+            >
+              <span className="min-w-0 flex-1 truncate text-xs text-ink-secondary">
+                {ruleSummary(r, templates)}
+              </span>
+              <div className="flex items-center gap-2">
+                <TemplateTag templates={templates} templateKey={v.templateKey} />
+                <EditButton onClick={() => setEditingId(r.id)} />
+                <RemoveButton id={r.id} effectiveFrom={effectiveFrom} />
+              </div>
+            </div>
+          );
+        })
+      )}
+    </SectionShell>
+  );
+}
+
+const EXTERNAL_KIND_OPTIONS: ReadonlyArray<{
+  value: ExternalEventMatchKind;
+  label: string;
+}> = [
+  { value: 'holiday', label: '节假日' },
+  { value: 'makeup-workday', label: '调休' },
+  { value: 'observance', label: '观察日（母亲节等）' },
+  { value: 'user-note', label: '我的备注' },
+];
+
+function ExternalEventForm({
+  templates,
+  initial,
+  onSubmit,
+  onCancel,
+}: {
+  templates: Template[];
+  initial?: {
+    kinds: ExternalEventMatchKind[];
+    regions: string[];
+    templateKey: string;
+    label: string;
+  };
+  onSubmit: (opts: {
+    kinds: ExternalEventMatchKind[];
+    regions?: string[];
+    templateKey: string;
+    label?: string;
+  }) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [kinds, setKinds] = useState<ExternalEventMatchKind[]>(
+    initial?.kinds ?? ['holiday'],
+  );
+  const [regions, setRegions] = useState<string[]>(initial?.regions ?? []);
+  const [templateKey, setTemplateKey] = useState<string>(
+    initial?.templateKey ?? templates[0]?.key ?? '',
+  );
+  const [label, setLabel] = useState(initial?.label ?? '');
+  const allRegions = listHolidayRegions();
+  const toggleKind = (k: ExternalEventMatchKind) => {
+    setKinds((prev) =>
+      prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k],
+    );
+  };
+  const toggleRegion = (r: string) => {
+    setRegions((prev) =>
+      prev.includes(r) ? prev.filter((x) => x !== r) : [...prev, r],
+    );
+  };
+  const submit = async () => {
+    if (kinds.length === 0 || !templateKey) return;
+    await onSubmit({
+      kinds,
+      ...(regions.length > 0 && { regions }),
+      templateKey,
+      ...(label.trim() && { label: label.trim() }),
+    });
+  };
+  return (
+    <div className="flex flex-col gap-2 rounded-md bg-surface-1 px-3 py-3">
+      <div className="flex flex-col gap-1">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          匹配 kind（至少选一个）
+        </span>
+        <div className="flex flex-wrap gap-1.5">
+          {EXTERNAL_KIND_OPTIONS.map((opt) => {
+            const active = kinds.includes(opt.value);
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => toggleKind(opt.value)}
+                className={clsx(
+                  'rounded-md px-2 py-1 text-xs transition',
+                  active
+                    ? 'bg-ink-primary text-surface-0'
+                    : 'bg-surface-2 text-ink-secondary hover:bg-surface-3',
+                )}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="flex flex-col gap-1">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          区域过滤（可选 · 不选 = 所有已启用区域）
+        </span>
+        <div className="flex flex-wrap gap-1.5">
+          {allRegions.map((r) => {
+            const active = regions.includes(r);
+            const display = getHolidayDatasetDisplayName(r, 'zh-CN') ?? r;
+            return (
+              <button
+                key={r}
+                type="button"
+                onClick={() => toggleRegion(r)}
+                className={clsx(
+                  'rounded-md px-2 py-1 text-xs transition',
+                  active
+                    ? 'bg-ink-primary text-surface-0'
+                    : 'bg-surface-2 text-ink-secondary hover:bg-surface-3',
+                )}
+              >
+                {display}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          应用模板
+        </span>
+        <select
+          value={templateKey}
+          onChange={(e) => setTemplateKey(e.target.value)}
+          className="h-7 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none focus:border-ink-secondary"
+        >
+          {templates.map((t) => (
+            <option key={t.key} value={t.key}>
+              {t.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          名字（可选）
+        </span>
+        <input
+          type="text"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="例：节假日休息"
+          className="h-7 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+        />
+      </div>
+      <FormActions
+        onCancel={onCancel}
+        onSubmit={() => {
+          void submit();
+        }}
+      />
     </div>
   );
 }
