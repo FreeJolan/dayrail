@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { clsx } from 'clsx';
 import { GripVertical, Pencil, Plus, X } from 'lucide-react';
 import {
@@ -991,15 +991,33 @@ function PriorityOrderSection({
   const [addingKind, setAddingKind] = useState<CalendarRule['kind'] | null>(
     null,
   );
+
+  // Drag state. The drag-and-drop handlers live on the container (not
+  // per-row), so the deadzones above the first row and below the last
+  // row no longer eat the gesture: the user can hover anywhere inside
+  // the container's padding — even far above or below the rows —
+  // and `computeDropIdx` snaps the indicator to the nearest gap.
+  //
+  // `dropIdx` is the index into the without-dragged list at which the
+  // dragged item will be reinserted. Range: 0 (top of list) ..
+  // ids.length (after the last row).
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [overId, setOverId] = useState<string | null>(null);
-  // Track upper-half vs lower-half cursor position within the target
-  // row, so the user can drop a rule BOTH above and below any other
-  // rule — without this, the splice was hardcoded to "insert before
-  // target" and the very last position was unreachable. Also gives a
-  // direction-aware insertion line indicator.
-  const [dropPosition, setDropPosition] = useState<'above' | 'below' | null>(
-    null,
+  const [dropIdx, setDropIdx] = useState<number | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
+
+  const computeDropIdx = useCallback(
+    (clientY: number): number => {
+      const ids = sortedIds.filter((id) => id !== draggingId);
+      for (let i = 0; i < ids.length; i++) {
+        const el = rowRefs.current.get(ids[i]!);
+        if (!el) continue;
+        const rect = el.getBoundingClientRect();
+        if (clientY < rect.top + rect.height / 2) return i;
+      }
+      return ids.length;
+    },
+    [sortedIds, draggingId],
   );
 
   const onDragStart = (id: string) => (e: React.DragEvent) => {
@@ -1007,106 +1025,131 @@ function PriorityOrderSection({
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', id);
   };
-  const onDragOver = (id: string) => (e: React.DragEvent<HTMLDivElement>) => {
+  const onContainerDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!draggingId) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pos: 'above' | 'below' =
-      e.clientY < rect.top + rect.height / 2 ? 'above' : 'below';
-    if (overId !== id) setOverId(id);
-    if (dropPosition !== pos) setDropPosition(pos);
+    const idx = computeDropIdx(e.clientY);
+    if (dropIdx !== idx) setDropIdx(idx);
+  };
+  const onContainerDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    // Only clear if the cursor truly left the container (not just
+    // moved between child rows). The relatedTarget is the element
+    // entered next; if it's a descendant of the container, we're
+    // still inside.
+    if (
+      containerRef.current &&
+      e.relatedTarget instanceof Node &&
+      containerRef.current.contains(e.relatedTarget)
+    ) {
+      return;
+    }
+    setDropIdx(null);
   };
   const onDragEnd = () => {
     setDraggingId(null);
-    setOverId(null);
-    setDropPosition(null);
+    setDropIdx(null);
   };
-  const onDrop = (targetId: string) => (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    if (!draggingId || draggingId === targetId) {
+  const onContainerDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!draggingId) {
       onDragEnd();
       return;
     }
-    // WYSIWYG: compute "above vs below" FROM THIS DROP EVENT instead
-    // of reading the React `dropPosition` state. setState in
-    // onDragOver is async; if the user drops a few ms after the most
-    // recent dragOver tick, the closure here would read the
-    // previous-tick's value. Recomputing from `e.clientY` against
-    // `e.currentTarget.getBoundingClientRect()` makes the actual
-    // drop deterministic with what the cursor is currently doing —
-    // the visual indicator may briefly lag, but the drop result
-    // never disagrees with the cursor's current position.
-    const rect = e.currentTarget.getBoundingClientRect();
-    const dropAbove = e.clientY < rect.top + rect.height / 2;
-    const next = sortedIds.filter((id) => id !== draggingId);
-    let targetIdx = next.indexOf(targetId);
-    if (!dropAbove) targetIdx += 1;
-    next.splice(targetIdx, 0, draggingId);
-    void setCalendarRuleOrder(next);
+    e.preventDefault();
+    // WYSIWYG: recompute the drop index from THIS drop event's
+    // clientY rather than reading `dropIdx` from React state, which
+    // is async. The visual indicator may briefly lag, but the
+    // committed drop always matches the cursor at the moment of
+    // release.
+    const idx = computeDropIdx(e.clientY);
+    const ids = sortedIds.filter((id) => id !== draggingId);
+    ids.splice(idx, 0, draggingId);
+    void setCalendarRuleOrder(ids);
     onDragEnd();
   };
+
+  // Without-dragged list is the basis for `dropIdx` math.
+  const idsWithoutDragged = useMemo(
+    () => sortedIds.filter((id) => id !== draggingId),
+    [sortedIds, draggingId],
+  );
 
   return (
     <SectionShell
       title="规则列表"
       subtitle="拖拽排序优先级 · 上面的优先 · 点 ✎ 编辑 · 点底部 + 添加新规则"
     >
-      {sortedIds.length === 0 && addingKind === null ? (
-        <EmptyHint text="暂无规则。点下方「+ 添加规则」开始。" />
-      ) : (
-        sortedIds.map((id) => {
-          const r = ruleById.get(id);
-          if (!r) return null;
-          if (editingId === id) {
+      {/* Container catches drag events anywhere inside its padded
+          area, not just on individual rows. py-2 gives a generous
+          drop-zone above the first row and below the last row, so
+          dragging "to position 0" or "to last" works even when the
+          cursor is slightly outside the row's own bounding box. */}
+      <div
+        ref={containerRef}
+        onDragOver={onContainerDragOver}
+        onDragLeave={onContainerDragLeave}
+        onDrop={onContainerDrop}
+        className="flex flex-col gap-1.5 py-2"
+      >
+        {sortedIds.length === 0 && addingKind === null ? (
+          <EmptyHint text="暂无规则。点下方「+ 添加规则」开始。" />
+        ) : (
+          sortedIds.map((id) => {
+            const r = ruleById.get(id);
+            if (!r) return null;
+            if (editingId === id) {
+              return (
+                <RuleEditCard
+                  key={id}
+                  rule={r}
+                  templates={templates}
+                  effectiveFrom={effectiveFrom}
+                  onClose={() => setEditingId(null)}
+                />
+              );
+            }
+            const isDragged = id === draggingId;
+            const undragIdx = idsWithoutDragged.indexOf(id);
+            // Indicator on this row when dragging:
+            //   `above` if dropIdx points to this row's slot
+            //   `below` only on the last row when dropIdx === length
+            //           (the "drop after the last row" case)
+            const showAbove = !isDragged && dropIdx === undragIdx;
+            const showBelow =
+              !isDragged &&
+              undragIdx === idsWithoutDragged.length - 1 &&
+              dropIdx === idsWithoutDragged.length;
             return (
-              <RuleEditCard
+              <div
                 key={id}
-                rule={r}
-                templates={templates}
-                effectiveFrom={effectiveFrom}
-                onClose={() => setEditingId(null)}
-              />
+                ref={(el) => {
+                  rowRefs.current.set(id, el);
+                }}
+                draggable
+                onDragStart={onDragStart(id)}
+                onDragEnd={onDragEnd}
+                className={clsx(
+                  'flex items-center gap-2 rounded-md bg-surface-1 px-2 py-1.5 transition',
+                  isDragged && 'opacity-40',
+                  showAbove && 'shadow-[0_-2px_0_0_rgb(var(--ink-primary))]',
+                  showBelow && 'shadow-[0_2px_0_0_rgb(var(--ink-primary))]',
+                )}
+              >
+                <GripVertical
+                  className="h-3.5 w-3.5 shrink-0 cursor-grab text-ink-tertiary"
+                  strokeWidth={1.6}
+                />
+                <KindBadge kind={r.kind} />
+                <span className="min-w-0 flex-1 truncate text-xs text-ink-secondary">
+                  {ruleSummary(r, templates)}
+                </span>
+                <EditButton onClick={() => setEditingId(id)} />
+                <RemoveButton id={id} effectiveFrom={effectiveFrom} />
+              </div>
             );
-          }
-          return (
-            <div
-              key={id}
-              draggable
-              onDragStart={onDragStart(id)}
-              onDragOver={onDragOver(id)}
-              onDrop={onDrop(id)}
-              onDragEnd={onDragEnd}
-              className={clsx(
-                'flex items-center gap-2 rounded-md bg-surface-1 px-2 py-1.5 transition',
-                // Insertion line above OR below the target row depending
-                // on the cursor's vertical half — gives the user a
-                // reachable "drop after the last item" path. box-shadow
-                // avoids the 2px layout shift a border would cause.
-                draggingId === id && 'opacity-40',
-                overId === id &&
-                  draggingId !== id &&
-                  dropPosition === 'above' &&
-                  'shadow-[0_-2px_0_0_rgb(var(--ink-primary))]',
-                overId === id &&
-                  draggingId !== id &&
-                  dropPosition === 'below' &&
-                  'shadow-[0_2px_0_0_rgb(var(--ink-primary))]',
-              )}
-            >
-              <GripVertical
-                className="h-3.5 w-3.5 shrink-0 cursor-grab text-ink-tertiary"
-                strokeWidth={1.6}
-              />
-              <KindBadge kind={r.kind} />
-              <span className="min-w-0 flex-1 truncate text-xs text-ink-secondary">
-                {ruleSummary(r, templates)}
-              </span>
-              <EditButton onClick={() => setEditingId(id)} />
-              <RemoveButton id={id} effectiveFrom={effectiveFrom} />
-            </div>
-          );
-        })
-      )}
+          })
+        )}
+      </div>
 
       {/* Add-rule entry: kind picker → kind-specific form below. */}
       {addingKind === null ? (
