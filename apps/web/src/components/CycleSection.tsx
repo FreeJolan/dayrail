@@ -736,18 +736,22 @@ function RailRowLabel({
 function OffRailRowLabel() {
   // Visually distinct from a real rail row: no color bar, dashed
   // outline, italic copy. Communicates "these tasks lost their rail"
-  // without pretending to be a peer of the user's own rails. Drag the
-  // pill onto any rail above to recover.
+  // without pretending to be a peer of the user's own rails.
+  //
+  // The "off-rail · 拖回任意 rail 即可恢复" subtitle used to render
+  // here as a second line, but at font-mono size + the dashed border
+  // padding it overflowed the table's 220px label column under
+  // `table-fixed`, pushing every day cell in the off-rail row out of
+  // alignment with the rail rows above. Demoted to a `title=`
+  // tooltip — the main label alone reads cleanly enough, and the
+  // recovery hint is a one-time learning moment.
   return (
-    <div className="flex items-center gap-2 rounded-sm border border-dashed border-hairline/60 bg-surface-0/40 pl-0.5 pr-1.5 py-1">
-      <span aria-hidden className="h-6 w-1 shrink-0" />
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-sm italic text-ink-secondary">
-          未归属
-        </span>
-        <span className="truncate font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          off-rail · 拖回任意 rail 即可恢复
-        </span>
+    <div
+      title="未归属 · 拖回任意 rail 即可恢复"
+      className="flex max-w-full items-center gap-2 overflow-hidden rounded-sm border border-dashed border-hairline/60 bg-surface-0/40 px-1.5 py-1"
+    >
+      <span className="truncate text-sm italic text-ink-secondary">
+        未归属
       </span>
     </div>
   );
