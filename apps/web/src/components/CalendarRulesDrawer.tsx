@@ -1140,7 +1140,10 @@ function PriorityOrderSection({
                   strokeWidth={1.6}
                 />
                 <KindBadge kind={r.kind} />
-                <span className="min-w-0 flex-1 truncate text-xs text-ink-secondary">
+                <span
+                  className="min-w-0 flex-1 truncate text-xs text-ink-secondary"
+                  title={ruleSummary(r, templates)}
+                >
                   {ruleSummary(r, templates)}
                 </span>
                 <EditButton onClick={() => setEditingId(id)} />
@@ -1551,7 +1554,10 @@ function ExternalEventSection({
               key={r.id}
               className="flex items-center justify-between gap-2 rounded-md bg-surface-1 px-3 py-1.5"
             >
-              <span className="min-w-0 flex-1 truncate text-xs text-ink-secondary">
+              <span
+                className="min-w-0 flex-1 truncate text-xs text-ink-secondary"
+                title={ruleSummary(r, templates)}
+              >
                 {ruleSummary(r, templates)}
               </span>
               <div className="flex items-center gap-2">
