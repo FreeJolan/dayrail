@@ -1319,6 +1319,7 @@ function RuleEditCard({
           initial={{
             kinds: v.kinds,
             regions: v.regions ?? [],
+            ...(v.noteLabelFilter && { noteLabelFilter: v.noteLabelFilter }),
             templateKey: v.templateKey,
             label: v.label ?? '',
           }}
@@ -1464,7 +1465,7 @@ function ruleSummary(r: CalendarRule, templates: Template[]): string {
           (k) =>
             ({
               holiday: '节假日',
-              observance: '观察日',
+              observance: '节庆',
               'makeup-workday': '调休',
               'user-note': '备注',
             })[k],
@@ -1472,8 +1473,11 @@ function ruleSummary(r: CalendarRule, templates: Template[]): string {
         .join('+');
       const regionPart =
         v.regions && v.regions.length > 0 ? ` (${v.regions.join(',')})` : '';
+      const noteFilterPart = v.noteLabelFilter?.query
+        ? ` 备注${v.noteLabelFilter.mode === 'exact' ? '=' : '⊇'}「${v.noteLabelFilter.query}」`
+        : '';
       const labelPart = v.label ? `${v.label} · ` : '';
-      return `${labelPart}${kindNames}${regionPart} → ${tplName(v.templateKey)}`;
+      return `${labelPart}${kindNames}${regionPart}${noteFilterPart} → ${tplName(v.templateKey)}`;
     }
   }
 }
@@ -1568,7 +1572,11 @@ const EXTERNAL_KIND_OPTIONS: ReadonlyArray<{
 }> = [
   { value: 'holiday', label: '节假日' },
   { value: 'makeup-workday', label: '调休' },
-  { value: 'observance', label: '观察日（母亲节等）' },
+  // observance kind covers cultural / commemorative dates that aren't
+  // statutory off-days (母亲节 / 父亲节 / 元宵 / 七夕 / 教师节 / 重阳
+  // / 圣诞 etc.). The UI label "节庆" reads more naturally in Chinese
+  // than the literal translation "观察日" — same underlying kind.
+  { value: 'observance', label: '节庆（母亲节 / 七夕 等）' },
   { value: 'user-note', label: '我的备注' },
 ];
 
@@ -1582,12 +1590,14 @@ function ExternalEventForm({
   initial?: {
     kinds: ExternalEventMatchKind[];
     regions: string[];
+    noteLabelFilter?: { mode: 'contains' | 'exact'; query: string };
     templateKey: string;
     label: string;
   };
   onSubmit: (opts: {
     kinds: ExternalEventMatchKind[];
     regions?: string[];
+    noteLabelFilter?: { mode: 'contains' | 'exact'; query: string };
     templateKey: string;
     label?: string;
   }) => Promise<void>;
@@ -1597,11 +1607,18 @@ function ExternalEventForm({
     initial?.kinds ?? ['holiday'],
   );
   const [regions, setRegions] = useState<string[]>(initial?.regions ?? []);
+  const [noteFilterMode, setNoteFilterMode] = useState<'contains' | 'exact'>(
+    initial?.noteLabelFilter?.mode ?? 'contains',
+  );
+  const [noteFilterQuery, setNoteFilterQuery] = useState<string>(
+    initial?.noteLabelFilter?.query ?? '',
+  );
   const [templateKey, setTemplateKey] = useState<string>(
     initial?.templateKey ?? templates[0]?.key ?? '',
   );
   const [label, setLabel] = useState(initial?.label ?? '');
   const allRegions = listHolidayRegions();
+  const userNoteSelected = kinds.includes('user-note');
   const toggleKind = (k: ExternalEventMatchKind) => {
     setKinds((prev) =>
       prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k],
@@ -1614,9 +1631,19 @@ function ExternalEventForm({
   };
   const submit = async () => {
     if (kinds.length === 0 || !templateKey) return;
+    const trimmedNoteQuery = noteFilterQuery.trim();
     await onSubmit({
       kinds,
       ...(regions.length > 0 && { regions }),
+      // Only forward the filter when the user actually picked
+      // user-note AND typed a non-empty query.
+      ...(userNoteSelected &&
+        trimmedNoteQuery.length > 0 && {
+          noteLabelFilter: {
+            mode: noteFilterMode,
+            query: trimmedNoteQuery,
+          },
+        }),
       templateKey,
       ...(label.trim() && { label: label.trim() }),
     });
@@ -1674,6 +1701,48 @@ function ExternalEventForm({
           })}
         </div>
       </div>
+      {userNoteSelected && (
+        <div className="flex flex-col gap-1">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            备注文本筛选（可选 · 留空 = 匹配任意备注）
+          </span>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setNoteFilterMode('contains')}
+              className={clsx(
+                'shrink-0 rounded-md px-2 py-1 text-xs transition',
+                noteFilterMode === 'contains'
+                  ? 'bg-ink-primary text-surface-0'
+                  : 'bg-surface-2 text-ink-secondary hover:bg-surface-3',
+              )}
+            >
+              包含
+            </button>
+            <button
+              type="button"
+              onClick={() => setNoteFilterMode('exact')}
+              className={clsx(
+                'shrink-0 rounded-md px-2 py-1 text-xs transition',
+                noteFilterMode === 'exact'
+                  ? 'bg-ink-primary text-surface-0'
+                  : 'bg-surface-2 text-ink-secondary hover:bg-surface-3',
+              )}
+            >
+              精确匹配
+            </button>
+            <input
+              type="text"
+              value={noteFilterQuery}
+              onChange={(e) => setNoteFilterQuery(e.target.value)}
+              placeholder={
+                noteFilterMode === 'contains' ? '例：生日' : '例：看牙医'
+              }
+              className="h-7 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-xs text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+            />
+          </div>
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <span className="shrink-0 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
           应用模板

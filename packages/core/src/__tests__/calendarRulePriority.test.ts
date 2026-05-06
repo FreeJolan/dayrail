@@ -131,6 +131,124 @@ describe('calendarRuleApplies · external-event kind', () => {
     expect(calendarRuleApplies(r, '2026-05-12', ctx)).toBe(true);
   });
 
+  it('user-note noteLabelFilter "contains" mode narrows by substring', () => {
+    const r: CalendarRule = {
+      id: 'r-nf-contains',
+      kind: 'external-event',
+      value: {
+        kinds: ['user-note'],
+        noteLabelFilter: { mode: 'contains', query: '生日' },
+        templateKey: 'restday',
+      },
+      createdAt: 1,
+    };
+    const ctx = {
+      userDayNotes: {
+        n1: {
+          id: 'n1',
+          date: '2026-05-12',
+          label: '妈妈生日',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        n2: {
+          id: 'n2',
+          date: '2026-05-13',
+          label: '看牙医',
+          createdAt: 2,
+          updatedAt: 2,
+        },
+      },
+      enabledHolidayRegions: [] as string[],
+    };
+    expect(calendarRuleApplies(r, '2026-05-12', ctx)).toBe(true);
+    expect(calendarRuleApplies(r, '2026-05-13', ctx)).toBe(false);
+  });
+
+  it('user-note noteLabelFilter "exact" mode requires full label match', () => {
+    const r: CalendarRule = {
+      id: 'r-nf-exact',
+      kind: 'external-event',
+      value: {
+        kinds: ['user-note'],
+        noteLabelFilter: { mode: 'exact', query: '看牙医' },
+        templateKey: 'workday',
+      },
+      createdAt: 1,
+    };
+    const ctx = {
+      userDayNotes: {
+        n1: {
+          id: 'n1',
+          date: '2026-05-13',
+          label: '看牙医',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        n2: {
+          id: 'n2',
+          date: '2026-05-14',
+          label: '看牙医（复诊）',
+          createdAt: 2,
+          updatedAt: 2,
+        },
+      },
+      enabledHolidayRegions: [] as string[],
+    };
+    expect(calendarRuleApplies(r, '2026-05-13', ctx)).toBe(true);
+    // Exact mode rejects "看牙医（复诊）" because it isn't equal.
+    expect(calendarRuleApplies(r, '2026-05-14', ctx)).toBe(false);
+  });
+
+  it('empty noteLabelFilter.query degrades to "match any note"', () => {
+    const r: CalendarRule = {
+      id: 'r-nf-empty',
+      kind: 'external-event',
+      value: {
+        kinds: ['user-note'],
+        noteLabelFilter: { mode: 'contains', query: '   ' },
+        templateKey: 'restday',
+      },
+      createdAt: 1,
+    };
+    const ctx = {
+      userDayNotes: {
+        n1: {
+          id: 'n1',
+          date: '2026-05-12',
+          label: 'whatever',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      },
+      enabledHolidayRegions: [] as string[],
+    };
+    expect(calendarRuleApplies(r, '2026-05-12', ctx)).toBe(true);
+  });
+
+  it('noteLabelFilter does not affect non-user-note matches', () => {
+    setHolidayDatasets([ZH_CN]);
+    const r: CalendarRule = {
+      id: 'r-nf-mixed',
+      kind: 'external-event',
+      value: {
+        // Holiday + user-note both selected; the note filter only
+        // narrows the user-note kind, holidays still match by date.
+        kinds: ['holiday', 'user-note'],
+        noteLabelFilter: { mode: 'exact', query: '看牙医' },
+        templateKey: 'restday',
+      },
+      createdAt: 1,
+    };
+    const ctx = {
+      userDayNotes: {} as Record<string, UserDayNote>,
+      enabledHolidayRegions: ['zh-CN'],
+    };
+    // 2026-05-01 has a holiday (劳动节), no user-note → match should
+    // still fire because the holiday side ignores noteLabelFilter.
+    expect(calendarRuleApplies(r, '2026-05-01', ctx)).toBe(true);
+  });
+
   it('returns false with empty kinds array', () => {
     const r: CalendarRule = {
       id: 'r5',

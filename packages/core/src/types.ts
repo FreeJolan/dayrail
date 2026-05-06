@@ -397,6 +397,22 @@ export interface CalendarRuleExternalEvent {
    *  or empty = match any enabled region. `user-note` events have no
    *  region and ignore this field. */
   regions?: string[];
+  /** Narrow `user-note` matching by the note's label (the user's own
+   *  text). Only applies when `'user-note'` is in `kinds`; other
+   *  kinds ignore it. Undefined / empty `query` = match every note.
+   *
+   *  Use cases the user asked for:
+   *    - `{ mode: 'contains', query: '生日' }`
+   *      "every note that mentions 生日 → restday"
+   *    - `{ mode: 'exact', query: '看牙医' }`
+   *      "only notes whose exact text is 看牙医 → workday"
+   *
+   *  v0.8.1 ships these two modes; regex / case-insensitive variants
+   *  are out of scope. */
+  noteLabelFilter?: {
+    mode: 'contains' | 'exact';
+    query: string;
+  };
   templateKey: TemplateKey;
   /** Optional human-readable label shown in the rules drawer
    *  ("我的法定节假日") — purely for the user's bookkeeping; the

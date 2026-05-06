@@ -283,6 +283,9 @@ export interface DayRailActions {
     id?: string;
     kinds: ExternalEventMatchKind[];
     regions?: string[];
+    /** v0.8.1 — narrow `user-note` matching by note label. See
+     *  CalendarRuleExternalEvent.noteLabelFilter. */
+    noteLabelFilter?: { mode: 'contains' | 'exact'; query: string };
     templateKey: TemplateKey;
     label?: string;
     effectiveFrom?: string;
@@ -1552,6 +1555,7 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
     id,
     kinds,
     regions,
+    noteLabelFilter,
     templateKey,
     label,
     effectiveFrom,
@@ -1567,9 +1571,20 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
         ? ((existing as YMap<unknown>).get('createdAt') as number) ??
           Date.now()
         : Date.now();
+    const trimmedNoteQuery = noteLabelFilter?.query.trim() ?? '';
     const value: CalendarRuleExternalEvent = {
       kinds: [...kinds],
       ...(regions && regions.length > 0 && { regions: [...regions] }),
+      // Persist noteLabelFilter only when the user actually entered
+      // a non-empty query — an empty filter is equivalent to "match
+      // any note" and should not waste storage / clutter the rule
+      // summary.
+      ...(noteLabelFilter && trimmedNoteQuery.length > 0 && {
+        noteLabelFilter: {
+          mode: noteLabelFilter.mode,
+          query: trimmedNoteQuery,
+        },
+      }),
       templateKey,
       ...(label !== undefined && label.trim().length > 0 && { label }),
     };
@@ -2126,6 +2141,12 @@ export function calendarRuleApplies(
       const kindSet = new Set<ExternalEventMatchKind>(v.kinds);
       const regionFilter =
         v.regions && v.regions.length > 0 ? new Set(v.regions) : null;
+      // Pre-trim the note-label query so the per-event closure does
+      // a single .includes / equality check; empty query degrades to
+      // "match any note".
+      const noteFilter = v.noteLabelFilter;
+      const noteQuery = noteFilter?.query.trim() ?? '';
+      const noteFilterActive = noteFilter !== undefined && noteQuery.length > 0;
       return events.some((ev) => {
         if (!kindSet.has(ev.kind as ExternalEventMatchKind)) return false;
         // user-note has no region; rule's regions filter is silently
@@ -2133,6 +2154,16 @@ export function calendarRuleApplies(
         // when they've also restricted regions for holidays).
         if (regionFilter && ev.regionCode) {
           if (!regionFilter.has(ev.regionCode)) return false;
+        }
+        // Note-label filter applies only to user-note events; other
+        // kinds pass through unchanged.
+        if (ev.kind === 'user-note' && noteFilterActive) {
+          if (noteFilter!.mode === 'exact' && ev.label !== noteQuery) return false;
+          if (
+            noteFilter!.mode === 'contains' &&
+            !ev.label.includes(noteQuery)
+          )
+            return false;
         }
         return true;
       });
