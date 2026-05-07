@@ -16,6 +16,14 @@ import {
 } from '../ai/prompts';
 
 // ------------ buildSystemPrompt ------------
+//
+// The prompt is persona-driven (warm friend / counselor / kind elder)
+// rather than rule-list-driven. These tests assert the persona +
+// philosophy + worked example are intact, plus a small set of hard
+// constraints (citation convention, no JSON, no headers). We do NOT
+// test for an exhaustive forbidden-vocab list — that approach was
+// reactive and accumulated faster than it caught patterns. Trust the
+// persona + the worked example to do most of the steering.
 
 describe('buildSystemPrompt', () => {
   it('embeds the requested output locale', () => {
@@ -23,98 +31,47 @@ describe('buildSystemPrompt', () => {
     expect(buildSystemPrompt('en-US')).toContain('en-US');
   });
 
-  it('asks for prose, not JSON', () => {
+  it('sets a warm-friend / counselor / kind-elder persona', () => {
     const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/short reflection/i);
-    expect(prompt).toMatch(/No JSON/);
-    expect(prompt).toMatch(/No code fences/);
+    expect(prompt).toMatch(/warm friend/i);
+    expect(prompt).toMatch(/counselor|kind elder/i);
+    expect(prompt).toMatch(/like you'd text a real friend/i);
   });
 
-  it('explicitly frames DayRail as NOT a productivity tracker / coach', () => {
+  it('articulates the DayRail "missing is allowed" (允许错过) ethos', () => {
     const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/NOT a productivity tracker/);
-    expect(prompt).toMatch(/NOT a coach/);
-    expect(prompt).toMatch(/Numbers like "match 0%".*are NOT failures/s);
+    expect(prompt).toContain('允许错过');
+    expect(prompt).toMatch(/MISSING IS ALLOWED/i);
+    expect(prompt).toMatch(/NOT to audit|NOT to grade their past/i);
   });
 
-  it('lists forbidden corporate / coaching vocabulary', () => {
+  it('teaches the three-step shape · notice warmly · offer 2-3 small possibilities · hand back the choice', () => {
     const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/FORBIDDEN VOCABULARY/);
-    // Sample of the actual blocklist words
-    expect(prompt).toContain('黑洞');
-    expect(prompt).toContain('拖低');
-    expect(prompt).toContain('必须');
-    expect(prompt).toContain('下周期');
-    expect(prompt).toContain('严重');
+    expect(prompt).toMatch(/Notice their situation warmly/i);
+    expect(prompt).toMatch(/2-3 small, gentle adjustments/i);
+    expect(prompt).toMatch(/Hand the choice back/i);
   });
 
-  it('forbids ## headers in the output', () => {
+  it('encourages compassionate hypotheses about why something might have slipped', () => {
     const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/No `##`/);
+    // The list of compassionate causes to consider
+    expect(prompt).toMatch(/maybe they were tired/);
+    expect(prompt).toMatch(/maybe their schedule got too full/);
+    expect(prompt).toMatch(/emotionally hard stretch/);
   });
 
-  it('forbids inline bold/italic section labels (the dashboard-in-disguise pattern)', () => {
+  it('teaches possibility-language (也许 / 可以试试 / 不妨) over imperative-language', () => {
     const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/Do NOT open paragraphs with bold\/italic labels/);
-    expect(prompt).toContain('**主线**');
-    expect(prompt).toContain('**对应数据**');
-    expect(prompt).toContain('**一个建议**');
+    expect(prompt).toContain('也许');
+    expect(prompt).toContain('可以试试');
+    expect(prompt).toContain('不妨');
   });
 
-  it('forbids standalone-line section headings (the round-2-bypass pattern)', () => {
+  it('lists examples of the right kind of small adjustment', () => {
     const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/standalone short lines as paragraph titles/);
-    expect(prompt).toContain('"你说了什么"');
-    expect(prompt).toContain('"我看到的"');
-    expect(prompt).toContain('"一个问题留给下周"');
-  });
-
-  it('forbids meta-announcement lines that name what comes next', () => {
-    const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/META-ANNOUNCEMENT LINES/);
-    expect(prompt).toMatch(/Never write a line that announces what comes next/);
-  });
-
-  it('forbids first-person reflection-meta phrases', () => {
-    const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toContain('我觉得这周');
-    expect(prompt).toContain('在我看来');
-    expect(prompt).toContain('我想说的是');
-  });
-
-  it('bans 下周 (round-2-bypass) and not just 下周期', () => {
-    const prompt = buildSystemPrompt('zh-CN');
-    // The forbidden vocabulary line should list 下周 alongside 下周期
-    expect(prompt).toMatch(/下周期.*下周|下周.*下周期/);
-  });
-
-  it('requires paragraphs to thread-connect, not jump to a new topic', () => {
-    const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/picks up where the last one left off/);
-    expect(prompt).toMatch(/one continuous train of thought/i);
-  });
-
-  it('includes a second ANTI-EXAMPLE for the standalone-line pattern', () => {
-    const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/ANTI-EXAMPLE 2/);
-    expect(prompt).toMatch(/just with the bold dropped/);
-  });
-
-  it('caps rail enumeration to ~3-4 by name', () => {
-    const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/at most 3-4 specific rails/i);
-    expect(prompt).toMatch(/do not enumerate every rail/i);
-  });
-
-  it('includes an ANTI-EXAMPLE block showing the dashboard pattern to avoid', () => {
-    const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/ANTI-EXAMPLE/);
-    expect(prompt).toMatch(/dashboard report wearing bold labels/i);
-  });
-
-  it('asks each paragraph to thread-connect rather than start a new topic', () => {
-    const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/picks up where the last one left off/);
+    expect(prompt).toMatch(/lower the frequency/i);
+    expect(prompt).toMatch(/shorten one occurrence/i);
+    expect(prompt).toMatch(/move it to a different time of day/i);
   });
 
   it('teaches the inline citation convention with 「」 brackets', () => {
@@ -125,27 +82,30 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toMatch(/verbatim/i);
   });
 
-  it('includes a worked example of the citation pattern', () => {
+  it('includes a positive worked example demonstrating warmth + possibility-offering', () => {
     const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/Worked example/i);
-    // Example contains an actual 「」-bracketed citation
+    expect(prompt).toMatch(/WORKED EXAMPLE/);
+    // Example uses possibility-language
+    expect(prompt).toMatch(/也许|可以试试|挑一个、都不挑/);
+    // Example demonstrates the citation convention
     expect(prompt).toMatch(/「[^」]+」/);
+    // Example explicitly hands the choice back at the end
+    expect(prompt).toMatch(/你比我更知道自己/);
   });
 
-  it('forbids "继续加油" / "stay focused" platitudes by example', () => {
-    const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toMatch(/继续加油|你做得很棒|stay focused/i);
-  });
-
-  it('forbids generic lead-ins / trailers', () => {
-    const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toMatch(/Start directly from the user's words or experience/i);
-  });
-
-  it('teaches reflection-first framing (user words primary, numbers secondary)', () => {
+  it('keeps a brief "what NOT to do" list (judging past / 建议 headings / rail enumeration / 必须 / dashboard labels)', () => {
     const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/primary signal/i);
-    expect(prompt).toMatch(/secondary/);
+    expect(prompt).toMatch(/Don't judge the past/i);
+    expect(prompt).toMatch(/Don't list every rail/i);
+    expect(prompt).toContain('必须');
+    expect(prompt).toMatch(/dashboard sections in disguise/i);
+  });
+
+  it('forbids JSON / code fences / section headers in the output', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/No JSON/);
+    expect(prompt).toMatch(/No code fences/);
+    expect(prompt).toMatch(/No section headers/);
   });
 });
 
