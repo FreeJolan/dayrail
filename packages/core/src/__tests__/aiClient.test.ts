@@ -191,6 +191,56 @@ describe('callChatCompletion', () => {
     expect(out).toBe('split');
   });
 
+  it('invokes onChunk per delta as the SSE stream arrives', async () => {
+    const sse = [
+      'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ].join('');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(streamFromString(sse), { status: 200 }),
+      ),
+    );
+
+    const deltas: string[] = [];
+    const out = await callChatCompletion({
+      baseUrl: 'https://example.test/v1',
+      apiKey: 'sk-test',
+      model: 'm',
+      messages: [{ role: 'user', content: 'hi' }],
+      onChunk: (d) => deltas.push(d),
+    });
+    expect(out).toBe('Hello world');
+    expect(deltas).toEqual(['Hel', 'lo', ' world']);
+  });
+
+  it('skips onChunk for empty deltas (provider keepalive frames)', async () => {
+    const sse = [
+      'data: {"choices":[{"delta":{"content":""}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"actual"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ].join('');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(streamFromString(sse), { status: 200 }),
+      ),
+    );
+
+    const deltas: string[] = [];
+    await callChatCompletion({
+      baseUrl: 'https://example.test/v1',
+      apiKey: 'sk-test',
+      model: 'm',
+      messages: [{ role: 'user', content: 'hi' }],
+      onChunk: (d) => deltas.push(d),
+    });
+    expect(deltas).toEqual(['actual']);
+  });
+
   it('strips trailing slash from baseUrl when joining /chat/completions', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(
       new Response(streamFromString('data: [DONE]\n\n'), { status: 200 }),

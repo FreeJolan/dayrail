@@ -31,6 +31,11 @@ export interface CallChatCompletionParams {
   messages: ChatMessage[];
   /** Optional cancellation. */
   signal?: AbortSignal;
+  /** Optional per-delta callback. Each `delta` is a fragment of
+   *  assistant content as it streams in. UI consumers can hook this
+   *  to show "AI is typing" progress + spot mid-stream truncation.
+   *  The promise still resolves to the full assembled string. */
+  onChunk?: (delta: string) => void;
 }
 
 export type AiClientErrorKind =
@@ -67,7 +72,7 @@ export class AiClientError extends Error {
 export async function callChatCompletion(
   params: CallChatCompletionParams,
 ): Promise<string> {
-  const { baseUrl, apiKey, model, messages, signal } = params;
+  const { baseUrl, apiKey, model, messages, signal, onChunk } = params;
   const url = joinUrl(baseUrl, '/chat/completions');
   const init: RequestInit = {
     method: 'POST',
@@ -130,7 +135,7 @@ export async function callChatCompletion(
     throw new AiClientError('parse-error', 'Response had no body to stream');
   }
 
-  return await consumeSse(res.body, signal);
+  return await consumeSse(res.body, signal, onChunk);
 }
 
 // ============ /v1/models · model autocomplete ============
@@ -261,11 +266,16 @@ export function parseModelList(payload: unknown): ModelInfo[] {
 async function consumeSse(
   stream: ReadableStream<Uint8Array>,
   signal?: AbortSignal,
+  onChunk?: (delta: string) => void,
 ): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
   let result = '';
+  const emit = (delta: string): void => {
+    result += delta;
+    if (onChunk && delta.length > 0) onChunk(delta);
+  };
   try {
     while (true) {
       if (signal?.aborted) {
@@ -279,7 +289,7 @@ async function consumeSse(
       for (const event of parsed.events) {
         if (event === '[DONE]') return result;
         const delta = extractContentDelta(event);
-        if (delta !== null) result += delta;
+        if (delta !== null) emit(delta);
       }
     }
     // Drain any remaining buffered event (some servers don't flush a
@@ -289,7 +299,7 @@ async function consumeSse(
       for (const event of tail.events) {
         if (event === '[DONE]') return result;
         const delta = extractContentDelta(event);
-        if (delta !== null) result += delta;
+        if (delta !== null) emit(delta);
       }
     }
   } finally {

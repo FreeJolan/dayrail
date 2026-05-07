@@ -12,7 +12,7 @@
 //
 // Confirm step is inline (not a modal) — small footprint, reversible.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Sparkles, X } from 'lucide-react';
 import { clsx } from 'clsx';
 import {
@@ -61,7 +61,7 @@ export interface AiObservationCardProps {
 type CallState =
   | { kind: 'idle' }
   | { kind: 'confirm'; prepared: PreparedAiCall }
-  | { kind: 'loading' }
+  | { kind: 'loading'; streamingText: string }
   | { kind: 'error'; message: string; bodyExcerpt?: string };
 
 export function AiObservationCard({
@@ -83,6 +83,12 @@ export function AiObservationCard({
 
   const [state, setState] = useState<CallState>({ kind: 'idle' });
 
+  // Streaming text accumulator — held in a ref so the SSE callback
+  // can mutate without re-creating the closure on every state tick,
+  // and so post-error fallback (validate-failure → bodyExcerpt) can
+  // read whatever text we managed to collect before the failure.
+  const streamRef = useRef('');
+
   const handleAsk = useCallback(() => {
     setState({ kind: 'confirm', prepared: prepareCall() });
   }, [prepareCall]);
@@ -93,13 +99,18 @@ export function AiObservationCard({
 
   const handleSend = useCallback(
     async (prepared: PreparedAiCall) => {
-      setState({ kind: 'loading' });
+      streamRef.current = '';
+      setState({ kind: 'loading', streamingText: '' });
       try {
         const text = await callChatCompletion({
           baseUrl,
           apiKey,
           model,
           messages: prepared.messages,
+          onChunk: (delta) => {
+            streamRef.current += delta;
+            setState({ kind: 'loading', streamingText: streamRef.current });
+          },
         });
         const parsed = extractJsonFromResponse(text);
         const validated = validateObservationJson(parsed);
@@ -111,18 +122,30 @@ export function AiObservationCard({
         onCommit(observation);
         setState({ kind: 'idle' });
       } catch (err) {
+        // Fallback: if the AiClientError carries no bodyExcerpt of
+        // its own (typical for parse-error / validate-error paths),
+        // surface whatever text the model managed to stream before
+        // the failure. Lets the user see the truncated / wrong-shape
+        // response and judge what went wrong.
+        const fallbackExcerpt =
+          streamRef.current.length > 0
+            ? streamRef.current.slice(-2000)
+            : undefined;
         if (err instanceof AiClientError) {
+          const excerpt =
+            err.bodyExcerpt && err.bodyExcerpt.trim().length > 0
+              ? err.bodyExcerpt
+              : fallbackExcerpt;
           setState({
             kind: 'error',
             message: `[${err.kind}] ${err.message}`,
-            ...(err.bodyExcerpt && err.bodyExcerpt.trim().length > 0
-              ? { bodyExcerpt: err.bodyExcerpt }
-              : {}),
+            ...(excerpt ? { bodyExcerpt: excerpt } : {}),
           });
         } else {
           setState({
             kind: 'error',
             message: (err as Error).message ?? String(err),
+            ...(fallbackExcerpt ? { bodyExcerpt: fallbackExcerpt } : {}),
           });
         }
       }
@@ -178,9 +201,19 @@ export function AiObservationCard({
       )}
 
       {state.kind === 'loading' && (
-        <p className="text-xs text-ink-tertiary">
-          调用中… provider 在生成完整回复后一次性返回，可能需要数秒。
-        </p>
+        <div className="flex flex-col gap-2 text-xs">
+          <p className="text-ink-tertiary">
+            调用中…{' '}
+            {state.streamingText.length > 0
+              ? `已收到 ${state.streamingText.length} 字`
+              : '等待第一段返回'}
+          </p>
+          {state.streamingText.length > 0 && (
+            <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-sm bg-surface-2 p-2 font-mono text-2xs text-ink-secondary">
+              {state.streamingText}
+            </pre>
+          )}
+        </div>
       )}
 
       {state.kind === 'error' && (
