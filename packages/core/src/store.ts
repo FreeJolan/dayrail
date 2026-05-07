@@ -92,6 +92,7 @@ import {
 import { decodeDryj } from '@dayrail/db/dryj';
 import type {
   AdhocEvent,
+  AiObservation,
   CalendarRule,
   CalendarRuleCycle,
   CalendarRuleDateRange,
@@ -318,6 +319,29 @@ export interface DayRailActions {
   /** ERD §14.2 — replace the enabled-region list for the holiday
    *  display layer. Empty array = nothing rendered. */
   setEnabledHolidayRegions: (regions: string[]) => Promise<void>;
+  /** ERD §6.6 v0.8.2 — master toggle for AI assistance. */
+  setAiEnabled: (enabled: boolean) => Promise<void>;
+  /** ERD §6.6 v0.8.2 — base URL of an OpenAI-compatible
+   *  `/chat/completions` endpoint. Pass empty string to clear. */
+  setAiBaseUrl: (baseUrl: string) => Promise<void>;
+  /** ERD §6.6 v0.8.2 — model id passed verbatim to the provider. */
+  setAiModel: (model: string) => Promise<void>;
+  /** ERD §6.6.1 v0.8.2 — single Markdown blob describing the user.
+   *  Pass empty string to clear. */
+  setUserBackground: (background: string) => Promise<void>;
+  /** ERD §6.6.2 v0.8.2 — cache the most recent Day-reflection AI
+   *  output. No-op if no reflection row exists for that date (UX gate
+   *  enforces non-empty content as a precondition). */
+  setDailyReflectionAiObservation: (
+    date: string,
+    observation: AiObservation,
+  ) => Promise<void>;
+  /** ERD §6.6.2 v0.8.2 — cache the most recent Cycle-reflection AI
+   *  output. No-op if cycle entity is missing. */
+  setCycleAiObservation: (
+    cycleId: string,
+    observation: AiObservation,
+  ) => Promise<void>;
   upsertHabitBinding: (
     opts: {
       id?: string;
@@ -579,6 +603,22 @@ function upsertEntity(
 
 function deleteEntity(doc: YDoc, mapName: string, id: string): void {
   getEntityMap(doc, mapName).delete(id);
+}
+
+/** ERD §6.6 / §14.2 — patch the singleton `userProfile` Y.Map.
+ *  Creates the entity on first write. Use for any UserProfile field
+ *  that should ride the Y.Doc sync stream. */
+function patchUserProfile(doc: YDoc, patch: Partial<UserProfile>): void {
+  const map = getEntityMap(doc, 'userProfile');
+  const existing = map.get(USER_PROFILE_ID);
+  if (existing instanceof Y.Map) {
+    patchEntityYMap(existing as YMap<unknown>, patch as Record<string, unknown>);
+  } else {
+    map.set(
+      USER_PROFILE_ID,
+      entityToYMap(patch as unknown as Record<string, unknown>),
+    );
+  }
 }
 
 function appendRevision(
@@ -1077,6 +1117,70 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
         );
       }
     }, 'setEnabledHolidayRegions');
+  },
+
+  // ============ ERD §6.6 v0.8.2 · AI MVP user-profile fields ============
+  //
+  // Four "settings inside the channel" — Y.Doc sync stream.
+  // `aiApiKey` is intentionally NOT here (browser localStorage only,
+  // see `apps/web/src/lib/aiApiKey.ts`); see ERD §6.6 "userProfile
+  // field-split policy" for the credential vs setting dichotomy.
+
+  setAiEnabled: async (enabled) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      patchUserProfile(doc, { aiEnabled: enabled });
+    }, 'setAiEnabled');
+  },
+
+  setAiBaseUrl: async (baseUrl) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      patchUserProfile(doc, { aiBaseUrl: baseUrl });
+    }, 'setAiBaseUrl');
+  },
+
+  setAiModel: async (model) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      patchUserProfile(doc, { aiModel: model });
+    }, 'setAiModel');
+  },
+
+  setUserBackground: async (background) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      patchUserProfile(doc, { background });
+    }, 'setUserBackground');
+  },
+
+  setDailyReflectionAiObservation: async (date, observation) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const map = getEntityMap(doc, 'dailyReflections');
+      const existing = map.get(date);
+      // UX gate enforces "reflection.content non-empty before AI call"
+      // upstream; defensive no-op here when the row is missing so we
+      // never create a half-formed reflection without `content`.
+      if (existing instanceof Y.Map) {
+        patchEntityYMap(existing as YMap<unknown>, {
+          lastAiObservation: observation,
+        });
+      }
+    }, 'setDailyReflectionAiObservation');
+  },
+
+  setCycleAiObservation: async (cycleId, observation) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const map = getEntityMap(doc, 'cycles');
+      const existing = map.get(cycleId);
+      if (existing instanceof Y.Map) {
+        patchEntityYMap(existing as YMap<unknown>, {
+          lastAiObservation: observation,
+        });
+      }
+    }, 'setCycleAiObservation');
   },
 
   // ============ TODO — to be translated in subsequent commits ============

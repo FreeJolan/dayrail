@@ -287,6 +287,12 @@ export interface DailyReflection {
   content: string;
   /** Wall clock of the latest event that wrote this row (epoch ms). */
   updatedAt: number;
+  /** ERD §6.6.2 v0.8.2 — single-field LWW cache of the most recent
+   *  Day-reflection AI output. Retap overwrites; no history array.
+   *  Hangs off the reflection so it disappears when the reflection is
+   *  cleared (the reflection is "the day's user free-text" entity; the
+   *  AI observation is a derived reading of it). */
+  lastAiObservation?: AiObservation;
 }
 
 /** A one-off time block that overlays the Track. Either ad-hoc input
@@ -322,6 +328,35 @@ export interface Cycle {
   endDate: string;
   label?: string;
   createdAt: number;
+  /** ERD §6.6.2 v0.8.2 — single-field LWW cache of the most recent
+   *  Cycle-reflection AI output. Retap overwrites directly; no history
+   *  array. Hangs off the cycle so it disappears with the cycle. */
+  lastAiObservation?: AiObservation;
+}
+
+/** ERD §6.6.2 v0.8.2 — shape of the cached AI output for both Day
+ *  (`DailyReflection.lastAiObservation`) and Cycle
+ *  (`Cycle.lastAiObservation`). The `json` payload conforms to the
+ *  generic v0.8.2 output schema:
+ *  `{ observation: string; patterns: string[]; suggestions: string[] }`. */
+export interface AiObservation {
+  /** Wall-clock of the call's completion (epoch ms). */
+  generatedAt: number;
+  /** Model name selected at call time — kept for provenance / debugging. */
+  model: string;
+  /** Parsed JSON output. Shape is the v0.8.2 generic schema; stored as
+   *  a plain object for flexibility (the renderer is forgiving). */
+  json: AiObservationJson;
+}
+
+/** ERD §6.6.2 v0.8.2 generic output schema. */
+export interface AiObservationJson {
+  /** 2-4 sentence observation-tone summary. */
+  observation: string;
+  /** 0-3 rhythm / completion patterns. */
+  patterns: string[];
+  /** 0-3 non-imperative suggestions. */
+  suggestions: string[];
 }
 
 /** ERD §5.4 rule that decides which Template applies to a given date.
@@ -575,10 +610,11 @@ export interface UserDayNote {
   updatedAt: number;
 }
 
-/** ERD §14.2 / §6.6.1. Singleton record holding cross-cutting user
- *  preferences that need to ride the Y.Doc sync stream. v0.8.0 only
- *  populates `enabledHolidayRegions`; v0.8.1 will add AI-related fields
- *  (`aiBaseUrl` / `aiApiKey` / `aiModel` / `background`). */
+/** ERD §14.2 / §6.6.1 / §6.6 (v0.8.2 field-split policy). Singleton
+ *  record holding cross-cutting user preferences that ride the Y.Doc
+ *  sync stream. Settings inside the channel only — `aiApiKey` is
+ *  intentionally NOT here; it lives in browser localStorage per the
+ *  v0.8.2 credential mental model (see `apps/web/src/lib/aiApiKey.ts`). */
 export interface UserProfile {
   /** ERD §14.2. Region codes for which bundled holiday data is shown
    *  (e.g. ['zh-CN', 'en-US']). Empty array = no holidays rendered. */
@@ -592,6 +628,27 @@ export interface UserProfile {
    *  template switch) prepend their id automatically so the user's
    *  most recent intention naturally wins. */
   calendarRuleOrder?: string[];
+  /** ERD §6.6 v0.8.2 — master toggle for AI assistance. When false (or
+   *  undefined), Settings hides the AI fields, the Day / Cycle
+   *  reflection AI buttons are not rendered, and no calls are made.
+   *  Defaults to false per §6.4 "off by default". */
+  aiEnabled?: boolean;
+  /** ERD §6.6 v0.8.2 — base URL of an OpenAI-compatible
+   *  `/chat/completions` endpoint. Default suggested
+   *  `https://openrouter.ai/api/v1`; users may point at any compatible
+   *  provider (OpenRouter / Groq / Anthropic-via-proxy / Ollama / LM
+   *  Studio / claude-code-router / claude-bridge). Empty string or
+   *  undefined = field unset. */
+  aiBaseUrl?: string;
+  /** ERD §6.6 v0.8.2 — model id passed verbatim to the provider.
+   *  Free-form text by design: each provider has its own namespace and
+   *  hardcoding goes stale fast. */
+  aiModel?: string;
+  /** ERD §6.6.1 v0.8.2 — single Markdown blob describing the user
+   *  ("grad student / runs on weekends / studying for exam"). Prepended
+   *  to every AI call's system prompt. No history / no per-context
+   *  override. Length-uncapped (provider enforces token limits). */
+  background?: string;
 }
 
 /** Singleton id used by the underlying Y.Map of `userProfile`. */
