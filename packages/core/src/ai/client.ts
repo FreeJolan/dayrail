@@ -1,17 +1,26 @@
-// ERD §6.6 v0.8.2 — OpenAI-compatible generic client.
+// ERD §6.6 v0.8.2 — OpenAI-compatible AI client.
 //
-// One `fetch` + manual SSE parser covers every compatible endpoint:
-// OpenRouter / Groq / Together / Anthropic-via-proxy / Ollama /
-// LM Studio / claude-code-router / claude-bridge. We deliberately
-// do NOT depend on provider-specific `response_format: json_object`
-// (behavior diverges across providers); structured output is enforced
-// at the prompt level + recovered with `extractJsonFromResponse` on
-// the client side.
+// Streaming + chat-completion go through the Vercel AI SDK
+// (`@ai-sdk/openai-compatible` + `ai`), loaded **dynamically** so the
+// PWA cold-start bundle stays slim for users who never enable AI
+// (default-off per §6.4). The SDK adds ~80 KB gzipped to the AI
+// chunk on first use; that's amortized across subsequent calls in
+// the same session.
 //
-// Streaming is on by design — provider-side compat for SSE is wider
-// than for JSON-mode `response_format`. The first MVP collects all
-// chunks into a single string before returning; that gives us the
-// option to surface per-chunk UI later without rewriting the client.
+// The SDK handles SSE parsing, chunk buffering, encoding edge cases,
+// and error categorization — which were ~120 lines of hand-rolled
+// code in earlier v0.8.2 commits before dogfood revealed how many
+// edge cases live there. ERD §6.6 "prefer mature off-the-shelf
+// components for streaming" applies.
+//
+// `listModels` stays hand-rolled because /v1/models is not first-class
+// in the AI SDK and the response shape varies more than the SDK
+// abstraction allows. It's a 60-line GET + defensive parser.
+
+// Type-only imports stay static so consumers get IntelliSense; the
+// runtime values (`streamText`, `APICallError`, `createOpenAICompatible`)
+// are loaded on demand inside `callChatCompletion`.
+import type { APICallError as APICallErrorType } from 'ai';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -23,18 +32,17 @@ export interface CallChatCompletionParams {
    *  `https://openrouter.ai/api/v1`. Trailing slash optional. */
   baseUrl: string;
   /** Bearer token. Most providers want a non-empty value; some local
-   *  bridges accept empty (we still send the header). */
+   *  bridges accept anything. The SDK forwards it via Authorization. */
   apiKey: string;
-  /** Model id, passed verbatim to the provider. */
+  /** Model id passed verbatim to the provider. */
   model: string;
   /** OpenAI-style messages array. */
   messages: ChatMessage[];
-  /** Optional cancellation. */
+  /** Optional cancellation. Forwarded to `streamText`'s abortSignal. */
   signal?: AbortSignal;
   /** Optional per-delta callback. Each `delta` is a fragment of
-   *  assistant content as it streams in. UI consumers can hook this
-   *  to show "AI is typing" progress + spot mid-stream truncation.
-   *  The promise still resolves to the full assembled string. */
+   *  assistant content as it streams in. The promise still resolves
+   *  to the full assembled string at the end. */
   onChunk?: (delta: string) => void;
 }
 
@@ -45,7 +53,7 @@ export type AiClientErrorKind =
   | 'not-found-404' // wrong base URL or model
   | 'rate-limit-429' // throttled
   | 'provider-error' // 5xx or other non-2xx
-  | 'parse-error' // SSE / JSON parse failed
+  | 'parse-error' // SSE / JSON parse failed (rare with SDK; kept for safety)
   | 'aborted'; // signal aborted
 
 export class AiClientError extends Error {
@@ -73,72 +81,129 @@ export async function callChatCompletion(
   params: CallChatCompletionParams,
 ): Promise<string> {
   const { baseUrl, apiKey, model, messages, signal, onChunk } = params;
-  const url = joinUrl(baseUrl, '/chat/completions');
-  const init: RequestInit = {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({ model, messages, stream: true }),
-    ...(signal && { signal }),
-  };
 
-  let res: Response;
+  // Dynamic import: the AI SDK + provider together are ~80 KB gzipped
+  // and we want them off the cold-start path for users who never
+  // enable AI. Vite splits these into a separate async chunk; the
+  // first call pays a one-time download cost, subsequent calls are
+  // instant from the browser cache.
+  const [{ streamText, APICallError }, { createOpenAICompatible }] =
+    await Promise.all([
+      import('ai'),
+      import('@ai-sdk/openai-compatible'),
+    ]);
+
+  const provider = createOpenAICompatible({
+    name: 'dayrail-custom',
+    baseURL: baseUrl.replace(/\/+$/, ''),
+    apiKey,
+  });
+
+  const result = streamText({
+    model: provider(model),
+    messages,
+    ...(signal && { abortSignal: signal }),
+  });
+
+  let assembled = '';
   try {
-    res = await fetch(url, init);
+    for await (const delta of result.textStream) {
+      assembled += delta;
+      if (onChunk && delta.length > 0) onChunk(delta);
+    }
+    return assembled;
   } catch (err) {
-    if (signal?.aborted) {
-      throw new AiClientError('aborted', 'Request aborted by caller');
-    }
-    if (looksLikeCors(err)) {
-      throw new AiClientError(
-        'cors',
-        `Network or CORS failure reaching ${url}. If you are using a local CLI bridge (claude-code-router / Ollama / etc.) make sure it allows CORS from this origin.`,
-      );
-    }
-    throw new AiClientError(
-      'network',
-      `Network failure reaching ${url}: ${(err as Error).message ?? String(err)}`,
-    );
+    throw mapToAiClientError(err, APICallError);
   }
+}
 
-  if (!res.ok) {
-    const body = await safeReadBody(res);
-    const opts = { status: res.status, bodyExcerpt: body };
-    if (res.status === 401)
-      throw new AiClientError(
+/** Map any thrown error from the AI SDK / fetch layer onto our
+ *  classified `AiClientError`. The SDK throws `APICallError` for
+ *  HTTP-level failures with a `responseBody` we can surface; other
+ *  errors fall back to network / cors / aborted heuristics.
+ *
+ *  `APICallErrorCtor` is passed in (not statically imported) because
+ *  the SDK is dynamically loaded — see `callChatCompletion`. */
+function mapToAiClientError(
+  err: unknown,
+  APICallErrorCtor: typeof APICallErrorType,
+): AiClientError {
+  if (err instanceof AiClientError) return err;
+
+  if (APICallErrorCtor.isInstance(err)) {
+    const status = (err as { statusCode?: number }).statusCode;
+    const rawBody = (err as { responseBody?: string }).responseBody;
+    const body =
+      typeof rawBody === 'string' && rawBody.length > 0
+        ? rawBody.slice(0, 500)
+        : undefined;
+    const opts = {
+      ...(status !== undefined && { status }),
+      ...(body !== undefined && { bodyExcerpt: body }),
+    };
+    if (status === 401) {
+      return new AiClientError(
         'auth-401',
         'Provider rejected the API key (401).',
         opts,
       );
-    if (res.status === 404)
-      throw new AiClientError(
+    }
+    if (status === 404) {
+      return new AiClientError(
         'not-found-404',
         'Endpoint or model not found (404). Check Base URL and Model name.',
         opts,
       );
-    if (res.status === 429)
-      throw new AiClientError(
+    }
+    if (status === 429) {
+      return new AiClientError(
         'rate-limit-429',
         'Provider rate-limited the request (429). Try again in a moment.',
         opts,
       );
-    throw new AiClientError(
+    }
+    return new AiClientError(
       'provider-error',
-      `Provider returned ${res.status}.`,
+      status !== undefined
+        ? `Provider returned ${status}.`
+        : 'Provider returned a non-2xx response.',
       opts,
     );
   }
 
-  if (!res.body) {
-    throw new AiClientError('parse-error', 'Response had no body to stream');
+  // Abort
+  if (
+    (err instanceof DOMException && err.name === 'AbortError') ||
+    (err as { name?: string }).name === 'AbortError'
+  ) {
+    return new AiClientError('aborted', 'Request aborted by caller');
   }
 
-  return await consumeSse(res.body, signal, onChunk);
+  // CORS / network heuristic — TypeError("Failed to fetch") is the
+  // canonical browser CORS failure.
+  const message = (err as Error).message ?? String(err);
+  const lower = message.toLowerCase();
+  if (
+    err instanceof TypeError &&
+    (lower.includes('failed to fetch') ||
+      lower.includes('cors') ||
+      lower.includes('cross-origin'))
+  ) {
+    return new AiClientError(
+      'cors',
+      `Network or CORS failure. If you are using a local CLI bridge (claude-code-router / Ollama / etc.) make sure it allows CORS from this origin.`,
+    );
+  }
+
+  return new AiClientError('network', `Network failure: ${message}`);
 }
 
 // ============ /v1/models · model autocomplete ============
+//
+// Hand-rolled because /v1/models is not first-class in the AI SDK,
+// and the response shape varies (canonical { data: [...] } vs bare
+// arrays vs alt envelopes used by self-hosted backends). One small
+// fetch + a defensive parser is the right level for this corner.
 
 export interface ModelInfo {
   /** Model id passed verbatim into the `model` field of subsequent
@@ -263,135 +328,7 @@ export function parseModelList(payload: unknown): ModelInfo[] {
   return out;
 }
 
-async function consumeSse(
-  stream: ReadableStream<Uint8Array>,
-  signal?: AbortSignal,
-  onChunk?: (delta: string) => void,
-): Promise<string> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder('utf-8');
-  let buffer = '';
-  let result = '';
-  const emit = (delta: string): void => {
-    result += delta;
-    if (onChunk && delta.length > 0) onChunk(delta);
-  };
-  try {
-    while (true) {
-      if (signal?.aborted) {
-        throw new AiClientError('aborted', 'Request aborted by caller');
-      }
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const parsed = parseSseBuffer(buffer);
-      buffer = parsed.remainder;
-      for (const event of parsed.events) {
-        if (event === '[DONE]') return result;
-        const delta = extractContentDelta(event);
-        if (delta !== null) emit(delta);
-      }
-    }
-    // Drain any remaining buffered event (some servers don't flush a
-    // trailing \n\n before EOF).
-    if (buffer.length > 0) {
-      const tail = parseSseBuffer(buffer + '\n\n');
-      for (const event of tail.events) {
-        if (event === '[DONE]') return result;
-        const delta = extractContentDelta(event);
-        if (delta !== null) emit(delta);
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return result;
-}
-
-interface ParsedSse {
-  events: string[];
-  remainder: string;
-}
-
-/** Split an SSE buffer into complete events. SSE event boundary is a
- *  blank line (`\n\n`). Each event may have multiple `data:` lines
- *  (RFC says join with `\n`); we honor that. The buffer's trailing
- *  partial event is returned as `remainder`. */
-export function parseSseBuffer(buffer: string): ParsedSse {
-  // Normalize CRLF → LF so splits work regardless of server quirks.
-  const normalized = buffer.replace(/\r\n/g, '\n');
-  const blocks = normalized.split('\n\n');
-  const remainder = blocks.pop() ?? '';
-  const events: string[] = [];
-  for (const block of blocks) {
-    const lines = block.split('\n');
-    const datas = lines
-      .filter((l) => l.startsWith('data:'))
-      .map((l) => (l.startsWith('data: ') ? l.slice(6) : l.slice(5)));
-    if (datas.length === 0) continue;
-    events.push(datas.join('\n'));
-  }
-  return { events, remainder };
-}
-
-function extractContentDelta(event: string): string | null {
-  try {
-    const obj = JSON.parse(event) as {
-      choices?: Array<{
-        delta?: { content?: unknown };
-        message?: { content?: unknown };
-      }>;
-    };
-    const choice = obj.choices?.[0];
-    const delta = choice?.delta?.content ?? choice?.message?.content;
-    return typeof delta === 'string' ? delta : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Best-effort JSON extraction from a model response. Strips markdown
- *  code fences if present, then falls back to first-`{` last-`}`
- *  bracketing. Throws `AiClientError('parse-error')` if no valid JSON
- *  is found. The result type is unknown — caller validates the schema. */
-export function extractJsonFromResponse(text: string): unknown {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) {
-    throw new AiClientError('parse-error', 'Empty response from model.');
-  }
-
-  // Try fenced ```json ... ``` or ``` ... ``` block first.
-  const fence = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-  if (fence) {
-    try {
-      return JSON.parse(fence[1]!.trim());
-    } catch {
-      // Fall through to bare-braces strategy.
-    }
-  }
-
-  // Bare JSON with possible prose around it: find outermost { ... }.
-  const first = trimmed.indexOf('{');
-  const last = trimmed.lastIndexOf('}');
-  if (first !== -1 && last > first) {
-    try {
-      return JSON.parse(trimmed.slice(first, last + 1));
-    } catch {
-      // Fall through.
-    }
-  }
-
-  // Last resort: parse as-is.
-  try {
-    return JSON.parse(trimmed);
-  } catch (err) {
-    throw new AiClientError(
-      'parse-error',
-      `Could not parse model response as JSON: ${(err as Error).message}`,
-      { bodyExcerpt: trimmed.slice(0, 200) },
-    );
-  }
-}
+// ============ Helpers ============
 
 function joinUrl(baseUrl: string, path: string): string {
   const trimmed = baseUrl.replace(/\/+$/, '');

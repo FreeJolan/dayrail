@@ -336,48 +336,29 @@ export interface Cycle {
 
 /** ERD §6.6.2 v0.8.2 — shape of the cached AI output for both Day
  *  (`DailyReflection.lastAiObservation`) and Cycle
- *  (`Cycle.lastAiObservation`). The `json` payload conforms to the
- *  citation-bound schema below. */
+ *  (`Cycle.lastAiObservation`).
+ *
+ *  v0.8.2 dogfood reversal: originally a structured JSON schema
+ *  (`{ headline, observations: [{ claim, from_data }],
+ *  questions_to_sit_with }`), reverted to a free-form Markdown blob
+ *  after hitting two classes of friction —
+ *    1. Code-tuned models bleed in lint/audit schemas (finding +
+ *       severity), forcing us to maintain alias maps.
+ *    2. JSON spec fights the model's strongest output mode (flowing
+ *       prose) without buying us anything we couldn't do in markdown
+ *       (citations work as inline `「verbatim quote」` brackets).
+ *
+ *  The system prompt teaches a citation convention; verification is
+ *  visual (user scans for `「」` brackets to spot hallucinations). */
 export interface AiObservation {
   /** Wall-clock of the call's completion (epoch ms). */
   generatedAt: number;
   /** Model name selected at call time — kept for provenance / debugging. */
   model: string;
-  /** Parsed JSON output. Shape is the v0.8.2 citation-bound schema;
-   *  stored as a plain object for flexibility (the renderer is forgiving). */
-  json: AiObservationJson;
-}
-
-/** ERD §6.6.2 v0.8.2 citation-bound output schema.
- *
- *  Designed to defend against AI hallucination: every observation
- *  comes paired with a `from_data` quote that the user (and the
- *  client) can verify against the prompt input. `questions_to_sit_with`
- *  replaces the v0.8.2-draft "suggestions" field — open-ended
- *  questions stay aligned with the §6.2 "observe, don't judge /
- *  suggest, don't command" tone rule. */
-export interface AiObservationJson {
-  /** 1-line core takeaway. The thing worth saying if you only get to
-   *  say one thing. */
-  headline: string;
-  /** 1-5 grounded observations, each citing a specific data point
-   *  from the prompt input. Empty array is allowed if the data
-   *  genuinely doesn't support any observation. */
-  observations: AiObservationItem[];
-  /** 0-3 open-ended questions to sit with — never imperative. */
-  questions_to_sit_with: string[];
-}
-
-/** ERD §6.6.2 — a single grounded observation. */
-export interface AiObservationItem {
-  /** 1-2 sentence interpretive statement. */
-  claim: string;
-  /** Verbatim (or near-verbatim) excerpt from the prompt input. The
-   *  client soft-checks that this substring appears in the input;
-   *  observations whose citation is not found are flagged
-   *  `[unverified]` in the rendered card so the user can spot
-   *  hallucinations. */
-  from_data: string;
+  /** Raw Markdown output as the model wrote it. Rendered via the
+   *  shared `MarkdownView` primitive — same renderer as `DailyReflection`
+   *  / Project / Habit notes (ERD §5.5.4). */
+  markdown: string;
 }
 
 /** ERD §5.4 rule that decides which Template applies to a given date.

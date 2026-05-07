@@ -16,7 +16,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^2.0.46",
     "@dayrail/db": "workspace:*",
+    "ai": "^6.0.175",
     "yjs": "^13.6.0",
     "zustand": "5.0.2"
   },

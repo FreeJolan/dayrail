@@ -1,11 +1,10 @@
 // Tests for the AI prompt builders (packages/core/src/ai/prompts.ts).
 //
-// Coverage focus per ERD §6.6.1 / §6.6.2:
-//   - System prompt carries locale + JSON-schema directive + citation requirement
-//   - User-background block omitted when empty / whitespace
-//   - Day prompt: shift tags / habit context / 7-day baseline / template name
-//   - Cycle prompt: shift tag distribution / daily trajectory / phase boundaries
-//   - Token estimate is rough but monotonically increasing
+// v0.8.2 dogfood reversal: the original tests asserted the JSON schema
+// + field-name discipline. Those are gone now that we've moved to
+// free-form Markdown output with a citation convention. This file
+// asserts the new prose convention is taught correctly + the data
+// slicing fields (which kept their shape) still flow through.
 
 import { describe, expect, it } from 'vitest';
 import {
@@ -24,48 +23,47 @@ describe('buildSystemPrompt', () => {
     expect(buildSystemPrompt('en-US')).toContain('en-US');
   });
 
-  it('forbids code fences in the output', () => {
-    const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toMatch(/code fences/i);
+  it('asks for prose, not JSON', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/short reflection/i);
+    expect(prompt).toMatch(/Not JSON/);
+    expect(prompt).toMatch(/No code fences/);
   });
 
-  it('declares the citation-bound JSON schema', () => {
-    const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toContain('headline');
-    expect(prompt).toContain('observations');
-    expect(prompt).toContain('from_data');
-    expect(prompt).toContain('questions_to_sit_with');
+  it('teaches the inline citation convention with 「」 brackets', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/CITATION CONVENTION/);
+    expect(prompt).toContain('「');
+    expect(prompt).toContain('」');
+    expect(prompt).toMatch(/verbatim/i);
   });
 
-  it('requires each observation to carry a from_data citation', () => {
-    const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toMatch(/MUST be a verbatim/i);
-  });
-
-  it('lists field-name anti-aliases (no finding / severity / etc)', () => {
-    const prompt = buildSystemPrompt('en-US');
-    // Code-tuned models drift toward lint-style schemas; the prompt
-    // must call this out explicitly.
-    expect(prompt).toMatch(/NOT "finding"/);
-    expect(prompt).toMatch(/no "severity"/);
-  });
-
-  it('includes a few-shot example with the canonical field names', () => {
-    const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toMatch(/EXAMPLE/);
-    expect(prompt).toContain('"claim"');
-    expect(prompt).toContain('"from_data"');
-    expect(prompt).toContain('"questions_to_sit_with"');
-  });
-
-  it('forbids restating UI facts (no productivity-coach summary)', () => {
-    const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toMatch(/Do NOT restate facts the user can read/i);
+  it('includes a worked example of the citation pattern', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/Worked example/i);
+    // Example contains an actual 「」-bracketed citation
+    expect(prompt).toMatch(/「[^」]+」/);
   });
 
   it('keeps the observation-not-judgment tone constraint', () => {
     const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toMatch(/observe.*judge|do not judge/i);
+    expect(prompt).toMatch(/Observe, do not judge/i);
+  });
+
+  it('forbids productivity-coach platitudes by example', () => {
+    const prompt = buildSystemPrompt('en-US');
+    expect(prompt).toMatch(/great job/i);
+    expect(prompt).toMatch(/试试番茄钟|Pomodoro/i);
+  });
+
+  it('forbids restating UI facts (no productivity-coach summary)', () => {
+    const prompt = buildSystemPrompt('en-US');
+    expect(prompt).toMatch(/Do not restate facts the user can read/i);
+  });
+
+  it('forbids generic lead-ins / trailers', () => {
+    const prompt = buildSystemPrompt('en-US');
+    expect(prompt).toMatch(/start directly with the substance/i);
   });
 });
 
@@ -112,26 +110,21 @@ describe('buildDayReviewUserMessage', () => {
     expect(out).toContain('grad student');
   });
 
-  it('omits USER BACKGROUND when value is whitespace-only', () => {
-    const out = buildDayReviewUserMessage({
-      ...baseInput,
-      background: '   \n  \n',
-    });
-    expect(out).not.toContain('USER BACKGROUND');
-  });
-
-  it('renders task groups with title / line / time', () => {
+  it('renders task groups with title / line / time bullets', () => {
     const out = buildDayReviewUserMessage({
       ...baseInput,
       completed: [
         { title: 'Morning run', line: 'Habits', time: '06:30–07:00' },
         { title: 'Thesis section 3' },
       ],
+      deferred: [{ title: 'Email reply', line: 'Inbox' }],
     });
     expect(out).toContain('Morning run');
     expect(out).toContain('Habits');
     expect(out).toContain('06:30–07:00');
     expect(out).toContain('Thesis section 3');
+    expect(out).toContain('Email reply');
+    expect(out).toContain('Inbox');
   });
 
   it('appends shift reason tags to deferred tasks', () => {
@@ -207,9 +200,15 @@ describe('buildDayReviewUserMessage', () => {
     expect(out).toMatch(/Daily reflection: \(none written\)/);
   });
 
-  it('reminds the model to cite from_data in the closing line', () => {
+  it('reminds the model to cite verbatim quotes in the closing line', () => {
     const out = buildDayReviewUserMessage(baseInput);
-    expect(out).toMatch(/from_data citation/i);
+    expect(out).toMatch(/verbatim/i);
+    expect(out).toContain('「');
+  });
+
+  it('does not mention JSON in the closing line', () => {
+    const out = buildDayReviewUserMessage(baseInput);
+    expect(out).not.toMatch(/JSON/);
   });
 });
 
@@ -332,14 +331,15 @@ describe('buildCycleReviewUserMessage', () => {
     expect(out).toContain('Better.');
   });
 
-  it('marks empty reflections as "(none written this cycle)"', () => {
+  it('reminds the model to cite verbatim quotes in the closing line', () => {
     const out = buildCycleReviewUserMessage(baseInput);
-    expect(out).toMatch(/none written this cycle/i);
+    expect(out).toMatch(/verbatim/i);
+    expect(out).toContain('「');
   });
 
-  it('reminds the model to cite from_data in the closing line', () => {
+  it('does not mention JSON in the closing line', () => {
     const out = buildCycleReviewUserMessage(baseInput);
-    expect(out).toMatch(/from_data citation/i);
+    expect(out).not.toMatch(/JSON/);
   });
 });
 
