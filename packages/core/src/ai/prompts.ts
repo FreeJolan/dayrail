@@ -164,8 +164,12 @@ FORBIDDEN VOCABULARY (these are corporate / coaching tics that don't belong in a
 - 黑洞 / 欠账 / 拖低 / 拖累 / 红利 / 迁移 / 优化 / 改进 / 整改 / 推进
 - 必须 / 应该 / 一定要 / 强制 / 务必 / 加强
 - 严重 / 偏低 / 不稳 / 失败 / 表现 / 执行不力
-- 下周期 / 下个 cycle / 接下来 / 后续 / 建议（as a noun heading）
+- 下周期 / 下个 cycle / 下周 / 接下来 / 后续 / 建议（as a noun heading）
 - "继续加油" / "保持节奏" / "你做得很棒" / "再接再厉" / "stay focused"
+
+FORBIDDEN META-ANNOUNCEMENT LINES (these are the dashboard pattern in disguise — the model often falls into them after we ban bold labels):
+- Do NOT open paragraphs or sections with lines like "你说了什么" / "你写了什么" / "我看到的" / "我注意到的" / "我的观察" / "一个问题" / "一个想法" / "留给下周" / "总结一下" / "周期回顾" / "本周回顾" / "本周复盘". These are headline-style stand-ins for ## headers. Never write a line that announces what comes next. Just say the thing.
+- Do NOT write meta-commentary about your own reflection process: "我觉得这周..." / "在我看来..." / "我想说的是...". Drop these prefixes; the sentence after them is already the substance.
 
 WHAT TO WRITE:
 A short reflection, written as 2-4 short paragraphs of natural prose.
@@ -192,7 +196,7 @@ WORKED EXAMPLE (study the *flow* and *tone* — yours will be about the user's a
 
 Notice how the example flows as one continuous thread of thinking — paragraph 1 sets up "what got the user's attention", paragraph 2 picks up that thread to explain what got pushed aside, paragraph 3 asks one real question. There are no labeled sections like "**主线**" or "**对应数据**" or "**一个观察**". Specific rail names appear only when they carry the story (4 rails total across all 3 paragraphs); other rails are not enumerated.
 
-ANTI-EXAMPLE (what NOT to write — this is a dashboard report, not a reflection):
+ANTI-EXAMPLE 1 (what NOT to write — this is a dashboard report wearing bold labels):
 
 "**主线**
 本周用户重心在知识助手开发。
@@ -208,13 +212,31 @@ ANTI-EXAMPLE (what NOT to write — this is a dashboard report, not a reflection
 **一个建议**
 下周期可以在运动上设置最小执行量。"
 
-Why this is wrong: bold labels at the start of paragraphs ARE section headers in disguise. Enumerating every rail's number is a status report, not a reflection. Suggestions / "下周期" plans are not your job. NEVER write in this shape.
+Why this is wrong: bold labels at the start of paragraphs ARE section headers in disguise. Enumerating every rail's number is a status report, not a reflection. Suggestions / "下周期" plans are not your job.
+
+ANTI-EXAMPLE 2 (what NOT to write — same dashboard shape, just with the bold dropped and labels renamed to look conversational; this is the harder pattern to spot):
+
+"周期回顾（2026-04-27 → 2026-05-03）
+你说了什么
+这周你只留下一句话「开发知识助手中。老实说还挺有意思」。
+
+我看到的
+- 兴趣项目 Part2 是这周完成度最高的一栏。
+- 劳动节三天明显失速。
+- 运动和论文是这周的真空区。
+- shift 原因很少。
+
+一个问题留给下周
+你愿意明确把它当作主线，还是想把运动 / 论文重新拉回来？"
+
+Why this is wrong, even though it sounds friendlier: "你说了什么 / 我看到的 / 一个问题留给下周" are still section headers, just typed as standalone short lines instead of bold prefixes. The four lines under "我看到的" are still a list of self-contained observations rather than a connected train of thought. This is the same dashboard skeleton in a thinner costume. NEVER write in this shape.
 
 LANGUAGE: Reply in ${outputLocale}.
 
 FORMAT:
-- 2-4 short paragraphs of continuous prose. Each paragraph should advance ONE thread of thinking — not introduce a new analytical category.
+- 2-4 short paragraphs of continuous prose. Each paragraph picks up where the last one left off — paragraph 2 should build on a thread paragraph 1 introduced, not jump to a new topic. Think "one continuous train of thought broken into paragraphs for breathing", not "list of points dressed as paragraphs".
 - Do NOT open paragraphs with bold/italic labels like **主线** / **观察** / **对应数据** / **一个建议** / **没发生的事** / **下一步**. These are dashboard section headers in disguise.
+- Do NOT use standalone short lines as paragraph titles either ("你说了什么" / "我看到的" / "一个问题留给下周"). The previous round of dogfood showed the model falling back to this pattern after bold labels were banned. They are still section headers.
 - Refer to at most 3-4 specific rails by name across the whole reflection. Pick the few that actually carry the story; do not enumerate every rail. Other rails should not be mentioned by name at all.
 - No code fences. No JSON. No \`##\` / \`###\` headers.
 - No lead-in like "这是我的观察:" / "周期回顾" / "本周复盘". No trailer like "希望对你有帮助。"

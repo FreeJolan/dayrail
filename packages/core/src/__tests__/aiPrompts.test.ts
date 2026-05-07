@@ -61,6 +61,45 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('**一个建议**');
   });
 
+  it('forbids standalone-line section headings (the round-2-bypass pattern)', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/standalone short lines as paragraph titles/);
+    expect(prompt).toContain('"你说了什么"');
+    expect(prompt).toContain('"我看到的"');
+    expect(prompt).toContain('"一个问题留给下周"');
+  });
+
+  it('forbids meta-announcement lines that name what comes next', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/META-ANNOUNCEMENT LINES/);
+    expect(prompt).toMatch(/Never write a line that announces what comes next/);
+  });
+
+  it('forbids first-person reflection-meta phrases', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toContain('我觉得这周');
+    expect(prompt).toContain('在我看来');
+    expect(prompt).toContain('我想说的是');
+  });
+
+  it('bans 下周 (round-2-bypass) and not just 下周期', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    // The forbidden vocabulary line should list 下周 alongside 下周期
+    expect(prompt).toMatch(/下周期.*下周|下周.*下周期/);
+  });
+
+  it('requires paragraphs to thread-connect, not jump to a new topic', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/picks up where the last one left off/);
+    expect(prompt).toMatch(/one continuous train of thought/i);
+  });
+
+  it('includes a second ANTI-EXAMPLE for the standalone-line pattern', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/ANTI-EXAMPLE 2/);
+    expect(prompt).toMatch(/just with the bold dropped/);
+  });
+
   it('caps rail enumeration to ~3-4 by name', () => {
     const prompt = buildSystemPrompt('zh-CN');
     expect(prompt).toMatch(/at most 3-4 specific rails/i);
@@ -70,12 +109,12 @@ describe('buildSystemPrompt', () => {
   it('includes an ANTI-EXAMPLE block showing the dashboard pattern to avoid', () => {
     const prompt = buildSystemPrompt('zh-CN');
     expect(prompt).toMatch(/ANTI-EXAMPLE/);
-    expect(prompt).toMatch(/dashboard report, not a reflection/i);
+    expect(prompt).toMatch(/dashboard report wearing bold labels/i);
   });
 
-  it('asks each paragraph to advance one thread (not introduce a new category)', () => {
+  it('asks each paragraph to thread-connect rather than start a new topic', () => {
     const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/Each paragraph should advance ONE thread/);
+    expect(prompt).toMatch(/picks up where the last one left off/);
   });
 
   it('teaches the inline citation convention with 「」 brackets', () => {
