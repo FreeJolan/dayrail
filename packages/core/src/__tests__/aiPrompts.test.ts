@@ -31,18 +31,41 @@ describe('buildSystemPrompt', () => {
     expect(buildSystemPrompt('en-US')).toContain('en-US');
   });
 
-  it('sets a warm-friend / counselor / kind-elder persona', () => {
+  it('opens by staging the SCENE (chat reply, not abstract persona)', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/^SCENE:/);
+    expect(prompt).toMatch(/sent you a long-ish message in WeChat/);
+    expect(prompt).toMatch(/YOU ARE NOW TYPING A REPLY TO THEM/);
+  });
+
+  it('keeps the warm-friend / counselor / kind-elder persona inside the scene', () => {
     const prompt = buildSystemPrompt('zh-CN');
     expect(prompt).toMatch(/warm friend/i);
     expect(prompt).toMatch(/counselor|kind elder/i);
-    expect(prompt).toMatch(/like you'd text a real friend/i);
+  });
+
+  it('contrasts the chat-reply medium with reports / emails (the structural anchor)', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/ABOUT THE MEDIUM/);
+    expect(prompt).toMatch(/WeChat reply, not a report or an email/);
+    expect(prompt).toMatch(/people don't write status reports to friends in WeChat/i);
+  });
+
+  it('names specific dashboard openers from dogfood as "things you would not write in WeChat"', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    // These are the actual labels that appeared in real dogfood
+    // output and survived earlier rounds.
+    expect(prompt).toContain('周期回顾 YYYY-MM-DD');
+    expect(prompt).toContain('用户的声音');
+    expect(prompt).toContain('这段话落在什么样的一周里');
+    expect(prompt).toContain('一句话给下周');
   });
 
   it('articulates the DayRail "missing is allowed" (允许错过) ethos', () => {
     const prompt = buildSystemPrompt('zh-CN');
     expect(prompt).toContain('允许错过');
-    expect(prompt).toMatch(/MISSING IS ALLOWED/i);
-    expect(prompt).toMatch(/NOT to audit|NOT to grade their past/i);
+    expect(prompt).toMatch(/missing is allowed/i);
+    expect(prompt).toMatch(/not asking you to audit|grade their past/i);
   });
 
   it('teaches the three-step shape · notice warmly · offer 2-3 small possibilities · hand back the choice', () => {
@@ -60,11 +83,11 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toMatch(/emotionally hard stretch/);
   });
 
-  it('teaches possibility-language (也许 / 可以试试 / 不妨) over imperative-language', () => {
+  it('teaches possibility-language (也许 / 你应该) over imperative-language', () => {
     const prompt = buildSystemPrompt('zh-CN');
+    // The "也许 / 不要 你应该" contrast is core to the suggestion shape
     expect(prompt).toContain('也许');
-    expect(prompt).toContain('可以试试');
-    expect(prompt).toContain('不妨');
+    expect(prompt).toContain('你应该');
   });
 
   it('lists examples of the right kind of small adjustment', () => {
@@ -76,7 +99,7 @@ describe('buildSystemPrompt', () => {
 
   it('teaches the inline citation convention with 「」 brackets', () => {
     const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/CITATION CONVENTION/);
+    expect(prompt).toMatch(/WHEN YOU REFERENCE THEIR DATA/);
     expect(prompt).toContain('「');
     expect(prompt).toContain('」');
     expect(prompt).toMatch(/verbatim/i);
@@ -84,28 +107,28 @@ describe('buildSystemPrompt', () => {
 
   it('includes a positive worked example demonstrating warmth + possibility-offering', () => {
     const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/WORKED EXAMPLE/);
+    expect(prompt).toMatch(/EXAMPLE OF THE RIGHT SHAPE/);
     // Example uses possibility-language
-    expect(prompt).toMatch(/也许|可以试试|挑一个、都不挑/);
+    expect(prompt).toMatch(/也许|可以这样想|挑一个、都不挑/);
     // Example demonstrates the citation convention
     expect(prompt).toMatch(/「[^」]+」/);
     // Example explicitly hands the choice back at the end
     expect(prompt).toMatch(/你比我更知道自己/);
   });
 
-  it('keeps a brief "what NOT to do" list (judging past / 建议 headings / rail enumeration / 必须 / dashboard labels)', () => {
+  it('frames "what NOT to say" as friend-voice rather than rule list', () => {
     const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/Don't judge the past/i);
-    expect(prompt).toMatch(/Don't list every rail/i);
+    expect(prompt).toMatch(/THINGS YOU WOULDN'T SAY/);
+    expect(prompt).toMatch(/a real friend wouldn't either/i);
     expect(prompt).toContain('必须');
-    expect(prompt).toMatch(/dashboard sections in disguise/i);
+    expect(prompt).toContain('做得不够');
   });
 
   it('forbids JSON / code fences / section headers in the output', () => {
     const prompt = buildSystemPrompt('zh-CN');
     expect(prompt).toMatch(/No JSON/);
-    expect(prompt).toMatch(/No code fences/);
-    expect(prompt).toMatch(/No section headers/);
+    expect(prompt).toMatch(/no code fences/i);
+    expect(prompt).toMatch(/no section headers/i);
   });
 });
 
