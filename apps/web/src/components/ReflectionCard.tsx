@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { selectReflection, useStore } from '@dayrail/core';
 import { MarkdownField } from '@/components/MarkdownField';
+import { DayReflectionAi } from '@/components/DayReflectionAi';
 
 // ERD §4.1 / §10.4 — DailyReflection card. Shared between
 //   • Today Track (mounted at the bottom, hard-wired to today)
@@ -49,6 +50,9 @@ export function ReflectionCard({
         dialogTitle={`${title} · ${date}`}
         ariaLabel={`Reflection editor for ${date}`}
       />
+      {/* ERD §6.6.2 v0.8.2 · Day-scoped AI button. Renders nothing if
+          aiEnabled === false OR the reflection is empty (UX gate). */}
+      <DayReflectionAi date={date} />
     </section>
   );
 }

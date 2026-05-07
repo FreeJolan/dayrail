@@ -5,9 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Lightbulb,
-  MessageSquareQuote,
   NotebookPen,
-  Sparkles,
 } from 'lucide-react';
 import {
   selectHabitPhasesByLine,
@@ -20,6 +18,8 @@ import { MarkdownView } from '@/components/MarkdownField';
 import { RhythmHeatmap } from '@/components/RhythmHeatmap';
 import { ReflectionCard } from '@/components/ReflectionCard';
 import { ShiftTagBars } from '@/components/ShiftTagBars';
+import { CycleReflectionAi } from '@/components/CycleReflectionAi';
+import { MonthReflectionAi } from '@/components/MonthReflectionAi';
 import {
   buildPhaseBands,
   cycleDatesFor,
@@ -70,7 +70,6 @@ export function Review() {
     () => parseAnchor(anchorParam) ?? new Date(),
     [anchorParam],
   );
-  const [aiEnabled, setAiEnabled] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const habitLineId = searchParams.get('habit') ?? undefined;
 
@@ -215,7 +214,6 @@ export function Review() {
         <RhythmHeatmap data={data} prev={prevData} phaseBands={phaseBands} />
         <ShiftTagBars tags={data.shiftTags} />
         {data.adhocHint && <AdhocHintCard hint={data.adhocHint} />}
-        <AISection enabled={aiEnabled} onToggle={() => setAiEnabled((v) => !v)} />
 
         {scope === 'day' ? (
           <ReflectionCard
@@ -223,7 +221,25 @@ export function Review() {
             title="Daily Reflection · 今日复盘"
           />
         ) : (
-          <ReflectionLog dates={data.dates} />
+          <>
+            {scope === 'cycle' && data.dates.length > 0 && (
+              <CycleReflectionAi
+                cycleStartDate={data.dates[0]!}
+                cycleEndDate={data.dates[data.dates.length - 1]!}
+                rows={data.rows}
+                dates={data.dates}
+              />
+            )}
+            {scope === 'month' && data.dates.length > 0 && (
+              <MonthReflectionAi
+                monthStart={data.dates[0]!}
+                monthEnd={data.dates[data.dates.length - 1]!}
+                rows={data.rows}
+                dates={data.dates}
+              />
+            )}
+            <ReflectionLog dates={data.dates} />
+          </>
         )}
 
         <Footer scope={scope} data={data} />
@@ -491,116 +507,6 @@ function AdhocHintCard({
         >
           不再提示
         </button>
-      </div>
-    </section>
-  );
-}
-
-function AISection({
-  enabled,
-  onToggle,
-}: {
-  enabled: boolean;
-  onToggle: () => void;
-}) {
-  if (!enabled) {
-    return (
-      <section className="rounded-md bg-surface-1 p-4">
-        <button
-          type="button"
-          onClick={onToggle}
-          className="group flex w-full items-center gap-2 text-left"
-          aria-label="Toggle AI preview"
-        >
-          <Sparkles className="h-4 w-4 text-ink-tertiary" strokeWidth={1.6} />
-          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-            AI Observe · Review
-          </span>
-          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary/60">
-            · off
-          </span>
-          <span className="ml-auto text-xs text-ink-tertiary opacity-0 transition group-hover:opacity-100">
-            ▾ preview mock
-          </span>
-        </button>
-        <p className="mt-2 text-sm text-ink-secondary">
-          AI 默认关闭（§6.4）。启用后这里会出现 AI Observe 的模式观察 + AI Review 的结构化周期回顾。
-          自备 OpenRouter API Key，见 Settings → AI 辅助。
-        </p>
-      </section>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-3">
-      <MockObserveCard />
-      <MockReviewCard />
-      <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={onToggle}
-          className="rounded-sm px-2.5 py-1 text-xs font-medium text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-secondary"
-        >
-          关闭预览
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function MockObserveCard() {
-  return (
-    <section className="rounded-md bg-surface-1 p-4">
-      <header className="flex items-center gap-2">
-        <Sparkles className="h-4 w-4 text-ink-tertiary" strokeWidth={1.6} />
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-primary">
-          AI Observe
-        </span>
-      </header>
-      <ul className="mt-2 flex flex-col gap-2 text-sm text-ink-secondary">
-        <li>
-          · <span className="text-ink-primary">周三下午</span> 的
-          《工作 · 编码》连续 3 周被挤压 ——
-          考虑缩短到 90 min 或挪到其他时段？
-        </li>
-        <li>
-          · 晨跑 5 天中 <span className="text-ink-primary">4 次完成</span>，
-          目前处于建立期，保持节奏即可。
-        </li>
-        <li>
-          · <span className="text-ink-primary">会议冲突</span> 标签本周出现 5 次 ——
-          比上周 (2) 明显上升。
-        </li>
-      </ul>
-    </section>
-  );
-}
-
-function MockReviewCard() {
-  return (
-    <section className="rounded-md bg-surface-1 p-4">
-      <header className="flex items-center gap-2">
-        <MessageSquareQuote className="h-4 w-4 text-ink-tertiary" strokeWidth={1.6} />
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-primary">
-          AI Review · Cycle 回顾
-        </span>
-      </header>
-      <div className="mt-2 flex flex-col gap-2 text-sm text-ink-primary">
-        <p>
-          本周期节奏匹配度 <span className="font-mono tabular-nums">62%</span>，
-          与过去四个 cycle 平均值 <span className="font-mono tabular-nums">65%</span> 相近。
-        </p>
-        <p className="text-ink-secondary">
-          变动最集中在
-          <span className="text-ink-primary"> 工作·深度任务 </span>
-          与
-          <span className="text-ink-primary"> 英语 </span>
-          两条 Rail；其它 Rail 均处于稳定节律。
-        </p>
-        <p className="text-ink-secondary">
-          Project 进度方面：DayRail 开发本周期推进 2 条任务（Template Editor 静态页 + Cycle View 静态页），
-          符合原计划；考研 408 完成 4 节，略低于预期（5）。
-        </p>
       </div>
     </section>
   );

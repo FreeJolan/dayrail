@@ -6,8 +6,6 @@ import {
   Cloud,
   CloudOff,
   ExternalLink,
-  GripVertical,
-  Plus,
   Sparkles,
   Trash2,
   X,
@@ -73,6 +71,17 @@ import {
 } from '@dayrail/core';
 import { decodeDryj } from '@dayrail/db/dryj';
 import { exportDryjSnapshot } from '@/lib/exportData';
+import {
+  AiClientError,
+  callChatCompletion,
+  listModels,
+} from '@dayrail/core';
+import {
+  getAiApiKey,
+  setAiApiKey,
+  subscribeAiApiKey,
+} from '@/lib/aiApiKey';
+import { MarkdownField } from './MarkdownField';
 
 // ============ Appearance ============
 
@@ -1274,34 +1283,171 @@ function fmtAbsoluteIso(iso: string): string {
 
 
 // ============ AI ============
+//
+// ERD §6.6 v0.8.2 — OpenAI-compatible generic client.
+//
+// Three Y.Doc-synced fields (Base URL / Model / Background / aiEnabled)
+// plus one local-only field (API key, in browser localStorage). The
+// dichotomy follows §6.6 "userProfile field-split policy": settings
+// inside the channel sync; the credential opening the channel does not.
+
+const AI_BASE_URL_DEFAULT = 'https://openrouter.ai/api/v1';
+const AI_MODEL_DEFAULT = 'meta-llama/llama-3.1-8b-instruct:free';
+
+type TestConnectionState =
+  | { kind: 'idle' }
+  | { kind: 'loading' }
+  | { kind: 'ok' }
+  | { kind: 'error'; message: string; bodyExcerpt?: string };
+
+type ModelListState =
+  | { kind: 'idle' }
+  | { kind: 'loading' }
+  | { kind: 'ok'; models: string[] }
+  | { kind: 'error'; message: string; bodyExcerpt?: string };
+
+const MODEL_DATALIST_ID = 'ai-model-list';
+
+/** Map any error from the AI client into the shared `{ kind: 'error',
+ *  message, bodyExcerpt? }` UI state. Carries through `bodyExcerpt`
+ *  when present so the bridge / provider's own error body is visible
+ *  in-place — without it, "[provider-error] Provider returned 503"
+ *  is opaque. */
+function toErrorState(
+  err: unknown,
+): { kind: 'error'; message: string; bodyExcerpt?: string } {
+  if (err instanceof AiClientError) {
+    return {
+      kind: 'error',
+      message: `[${err.kind}] ${err.message}`,
+      ...(err.bodyExcerpt && err.bodyExcerpt.trim().length > 0
+        ? { bodyExcerpt: err.bodyExcerpt }
+        : {}),
+    };
+  }
+  return {
+    kind: 'error',
+    message: (err as Error).message ?? String(err),
+  };
+}
 
 export function AISection() {
-  const [enabled, setEnabled] = useState(false);
-  const [apiKey, setApiKey] = useState('');
-  const [chain, setChain] = useState<Array<{ id: string; model: string; paid: boolean }>>([
-    { id: 'm1', model: 'claude-3.5-sonnet:free', paid: false },
-    { id: 'm2', model: 'gpt-4o-mini:free', paid: false },
-  ]);
+  const userProfile = useStore((s) => s.userProfile);
+  const setAiEnabled = useStore((s) => s.setAiEnabled);
+  const setAiBaseUrl = useStore((s) => s.setAiBaseUrl);
+  const setAiModel = useStore((s) => s.setAiModel);
+  const setUserBackground = useStore((s) => s.setUserBackground);
+
+  const aiEnabled = userProfile?.aiEnabled === true;
+  const baseUrl = userProfile?.aiBaseUrl ?? '';
+  const model = userProfile?.aiModel ?? '';
+  const background = userProfile?.background ?? '';
+
+  const [apiKey, setApiKeyLocal] = useState<string>(() => getAiApiKey());
+  useEffect(() => {
+    const unsub = subscribeAiApiKey(setApiKeyLocal);
+    return unsub;
+  }, []);
+  const handleApiKeyChange = useCallback((next: string) => {
+    setAiApiKey(next);
+    setApiKeyLocal(next);
+  }, []);
+
+  const [testState, setTestState] = useState<TestConnectionState>({ kind: 'idle' });
+  const [modelListState, setModelListState] = useState<ModelListState>({ kind: 'idle' });
+  const handleBackgroundCommit = useCallback(
+    (next: string | undefined) => {
+      void setUserBackground(next ?? '');
+    },
+    [setUserBackground],
+  );
+  const handleTestConnection = useCallback(async () => {
+    setTestState({ kind: 'loading' });
+    try {
+      const out = await callChatCompletion({
+        baseUrl: (baseUrl || AI_BASE_URL_DEFAULT).trim(),
+        apiKey,
+        model: (model || AI_MODEL_DEFAULT).trim(),
+        messages: [
+          { role: 'system', content: 'Reply with the single word OK and nothing else.' },
+          { role: 'user', content: 'ping' },
+        ],
+      });
+      if (out.trim().length === 0) {
+        setTestState({
+          kind: 'error',
+          message: '调通了，但返回为空。模型可能出于流式 / 配置问题没回内容。',
+        });
+        return;
+      }
+      setTestState({ kind: 'ok' });
+    } catch (err) {
+      setTestState(toErrorState(err));
+    }
+  }, [apiKey, baseUrl, model]);
+  const handleListModels = useCallback(async () => {
+    setModelListState({ kind: 'loading' });
+    try {
+      const out = await listModels({
+        baseUrl: (baseUrl || AI_BASE_URL_DEFAULT).trim(),
+        apiKey,
+      });
+      const ids = out
+        .map((m) => m.id)
+        .filter((id, i, arr) => id.length > 0 && arr.indexOf(id) === i)
+        .sort();
+      setModelListState({ kind: 'ok', models: ids });
+    } catch (err) {
+      setModelListState(toErrorState(err));
+    }
+  }, [apiKey, baseUrl]);
 
   return (
     <SettingsSectionShell
-      overline="AI · OpenRouter"
+      overline="AI · OpenAI 兼容协议"
       title="AI 辅助"
-      description="DayRail 不自建推理，所有 AI 功能走 OpenRouter 网关。默认关闭；自备 API Key 零花费可用免费模型。详见 §6。"
+      description="DayRail 不自建推理；所有 AI 功能走任何 OpenAI 兼容端点。默认关闭。Base URL / Model / 我的背景 跨设备同步；API key 仅本机存储不上传。详见 ERD §6.6。"
     >
       <Row
         label="启用 AI 辅助"
-        description="关闭时，Review / Projects 的 AI 卡片完全不渲染；Decompose 入口隐藏。"
-        control={<Toggle checked={enabled} onChange={setEnabled} label="AI" />}
+        description="关闭时，Today Track / Review 的『让 AI 帮我看看』按钮整段不渲染。"
+        control={
+          <Toggle
+            checked={aiEnabled}
+            onChange={(next) => void setAiEnabled(next)}
+            label="AI"
+          />
+        }
       />
 
-      {enabled && (
+      {aiEnabled && (
         <>
           <Row
-            label="OpenRouter API Key"
+            label="Base URL"
             description={
               <>
-                仅本设备存储，永不上传。去{' '}
+                任何兼容 OpenAI <code className="font-mono text-2xs">/chat/completions</code>{' '}
+                的端点都可以填；默认 OpenRouter。本地 CLI 桥接（claude-code-router /
+                Ollama 等）请确认对 PWA origin 开了 CORS。
+              </>
+            }
+            control={
+              <TextField
+                value={baseUrl}
+                onChange={(next) => void setAiBaseUrl(next)}
+                placeholder={AI_BASE_URL_DEFAULT}
+                mono
+                className="w-[300px]"
+              />
+            }
+          />
+
+          <Row
+            label="API key"
+            description={
+              <>
+                <strong className="text-ink-secondary">仅本设备保存，不随同步流上传</strong>
+                （ERD §6.6 字段分流原则 · 凭证心智）。OpenRouter key 去{' '}
                 <a
                   href="https://openrouter.ai/keys"
                   target="_blank"
@@ -1310,47 +1456,128 @@ export function AISection() {
                 >
                   openrouter.ai/keys <ExternalLink className="inline h-3 w-3" strokeWidth={1.8} />
                 </a>{' '}
-                获取。
+                获取；CLI 桥接 / 本地 LLM 通常用占位 key 即可。
               </>
             }
             control={
               <TextField
                 type="password"
                 value={apiKey}
-                onChange={setApiKey}
+                onChange={handleApiKeyChange}
                 placeholder="sk-or-v1-..."
                 mono
                 className="w-[260px]"
               />
             }
           />
+
           <Row
-            label="Fallback 链"
-            description="按顺序尝试；任一模型失败（限流 / 报错 / 超时）自动切到下一个。拖拽重排。"
-            control={<span className="text-xs text-ink-tertiary">右侧展开 →</span>}
-          />
-          <div className="hairline-t flex flex-col gap-2 py-4">
-            <ul className="flex flex-col gap-2">
-              {chain.map((m, idx) => (
-                <FallbackPill
-                  key={m.id}
-                  idx={idx}
-                  model={m.model}
-                  paid={m.paid}
-                  onRemove={() => setChain((prev) => prev.filter((x) => x.id !== m.id))}
+            label="Model"
+            description={
+              <>
+                自由文本 —— 各 provider 模型 ID 命名空间不同。
+                也可点右侧「刷新可选模型」让 provider 自己报一份（走 OpenAI-compat{' '}
+                <code className="font-mono text-2xs">/v1/models</code>）。
+              </>
+            }
+            control={
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  list={
+                    modelListState.kind === 'ok' &&
+                    modelListState.models.length > 0
+                      ? MODEL_DATALIST_ID
+                      : undefined
+                  }
+                  value={model}
+                  onChange={(e) => void setAiModel(e.target.value)}
+                  placeholder={AI_MODEL_DEFAULT}
+                  className={clsx(
+                    'rounded-md bg-surface-1 px-3 py-1.5 text-sm text-ink-primary outline-none transition focus:bg-surface-2',
+                    'placeholder:text-ink-tertiary/70',
+                    'font-mono tabular-nums',
+                    'w-[300px]',
+                  )}
                 />
-              ))}
-            </ul>
-            <button
-              type="button"
-              className="inline-flex w-fit items-center gap-1.5 rounded-md border border-dashed border-ink-tertiary/40 px-2.5 py-1 text-xs text-ink-tertiary transition hover:border-ink-secondary hover:text-ink-secondary"
-            >
-              <Plus className="h-3 w-3" strokeWidth={1.8} />
-              从免费清单追加 · 或插入付费模型
-            </button>
-            <p className="pt-1 text-2xs text-ink-tertiary/80">
-              免费清单是远端 JSON（CDN 托管），应用启动时拉取 + 本地兜底；你可以在任意位置插入付费模型。
+                {modelListState.kind === 'ok' &&
+                  modelListState.models.length > 0 && (
+                    <datalist id={MODEL_DATALIST_ID}>
+                      {modelListState.models.map((id) => (
+                        <option key={id} value={id} />
+                      ))}
+                    </datalist>
+                  )}
+                <button
+                  type="button"
+                  onClick={() => void handleListModels()}
+                  disabled={modelListState.kind === 'loading'}
+                  title="GET /v1/models · 把 provider 当前可用模型 ID 拉到下拉里"
+                  className={clsx(
+                    'rounded-md border px-2.5 py-1.5 text-xs transition',
+                    modelListState.kind === 'loading'
+                      ? 'cursor-wait border-ink-tertiary/40 text-ink-tertiary'
+                      : 'border-ink-tertiary/60 text-ink-primary hover:bg-surface-2',
+                  )}
+                >
+                  {modelListState.kind === 'loading'
+                    ? '获取中…'
+                    : '刷新可选模型'}
+                </button>
+              </div>
+            }
+          />
+          {modelListState.kind === 'ok' && (
+            <p className="text-xs text-ink-tertiary">
+              {modelListState.models.length > 0
+                ? `✓ 拉到 ${modelListState.models.length} 个模型 · 在 Model 输入框内出现下拉提示，或继续手动输入`
+                : '✓ 端点回了空清单 · 该 provider 没暴露模型 ID，手动填即可'}
             </p>
+          )}
+          {modelListState.kind === 'error' && (
+            <ErrorPanel state={modelListState} />
+          )}
+
+          <Row
+            label="测试连接"
+            description="按一下打一次 minimal completion，确认 URL / key / model 三件事都通。"
+            control={
+              <button
+                type="button"
+                onClick={() => void handleTestConnection()}
+                disabled={testState.kind === 'loading'}
+                className={clsx(
+                  'rounded-md border px-3 py-1.5 text-xs transition',
+                  testState.kind === 'loading'
+                    ? 'cursor-wait border-ink-tertiary/40 text-ink-tertiary'
+                    : 'border-ink-tertiary/60 text-ink-primary hover:bg-surface-2',
+                )}
+              >
+                {testState.kind === 'loading' ? '调用中…' : '测试'}
+              </button>
+            }
+          />
+          {testState.kind === 'ok' && (
+            <p className="text-xs text-ok">✓ 调通了。</p>
+          )}
+          {testState.kind === 'error' && <ErrorPanel state={testState} />}
+
+          <div className="hairline-t flex flex-col gap-2 py-4">
+            <header className="flex flex-col gap-1">
+              <h3 className="text-sm font-medium text-ink-primary">我的背景</h3>
+              <p className="text-xs text-ink-tertiary">
+                单 Markdown blob，AI 调用前 prepend 到 system prompt；心智对标 Claude Code{' '}
+                <code className="font-mono text-2xs">CLAUDE.md</code>。说说你的角色 / 习惯
+                / 在意的事 —— AI 给的反馈会贴近这些上下文。详见 ERD §6.6.1。
+              </p>
+            </header>
+            <MarkdownField
+              value={background}
+              onCommit={handleBackgroundCommit}
+              placeholder="+ 添加背景 · Markdown · 例如『研究生 · 周末跑步 · 在备考 GRE』"
+              dialogTitle="我的背景 · userProfile.background"
+              ariaLabel="AI 背景 Markdown"
+            />
           </div>
         </>
       )}
@@ -1358,48 +1585,30 @@ export function AISection() {
   );
 }
 
-function FallbackPill({
-  idx,
-  model,
-  paid,
-  onRemove,
+/** Display a classified AI error with optional body-excerpt drawer.
+ *  Used by both 「测试连接」 and 「刷新可选模型」 paths so the bridge /
+ *  provider's own error body is surfaced — without it we'd just show
+ *  `[provider-error] Provider returned 503` and the user has no way
+ *  to see what the upstream actually said. */
+function ErrorPanel({
+  state,
 }: {
-  idx: number;
-  model: string;
-  paid: boolean;
-  onRemove: () => void;
+  state: { kind: 'error'; message: string; bodyExcerpt?: string };
 }) {
   return (
-    <li className="flex items-center gap-2 rounded-md bg-surface-1 px-2 py-1.5">
-      <GripVertical
-        className="h-3.5 w-3.5 cursor-grab text-ink-tertiary"
-        strokeWidth={1.8}
-      />
-      <span className="w-5 font-mono text-2xs tabular-nums text-ink-tertiary">
-        {idx + 1}
-      </span>
-      <span className="flex-1 truncate font-mono text-xs tabular-nums text-ink-primary">
-        {model}
-      </span>
-      <span
-        className={clsx(
-          'rounded-sm px-1.5 py-0.5 font-mono text-2xs uppercase tracking-widest',
-          paid
-            ? 'bg-warn-soft text-warn'
-            : 'bg-surface-2 text-ink-tertiary',
-        )}
-      >
-        {paid ? '付费' : '免费'}
-      </span>
-      <button
-        type="button"
-        onClick={onRemove}
-        aria-label="Remove"
-        className="rounded-sm p-0.5 text-ink-tertiary transition hover:bg-surface-3 hover:text-ink-primary"
-      >
-        <X className="h-3 w-3" strokeWidth={1.8} />
-      </button>
-    </li>
+    <div className="flex flex-col gap-1 text-xs">
+      <p className="text-warn">✗ {state.message}</p>
+      {state.bodyExcerpt && (
+        <details className="text-2xs text-ink-tertiary">
+          <summary className="cursor-pointer hover:text-ink-secondary">
+            provider 回的 body（前 500 字）
+          </summary>
+          <pre className="mt-1 whitespace-pre-wrap break-words rounded-sm bg-surface-1 p-2 font-mono text-ink-secondary">
+            {state.bodyExcerpt}
+          </pre>
+        </details>
+      )}
+    </div>
   );
 }
 
