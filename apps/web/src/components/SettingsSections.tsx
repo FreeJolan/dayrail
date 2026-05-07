@@ -74,6 +74,7 @@ import { exportDryjSnapshot } from '@/lib/exportData';
 import {
   AiClientError,
   callChatCompletion,
+  listModels,
 } from '@dayrail/core';
 import {
   getAiApiKey,
@@ -1297,7 +1298,38 @@ type TestConnectionState =
   | { kind: 'idle' }
   | { kind: 'loading' }
   | { kind: 'ok' }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string; bodyExcerpt?: string };
+
+type ModelListState =
+  | { kind: 'idle' }
+  | { kind: 'loading' }
+  | { kind: 'ok'; models: string[] }
+  | { kind: 'error'; message: string; bodyExcerpt?: string };
+
+const MODEL_DATALIST_ID = 'ai-model-list';
+
+/** Map any error from the AI client into the shared `{ kind: 'error',
+ *  message, bodyExcerpt? }` UI state. Carries through `bodyExcerpt`
+ *  when present so the bridge / provider's own error body is visible
+ *  in-place — without it, "[provider-error] Provider returned 503"
+ *  is opaque. */
+function toErrorState(
+  err: unknown,
+): { kind: 'error'; message: string; bodyExcerpt?: string } {
+  if (err instanceof AiClientError) {
+    return {
+      kind: 'error',
+      message: `[${err.kind}] ${err.message}`,
+      ...(err.bodyExcerpt && err.bodyExcerpt.trim().length > 0
+        ? { bodyExcerpt: err.bodyExcerpt }
+        : {}),
+    };
+  }
+  return {
+    kind: 'error',
+    message: (err as Error).message ?? String(err),
+  };
+}
 
 export function AISection() {
   const userProfile = useStore((s) => s.userProfile);
@@ -1322,6 +1354,7 @@ export function AISection() {
   }, []);
 
   const [testState, setTestState] = useState<TestConnectionState>({ kind: 'idle' });
+  const [modelListState, setModelListState] = useState<ModelListState>({ kind: 'idle' });
   const handleBackgroundCommit = useCallback(
     (next: string | undefined) => {
       void setUserBackground(next ?? '');
@@ -1349,14 +1382,25 @@ export function AISection() {
       }
       setTestState({ kind: 'ok' });
     } catch (err) {
-      const aiErr = err as AiClientError;
-      const msg =
-        aiErr instanceof AiClientError
-          ? `[${aiErr.kind}] ${aiErr.message}`
-          : `${(err as Error).message ?? String(err)}`;
-      setTestState({ kind: 'error', message: msg });
+      setTestState(toErrorState(err));
     }
   }, [apiKey, baseUrl, model]);
+  const handleListModels = useCallback(async () => {
+    setModelListState({ kind: 'loading' });
+    try {
+      const out = await listModels({
+        baseUrl: (baseUrl || AI_BASE_URL_DEFAULT).trim(),
+        apiKey,
+      });
+      const ids = out
+        .map((m) => m.id)
+        .filter((id, i, arr) => id.length > 0 && arr.indexOf(id) === i)
+        .sort();
+      setModelListState({ kind: 'ok', models: ids });
+    } catch (err) {
+      setModelListState(toErrorState(err));
+    }
+  }, [apiKey, baseUrl]);
 
   return (
     <SettingsSectionShell
@@ -1429,17 +1473,70 @@ export function AISection() {
 
           <Row
             label="Model"
-            description="自由文本，不做下拉 —— 各 provider 模型 ID 命名空间不同。OpenRouter 默认免费款已预填，可改任意 ID（gpt-4o-mini / claude-3.5-sonnet:beta / llama-3.1-70b 等）。"
+            description={
+              <>
+                自由文本 —— 各 provider 模型 ID 命名空间不同。
+                也可点右侧「刷新可选模型」让 provider 自己报一份（走 OpenAI-compat{' '}
+                <code className="font-mono text-2xs">/v1/models</code>）。
+              </>
+            }
             control={
-              <TextField
-                value={model}
-                onChange={(next) => void setAiModel(next)}
-                placeholder={AI_MODEL_DEFAULT}
-                mono
-                className="w-[300px]"
-              />
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  list={
+                    modelListState.kind === 'ok' &&
+                    modelListState.models.length > 0
+                      ? MODEL_DATALIST_ID
+                      : undefined
+                  }
+                  value={model}
+                  onChange={(e) => void setAiModel(e.target.value)}
+                  placeholder={AI_MODEL_DEFAULT}
+                  className={clsx(
+                    'rounded-md bg-surface-1 px-3 py-1.5 text-sm text-ink-primary outline-none transition focus:bg-surface-2',
+                    'placeholder:text-ink-tertiary/70',
+                    'font-mono tabular-nums',
+                    'w-[300px]',
+                  )}
+                />
+                {modelListState.kind === 'ok' &&
+                  modelListState.models.length > 0 && (
+                    <datalist id={MODEL_DATALIST_ID}>
+                      {modelListState.models.map((id) => (
+                        <option key={id} value={id} />
+                      ))}
+                    </datalist>
+                  )}
+                <button
+                  type="button"
+                  onClick={() => void handleListModels()}
+                  disabled={modelListState.kind === 'loading'}
+                  title="GET /v1/models · 把 provider 当前可用模型 ID 拉到下拉里"
+                  className={clsx(
+                    'rounded-md border px-2.5 py-1.5 text-xs transition',
+                    modelListState.kind === 'loading'
+                      ? 'cursor-wait border-ink-tertiary/40 text-ink-tertiary'
+                      : 'border-ink-tertiary/60 text-ink-primary hover:bg-surface-2',
+                  )}
+                >
+                  {modelListState.kind === 'loading'
+                    ? '获取中…'
+                    : '刷新可选模型'}
+                </button>
+              </div>
             }
           />
+          {modelListState.kind === 'ok' && (
+            <p className="text-xs text-ink-tertiary">
+              {modelListState.models.length > 0
+                ? `✓ 拉到 ${modelListState.models.length} 个模型 · 在 Model 输入框内出现下拉提示，或继续手动输入`
+                : '✓ 端点回了空清单 · 该 provider 没暴露模型 ID，手动填即可'}
+            </p>
+          )}
+          {modelListState.kind === 'error' && (
+            <ErrorPanel state={modelListState} />
+          )}
 
           <Row
             label="测试连接"
@@ -1463,9 +1560,7 @@ export function AISection() {
           {testState.kind === 'ok' && (
             <p className="text-xs text-ok">✓ 调通了。</p>
           )}
-          {testState.kind === 'error' && (
-            <p className="text-xs text-warn">✗ {testState.message}</p>
-          )}
+          {testState.kind === 'error' && <ErrorPanel state={testState} />}
 
           <div className="hairline-t flex flex-col gap-2 py-4">
             <header className="flex flex-col gap-1">
@@ -1487,6 +1582,33 @@ export function AISection() {
         </>
       )}
     </SettingsSectionShell>
+  );
+}
+
+/** Display a classified AI error with optional body-excerpt drawer.
+ *  Used by both 「测试连接」 and 「刷新可选模型」 paths so the bridge /
+ *  provider's own error body is surfaced — without it we'd just show
+ *  `[provider-error] Provider returned 503` and the user has no way
+ *  to see what the upstream actually said. */
+function ErrorPanel({
+  state,
+}: {
+  state: { kind: 'error'; message: string; bodyExcerpt?: string };
+}) {
+  return (
+    <div className="flex flex-col gap-1 text-xs">
+      <p className="text-warn">✗ {state.message}</p>
+      {state.bodyExcerpt && (
+        <details className="text-2xs text-ink-tertiary">
+          <summary className="cursor-pointer hover:text-ink-secondary">
+            provider 回的 body（前 500 字）
+          </summary>
+          <pre className="mt-1 whitespace-pre-wrap break-words rounded-sm bg-surface-1 p-2 font-mono text-ink-secondary">
+            {state.bodyExcerpt}
+          </pre>
+        </details>
+      )}
+    </div>
   );
 }
 

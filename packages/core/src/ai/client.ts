@@ -133,6 +133,131 @@ export async function callChatCompletion(
   return await consumeSse(res.body, signal);
 }
 
+// ============ /v1/models · model autocomplete ============
+
+export interface ModelInfo {
+  /** Model id passed verbatim into the `model` field of subsequent
+   *  `/chat/completions` calls. */
+  id: string;
+}
+
+export interface ListModelsParams {
+  /** Same Base URL as `callChatCompletion` — `/models` is appended. */
+  baseUrl: string;
+  /** Bearer token. Most providers require it; some local bridges
+   *  accept anything. We always send the header. */
+  apiKey: string;
+  /** Optional cancellation. */
+  signal?: AbortSignal;
+}
+
+/** ERD §6.6 v0.8.2 — fetch the `/v1/models` autocomplete list.
+ *
+ *  OpenAI-compat standardizes the response as `{ data: [{ id, ... }] }`,
+ *  but locally-grown bridges sometimes return a bare array or omit
+ *  the wrapper. We accept both. Returns an empty array if the shape
+ *  is unfamiliar — caller can fall back to free-text input. */
+export async function listModels(
+  params: ListModelsParams,
+): Promise<ModelInfo[]> {
+  const { baseUrl, apiKey, signal } = params;
+  const url = joinUrl(baseUrl, '/models');
+  const init: RequestInit = {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: 'application/json',
+    },
+    ...(signal && { signal }),
+  };
+
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch (err) {
+    if (signal?.aborted) {
+      throw new AiClientError('aborted', 'Request aborted by caller');
+    }
+    if (looksLikeCors(err)) {
+      throw new AiClientError(
+        'cors',
+        `Network or CORS failure reaching ${url}. If you are using a local CLI bridge (claude-code-router / Ollama / etc.) make sure it allows CORS from this origin.`,
+      );
+    }
+    throw new AiClientError(
+      'network',
+      `Network failure reaching ${url}: ${(err as Error).message ?? String(err)}`,
+    );
+  }
+
+  if (!res.ok) {
+    const body = await safeReadBody(res);
+    const opts = { status: res.status, bodyExcerpt: body };
+    if (res.status === 401)
+      throw new AiClientError(
+        'auth-401',
+        'Provider rejected the API key (401).',
+        opts,
+      );
+    if (res.status === 404)
+      throw new AiClientError(
+        'not-found-404',
+        'Endpoint not found (404). The provider may not implement /v1/models — fill the Model field manually.',
+        opts,
+      );
+    if (res.status === 429)
+      throw new AiClientError(
+        'rate-limit-429',
+        'Provider rate-limited the request (429). Try again in a moment.',
+        opts,
+      );
+    throw new AiClientError(
+      'provider-error',
+      `Provider returned ${res.status} when listing models.`,
+      opts,
+    );
+  }
+
+  let payload: unknown;
+  try {
+    payload = await res.json();
+  } catch (err) {
+    throw new AiClientError(
+      'parse-error',
+      `Could not parse /models response as JSON: ${(err as Error).message}`,
+    );
+  }
+  return parseModelList(payload);
+}
+
+/** Pull `[{ id }]` out of an OpenAI-compat models payload. Defensive:
+ *  accept `{ data: [...] }` (canonical), `{ models: [...] }`
+ *  (sometimes used by self-hosted backends), or a bare top-level array. */
+export function parseModelList(payload: unknown): ModelInfo[] {
+  let raw: unknown;
+  if (Array.isArray(payload)) {
+    raw = payload;
+  } else if (payload && typeof payload === 'object') {
+    const obj = payload as Record<string, unknown>;
+    raw = obj.data ?? obj.models ?? null;
+  }
+  if (!Array.isArray(raw)) return [];
+  const out: ModelInfo[] = [];
+  for (const entry of raw) {
+    if (!entry) continue;
+    if (typeof entry === 'string') {
+      out.push({ id: entry });
+      continue;
+    }
+    if (typeof entry !== 'object') continue;
+    const id = (entry as Record<string, unknown>).id;
+    if (typeof id === 'string' && id.length > 0) {
+      out.push({ id });
+    }
+  }
+  return out;
+}
+
 async function consumeSse(
   stream: ReadableStream<Uint8Array>,
   signal?: AbortSignal,

@@ -62,7 +62,7 @@ type CallState =
   | { kind: 'idle' }
   | { kind: 'confirm'; prepared: PreparedAiCall }
   | { kind: 'loading' }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string; bodyExcerpt?: string };
 
 export function AiObservationCard({
   available,
@@ -111,12 +111,20 @@ export function AiObservationCard({
         onCommit(observation);
         setState({ kind: 'idle' });
       } catch (err) {
-        const aiErr = err as AiClientError;
-        const message =
-          aiErr instanceof AiClientError
-            ? `[${aiErr.kind}] ${aiErr.message}`
-            : (err as Error).message ?? String(err);
-        setState({ kind: 'error', message });
+        if (err instanceof AiClientError) {
+          setState({
+            kind: 'error',
+            message: `[${err.kind}] ${err.message}`,
+            ...(err.bodyExcerpt && err.bodyExcerpt.trim().length > 0
+              ? { bodyExcerpt: err.bodyExcerpt }
+              : {}),
+          });
+        } else {
+          setState({
+            kind: 'error',
+            message: (err as Error).message ?? String(err),
+          });
+        }
       }
     },
     [apiKey, baseUrl, model, onCommit],
@@ -178,6 +186,16 @@ export function AiObservationCard({
       {state.kind === 'error' && (
         <div className="flex flex-col gap-2 text-xs">
           <p className="text-warn">✗ {state.message}</p>
+          {state.bodyExcerpt && (
+            <details className="text-2xs text-ink-tertiary">
+              <summary className="cursor-pointer hover:text-ink-secondary">
+                provider 回的 body（前 500 字）
+              </summary>
+              <pre className="mt-1 whitespace-pre-wrap break-words rounded-sm bg-surface-2 p-2 font-mono text-ink-secondary">
+                {state.bodyExcerpt}
+              </pre>
+            </details>
+          )}
           <div className="flex gap-2">
             <button
               type="button"
