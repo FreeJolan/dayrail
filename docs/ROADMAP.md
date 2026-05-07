@@ -1,6 +1,6 @@
 # DayRail · 当前状态 & 后续迭代
 
-> 最后整理：2026-05-07（v0.8.2 设计锁定 · doc-only PR · 代码实装未开始）
+> 最后整理：2026-05-07（v0.8.2 ship 后）
 > 本文档与 `ERD.*.md` 分工：ERD 是设计意图 + 历史决策链（append-only
 > 记录），本文档是**当下状态快照** + **待办停车场** + **迭代注记**。
 > 每次大迭代开始前读这里拿到起点，结束后更新这里。
@@ -96,14 +96,13 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 
 ---
 
-### 🚧 v0.8 · 外部事件源 + 日历规则重构 + AI 复盘（在路上）
+### ✓ v0.8 · 外部事件源 + 日历规则重构 + AI 复盘
 
-> 详细设计：ERD §14（外部事件源）/ §5.4（日历规则）/ §6.6（AI v0.8
-> 实施说明）。
+> 详细设计：ERD §14（外部事件源）/ §5.4（日历规则）/ §6.6（AI 实施说明）。
 
 - ✅ **v0.8.0 · 外部事件源 · 节假日 + 用户标注**（已 ship）—— 节假日（`data/holidays/{regionCode}.json` bundle + region multi-select，§14.2）+ 用户标注（`UserDayNote`，Calendar 上手动加备注，§14.3）共享 `ExternalEvent` 渲染层；都不进 task pipeline。三个 surface：Calendar / Cycle View / Today Track。详见 ERD §14。
 - ✅ **v0.8.1 · §5.4 日历规则重构**（已 ship）—— 优先级从硬编码改为用户控制的全局排序（`UserProfile.calendarRuleOrder` drag-to-reorder）+ 新加 `external-event` rule kind 按属性匹配（节假日 / 调休 / 节庆 / 备注 + region 过滤 + 备注文本 contains/exact 筛选）。CalendarRulesDrawer 重做成单一规则列表 + 条件组形式的属性编辑器（节假日卡片 + 假日/非假日 子选 + 调休 + 我的备注卡 + 备注文本 datalist autocomplete）。drag handler 抬到 container 级别消除死区 + WYSIWYG drop。Calendar 单元格视觉减负（step-4 tint → step-3 + 删左 strip + 删顶 border + 实色 badge → 文字 + 小色点）。详见 ERD §5.4 + History 顶部条目。
-- **v0.8.2 · AI MVP**（后上 · 2026-05-07 设计锁定）—— 用户背景 Markdown blob（`userProfile.background`，对标 Claude Code `CLAUDE.md`）+ OpenAI-compat 通用接入（Settings → AI 三字段：base URL / API key / model name）+ §6 复盘场景 v1（**Day + Cycle 双场景同时上**）。**API key 仅本机 `localStorage` 不入同步流**（凭证心智 · 与 §7.1 一致）；Base URL / Model name / Background 等设置走 Y.Doc 同步流。**AI 输出 ephemeral + 单字段 LWW 缓存最近一次**（`DailyReflection.lastAiObservation` / `Cycle.lastAiObservation`），不留历史 array。**§6.4 引导卡 UI 停车 v0.8.3+**（`默认关闭` toggle 策略保留）。**显式承认 CLI 桥接路径**（`claude-code-router` / `claude-bridge` / Ollama / LM Studio）—— 用户已有 Claude Code / Cursor 套餐，不再多花钱。详见 ERD §6.6 / §6.6.1 / §6.6.2 + History 顶部 v0.8.2 条目。
+- ✅ **v0.8.2 · AI MVP**（已 ship）—— OpenAI-compat 通用接入（Settings → AI · Base URL / API key / Model + 「测试连接」+ 「刷新可选模型」走 `/v1/models` autocomplete）+ 用户背景 Markdown blob（`userProfile.background`）+ Day / Cycle / Month 三 scope 复盘 AI 入口。流式输出走 **Vercel AI SDK**（`ai` + `@ai-sdk/openai-compatible` · 动态 import lazy load）。**输出形态：自由 Markdown + 「verbatim 引用」内联约定**，不再走结构化 JSON schema（dogfood 反转，理由：code-tuned model 持续 schema drift；Markdown + 引用即可达成 grounding）。System prompt 经 5 轮迭代到 **scene-staged「微信里给朋友回消息」persona**，显式承载 DayRail「**允许错过**」哲学（不评判、不下周建议、不 KPI 分析、提议 2-3 个温和小调整 + 把选择权交回）。API key 仅本机 `localStorage` 不入同步流（凭证心智 · 与 §7.1 一致）。AI 输出 ephemeral + 单字段 LWW 缓存最近一次（`DailyReflection.lastAiObservation` / `Cycle.lastAiObservation`，Month 走合成 cycle id `month-${YYYY-MM}`）。Day 反思空时显示 discoverability hint。详见 ERD §6.6 / §6.6.1 / §6.6.2 + History 顶部 v0.8.2 ship-notes 条目。
 
 ---
 
@@ -118,8 +117,11 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 | `Task.subItems` 重新拆 per-element Y.Array op | action 层愿意改成 insert/delete/update on inner Y.Array | ERD §7.7 + ROADMAP |
 | Single-tab guard（`BroadcastChannel`） | 撞到第二例多 tab 数据打架 | ROADMAP 数据安全段 |
 | IndexedDB 启动 sanity check + Error boundary | 撞到第一例 Y.Doc 反序列化失败 | ROADMAP 数据安全段 |
-| AI 多场景全开（Day + Cycle + Habit phase） | v0.8.2 一个场景跑通后体验真有用 | ERD §6 |
+| AI 全局记忆（"软件记得我"） | **结论未定** —— 看 v0.8.2 ship 后 2-3 周真实使用，AI 反思的实际命中率 / 价值频率，再决定是否做 / 怎么做。当前思路：每次反思 AI 输出末尾可选附"要不要把这个记下"，accept 后入 `aiMemories` 同步流；UI 在 Settings → AI 加「AI 记忆」面板供查 / 编辑 / 归档。设计还没定，包括：是否独立 store 还是 background 扩展、记忆条目的 TTL / 衰减、隐私边界（默认随同步还是仅本机） | 待写到 ERD §6.7 草稿 |
+| AI 多场景全开（Decompose / Observe / Habit phase） | v0.8.2 复盘 AI 真实使用频率 + 价值已证伪 / 已稳 | ERD §6 |
 | 「AI 优化我的背景」按钮 | v0.8.2 ship 后看用户写的背景文本质量 | ERD §6.6.1 |
+| §6.4 首次启动「可关闭 AI 引导卡」 | v0.8.2 ship 后两周看 AI 启用率，普遍未启用再设计 | ERD §6.4 |
+| 推荐 model 文档化（opus-via-bridge 偏 structured · sonnet/gpt 更 prose） | v0.8.2 dogfood 已观察到，但样本只有 1 用户；扩 beta 用户后再写入 ERD §6.6 | ERD §6.6 |
 | 定时自动备份 · 用户可见可配置 | 扩用户基数前 | ROADMAP 数据安全段 |
 | action 层 + syncController 端到端集成测 | 扩用户基数前 | ERD §7.7 round 5/6/7 |
 
@@ -391,56 +393,64 @@ seed / import / first-write / replace 四个生命周期点的开关。
 - 同一 rule 用不同条件做不同 narrowing（per-condition regions 等）—— 当前数据模型 regions / noteLabelFilter 是 rule 级共用
 - AI 多 provider 适配层 / fallback chain UI
 
-### 🚧 v0.8.2 · AI MVP（一次 ship 三件事 · 2026-05-07 设计锁定）
+### ✅ v0.8.2 · AI MVP（已 ship）
 
-> 缺一件都不算 v0.8.2 完。详细设计见 ERD §6.6 / §6.6.1 / §6.6.2 +
-> ERD History 顶部 v0.8.2 设计锁定条目（含本轮四个决策的 why）。
+> 设计锁定 2026-05-07（PR #9 doc-only），代码 PR #10 同日 ship。
+> 设计经历多轮 dogfood 反转 —— 详细设计 + 反转纪要见 ERD §6.6 / §6.6.1 / §6.6.2 + History 顶部 v0.8.2 ship-notes 条目。
 
-- **用户背景 Markdown**（ERD §6.6.1）—— Settings → AI → 「我的背景」
-  textarea + preview · 单 Markdown blob · 存 Y.Doc
-  `userProfile.background` · AI 调用前 prepend 到 system prompt ·
-  心智对标 Claude Code `CLAUDE.md`
-- **OpenAI-compatible 通用接入**（ERD §6.6 重写 §6.3）—— Settings →
-  AI 三字段：Base URL（默认 `https://openrouter.ai/api/v1`）/ API key
-  / Model name。一份 `fetch` + SSE 解析覆盖 OpenRouter / Groq /
-  Together / Anthropic-via-proxy / Ollama / LM Studio /
-  `claude-code-router` / `claude-bridge` 等所有兼容端点。**显式承认
-  CLI 桥接路径**，用户已有 Claude Code / Cursor 套餐，不再多花钱。
-  文档说一句"如果你用本地 CLI 桥接，请确认它对 PWA origin 开了 CORS"
-- **§6 复盘场景 v1 · Day + Cycle 双场景同时上**（ERD §6.6.2 重写）——
-  Day 入口接 Today Track DailyReflection 块底部 + Review · Day；Cycle
-  入口接 Review · Cycle 视图 picker chip 旁。两场景共享 system prompt
-  + 用户背景注入路径 + JSON 输出 schema（`{ observation, patterns,
-  suggestions }`）+ §6.5 隐私 confirm modal；差异只在数据切片整形 +
-  缓存字段挂哪个实体。staged ship 拒掉，理由：客户端 + system prompt
-  + 输出 schema + UI 卡片渲染全共用，分两轮反而要写两遍 ERD + 两个 PR
+**最终交付的形态**（与原设计锁定有几处实质性反转，详见下方）：
 
-#### 本轮 4 个 high-blast 决策（2026-05-07 拍板）
+- **用户背景 Markdown**（`userProfile.background`）—— Settings → AI → 「我的背景」 MarkdownField · 心智对标 Claude Code `CLAUDE.md` · AI 调用前 prepend 到 system prompt
+- **OpenAI-compatible 通用接入** —— Settings → AI 三字段（Base URL / API key / Model）+ 「测试连接」+ 「刷新可选模型」（走 OpenAI-compat `/v1/models` autocomplete · 容忍 `{data:[]}` / `{models:[]}` / 裸数组等多种 envelope）
+- **流式输出走 Vercel AI SDK**（`ai` + `@ai-sdk/openai-compatible`）· 动态 import 让 SDK chunk lazy load · 不开启 AI 的用户冷启动 bundle 不变
+- **三个 scope 都有 AI 入口**：
+  - **Day**：Today Track / Review · Day 的 reflection 块底部「让 AI 帮我看看」按钮（UX gate：aiEnabled + reflection 非空）+ 反思为空时显示 discoverability hint
+  - **Cycle**：Review · Cycle 视图 reflection log 上方
+  - **Month**：Review · Month 视图 reflection log 上方（合成 cycle id `month-${YYYY-MM}` 作为缓存 key）
+- **错误展示带 body excerpt 抽屉** —— 503 / 401 / parse-error 等都能看到 provider 真实回的 body（前 500 字）
+- **§6.5 隐私 confirm modal** —— 显示 token 估算 + payload summary + 数据较多时警告
 
-| 项 | 决策 | 影响 |
-|---|---|---|
-| 首发场景 | Day + Cycle 都做 | 一次 ship 双场景；Decompose / Observe 继续停车 v0.8.3+ |
-| API key 存储 | **仅本机 `localStorage`，不入同步流** | 与 ERD §6.6 旧版本写法**冲突**已改；与 §7.1 凭证心智一致；新增 §6.6『字段分流原则』段裁决 |
-| AI 输出持久化 | **Ephemeral + 单字段 LWW 缓存最近一次** | Day → `DailyReflection.lastAiObservation`；Cycle → `Cycle.lastAiObservation`；不留历史 array |
-| §6.4 引导卡 | **UI 停车 v0.8.3+** | `默认关闭` toggle 策略保留；触发条件：ship 后两周看 AI 启用率 |
+**输出形态最终决定：自由 Markdown + 内联「verbatim 引用」约定**
 
-#### `userProfile` 字段分流（v0.8.2 新立规矩）
+设计锁定时定的 `{ headline, observations: [{ claim, from_data }], questions_to_sit_with }` 结构化 JSON schema，dogfood 第一次后**整体反转**。理由：
+- Code-tuned model（如 `claude-opus-4-7` via `claude-bridge`）持续 schema drift（返回 `finding / severity` 等 lint-style 字段而非 canonical schema）
+- alias map + 容忍 validator 越加越多，复杂度跑过价值
+- prose 是 model 的强项，让它走自然写作 + 引用约定，反而更稳
 
-| 同步通道 | 心智 | 字段 |
-|---|---|---|
-| Y.Doc `userProfile`（同步流） | 「通道里的设置」 | `enabledHolidayRegions` / `calendarRuleOrder` / `aiEnabled` / `aiBaseUrl` / `aiModel` / `background` |
-| 本机 `localStorage` | 「打开外部 service 的钥匙」（凭证） | `aiApiKey`（key: `dayrail.aiApiKey`）|
+新形态：散文段落 + 关键 claim 后跟 `「verbatim quote from input」` 中文方括号引用 —— 用户扫一眼引用就能判断 AI 是否 fabricated。删掉了 `validateObservationJson`（~150 行）+ alias map + 17 个测试。
 
-二分判别：「这台设备没了等价于失去对外服务访问权」→ 凭证 → 仅本机；「这台设备没了只是设置回到默认」→ 设置 → 同步流。详见 ERD §6.6『userProfile 字段分流原则』。
+**System prompt 经 5 轮迭代到「微信里给朋友回消息」 scene-staged persona**
+
+dogfood 撞了多轮"输出读起来像 PM 周报"的问题。最终路径：
+1. Round 1：禁词（黑洞 / 拖低 / 必须 / 下周期建议）—— 模型走绕路用「严重欠账」等
+2. Round 2：禁 markdown bold label —— 模型用独立短句 label 绕（「主线 / 我看到的」）
+3. Round 3：加 anti-example —— 用户反馈这是反向投毒（"don't think about a pink elephant"）
+4. Round 4：删所有 anti-example，换成 persona-driven（"warm friend / counselor / kind elder"）—— 仍偏 structured
+5. Round 5：scene-staging —— 把 persona 升级为具体场景「几分钟前你朋友在微信里给你发了消息，你正在打字回 ta」+ 显式 ABOUT THE MEDIUM 段对比 chat reply vs report。 medium 的社交常识压住了 dashboard 形态先验
+
+最终 system prompt 显式承载 DayRail「**允许错过**」哲学：不评判、不下周建议、不 KPI 分析、提议 2-3 个温和小调整（也许 / 可以试试）+ 把选择权交回（"你比我更了解自己"）。
+
+**API key 仅本机 `localStorage` 不入同步流** —— 与 ERD §7.1 凭证心智一致，与 Drive OAuth token / WebDAV 密码同档。Base URL / Model / Background 等"通道里的设置"继续走 Y.Doc 同步流。详见 ERD §6.6『userProfile 字段分流原则』。
+
+**AI 输出 ephemeral + 单字段 LWW 缓存最近一次**：
+- Day → `DailyReflection.lastAiObservation`
+- Cycle → `Cycle.lastAiObservation`
+- Month → 合成 `Cycle` 实体（id `month-${YYYY-MM}` · `upsertCycle` v0.8.2 接受可选 id + endDate）
+
+形态：`{ generatedAt, model, markdown }` —— 直接缓存模型返回的 markdown 字符串。
+
+**model-tone 兼容性观察**
+
+dogfood 发现 `claude-opus-4-7 via claude-bridge` 即使经过 5 轮 prompt iteration 仍偏向 structured 输出（独立短句 label）。换 OpenRouter 的 `claude-3-5-sonnet` / `gpt-4o` 通常 prose 更流畅。这是 RLHF 训练的天花板，不是 prompt 能继续解决的。当前样本只有 1 用户，扩 beta 用户后再决定是否文档化默认 model 推荐。
+
+**测试基线**：147 → 203 / 13 → 15 suites（+56 case · +2 suite · `aiClient.test.ts` 14 case + `aiPrompts.test.ts` 42 case）。
 
 未做 / 留 v0.8.3+：
-- AI 多场景全开（Decompose / Observe）—— 触发条件：v0.8.2 ship 后真实使用 6 周
+- AI 多场景全开（Decompose / Observe）—— 触发条件：v0.8.2 ship 后真实使用 6 周看 Review AI 价值
 - §6.4 一次性引导卡 UI —— 触发条件：ship 后两周看 AI 启用率
 - 「AI 优化我的背景」按钮 —— 触发条件：ship 后看真实背景文本质量
-- Streaming UI 的精细 surface（先按"loading → 完整出"做，够用就不打磨）
-- Provider 特有功能（OpenRouter fallback chain / Anthropic prompt
-  caching）—— 用户要的话自己在 endpoint 那一层做（`claude-code-router`
-  自带）
+- AI 全局记忆（"软件记得我"）—— **结论未定**，先停车到 v0.9 candidate 等真实使用 2-3 周 + dogfood 出有具体的"我希望 AI 记住 X 而不忘 Y"用例。当前思路：每次反思 AI 输出末尾可选附"要不要把这个记下"，accept 后入 `aiMemories` 同步流。详见上方 v0.9+ 停车场表
+- Provider 特有功能（OpenRouter fallback chain / Anthropic prompt caching）—— 用户要的话自己在 endpoint 那一层做（`claude-code-router` 自带）
 
 ---
 
@@ -594,13 +604,20 @@ seed / import / first-write / replace 四个生命周期点的开关。
 
 - ✅ **v0.8.0 · 外部事件源 · 节假日 + 用户标注** —— PR #5 已 ship
 - ✅ **v0.8.1 · §5.4 日历规则重构** —— PR #6 已 ship；后续 PR #7 修了 off-rail label 列宽溢出
-- 🚧 **v0.8.2 · AI MVP** —— 2026-05-07 设计锁定（PR #9 doc-only · 首发场景 / API key 存储 / AI 输出持久化 / 引导卡停车四个决策落地 ERD §6.6 + ROADMAP）。下一步代码实装：(1) `userProfile` 加 `aiEnabled / aiBaseUrl / aiModel / background` 四字段 + writer / selector；`aiApiKey` 走本机 `localStorage`（key: `dayrail.aiApiKey`）单写。(2) `DailyReflection` / `Cycle` 加 `lastAiObservation?` 字段。(3) `packages/core/src/ai/{client,prompts,settings}.ts` 三件套：`fetch` + SSE 客户端 + `extractJsonFromResponse` 兜底 + system prompt builder + Day / Cycle scenario framing。(4) `AISection` 重写：删 mock fallback chain pill，三字段 + 「我的背景」MarkdownField + 「测试连接」按钮。(5) Today Track DailyReflection 块 + Review · Day / Cycle 各加「让 AI 帮我看看」按钮 + §6.5 confirm modal + result 卡片。(6) 测试新增 ~13 case：客户端 SSE / JSON 解析 / error 分类 + prompt builder 三背景 × locale + Settings 字段 round-trip → 总数 147 → ~160。手动验证 OpenRouter + 本地 `claude-code-router` 两条路径都能调通。
+- ✅ **v0.8.2 · AI MVP** —— PR #9 doc-only 设计锁定 → PR #10 代码 ship（12 commit · 经过多轮 dogfood 反转：JSON schema → free Markdown · 引入 Vercel AI SDK 替代 ~340 行手卷 SSE · system prompt 5 轮迭代到 scene-staged 「微信回消息」persona · Day / Cycle / Month 三 scope 全有 AI 入口）。Doc-only 收尾 PR 跟在后面把 ERD ship-notes + 本文档同步。
+- 🚧 **v0.8.2 ship-notes（doc-only）** —— 当前 PR 在做：ERD §6.6 / §6.6.2 + ROADMAP 同步到实装现状 · history 链 append v0.8.2 反转纪要 · ROADMAP v0.9+ 停车场新增 "AI 全局记忆（结论未定）" 等条目。
+
+### 接下来可能做（顺序未定 · 触发条件未到）
+
+- v0.8.2 真实使用 2-3 周后，看 AI 反思的实际命中率 / 价值频率，决定下一步走 v0.9 还是 v0.8.3 的小修
+- v0.8.3 候选：§6.4 AI 引导卡 UI / 「AI 优化我的背景」按钮 / 推荐 model 文档化 —— 都是看 dogfood 数据再决定
+- v0.9 候选：**AI 全局记忆**（结论未定）/ AI 多场景全开（Decompose / Observe）—— 结论未定，等真实信号
 
 ### 通用回归 checklist（每轮迭代结束都跑一遍）
 
 1. `pnpm dev` · 打开 Today Track，把今天当一天用一遍（check-in、改期、
    完成、归档）· 验证没有破
-2. `pnpm test` · 147 个测试都绿
+2. `pnpm test` · 203 个测试都绿（v0.8.2 ship 后基线，比 v0.8.1 的 147 多 56 个 AI 相关 case）
 3. Settings → 同步 → 「下载本地快照」保存一份 `.dryj`（v0.7 起的兜底
    口径；v0.6 那个 JSON 导出在 Settings → 高级仍然在）
 4. Settings → 同步 → 「从快照导入」用刚保存的 `.dryj` 走一遍 round-trip
