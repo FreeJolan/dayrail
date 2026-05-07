@@ -50,7 +50,32 @@ describe('buildSystemPrompt', () => {
 
   it('forbids ## headers in the output', () => {
     const prompt = buildSystemPrompt('zh-CN');
-    expect(prompt).toMatch(/No headers like "## /);
+    expect(prompt).toMatch(/No `##`/);
+  });
+
+  it('forbids inline bold/italic section labels (the dashboard-in-disguise pattern)', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/Do NOT open paragraphs with bold\/italic labels/);
+    expect(prompt).toContain('**主线**');
+    expect(prompt).toContain('**对应数据**');
+    expect(prompt).toContain('**一个建议**');
+  });
+
+  it('caps rail enumeration to ~3-4 by name', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/at most 3-4 specific rails/i);
+    expect(prompt).toMatch(/do not enumerate every rail/i);
+  });
+
+  it('includes an ANTI-EXAMPLE block showing the dashboard pattern to avoid', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/ANTI-EXAMPLE/);
+    expect(prompt).toMatch(/dashboard report, not a reflection/i);
+  });
+
+  it('asks each paragraph to advance one thread (not introduce a new category)', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/Each paragraph should advance ONE thread/);
   });
 
   it('teaches the inline citation convention with 「」 brackets', () => {
@@ -75,7 +100,7 @@ describe('buildSystemPrompt', () => {
 
   it('forbids generic lead-ins / trailers', () => {
     const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toMatch(/Start directly with the substance/i);
+    expect(prompt).toMatch(/Start directly from the user's words or experience/i);
   });
 
   it('teaches reflection-first framing (user words primary, numbers secondary)', () => {
