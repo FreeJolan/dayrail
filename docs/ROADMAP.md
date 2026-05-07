@@ -1,6 +1,6 @@
 # DayRail · 当前状态 & 后续迭代
 
-> 最后整理：2026-05-06（v0.8.1 ship 后）
+> 最后整理：2026-05-07（v0.8.2 设计锁定 · doc-only PR · 代码实装未开始）
 > 本文档与 `ERD.*.md` 分工：ERD 是设计意图 + 历史决策链（append-only
 > 记录），本文档是**当下状态快照** + **待办停车场** + **迭代注记**。
 > 每次大迭代开始前读这里拿到起点，结束后更新这里。
@@ -103,7 +103,7 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 
 - ✅ **v0.8.0 · 外部事件源 · 节假日 + 用户标注**（已 ship）—— 节假日（`data/holidays/{regionCode}.json` bundle + region multi-select，§14.2）+ 用户标注（`UserDayNote`，Calendar 上手动加备注，§14.3）共享 `ExternalEvent` 渲染层；都不进 task pipeline。三个 surface：Calendar / Cycle View / Today Track。详见 ERD §14。
 - ✅ **v0.8.1 · §5.4 日历规则重构**（已 ship）—— 优先级从硬编码改为用户控制的全局排序（`UserProfile.calendarRuleOrder` drag-to-reorder）+ 新加 `external-event` rule kind 按属性匹配（节假日 / 调休 / 节庆 / 备注 + region 过滤 + 备注文本 contains/exact 筛选）。CalendarRulesDrawer 重做成单一规则列表 + 条件组形式的属性编辑器（节假日卡片 + 假日/非假日 子选 + 调休 + 我的备注卡 + 备注文本 datalist autocomplete）。drag handler 抬到 container 级别消除死区 + WYSIWYG drop。Calendar 单元格视觉减负（step-4 tint → step-3 + 删左 strip + 删顶 border + 实色 badge → 文字 + 小色点）。详见 ERD §5.4 + History 顶部条目。
-- **v0.8.2 · AI MVP**（后上）—— 用户背景 Markdown blob（`userProfile.background`，对标 Claude Code `CLAUDE.md`）+ OpenAI-compat 通用接入（Settings → AI 三字段：base URL / API key / model name）+ §6 复盘场景 v1（Day 还是 Cycle 实施时再选）。**显式承认 CLI 桥接路径**（`claude-code-router` / `claude-bridge` / Ollama / LM Studio）—— 用户已有 Claude Code / Cursor 套餐，不再多花钱。
+- **v0.8.2 · AI MVP**（后上 · 2026-05-07 设计锁定）—— 用户背景 Markdown blob（`userProfile.background`，对标 Claude Code `CLAUDE.md`）+ OpenAI-compat 通用接入（Settings → AI 三字段：base URL / API key / model name）+ §6 复盘场景 v1（**Day + Cycle 双场景同时上**）。**API key 仅本机 `localStorage` 不入同步流**（凭证心智 · 与 §7.1 一致）；Base URL / Model name / Background 等设置走 Y.Doc 同步流。**AI 输出 ephemeral + 单字段 LWW 缓存最近一次**（`DailyReflection.lastAiObservation` / `Cycle.lastAiObservation`），不留历史 array。**§6.4 引导卡 UI 停车 v0.8.3+**（`默认关闭` toggle 策略保留）。**显式承认 CLI 桥接路径**（`claude-code-router` / `claude-bridge` / Ollama / LM Studio）—— 用户已有 Claude Code / Cursor 套餐，不再多花钱。详见 ERD §6.6 / §6.6.1 / §6.6.2 + History 顶部 v0.8.2 条目。
 
 ---
 
@@ -391,11 +391,12 @@ seed / import / first-write / replace 四个生命周期点的开关。
 - 同一 rule 用不同条件做不同 narrowing（per-condition regions 等）—— 当前数据模型 regions / noteLabelFilter 是 rule 级共用
 - AI 多 provider 适配层 / fallback chain UI
 
-### 🚧 v0.8.2 · AI MVP（一次 ship 三件事）
+### 🚧 v0.8.2 · AI MVP（一次 ship 三件事 · 2026-05-07 设计锁定）
 
-> 缺一件都不算 v0.8.2 完。详细设计见 ERD §6.6 / §6.6.1 / §6.6.2。
+> 缺一件都不算 v0.8.2 完。详细设计见 ERD §6.6 / §6.6.1 / §6.6.2 +
+> ERD History 顶部 v0.8.2 设计锁定条目（含本轮四个决策的 why）。
 
-- **用户背景 Markdown**（ERD §6.6.1 新增）—— Settings → AI → 「我的背景」
+- **用户背景 Markdown**（ERD §6.6.1）—— Settings → AI → 「我的背景」
   textarea + preview · 单 Markdown blob · 存 Y.Doc
   `userProfile.background` · AI 调用前 prepend 到 system prompt ·
   心智对标 Claude Code `CLAUDE.md`
@@ -406,16 +407,37 @@ seed / import / first-write / replace 四个生命周期点的开关。
   `claude-code-router` / `claude-bridge` 等所有兼容端点。**显式承认
   CLI 桥接路径**，用户已有 Claude Code / Cursor 套餐，不再多花钱。
   文档说一句"如果你用本地 CLI 桥接，请确认它对 PWA origin 开了 CORS"
-- **§6 复盘场景 v1** —— Review 视图里挑一个真用得上的切入（首选
-  Day · 与 §4.1 DailyReflection 联动；次选 Cycle）。prompt 模板含三块：
-  用户背景 + 当前数据切片 + 输出指引。具体 Day 还是 Cycle 实施时拍板
-- **「AI 优化我的背景」按钮** —— 写完上面三件事再决定；不进 v0.8.1
-  ship 边界，停车场触发条件：v0.8.2 ship 后看真实背景文本质量
+- **§6 复盘场景 v1 · Day + Cycle 双场景同时上**（ERD §6.6.2 重写）——
+  Day 入口接 Today Track DailyReflection 块底部 + Review · Day；Cycle
+  入口接 Review · Cycle 视图 picker chip 旁。两场景共享 system prompt
+  + 用户背景注入路径 + JSON 输出 schema（`{ observation, patterns,
+  suggestions }`）+ §6.5 隐私 confirm modal；差异只在数据切片整形 +
+  缓存字段挂哪个实体。staged ship 拒掉，理由：客户端 + system prompt
+  + 输出 schema + UI 卡片渲染全共用，分两轮反而要写两遍 ERD + 两个 PR
 
-未做 / 留 v0.8.1+：
-- AI 多场景（Day / Cycle / Habit phase 全开）
-- Streaming UI 的精细 surface（先按"loading → 完整出"做，够用就不
-  打磨）
+#### 本轮 4 个 high-blast 决策（2026-05-07 拍板）
+
+| 项 | 决策 | 影响 |
+|---|---|---|
+| 首发场景 | Day + Cycle 都做 | 一次 ship 双场景；Decompose / Observe 继续停车 v0.8.3+ |
+| API key 存储 | **仅本机 `localStorage`，不入同步流** | 与 ERD §6.6 旧版本写法**冲突**已改；与 §7.1 凭证心智一致；新增 §6.6『字段分流原则』段裁决 |
+| AI 输出持久化 | **Ephemeral + 单字段 LWW 缓存最近一次** | Day → `DailyReflection.lastAiObservation`；Cycle → `Cycle.lastAiObservation`；不留历史 array |
+| §6.4 引导卡 | **UI 停车 v0.8.3+** | `默认关闭` toggle 策略保留；触发条件：ship 后两周看 AI 启用率 |
+
+#### `userProfile` 字段分流（v0.8.2 新立规矩）
+
+| 同步通道 | 心智 | 字段 |
+|---|---|---|
+| Y.Doc `userProfile`（同步流） | 「通道里的设置」 | `enabledHolidayRegions` / `calendarRuleOrder` / `aiEnabled` / `aiBaseUrl` / `aiModel` / `background` |
+| 本机 `localStorage` | 「打开外部 service 的钥匙」（凭证） | `aiApiKey`（key: `dayrail.aiApiKey`）|
+
+二分判别：「这台设备没了等价于失去对外服务访问权」→ 凭证 → 仅本机；「这台设备没了只是设置回到默认」→ 设置 → 同步流。详见 ERD §6.6『userProfile 字段分流原则』。
+
+未做 / 留 v0.8.3+：
+- AI 多场景全开（Decompose / Observe）—— 触发条件：v0.8.2 ship 后真实使用 6 周
+- §6.4 一次性引导卡 UI —— 触发条件：ship 后两周看 AI 启用率
+- 「AI 优化我的背景」按钮 —— 触发条件：ship 后看真实背景文本质量
+- Streaming UI 的精细 surface（先按"loading → 完整出"做，够用就不打磨）
 - Provider 特有功能（OpenRouter fallback chain / Anthropic prompt
   caching）—— 用户要的话自己在 endpoint 那一层做（`claude-code-router`
   自带）
@@ -572,7 +594,7 @@ seed / import / first-write / replace 四个生命周期点的开关。
 
 - ✅ **v0.8.0 · 外部事件源 · 节假日 + 用户标注** —— PR #5 已 ship
 - ✅ **v0.8.1 · §5.4 日历规则重构** —— PR #6 已 ship；后续 PR #7 修了 off-rail label 列宽溢出
-- 🚧 **v0.8.2 · AI MVP** —— ERD §6.6 重写过一遍 → Settings → AI 三字段（Base URL / API key / Model name）+ 用户背景 textarea（`userProfile.background`）→ `fetch` + SSE 通用客户端 → 一个 §6 复盘场景跑通（实施时选 Day 还是 Cycle）→ 手动验证 OpenRouter + 本地 `claude-code-router` 两条路径都能调通
+- 🚧 **v0.8.2 · AI MVP** —— 2026-05-07 设计锁定（PR #9 doc-only · 首发场景 / API key 存储 / AI 输出持久化 / 引导卡停车四个决策落地 ERD §6.6 + ROADMAP）。下一步代码实装：(1) `userProfile` 加 `aiEnabled / aiBaseUrl / aiModel / background` 四字段 + writer / selector；`aiApiKey` 走本机 `localStorage`（key: `dayrail.aiApiKey`）单写。(2) `DailyReflection` / `Cycle` 加 `lastAiObservation?` 字段。(3) `packages/core/src/ai/{client,prompts,settings}.ts` 三件套：`fetch` + SSE 客户端 + `extractJsonFromResponse` 兜底 + system prompt builder + Day / Cycle scenario framing。(4) `AISection` 重写：删 mock fallback chain pill，三字段 + 「我的背景」MarkdownField + 「测试连接」按钮。(5) Today Track DailyReflection 块 + Review · Day / Cycle 各加「让 AI 帮我看看」按钮 + §6.5 confirm modal + result 卡片。(6) 测试新增 ~13 case：客户端 SSE / JSON 解析 / error 分类 + prompt builder 三背景 × locale + Settings 字段 round-trip → 总数 147 → ~160。手动验证 OpenRouter + 本地 `claude-code-router` 两条路径都能调通。
 
 ### 通用回归 checklist（每轮迭代结束都跑一遍）
 
