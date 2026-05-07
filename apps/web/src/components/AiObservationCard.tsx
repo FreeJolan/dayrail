@@ -264,7 +264,7 @@ function ConfirmPanel({
         <button
           type="button"
           onClick={onSend}
-          className="rounded-md bg-bronze-9 px-2.5 py-1 text-xs text-white transition hover:bg-bronze-10"
+          className="rounded-md bg-cta px-3 py-1 text-xs font-medium text-cta-foreground transition hover:bg-cta-hover"
         >
           发送
         </button>
