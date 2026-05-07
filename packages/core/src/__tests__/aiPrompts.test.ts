@@ -39,7 +39,23 @@ describe('buildSystemPrompt', () => {
 
   it('requires each observation to carry a from_data citation', () => {
     const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toMatch(/MUST include a "from_data"/i);
+    expect(prompt).toMatch(/MUST be a verbatim/i);
+  });
+
+  it('lists field-name anti-aliases (no finding / severity / etc)', () => {
+    const prompt = buildSystemPrompt('en-US');
+    // Code-tuned models drift toward lint-style schemas; the prompt
+    // must call this out explicitly.
+    expect(prompt).toMatch(/NOT "finding"/);
+    expect(prompt).toMatch(/no "severity"/);
+  });
+
+  it('includes a few-shot example with the canonical field names', () => {
+    const prompt = buildSystemPrompt('en-US');
+    expect(prompt).toMatch(/EXAMPLE/);
+    expect(prompt).toContain('"claim"');
+    expect(prompt).toContain('"from_data"');
+    expect(prompt).toContain('"questions_to_sit_with"');
   });
 
   it('forbids restating UI facts (no productivity-coach summary)', () => {

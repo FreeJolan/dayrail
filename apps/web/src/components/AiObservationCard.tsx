@@ -19,6 +19,7 @@ import {
   AiClientError,
   callChatCompletion,
   extractJsonFromResponse,
+  validateObservationJson,
   type AiObservation,
   type AiObservationJson,
   type ChatMessage,
@@ -385,82 +386,6 @@ function ObservationView({ observation }: ObservationViewProps) {
 }
 
 // ============ Helpers ============
-
-/** Validate that the parsed JSON conforms to the v0.8.2 citation-bound
- *  observation schema. Throws AiClientError(parse-error) on mismatch.
- *  Soft on shape (defaults missing arrays to empty) — the AI sometimes
- *  omits empty arrays even when the schema says they're required. */
-export function validateObservationJson(raw: unknown): AiObservationJson {
-  if (!raw || typeof raw !== 'object') {
-    throw new AiClientError(
-      'parse-error',
-      'AI response was not a JSON object.',
-    );
-  }
-  const obj = raw as Record<string, unknown>;
-
-  const headline = obj.headline;
-  if (typeof headline !== 'string' || headline.trim().length === 0) {
-    throw new AiClientError(
-      'parse-error',
-      'AI response missing non-empty string field "headline".',
-    );
-  }
-
-  const rawObservations = obj.observations;
-  let observations: Array<{ claim: string; from_data: string }>;
-  if (rawObservations === undefined || rawObservations === null) {
-    observations = [];
-  } else if (!Array.isArray(rawObservations)) {
-    throw new AiClientError(
-      'parse-error',
-      'AI response field "observations" must be an array.',
-    );
-  } else {
-    observations = rawObservations.map((item, idx) => {
-      if (!item || typeof item !== 'object') {
-        throw new AiClientError(
-          'parse-error',
-          `AI response observations[${idx}] is not an object.`,
-        );
-      }
-      const o = item as Record<string, unknown>;
-      const claim = o.claim;
-      const from_data = o.from_data;
-      if (typeof claim !== 'string' || claim.trim().length === 0) {
-        throw new AiClientError(
-          'parse-error',
-          `AI response observations[${idx}].claim must be a non-empty string.`,
-        );
-      }
-      if (typeof from_data !== 'string') {
-        throw new AiClientError(
-          'parse-error',
-          `AI response observations[${idx}].from_data must be a string (use "" if you genuinely cannot cite — but prefer omitting the observation entirely).`,
-        );
-      }
-      return { claim, from_data };
-    });
-  }
-
-  const rawQuestions = obj.questions_to_sit_with;
-  let questions_to_sit_with: string[];
-  if (rawQuestions === undefined || rawQuestions === null) {
-    questions_to_sit_with = [];
-  } else if (
-    !Array.isArray(rawQuestions) ||
-    !rawQuestions.every((q) => typeof q === 'string')
-  ) {
-    throw new AiClientError(
-      'parse-error',
-      'AI response field "questions_to_sit_with" must be string[].',
-    );
-  } else {
-    questions_to_sit_with = rawQuestions;
-  }
-
-  return { headline, observations, questions_to_sit_with };
-}
 
 function formatObservationAsMarkdown(json: AiObservationJson): string {
   const parts: string[] = [];
