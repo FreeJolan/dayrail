@@ -26,8 +26,31 @@ describe('buildSystemPrompt', () => {
   it('asks for prose, not JSON', () => {
     const prompt = buildSystemPrompt('zh-CN');
     expect(prompt).toMatch(/short reflection/i);
-    expect(prompt).toMatch(/Not JSON/);
+    expect(prompt).toMatch(/No JSON/);
     expect(prompt).toMatch(/No code fences/);
+  });
+
+  it('explicitly frames DayRail as NOT a productivity tracker / coach', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/NOT a productivity tracker/);
+    expect(prompt).toMatch(/NOT a coach/);
+    expect(prompt).toMatch(/Numbers like "match 0%".*are NOT failures/s);
+  });
+
+  it('lists forbidden corporate / coaching vocabulary', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/FORBIDDEN VOCABULARY/);
+    // Sample of the actual blocklist words
+    expect(prompt).toContain('黑洞');
+    expect(prompt).toContain('拖低');
+    expect(prompt).toContain('必须');
+    expect(prompt).toContain('下周期');
+    expect(prompt).toContain('严重');
+  });
+
+  it('forbids ## headers in the output', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/No headers like "## /);
   });
 
   it('teaches the inline citation convention with 「」 brackets', () => {
@@ -45,25 +68,20 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toMatch(/「[^」]+」/);
   });
 
-  it('keeps the observation-not-judgment tone constraint', () => {
+  it('forbids "继续加油" / "stay focused" platitudes by example', () => {
     const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toMatch(/Observe, do not judge/i);
-  });
-
-  it('forbids productivity-coach platitudes by example', () => {
-    const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toMatch(/great job/i);
-    expect(prompt).toMatch(/试试番茄钟|Pomodoro/i);
-  });
-
-  it('forbids restating UI facts (no productivity-coach summary)', () => {
-    const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toMatch(/Do not restate facts the user can read/i);
+    expect(prompt).toMatch(/继续加油|你做得很棒|stay focused/i);
   });
 
   it('forbids generic lead-ins / trailers', () => {
     const prompt = buildSystemPrompt('en-US');
-    expect(prompt).toMatch(/start directly with the substance/i);
+    expect(prompt).toMatch(/Start directly with the substance/i);
+  });
+
+  it('teaches reflection-first framing (user words primary, numbers secondary)', () => {
+    const prompt = buildSystemPrompt('zh-CN');
+    expect(prompt).toMatch(/primary signal/i);
+    expect(prompt).toMatch(/secondary/);
   });
 });
 
@@ -159,9 +177,21 @@ describe('buildDayReviewUserMessage', () => {
 
   it('marks empty task groups as "(none)" so the model knows', () => {
     const out = buildDayReviewUserMessage(baseInput);
-    expect(out).toMatch(/Completed today: \(none\)/);
-    expect(out).toMatch(/Deferred today: \(none\)/);
-    expect(out).toMatch(/Still pending today: \(none\)/);
+    expect(out).toMatch(/Today's tasks · completed: \(none\)/);
+    expect(out).toMatch(/Today's tasks · deferred: \(none\)/);
+    expect(out).toMatch(/Today's tasks · still pending: \(none\)/);
+  });
+
+  it('leads with the reflection text (primary signal framing)', () => {
+    const out = buildDayReviewUserMessage({
+      ...baseInput,
+      reflectionContent: 'Felt focused this morning.',
+    });
+    const reflectionIdx = out.indexOf('Felt focused this morning');
+    const tasksIdx = out.indexOf("Today's tasks");
+    expect(reflectionIdx).toBeGreaterThan(-1);
+    expect(tasksIdx).toBeGreaterThan(-1);
+    expect(reflectionIdx).toBeLessThan(tasksIdx);
   });
 
   it('renders the 7-day baseline block when supplied', () => {
@@ -192,12 +222,13 @@ describe('buildDayReviewUserMessage', () => {
     expect(out).toMatch(/insufficient history/i);
   });
 
-  it('marks empty reflection as "(none written)" for the model', () => {
+  it('marks empty reflection with neutral note (not moralized)', () => {
     const out = buildDayReviewUserMessage({
       ...baseInput,
       reflectionContent: '',
     });
-    expect(out).toMatch(/Daily reflection: \(none written\)/);
+    expect(out).toMatch(/nothing written/);
+    expect(out).toMatch(/don't read into it/i);
   });
 
   it('reminds the model to cite verbatim quotes in the closing line', () => {

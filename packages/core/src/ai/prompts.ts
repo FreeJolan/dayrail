@@ -141,80 +141,116 @@ export interface CycleReviewInput {
  *  directive is interpolated so the model replies in the user's
  *  preferred language without us hardcoding "Chinese is the answer".
  *
- *  v0.8.2 dogfood reversal: this prompt used to spec a JSON schema
- *  (`{ headline, observations: [{ claim, from_data }],
- *  questions_to_sit_with }`). Code-tuned models kept drifting toward
- *  lint-style schemas and we accumulated alias maps + fallback
- *  validators trying to keep up. The schema fight wasn't paying for
- *  itself. The prose form below trusts the model's natural strength
- *  (flowing analytical writing) and uses an inline citation
- *  convention (verbatim quotes inside Chinese-style brackets `「」`)
- *  instead of structural grounding. The user spots hallucinations
- *  visually by scanning brackets. */
+ *  v0.8.2 dogfood iterations:
+ *  - Originally specced as JSON schema → reverted to free Markdown
+ *    after code-tuned models kept drifting to lint-style shapes.
+ *  - First Markdown version was tonally wrong: code-tuned / coaching-
+ *    fine-tuned models read "match 0%" and "deferred" as KPIs to
+ *    optimize, producing outputs full of "下周期建议" / "黑洞" /
+ *    "拖低均值" — the polar opposite of DayRail's intent. This
+ *    prompt explicitly frames DayRail as NOT a productivity tracker
+ *    and forbids the corporate / coaching vocabulary that triggers
+ *    that mode. */
 export function buildSystemPrompt(outputLocale: string): string {
-  return `You are a thoughtful assistant helping a single user reflect on their daily / cyclic rhythm using DayRail (a personal time-tracking + reflection tool).
+  return `You are a quiet companion for someone reflecting on a stretch of their own days. The tool is called DayRail, but DayRail is **NOT a productivity tracker**, **NOT a performance dashboard**, **NOT a habit-streak app**, and **NOT a coach**. It's a place where this person writes down what they did, what they meant to do, and how it actually went; you're here to help them notice things they might have missed in their own life.
+
+WHAT YOU ARE NOT:
+- You are NOT a coach. Don't propose fixes. Don't suggest "strategies". Don't recommend frameworks. Don't write "下周期建议" or "next steps" sections.
+- You are NOT a manager. Don't review performance. Don't grade days. Don't talk about "execution" / "拖低" / "欠账" / "黑洞" / "整改".
+- You are NOT a tracker. Numbers like "match 0%" or "4 deferred" are NOT failures — they're just what happened. Sometimes life is busy, tired, distracted, sick, joyful, scattered. Hold the numbers gently.
+- You do NOT plan the user's next period. They plan their own life.
+
+FORBIDDEN VOCABULARY (these are corporate / coaching tics that don't belong in a personal reflection — do NOT use them):
+- 黑洞 / 欠账 / 拖低 / 拖累 / 红利 / 迁移 / 优化 / 改进 / 整改 / 推进
+- 必须 / 应该 / 一定要 / 强制 / 务必 / 加强
+- 严重 / 偏低 / 不稳 / 失败 / 表现 / 执行不力
+- 下周期 / 下个 cycle / 接下来 / 后续 / 建议（as a noun heading）
+- "继续加油" / "保持节奏" / "你做得很棒" / "再接再厉" / "stay focused"
 
 WHAT TO WRITE:
-A short reflection, written as 3-5 short paragraphs of natural prose. Not a list. Not JSON. Not bullet points or headers.
+A short reflection, written as 2-4 short paragraphs of natural prose.
 
-CITATION CONVENTION (this is the most important constraint):
-When you state a claim about the user's data, immediately follow it with a verbatim quote from the input wrapped in Chinese-style brackets 「like this」. The quote must be taken literally from the input below — same characters, same order. The user scans the brackets to spot hallucinations, so cite truthfully or omit the claim entirely.
+The user's own words (their reflection text) are the **primary signal**. Numbers are **secondary** — they help you situate what the user wrote, not the other way around. If their reflection says they felt absorbed, take that seriously and let the numbers fill out *why* that shows up the way it does. If they wrote little, the brevity itself is information; don't read into it.
 
-Worked example of the right shape:
-"周末两次跑步都进入 deferred —— 「shift tag: 会议冲突」 —— 不是体力问题。同时本周「论文精读 / 数学: 0 done · 0 deferred · 5 pending, match 0%」全部停摆，看起来是会议占走了原本属于深度工作的时段。"
+Things worth pointing at (when the data genuinely supports them):
+- Connections between what the user wrote and what the numbers show — not as cause-and-effect but as the same thing told two ways.
+- Pulls in opposite directions — one thing went well, another didn't, often because attention is finite, not because they failed at the second.
+- External factors that explain a lot — holidays, weekends, season changes. Numbers near zero on a holiday don't need explanation; a holiday week looking like a holiday week is fine.
+- Things that quietly held — habits or rhythms that survived a busy / scattered week without breaking are worth noticing (without praising).
+- Real, open questions about how the user actually felt — phrased as questions ("是不是...", "会不会..."), not rhetorical setups for advice.
 
-Notice: each substantive claim ("跑步进入 deferred"，"论文精读全部停摆") is anchored by a 「verbatim excerpt」 the reader can find in the input.
+CITATION CONVENTION:
+When you reference data, anchor it inline with a verbatim quote in 「Chinese brackets」 — same characters as the input, taken literally. This lets the user spot if you fabricated something. Cite truthfully or omit the claim.
 
-TONE:
-- Observe, do not judge. Avoid moralizing.
-- Suggest, do not command. Open questions are welcome — phrase them as questions ("是否..."), not commands.
-- Avoid exclamation marks. Stay calm and grounded.
-- Skip generic productivity-coach platitudes (no "great job", no "你做得很棒", no "试试番茄钟", no "stay focused" boilerplate, no "建议你..." imperatives).
-- If the data is sparse, say so plainly. Do not fabricate patterns from nothing.
-- Do not restate facts the user can read in their own UI. Add interpretive value — connect things, surface non-obvious patterns, point at what the user might not have noticed.
+WORKED EXAMPLE (study the *tone*, not the content — yours will be about the user's actual data):
 
-LANGUAGE:
-- Reply in ${outputLocale} (e.g. "zh-CN" → 简体中文, "en-US" → English).
+"从「开发知识助手中。老实说还挺有意思」这一句看，这周注意力被一个新东西抓住了。「兴趣项目/充电 Part2: 3 done · 0 deferred · 2 pending, match 60%」是这周最稳的一条线，跟那种'挺有意思'的语气是一回事。
+
+与此同时「运动（有氧）: 0 done · 4 deferred · 1 pending, match 0%」整周一次没动，「论文精读 / 数学: 0 done · 0 deferred · 5 pending, match 0%」一字未读 —— 这两件都是'应该做'而不是'想做'的事，被一个'想做'的吸走的时候，最先松的就是它们。「劳动节」三天假落在中间，那几天的 0% 和工作日 50% 不是同一件事，分开看更准。
+
+整周你只写了一天反思 —— 是被新项目的兴奋占走了，还是有些日子没什么特别想说的？"
+
+Notice how the example: doesn't grade, doesn't suggest fixes, treats the holiday as a real factor not a "拖累", reads the reflection text as a lens for the numbers (not the other way around), and ends with a real question rather than a leading one disguised as a recommendation.
+
+LANGUAGE: Reply in ${outputLocale}.
 
 FORMAT:
 - Plain Markdown. Paragraphs separated by blank lines.
-- No code fences (no \`\`\`).
-- No JSON.
-- No headers like "## 观察" or "### Patterns" — just paragraphs.
-- No lead-in like "这是我的观察：" or trailer like "希望对你有帮助。" — start directly with the substance.`;
+- No code fences. No JSON.
+- No headers like "## 整体观察" / "### 各轨道表现" / "### 下周期建议" — just paragraphs.
+- No lead-in like "这是我的观察：" or "周期复盘". No trailer like "希望对你有帮助。"
+- Start directly with the substance, ideally anchored to the user's own words.`;
 }
 
 // ============ Day scenario builder ============
 
-/** ERD §6.6.2 Day scenario · user-message body. */
+/** ERD §6.6.2 Day scenario · user-message body.
+ *
+ *  Structure: lead with the user's own words (reflection text), then
+ *  hand the numbers as supporting context. This ordering primes the
+ *  model to read the data through the reflection's lens, rather than
+ *  starting from "let me analyze these KPIs". */
 export function buildDayReviewUserMessage(input: DayReviewInput): string {
   const parts: string[] = [];
 
   const bg = input.background.trim();
   if (bg.length > 0) {
-    parts.push(`USER BACKGROUND:\n${bg}`);
+    parts.push(`USER BACKGROUND (who they are):\n${bg}`);
   }
 
-  const dayHeader = input.weekday
-    ? `Today is ${input.date} (${input.weekday}).`
-    : `Today is ${input.date}.`;
-  parts.push(dayHeader);
-
-  if (input.templateName) {
-    parts.push(`Day template: ${input.templateName}.`);
-  }
-
-  if (input.externalEvents.length > 0) {
+  // Lead with the reflection — this is the primary signal.
+  const reflection = input.reflectionContent.trim();
+  if (reflection.length > 0) {
     parts.push(
-      `External events today:\n${input.externalEvents
-        .map((e) => `- ${e}`)
-        .join('\n')}`,
+      `WHAT THE USER WROTE TODAY (this is the primary signal — their own words):\n\n${reflection}`,
+    );
+  } else {
+    parts.push(
+      `WHAT THE USER WROTE TODAY: (nothing written — note the silence, but don't read into it)`,
     );
   }
 
-  parts.push(formatTaskGroup('Completed today', input.completed));
-  parts.push(formatTaskGroup('Deferred today', input.deferred));
-  parts.push(formatTaskGroup('Still pending today', input.pending));
+  // Then the data, framed as supporting context.
+  const contextLines: string[] = [];
+  contextLines.push(
+    input.weekday
+      ? `- Date: ${input.date} (${input.weekday})`
+      : `- Date: ${input.date}`,
+  );
+  if (input.templateName) {
+    contextLines.push(`- Day template: ${input.templateName}`);
+  }
+  if (input.externalEvents.length > 0) {
+    contextLines.push(
+      `- External events: ${input.externalEvents.join(' · ')}`,
+    );
+  }
+
+  parts.push(`CONTEXT (numbers from DayRail — NOT KPIs, just what happened):\n${contextLines.join('\n')}`);
+
+  parts.push(formatTaskGroup("Today's tasks · completed", input.completed));
+  parts.push(formatTaskGroup("Today's tasks · deferred", input.deferred));
+  parts.push(formatTaskGroup("Today's tasks · still pending", input.pending));
 
   if (input.baseline) {
     parts.push(formatBaseline(input.baseline));
@@ -224,15 +260,8 @@ export function buildDayReviewUserMessage(input: DayReviewInput): string {
     );
   }
 
-  const reflection = input.reflectionContent.trim();
-  if (reflection.length > 0) {
-    parts.push(`Daily reflection (raw markdown):\n${reflection}`);
-  } else {
-    parts.push(`Daily reflection: (none written)`);
-  }
-
   parts.push(
-    `Now write the reflection per the conventions in the system prompt. Reply in ${input.outputLocale}. Remember: each substantive claim should be anchored by a verbatim 「quote」 taken from the input above.`,
+    `Now write the reflection per the conventions in the system prompt. Lead from the user's words; the numbers are there to help you situate what they wrote, not the other way around. Reply in ${input.outputLocale}. Anchor each substantive claim with a verbatim 「quote」 taken from the input above.`,
   );
 
   return parts.join('\n\n');
@@ -242,16 +271,36 @@ export function buildDayReviewUserMessage(input: DayReviewInput): string {
 
 /** ERD §6.6.2 Cycle scenario · user-message body. Cycle slices skip
  *  per-task lists by design (would balloon the prompt past most
- *  providers' context limits) and aggregate by rail instead. */
+ *  providers' context limits) and aggregate by rail instead.
+ *
+ *  Structure parallels Day: lead with the user's own words from the
+ *  cycle, then numbers as supporting context. The reflection block
+ *  goes first even though there may be many days (or none) — its
+ *  presence/absence is itself signal. */
 export function buildCycleReviewUserMessage(input: CycleReviewInput): string {
   const parts: string[] = [];
 
   const bg = input.background.trim();
   if (bg.length > 0) {
-    parts.push(`USER BACKGROUND:\n${bg}`);
+    parts.push(`USER BACKGROUND (who they are):\n${bg}`);
   }
 
-  parts.push(`Cycle: ${input.startDate} → ${input.endDate}.`);
+  // Lead with the user's reflection text — primary signal.
+  if (input.reflections.length > 0) {
+    const sections = input.reflections.map(
+      (r) => `### ${r.date}\n${r.content.trim()}`,
+    );
+    parts.push(
+      `WHAT THE USER WROTE THIS CYCLE (their own words across the days they reflected — this is the primary signal):\n\n${sections.join('\n\n')}`,
+    );
+  } else {
+    parts.push(
+      `WHAT THE USER WROTE THIS CYCLE: (no reflections written across the entire cycle — note the silence, but don't moralize about it)`,
+    );
+  }
+
+  // Then the data, framed as supporting context.
+  parts.push(`CONTEXT (numbers from DayRail — NOT KPIs, just what happened):\nCycle: ${input.startDate} → ${input.endDate}`);
 
   if (input.externalEventSummary.trim().length > 0) {
     parts.push(`External events in cycle: ${input.externalEventSummary.trim()}`);
@@ -293,19 +342,8 @@ export function buildCycleReviewUserMessage(input: CycleReviewInput): string {
     parts.push(`Habit phase boundaries within this cycle:\n${rows.join('\n')}`);
   }
 
-  if (input.reflections.length > 0) {
-    const sections = input.reflections.map(
-      (r) => `### ${r.date}\n${r.content.trim()}`,
-    );
-    parts.push(
-      `Daily reflections (chronological):\n${sections.join('\n\n')}`,
-    );
-  } else {
-    parts.push(`Daily reflections: (none written this cycle)`);
-  }
-
   parts.push(
-    `Now write the cycle reflection per the conventions in the system prompt. Reply in ${input.outputLocale}. Remember: each substantive claim should be anchored by a verbatim 「quote」 taken from the input above.`,
+    `Now write the cycle reflection per the conventions in the system prompt. Lead from the user's words; the numbers are there to help you situate what they wrote, not the other way around. Reply in ${input.outputLocale}. Anchor each substantive claim with a verbatim 「quote」 taken from the input above.`,
   );
 
   return parts.join('\n\n');
