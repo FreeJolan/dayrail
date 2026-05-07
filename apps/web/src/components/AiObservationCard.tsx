@@ -276,39 +276,44 @@ function ObservationView({ observation }: ObservationViewProps) {
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-2 rounded-md bg-surface-2 p-3">
         <h3 className="text-xs font-medium uppercase tracking-widest text-ink-tertiary">
-          观察
+          标题
         </h3>
         <p className="whitespace-pre-wrap text-sm text-ink-primary">
-          {json.observation}
+          {json.headline}
         </p>
-        <p className="text-2xs text-ink-tertiary">· 供参考</p>
       </div>
 
-      {json.patterns.length > 0 && (
-        <div className="flex flex-col gap-2 rounded-md bg-surface-2 p-3">
+      {json.observations.length > 0 && (
+        <div className="flex flex-col gap-3 rounded-md bg-surface-2 p-3">
           <h3 className="text-xs font-medium uppercase tracking-widest text-ink-tertiary">
-            节奏 / 完成度模式
+            观察 · 引用入参
           </h3>
-          <ul className="list-disc space-y-1 pl-5 text-sm text-ink-primary">
-            {json.patterns.map((p, i) => (
-              <li key={i}>{p}</li>
+          <ul className="flex flex-col gap-3">
+            {json.observations.map((item, i) => (
+              <li key={i} className="flex flex-col gap-1">
+                <p className="text-sm text-ink-primary">{item.claim}</p>
+                <p className="text-2xs text-ink-tertiary">
+                  ↳ <span className="italic">「{item.from_data}」</span>
+                </p>
+              </li>
             ))}
           </ul>
-          <p className="text-2xs text-ink-tertiary">· 供参考</p>
+          <p className="text-2xs text-ink-tertiary">
+            · 供参考 · 每条 claim 都附 from_data 引用，与 prompt 对不上的就别信
+          </p>
         </div>
       )}
 
-      {json.suggestions.length > 0 && (
+      {json.questions_to_sit_with.length > 0 && (
         <div className="flex flex-col gap-2 rounded-md bg-surface-2 p-3">
           <h3 className="text-xs font-medium uppercase tracking-widest text-ink-tertiary">
-            建议
+            可以放在心里慢慢想的问题
           </h3>
           <ul className="list-disc space-y-1 pl-5 text-sm text-ink-primary">
-            {json.suggestions.map((s, i) => (
-              <li key={i}>{s}</li>
+            {json.questions_to_sit_with.map((q, i) => (
+              <li key={i}>{q}</li>
             ))}
           </ul>
-          <p className="text-2xs text-ink-tertiary">· 供参考</p>
         </div>
       )}
 
@@ -330,8 +335,10 @@ function ObservationView({ observation }: ObservationViewProps) {
 
 // ============ Helpers ============
 
-/** Validate that the parsed JSON conforms to the v0.8.2 generic
- *  observation schema. Throws AiClientError(parse-error) on mismatch. */
+/** Validate that the parsed JSON conforms to the v0.8.2 citation-bound
+ *  observation schema. Throws AiClientError(parse-error) on mismatch.
+ *  Soft on shape (defaults missing arrays to empty) — the AI sometimes
+ *  omits empty arrays even when the schema says they're required. */
 export function validateObservationJson(raw: unknown): AiObservationJson {
   if (!raw || typeof raw !== 'object') {
     throw new AiClientError(
@@ -340,47 +347,84 @@ export function validateObservationJson(raw: unknown): AiObservationJson {
     );
   }
   const obj = raw as Record<string, unknown>;
-  const observation = obj.observation;
-  const patterns = obj.patterns;
-  const suggestions = obj.suggestions;
-  if (typeof observation !== 'string') {
+
+  const headline = obj.headline;
+  if (typeof headline !== 'string' || headline.trim().length === 0) {
     throw new AiClientError(
       'parse-error',
-      'AI response missing string field "observation".',
+      'AI response missing non-empty string field "headline".',
     );
   }
-  if (
-    !Array.isArray(patterns) ||
-    !patterns.every((p) => typeof p === 'string')
+
+  const rawObservations = obj.observations;
+  let observations: Array<{ claim: string; from_data: string }>;
+  if (rawObservations === undefined || rawObservations === null) {
+    observations = [];
+  } else if (!Array.isArray(rawObservations)) {
+    throw new AiClientError(
+      'parse-error',
+      'AI response field "observations" must be an array.',
+    );
+  } else {
+    observations = rawObservations.map((item, idx) => {
+      if (!item || typeof item !== 'object') {
+        throw new AiClientError(
+          'parse-error',
+          `AI response observations[${idx}] is not an object.`,
+        );
+      }
+      const o = item as Record<string, unknown>;
+      const claim = o.claim;
+      const from_data = o.from_data;
+      if (typeof claim !== 'string' || claim.trim().length === 0) {
+        throw new AiClientError(
+          'parse-error',
+          `AI response observations[${idx}].claim must be a non-empty string.`,
+        );
+      }
+      if (typeof from_data !== 'string') {
+        throw new AiClientError(
+          'parse-error',
+          `AI response observations[${idx}].from_data must be a string (use "" if you genuinely cannot cite — but prefer omitting the observation entirely).`,
+        );
+      }
+      return { claim, from_data };
+    });
+  }
+
+  const rawQuestions = obj.questions_to_sit_with;
+  let questions_to_sit_with: string[];
+  if (rawQuestions === undefined || rawQuestions === null) {
+    questions_to_sit_with = [];
+  } else if (
+    !Array.isArray(rawQuestions) ||
+    !rawQuestions.every((q) => typeof q === 'string')
   ) {
     throw new AiClientError(
       'parse-error',
-      'AI response field "patterns" must be string[].',
+      'AI response field "questions_to_sit_with" must be string[].',
     );
+  } else {
+    questions_to_sit_with = rawQuestions;
   }
-  if (
-    !Array.isArray(suggestions) ||
-    !suggestions.every((s) => typeof s === 'string')
-  ) {
-    throw new AiClientError(
-      'parse-error',
-      'AI response field "suggestions" must be string[].',
-    );
-  }
-  return { observation, patterns, suggestions };
+
+  return { headline, observations, questions_to_sit_with };
 }
 
 function formatObservationAsMarkdown(json: AiObservationJson): string {
   const parts: string[] = [];
-  parts.push(`### 观察\n\n${json.observation}`);
-  if (json.patterns.length > 0) {
-    parts.push(
-      `### 节奏 / 完成度模式\n\n${json.patterns.map((p) => `- ${p}`).join('\n')}`,
+  parts.push(`### ${json.headline}`);
+  if (json.observations.length > 0) {
+    const lines = json.observations.map(
+      (o) => `- ${o.claim}\n  ↳ 引用：「${o.from_data}」`,
     );
+    parts.push(`#### 观察 · 引用入参\n\n${lines.join('\n')}`);
   }
-  if (json.suggestions.length > 0) {
+  if (json.questions_to_sit_with.length > 0) {
     parts.push(
-      `### 建议\n\n${json.suggestions.map((s) => `- ${s}`).join('\n')}`,
+      `#### 可以放在心里慢慢想的问题\n\n${json.questions_to_sit_with
+        .map((q) => `- ${q}`)
+        .join('\n')}`,
     );
   }
   return parts.join('\n\n');
