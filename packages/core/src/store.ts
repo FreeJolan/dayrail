@@ -295,7 +295,20 @@ export interface DayRailActions {
    *  (drag-to-reorder writes the full new order each time). Ids that
    *  don't exist as rules are filtered out automatically. */
   setCalendarRuleOrder: (orderedIds: string[]) => Promise<void>;
-  upsertCycle: (opts: { startDate: string; label?: string }) => Promise<string>;
+  /** ERD §5.3 / §10 — upsert a Cycle entity. Default behavior (omit
+   *  `id` and `endDate`) creates a 7-day Monday-anchored cycle keyed
+   *  `cycle-{startDate}`. v0.8.2 adds two optional overrides:
+   *    - `id`: custom entity id (e.g. `month-2026-04` for synthetic
+   *      Month-scope reflection caches; ERD §6.6.2 v0.8.2).
+   *    - `endDate`: custom inclusive end date (originally reserved
+   *      "for v0.4 custom-length cycles" per the type comment;
+   *      v0.8.2 finally exercises that). */
+  upsertCycle: (opts: {
+    startDate: string;
+    label?: string;
+    id?: string;
+    endDate?: string;
+  }) => Promise<string>;
   removeCycle: (id: string) => Promise<void>;
   upsertHabitPhase: (opts: {
     id?: string;
@@ -1732,26 +1745,28 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
   // ============ Cycles ============
 
   // Legacy: store.ts:2380 — deterministic id keyed on Monday startDate.
-  upsertCycle: async ({ startDate, label }) => {
+  // v0.8.2: optional `id` + `endDate` overrides for synthetic Month-
+  // scope cycles (ERD §6.6.2). Default path unchanged.
+  upsertCycle: async ({ startDate, label, id, endDate }) => {
     const doc = getYDoc();
-    const id = `cycle-${startDate}`;
-    const endDate = addDaysIsoY(startDate, 6);
-    const existing = getEntityMap(doc, 'cycles').get(id);
+    const cycleId = id ?? `cycle-${startDate}`;
+    const computedEndDate = endDate ?? addDaysIsoY(startDate, 6);
+    const existing = getEntityMap(doc, 'cycles').get(cycleId);
     const createdAt =
       existing instanceof Y.Map
         ? ((existing as YMap<unknown>).get('createdAt') as number) ??
           Date.now()
         : Date.now();
     doc.transact(() => {
-      upsertEntity(doc, 'cycles', id, {
-        id,
+      upsertEntity(doc, 'cycles', cycleId, {
+        id: cycleId,
         startDate,
-        endDate,
+        endDate: computedEndDate,
         ...(label && { label }),
         createdAt,
       });
     }, 'upsertCycle');
-    return id;
+    return cycleId;
   },
 
   // Legacy: store.ts:2404

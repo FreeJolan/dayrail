@@ -144,22 +144,34 @@ export function DayReflectionAi({ date }: DayReflectionAiProps) {
     [date, setDailyReflectionAiObservation],
   );
 
-  // UX gate per ERD §6.6.2: button only available when aiEnabled +
+  // UX gate per ERD §6.6.2: full AI surface only when aiEnabled +
   // reflection has been written. The cache field hangs off the
   // reflection entity, so writing AI output before any reflection
   // exists would no-op silently.
+  //
+  // v0.8.2 dogfood: an earlier version returned null when reflection
+  // was empty, leaving zero discoverability for the AI feature on
+  // Day scope. Now we render a small hint line so the user knows AI
+  // is available once they write something.
   const reflectionWritten =
     !!reflection && reflection.content.trim().length > 0;
-  const available = aiEnabled && reflectionWritten;
 
   const cached = reflection?.lastAiObservation;
   const cardCached = useMemo(() => cached, [cached]);
 
-  if (!available) return null;
+  if (!aiEnabled) return null;
+
+  if (!reflectionWritten) {
+    return (
+      <p className="text-2xs italic text-ink-tertiary">
+        ✨ 写完反思后，可以让 AI 帮你看看（基于你的反思和这天的数据）。
+      </p>
+    );
+  }
 
   return (
     <AiObservationCard
-      available={available}
+      available
       cached={cardCached}
       prepareCall={prepareCall}
       onCommit={handleCommit}

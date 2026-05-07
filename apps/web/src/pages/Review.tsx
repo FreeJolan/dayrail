@@ -19,6 +19,7 @@ import { RhythmHeatmap } from '@/components/RhythmHeatmap';
 import { ReflectionCard } from '@/components/ReflectionCard';
 import { ShiftTagBars } from '@/components/ShiftTagBars';
 import { CycleReflectionAi } from '@/components/CycleReflectionAi';
+import { MonthReflectionAi } from '@/components/MonthReflectionAi';
 import {
   buildPhaseBands,
   cycleDatesFor,
@@ -225,6 +226,14 @@ export function Review() {
               <CycleReflectionAi
                 cycleStartDate={data.dates[0]!}
                 cycleEndDate={data.dates[data.dates.length - 1]!}
+                rows={data.rows}
+                dates={data.dates}
+              />
+            )}
+            {scope === 'month' && data.dates.length > 0 && (
+              <MonthReflectionAi
+                monthStart={data.dates[0]!}
+                monthEnd={data.dates[data.dates.length - 1]!}
                 rows={data.rows}
                 dates={data.dates}
               />
