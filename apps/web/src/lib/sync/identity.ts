@@ -18,6 +18,14 @@ const KEY_DIRTY_COUNT = 'dayrail.sync.dirtyCount';
 const KEY_LAST_SYNC_AT = 'dayrail.sync.lastSyncAt';
 const KEY_LAST_SYNC_LABEL = 'dayrail.sync.lastSyncLabel';
 const KEY_SAMPLES_ONLY = 'dayrail.sync.samplesOnly';
+// Sanity-check baseline (added 2026-05-08 after data-loss incident).
+// Counts of key entities at the moment of the last successful push.
+// runPush compares the current state's counts against this and warns
+// the user via window.confirm when a major drop is detected (e.g.
+// templates went from 2 → 0 because OPFS was wiped between v0.9.0
+// and v0.9.1). Empty / null when no successful push has happened yet
+// on this device.
+const KEY_LAST_PUSHED_COUNTS = 'dayrail.sync.lastPushedCounts';
 
 export type BootSyncChoice = 'auto-pull' | 'ask';
 const DEFAULT_BOOT_CHOICE: BootSyncChoice = 'auto-pull';
@@ -85,10 +93,78 @@ function uaDerivedLabel(): string {
   return `${browser} on ${os}`;
 }
 
+/** Cached host info populated at boot on Tauri runtime (see
+ *  `populateAutoDeviceLabel` in boot.ts). On PWA / before boot
+ *  fills it, returns null and getDeviceLabel falls back to the
+ *  UA-derived label. */
+const KEY_DEVICE_AUTO_LABEL = 'dayrail.device.autoLabel';
+
+export function getAutoDetectedDeviceLabel(): string | null {
+  return safeGet(KEY_DEVICE_AUTO_LABEL);
+}
+
+export function setAutoDetectedDeviceLabel(label: string): void {
+  if (label.trim().length === 0) return;
+  safeSet(KEY_DEVICE_AUTO_LABEL, label.trim());
+}
+
+/** Resolution order:
+ *    1. user-set override (Settings → 同步 → 本设备名)
+ *    2. auto-detected hostname (Tauri side, populated at boot)
+ *    3. UA-derived "Browser on macOS" fallback
+ *  The first non-empty wins. The user override stays sticky across
+ *  device-name changes — no clobbering by re-detection. */
 export function getDeviceLabel(): string {
   const stored = safeGet(KEY_DEVICE_LABEL);
   if (stored && stored.trim().length > 0) return stored;
+  const auto = getAutoDetectedDeviceLabel();
+  if (auto && auto.trim().length > 0) return auto;
   return uaDerivedLabel();
+}
+
+// Sanity-check counts at last successful push. Used by runPush to
+// detect "the local Y.Doc looks suspiciously empty compared to what
+// we last pushed" before overwriting Drive.
+export interface LastPushedCounts {
+  templates: number;
+  tasks: number;
+  lines: number;
+  reflections: number;
+  /** ISO timestamp of when these counts were captured. */
+  at: string;
+}
+
+export function getLastPushedCounts(): LastPushedCounts | null {
+  const raw = safeGet(KEY_LAST_PUSHED_COUNTS);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<LastPushedCounts>;
+    if (
+      typeof parsed.templates === 'number' &&
+      typeof parsed.tasks === 'number' &&
+      typeof parsed.lines === 'number' &&
+      typeof parsed.reflections === 'number' &&
+      typeof parsed.at === 'string'
+    ) {
+      return parsed as LastPushedCounts;
+    }
+  } catch {
+    // corrupted entry — drop it
+  }
+  return null;
+}
+
+export function setLastPushedCounts(counts: Omit<LastPushedCounts, 'at'>): void {
+  const payload: LastPushedCounts = { ...counts, at: new Date().toISOString() };
+  safeSet(KEY_LAST_PUSHED_COUNTS, JSON.stringify(payload));
+}
+
+/** The user's explicit override only — ignores auto / UA fallbacks.
+ *  The Settings input binds to this so clearing the field clears the
+ *  override visibly (placeholder takes over showing the resolved
+ *  default). */
+export function getDeviceLabelOverride(): string {
+  return safeGet(KEY_DEVICE_LABEL) ?? '';
 }
 
 export function setDeviceLabel(next: string): void {

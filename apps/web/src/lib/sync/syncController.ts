@@ -40,9 +40,11 @@ import {
   getDeviceLabel,
   getDirtyCount,
   getLastPulledSnapshotId,
+  getLastPushedCounts,
   isLocalSamplesOnly,
   isSyncProbeSuppressed,
   setLastPulledSnapshotId,
+  setLastPushedCounts,
   setLastSyncInfo,
 } from './identity';
 import {
@@ -55,6 +57,73 @@ import { isDriveConnected } from './driveAuth';
 import { syncStore } from './syncStore';
 
 const PUSH_DEBOUNCE_MS = 60 * 1000;
+
+// Sanity-check thresholds for the pre-push data-loss gate (added
+// 2026-05-08 after v0.9.0→v0.9.1 incident). Triggered when the
+// current local state is suspiciously emptier than what we last
+// pushed — Tauri's auto-update wiped WKWebView OPFS, the empty seed
+// looked normal to runPush, and Drive got overwritten with samples.
+//
+// "Suspicious" is conservative — would rather false-positive once
+// (user clicks confirm to proceed) than miss a real data-loss path.
+function computeLocalCounts(): {
+  templates: number;
+  tasks: number;
+  lines: number;
+  reflections: number;
+} {
+  const s = useStore.getState();
+  return {
+    templates: Object.keys(s.templates).length,
+    tasks: Object.keys(s.tasks).length,
+    lines: Object.keys(s.lines).length,
+    reflections: Object.keys(s.reflections).length,
+  };
+}
+
+function buildSanityWarning(
+  prev: ReturnType<typeof computeLocalCounts>,
+  curr: ReturnType<typeof computeLocalCounts>,
+  prevAt: string,
+): string | null {
+  // Build per-field "before → after" deltas for fields that lost
+  // material content. Material = (previous > 0 AND current is < half
+  // of previous AND drop is > 5 absolute) OR (previous > 0 AND
+  // current is 0). The first rule catches "user deleted lots of
+  // tasks intentionally" too — that's still worth a confirm given
+  // it's about to overwrite Drive.
+  const issues: string[] = [];
+  const check = (label: string, before: number, after: number) => {
+    if (before === 0) return;
+    if (after === 0) {
+      issues.push(`${label}: ${before} → 0`);
+    } else if (after < before / 2 && before - after > 5) {
+      issues.push(`${label}: ${before} → ${after}`);
+    }
+  };
+  check('模板', prev.templates, curr.templates);
+  check('任务', prev.tasks, curr.tasks);
+  check('反思', prev.reflections, curr.reflections);
+  // Lines: -1 from "Inbox is auto-created on every fresh boot" so
+  // decreasing by exactly 1 isn't suspicious. Skip the strict check.
+  if (prev.lines > 5 && curr.lines < prev.lines / 2 && prev.lines - curr.lines > 5) {
+    issues.push(`列表 (Lines): ${prev.lines} → ${curr.lines}`);
+  }
+  if (issues.length === 0) return null;
+  return [
+    '⚠️ 本地状态比上次推送时少了很多内容：',
+    '',
+    ...issues.map((s) => `  · ${s}`),
+    '',
+    `（上次推送：${new Date(prevAt).toLocaleString('zh-CN')}）`,
+    '',
+    '继续推送会用当前本地状态覆盖云端。如果是 Tauri 升级后等异常情况，',
+    '建议先点取消，然后 Settings → 同步 →「从快照导入」恢复一份 .dryj 备份再推。',
+    '',
+    '确定要推送吗？',
+  ].join('\n');
+}
+
 const PROBE_SOFT_TIMEOUT_MS = 1500;
 const PROBE_HARD_TIMEOUT_MS = 3500;
 const RECOVERY_KICK_DELAY_MS = 1500;
@@ -312,6 +381,12 @@ export async function runForcePush(): Promise<void> {
   syncStore.setPhase({ kind: 'syncing', reason: 'push' });
   inFlightPush = (async () => {
     try {
+      // runForcePush intentionally bypasses the runPush sanity gate —
+      // the user explicitly asked to overwrite Drive (e.g. after
+      // importing a .dryj that they verified). Track the new counts
+      // as the baseline going forward so the next regular runPush has
+      // an accurate compare.
+      const currCounts = computeLocalCounts();
       const update = exportYDocAsUpdate();
       const snapshotId = cryptoUUID();
       const meta: DryjMeta = {
@@ -330,6 +405,7 @@ export async function runForcePush(): Promise<void> {
         deviceLabel: getDeviceLabel(),
       });
       setLastPulledSnapshotId(snapshotId);
+      setLastPushedCounts(currCounts);
       clearDirtyCount();
       syncStore.setDirtyCount(0);
       clearLocalIsSamplesOnly();
@@ -497,6 +573,35 @@ async function runPush(opts: RunPushOpts): Promise<void> {
         }
       }
 
+      // Pre-push sanity gate (added 2026-05-08). Compare current
+      // entity counts to what we last pushed; if the local state is
+      // suspiciously emptier (templates went from N to 0, tasks
+      // halved, etc.), prompt before overwriting Drive. Skip on
+      // 'keepalive' (pagehide budget — no time to await user input)
+      // and on 'manual' if needed; we let manual through too because
+      // the user explicitly asked for the push.
+      const currCounts = computeLocalCounts();
+      const lastPushed = getLastPushedCounts();
+      if (lastPushed && !opts.keepalive) {
+        const warning = buildSanityWarning(
+          {
+            templates: lastPushed.templates,
+            tasks: lastPushed.tasks,
+            lines: lastPushed.lines,
+            reflections: lastPushed.reflections,
+          },
+          currCounts,
+          lastPushed.at,
+        );
+        if (warning && typeof window !== 'undefined') {
+          const proceed = window.confirm(warning);
+          if (!proceed) {
+            syncStore.setPhase(phaseBefore);
+            return;
+          }
+        }
+      }
+
       const update = exportYDocAsUpdate();
       const snapshotId = cryptoUUID();
       const parent = getLastPulledSnapshotId();
@@ -517,6 +622,7 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       });
 
       setLastPulledSnapshotId(snapshotId);
+      setLastPushedCounts(currCounts);
       clearDirtyCount();
       syncStore.setDirtyCount(0);
       // After a successful push, local has been committed to Drive.

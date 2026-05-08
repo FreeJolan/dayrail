@@ -9,6 +9,7 @@ import { Pending } from './pages/Pending';
 import { Settings } from './pages/Settings';
 import { Calendar } from './pages/Calendar';
 import { BacklogDrawer } from './components/BacklogDrawer';
+import { ImportSuccessToast } from './components/ImportSuccessToast';
 import { ReasonToast } from './components/ReasonToast';
 import { SideNav } from './components/SideNav';
 import { ShortcutCheatsheet } from './components/ShortcutCheatsheet';
@@ -109,6 +110,7 @@ function Shell() {
         onUndo={shiftPrompt.onUndo}
         onClose={shiftPrompt.onClose}
       />
+      <ImportSuccessToast />
     </div>
   );
 }

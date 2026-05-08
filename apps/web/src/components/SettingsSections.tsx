@@ -20,7 +20,7 @@ import {
 } from './SettingsPrimitives';
 import { resetLocalData } from '@/lib/resetLocalData';
 import { exportLocalData } from '@/lib/exportData';
-import { importLocalData } from '@/lib/importData';
+import { importLocalData, importLocalDataFromBytes } from '@/lib/importData';
 import { useVersionUpdate } from '@/lib/swRegistration';
 import { isTauriRuntime } from '@/lib/versionUpdateContext';
 import { applyTheme, getThemePref, type ThemePref } from '@/lib/theme';
@@ -55,6 +55,7 @@ import {
   getBootSyncChoice,
   getDeviceId,
   getDeviceLabel,
+  getDeviceLabelOverride,
   getDirtyCount,
   getLastPulledSnapshotId,
   isLocalSamplesOnly,
@@ -246,6 +247,22 @@ export function SyncSection() {
       <SyncStatusCard connected={status.connected} />
       {!status.connected && <ConnectDrivePanel />}
       {status.connected && <ConnectedSyncControls />}
+
+      {/* Local snapshot import/export is fundamentally a local
+          operation — Y.Doc encoded to a `.dryj` byte buffer, no Drive
+          API touched. It used to live inside ConnectedSyncControls
+          (only visible when Drive is connected), which inverted the
+          dependency: if your Drive is broken and you need to grab a
+          local snapshot to recover, you'd be locked out. v0.9.0→
+          v0.9.1 incident reinforced this: surface backup operations
+          unconditionally, alongside the Drive-specific controls. */}
+      <div className="hairline-t mt-6 flex flex-col pt-4">
+        <span className="pb-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          本地数据
+        </span>
+        <DownloadSnapshotRow />
+        <ImportSnapshotRow />
+      </div>
     </SettingsSectionShell>
   );
 }
@@ -561,8 +578,6 @@ function ConnectedSyncControls() {
       <DeviceLabelRow />
       <BootSyncChoiceRow />
       <SyncNowRow />
-      <DownloadSnapshotRow />
-      <ImportSnapshotRow />
       <DisconnectRow />
       <BackupHistoryRow />
     </div>
@@ -843,19 +858,25 @@ function fmtBytes(n: number): string {
 }
 
 function DeviceLabelRow() {
-  const [label, setLabel] = useState(() => getDeviceLabel());
+  // Track the user override separately from the resolved display
+  // value. Empty override input → fall back through autoDetected →
+  // UA-derived. This way clearing the input restores the default
+  // visibly via the placeholder; filling it back overrides again.
+  const [override, setOverride] = useState<string>(() =>
+    getDeviceLabelOverride(),
+  );
   const persist = (next: string) => {
-    setLabel(next);
-    setDeviceLabel(next);
+    setOverride(next);
+    setDeviceLabel(next); // empty string clears the override key
     syncStore.setDeviceLabel(next || getDeviceLabel());
   };
   return (
     <Row
-      label="设备名"
-      description="显示给其它设备看的标签（默认按 UA 推断）。"
+      label="本设备名"
+      description="显示给其他设备看的标签。桌面端默认是机器主机名（如 FreeJolan-MBP）；PWA 默认是按 UA 推断。留空恢复默认。"
       control={
         <TextField
-          value={label}
+          value={override}
           onChange={persist}
           placeholder={getDeviceLabel()}
         />
@@ -1035,8 +1056,47 @@ function ImportSnapshotRow() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const onPick = () => {
+
+  // Tauri WKWebView's HTML5 `<input type="file">` returns a File whose
+  // `arrayBuffer()` reads as empty for binary content (encountered
+  // during the v0.9.0→v0.9.1 incident recovery). On Tauri we route
+  // through the native dialog plugin instead, which returns a path
+  // we read via the fs plugin. PWA stays on the HTML5 input — works
+  // everywhere we've tested it.
+  const onPick = async () => {
     setErr(null);
+    if (isTauriRuntime()) {
+      setBusy(true);
+      try {
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const path = await open({
+          multiple: false,
+          filters: [
+            { name: 'DayRail snapshot', extensions: ['dryj'] },
+          ],
+        });
+        if (!path) {
+          setBusy(false);
+          return;
+        }
+        const filename = String(path).split('/').pop() ?? 'snapshot.dryj';
+        if (
+          !window.confirm(
+            `用 "${filename}" 替换本地数据？\n\n会先把当前本地清空再载入快照，然后页面会自动刷新。建议先点「下载本地快照」留底。`,
+          )
+        ) {
+          setBusy(false);
+          return;
+        }
+        const { readFile } = await import('@tauri-apps/plugin-fs');
+        const bytes = await readFile(String(path));
+        await importLocalDataFromBytes(bytes, { sourceLabel: filename });
+      } catch (e2) {
+        setErr((e2 as Error).message);
+        setBusy(false);
+      }
+      return;
+    }
     inputRef.current?.click();
   };
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1075,7 +1135,7 @@ function ImportSnapshotRow() {
           />
           <button
             type="button"
-            onClick={onPick}
+            onClick={() => void onPick()}
             disabled={busy}
             className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary disabled:opacity-50"
           >
