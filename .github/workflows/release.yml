@@ -54,7 +54,11 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          # Match the local + repo lockfile (v5.4 = pnpm 7 era).
+          # `package.json#engines` pins `pnpm >= 7`; bumping CI past
+          # 8 here would force `--frozen-lockfile` to reject the
+          # lockfile until we regenerate it with the newer pnpm.
+          version: 7
 
       - uses: actions/setup-node@v4
         with:
