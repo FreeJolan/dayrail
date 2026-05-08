@@ -22,6 +22,7 @@ import { resetLocalData } from '@/lib/resetLocalData';
 import { exportLocalData } from '@/lib/exportData';
 import { importLocalData } from '@/lib/importData';
 import { useVersionUpdate } from '@/lib/swRegistration';
+import { isTauriRuntime } from '@/lib/versionUpdateContext';
 import { applyTheme, getThemePref, type ThemePref } from '@/lib/theme';
 import { useUpgradeFlow } from '@/lib/useUpgradeFlow';
 import {
@@ -1933,7 +1934,14 @@ export function AboutSection() {
           />
           <KeyValue label="许可证" value="MIT" />
           <KeyValue label="维护者" value="FreeJolan" />
-          <StorageStatusRow storage={storage} />
+          {/* PWA-only · the persistence indicator advertises a real
+              browser eviction risk that doesn't apply to Tauri (per-app
+              isolated WebKit storage, no shared quota). Showing
+              "未启用（可能被回收）" on desktop is misleading — it
+              reports a state that has no equivalent risk. Storage usage
+              still renders in both runtimes since byte-count info is
+              independently useful. */}
+          {!isTauriRuntime() && <StorageStatusRow storage={storage} />}
           {storage.usage && (
             <KeyValue label="存储用量" value={storage.usage} mono />
           )}
