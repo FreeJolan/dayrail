@@ -141,6 +141,7 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 | §6.4 首次启动「可关闭 AI 引导卡」 | v0.8.2 ship 后两周看 AI 启用率，普遍未启用再设计 | ERD §6.4 |
 | 推荐 model 文档化（opus-via-bridge 偏 structured · sonnet/gpt 更 prose） | v0.8.2 dogfood 已观察到，但样本只有 1 用户；扩 beta 用户后再写入 ERD §6.6 | ERD §6.6 |
 | 定时自动备份 · 用户可见可配置 | 扩用户基数前 | ROADMAP 数据安全段 |
+| **可读格式导出**（Markdown 反思 / CSV 任务 / iCal 日程） | "作者跑路了我也能拿到自己数据"心智的真正闭环。当前 JSON / `.dryj` 导出只是底线门槛——schema 太 DayRail-specific，没有别的软件能直接吃；要真"换软件继续用"得有 markdown / csv / ical 这种通用格式。触发：我自己想用 jq 之外的方式查老反思 / 想把日程导进系 macOS Calendar / 有 beta 用户提"我导出来想给别的工具看"；或者 v1.0 sync 重审时一起做 | 待写 ERD §7.x 草稿 |
 | action 层 + syncController 端到端集成测 | 扩用户基数前 | ERD §7.7 round 5/6/7 |
 | WebDAV / iCloud / Dropbox 等替代同步后端 | 真实用户提出 Drive 不便 / 想自托管 —— v0.7 设计阶段判定 Drive 够用，v0.8.2 dogfood 后转向桌面端 + Drive refresh token 解决体验问题，多后端进一步停车 | ERD §7.3 |
 | **PWA `KEY_CONNECTED` localStorage 在 SW 升级后被清的 bug** | 桌面端 ship 后 PWA 同步问题不再是用户主路径，bug 影响降级；v0.9 实装中如果路过 SW 升级路径顺手修也行 | `apps/web/src/lib/sync/driveAuth.ts:28` |
