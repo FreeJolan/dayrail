@@ -118,6 +118,12 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 
 ---
 
+### 🚧 v1.0 候选（值得专门讨论，不是停车场级别）
+
+- **重审 sync 模型**（触发：v0.9.0→v0.9.1 数据丢失事故 · 2026-05-08）—— 当前架构是 push 阶段做 full upload（像 server-authoritative）+ pull 阶段做 CRDT 合并（纯 local-first），同一条数据流里既当 server 又当 peer，是这次事故几乎所有混乱的根源。**核心问题**：CRDT 没有"权威"概念，所有 client 的本地写都被视为同等可信，merge 时按 LWW per-key 机械裁决，"收敛到什么"不一定是用户想要的。**讨论入口**：(1) DayRail 的真实并发场景是不是真需要 CRDT —— 单用户跨设备**顺序使用**和 Notion-style 多人并发编辑的需求差很多，可能选了 Y.Doc 这个工具但没用上它的核心收益、只吃了它的复杂度；(2) 不引入后端的中间方案（pull-before-push 时窗 + replace-on-pull 取代 merge-on-pull + Drive `appdata` 多版本快照历史），把 Drive 升级成真权威；(3) 真后端方案（PostgreSQL + 服务端 ground truth），代价是后端运维 / 账户系统 / 隐私边界 / 离线 UX 复杂度，与 §7.1「无 DayRail 后端」立场冲突，需重新评估这个立场。**这件事重要到不能塞进停车场表格**，单独立项 v1.0 候选；触发条件不是某个产品信号，而是**讨论本身已经发生了**。下一步：开一个 doc-only PR 做完整 ERD §7.x 重写 + 三个方向的取舍分析 + 决策。
+
+---
+
 ### 🅿️ v0.9+ 停车场（触发条件明确，捡起来不用从头想）
 
 | 项 | 触发条件 | 设计草稿位置 |
