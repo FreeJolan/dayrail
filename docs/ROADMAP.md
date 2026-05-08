@@ -118,6 +118,12 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 
 ---
 
+### 🚧 v1.0 候选（值得专门讨论，不是停车场级别）
+
+- **重审 sync 模型**（触发：v0.9.0→v0.9.1 数据丢失事故 · 2026-05-08）—— 当前架构是 push 阶段做 full upload（像 server-authoritative）+ pull 阶段做 CRDT 合并（纯 local-first），同一条数据流里既当 server 又当 peer，是这次事故几乎所有混乱的根源。**核心问题**：CRDT 没有"权威"概念，所有 client 的本地写都被视为同等可信，merge 时按 LWW per-key 机械裁决，"收敛到什么"不一定是用户想要的。**讨论入口**：(1) DayRail 的真实并发场景是不是真需要 CRDT —— 单用户跨设备**顺序使用**和 Notion-style 多人并发编辑的需求差很多，可能选了 Y.Doc 这个工具但没用上它的核心收益、只吃了它的复杂度；(2) 不引入后端的中间方案（pull-before-push 时窗 + replace-on-pull 取代 merge-on-pull + Drive `appdata` 多版本快照历史），把 Drive 升级成真权威；(3) 真后端方案（PostgreSQL + 服务端 ground truth），代价是后端运维 / 账户系统 / 隐私边界 / 离线 UX 复杂度，与 §7.1「无 DayRail 后端」立场冲突，需重新评估这个立场。**这件事重要到不能塞进停车场表格**，单独立项 v1.0 候选；触发条件不是某个产品信号，而是**讨论本身已经发生了**。下一步：开一个 doc-only PR 做完整 ERD §7.x 重写 + 三个方向的取舍分析 + 决策。
+
+---
+
 ### 🅿️ v0.9+ 停车场（触发条件明确，捡起来不用从头想）
 
 | 项 | 触发条件 | 设计草稿位置 |
@@ -135,6 +141,7 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 | §6.4 首次启动「可关闭 AI 引导卡」 | v0.8.2 ship 后两周看 AI 启用率，普遍未启用再设计 | ERD §6.4 |
 | 推荐 model 文档化（opus-via-bridge 偏 structured · sonnet/gpt 更 prose） | v0.8.2 dogfood 已观察到，但样本只有 1 用户；扩 beta 用户后再写入 ERD §6.6 | ERD §6.6 |
 | 定时自动备份 · 用户可见可配置 | 扩用户基数前 | ROADMAP 数据安全段 |
+| **可读格式导出**（Markdown 反思 / CSV 任务 / iCal 日程） | "作者跑路了我也能拿到自己数据"心智的真正闭环。当前 JSON / `.dryj` 导出只是底线门槛——schema 太 DayRail-specific，没有别的软件能直接吃；要真"换软件继续用"得有 markdown / csv / ical 这种通用格式。触发：我自己想用 jq 之外的方式查老反思 / 想把日程导进系 macOS Calendar / 有 beta 用户提"我导出来想给别的工具看"；或者 v1.0 sync 重审时一起做 | 待写 ERD §7.x 草稿 |
 | action 层 + syncController 端到端集成测 | 扩用户基数前 | ERD §7.7 round 5/6/7 |
 | WebDAV / iCloud / Dropbox 等替代同步后端 | 真实用户提出 Drive 不便 / 想自托管 —— v0.7 设计阶段判定 Drive 够用，v0.8.2 dogfood 后转向桌面端 + Drive refresh token 解决体验问题，多后端进一步停车 | ERD §7.3 |
 | **PWA `KEY_CONNECTED` localStorage 在 SW 升级后被清的 bug** | 桌面端 ship 后 PWA 同步问题不再是用户主路径，bug 影响降级；v0.9 实装中如果路过 SW 升级路径顺手修也行 | `apps/web/src/lib/sync/driveAuth.ts:28` |
