@@ -20,6 +20,14 @@
 //
 // The GIS script (`https://accounts.google.com/gsi/client`) is loaded
 // by lazily on first call.
+//
+// **Desktop (v0.9 · ERD §15.3)**: when running inside Tauri, the GIS
+// path is bypassed entirely — we delegate to Rust commands that run
+// the authorization-code flow and stash a refresh token in the OS
+// keychain. The frontend cache + localStorage hint logic stays the
+// same so the boot gate / 401 retry paths don't fork.
+
+import { isTauriRuntime } from '../versionUpdateContext';
 
 const GIS_SCRIPT_URL = 'https://accounts.google.com/gsi/client';
 const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
@@ -136,6 +144,94 @@ function hydrateFromStorageOnce(): void {
     return;
   }
   cachedToken = persisted;
+}
+
+// ============ Desktop (Tauri) path ============
+//
+// Mirrors the four exported functions below but routes through the
+// `drive_*` Tauri commands defined in `apps/desktop/src-tauri/src/
+// drive_auth.rs`. Tauri's IPC import is gated behind `isTauriRuntime()`
+// so the PWA bundle never loads the bridge code.
+
+interface DesktopAccessTokenInfo {
+  access_token: string;
+  expires_at: number; // epoch ms — Rust's chrono::Utc → i64
+}
+
+async function tauriInvoke<T>(cmd: string): Promise<T> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<T>(cmd);
+}
+
+function applyDesktopTokenInfo(info: DesktopAccessTokenInfo): CachedToken {
+  const fresh: CachedToken = {
+    token: info.access_token,
+    expiresAt: info.expires_at,
+  };
+  cachedToken = fresh;
+  writePersistedToken(fresh);
+  return fresh;
+}
+
+async function desktopConnectDrive(): Promise<void> {
+  const info = await tauriInvoke<DesktopAccessTokenInfo>('drive_connect');
+  applyDesktopTokenInfo(info);
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(KEY_CONNECTED, '1');
+    } catch {
+      /* private browsing — non-fatal */
+    }
+  }
+}
+
+async function desktopDisconnectDrive(): Promise<void> {
+  cachedToken = null;
+  clearPersistedToken();
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.removeItem(KEY_CONNECTED);
+    } catch {
+      /* swallow */
+    }
+  }
+  // Best-effort. The Rust side ignores "no entry" so this is idempotent.
+  try {
+    await tauriInvoke<void>('drive_disconnect');
+  } catch {
+    /* keychain transient — frontend state is already cleared */
+  }
+}
+
+async function desktopEnsureAccessToken(): Promise<string> {
+  if (!isDriveConnected()) {
+    throw new Error('NOT_CONNECTED');
+  }
+  hydrateFromStorageOnce();
+  if (cachedToken && cachedToken.expiresAt - Date.now() > NEAR_EXPIRY_MS) {
+    return cachedToken.token;
+  }
+  try {
+    const info = await tauriInvoke<DesktopAccessTokenInfo>('drive_get_token');
+    return applyDesktopTokenInfo(info).token;
+  } catch (err) {
+    // Refresh-token gone (user revoked on Google's side, or wiped the
+    // keychain). Reset frontend state so the offline branch surfaces a
+    // Reconnect button instead of looping on a stale connected flag.
+    cachedToken = null;
+    clearPersistedToken();
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.removeItem(KEY_CONNECTED);
+      } catch {
+        /* swallow */
+      }
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `NEEDS_RECONNECT · 桌面端 Drive 授权失效（${msg}），点 重新连接 重新授权`,
+    );
+  }
 }
 
 function getClientId(): string {
@@ -276,6 +372,9 @@ function requestToken(prompt: '' | 'consent'): Promise<CachedToken> {
  *  connected on success so subsequent boots can attempt silent
  *  refresh without a prior user interaction. */
 export async function connectDrive(): Promise<void> {
+  if (isTauriRuntime()) {
+    return desktopConnectDrive();
+  }
   await requestToken('consent');
   if (typeof window !== 'undefined') {
     try {
@@ -290,6 +389,9 @@ export async function connectDrive(): Promise<void> {
  *  flag. Best-effort revocation against Google so the user's
  *  account-permissions page reflects the disconnect. */
 export async function disconnectDrive(): Promise<void> {
+  if (isTauriRuntime()) {
+    return desktopDisconnectDrive();
+  }
   const had = cachedToken;
   cachedToken = null;
   clearPersistedToken();
@@ -338,6 +440,9 @@ export function isDriveConnected(): boolean {
  *  from localStorage so a cold start within the previous token's 1 h
  *  validity skips the GIS round-trip entirely. */
 export async function ensureAccessToken(): Promise<string> {
+  if (isTauriRuntime()) {
+    return desktopEnsureAccessToken();
+  }
   if (!isDriveConnected()) {
     throw new Error('NOT_CONNECTED');
   }

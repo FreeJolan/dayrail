@@ -3172,11 +3172,11 @@ v0.7 ship 后 1 个月真实 dogfood 累积出一个结构性 UX 缺陷：
 
 - **Tauri 2** —— Rust 后端进程 + 系统 webview（macOS WKWebView / Windows WebView2 / Linux WebKitGTK）。
 - **前端复用 Vite 产出** —— `apps/web/` 不动，Tauri 配置 `frontendDist = "../web/dist"`。React / Zustand / Y.Doc 同代码。
-- **Tauri plugins**：
-  - `tauri-plugin-updater` —— auto-update（详见 §15.4）
-  - `tauri-plugin-stronghold` —— OS keychain（macOS Keychain / Windows Credential Manager / Linux Secret Service）存 refresh token
+- **Tauri plugins** + 直接 crate：
+  - `tauri-plugin-updater` + `tauri-plugin-process` —— auto-update + relaunch（详见 §15.4）
   - `tauri-plugin-shell` —— 打开浏览器走 OAuth consent
-  - `tauri-plugin-http` —— Drive API 调用（绕过 webview CORS）
+  - `keyring` crate（不走 plugin）—— OS keychain（macOS Keychain / Windows Credential Manager / Linux Secret Service via libsecret）存 refresh token。比 `tauri-plugin-stronghold` 轻量，不需要 master-password ceremony；refresh token 是 Google 端可随时撤销的 capability，不是用户长期密码材料，与 stronghold 的 vault 模型不匹配。
+  - `oauth2` + `reqwest` crate —— Rust 进程内跑 authorization-code flow + token exchange + refresh，不走 webview，所以不需要 `tauri-plugin-http` 绕 CORS。
   - `tauri-plugin-notification` —— 系统通知（v0.9.x 可选）
 
 ### 15.3 同步层适配（核心改动）
@@ -3190,25 +3190,30 @@ Browser → GIS implicit flow → access token (1h, no refresh) → Drive API
 桌面路径（新）：
 
 ```
-Tauri shell → tauri-plugin-shell.open(consent URL) → user grants in browser
-            ↓
-          authorization code returned via deep link / localhost loopback
-            ↓
-          Tauri Rust backend exchanges code → { access_token, refresh_token }
-            ↓
-          tauri-plugin-stronghold.write(refreshToken, OS keychain)
-            ↓
-          frontend uses access_token via tauri-plugin-http
-            ↓
-          on 401 → backend reads refresh_token from keychain → exchanges → returns fresh access_token (no UI)
+Tauri Rust 后端（drive_connect 命令）
+  1. 生成 PKCE challenge
+  2. tokio::TcpListener::bind("127.0.0.1:0") → OS 选个空闲端口
+  3. 用上面这个端口拼 redirect_uri，构造 authorize URL（access_type=offline, prompt=consent, PKCE）
+  4. open::that(authorize URL) → 用户默认浏览器打开 Google 同意页
+  5. 用户在浏览器里同意 → Google 重定向到 http://127.0.0.1:<port>/callback?code=...
+  6. listener.accept() 收到 HTTP 请求，解析 query 拿 code（5 分钟超时）
+  7. exchange_code(code, pkce_verifier) → { access_token, refresh_token, expires_in }
+  8. keyring.set_password(refresh_token) → OS keychain
+  9. 返回 { access_token, expires_at } 给前端
+后续 Drive API 调用：
+  前端缓存 access_token；过期时调 drive_get_token →
+    keyring.get_password() → exchange_refresh_token() → 返新 access_token（无 UI）
 ```
 
 关键决策：
 
-- **OAuth client 类型**：用 Google "Desktop app" credential（区别于 Web app 的 implicit flow）。可发 refresh token，无需 client_secret 暴露问题（desktop client 默认不需要，PKCE 替代）。
-- **refresh token 存哪**：OS keychain，**不在 Y.Doc 同步流**（与 §6.6 字段分流原则一致 —— 凭证仅本机）。每台桌面设备各自首次授权一次。
-- **frontend 还是用 fetch**：通过 Tauri 的 `__TAURI__` 全局 / IPC 调 Rust 端的 HTTP 客户端，不直接走浏览器 fetch（避免 CORS）。
-- **PWA `aiApiKey` 等本机字段**：桌面端继续走 OS keychain 优先 / `localStorage` fallback。
+- **OAuth client 类型**：用 Google "Desktop app" credential（区别于 Web app 的 implicit flow）。可发 refresh token；按 RFC 8252，desktop client 的 "client_secret" 不属于真正机密（嵌进每个分发的二进制），PKCE 才是 auth-code 交换的实际保护。
+- **refresh token 存哪**：OS keychain via `keyring` crate，**不在 Y.Doc 同步流**（与 §6.6 字段分流原则一致 —— 凭证仅本机）。每台桌面设备各自首次授权一次。`KEYCHAIN_SERVICE = "app.dayrail.desktop" / KEYCHAIN_USERNAME = "google-drive-refresh-token"`。
+- **frontend 直接用 fetch**：Drive API 调用走 webview 内的 `fetch()`，与 PWA 同路径——`drive.appdata` 端点支持 CORS，不需要 `tauri-plugin-http` 绕。Rust 那侧只负责 OAuth（认证 endpoint 不支持 CORS / 但本来就要在 Rust 跑因为要碰 keychain）。
+- **redirect_uri 用 loopback 不用 deep link**：deep link（`dayrail://` scheme）需要操作系统注册 + macOS 的 LaunchServices / Windows registry / Linux .desktop 协议绑定逐平台 plumbing；loopback 是 RFC 8252 推荐的 native-app pattern，OS 选随机端口、零注册成本、Google OAuth 直接支持。
+- **frontend 怎么知道当前在 Tauri**：`isTauriRuntime()`（`apps/web/src/lib/versionUpdateContext.ts`）检测 `__TAURI_INTERNALS__` 全局，PR-B auto-update 已经用过同一函数。`apps/web/src/lib/sync/driveAuth.ts` 在 4 个公开函数（`connectDrive` / `disconnectDrive` / `ensureAccessToken` / `isDriveConnected`）头部 early-return 到 desktop 路径，PWA 路径完全不动。
+- **`KEY_CONNECTED` localStorage hint 仍保留**：keychain 是真源，但前端需要一个同步可读的 "已连接" flag 来 gate UI。`drive_connect` 成功时写 `'1'`，`drive_disconnect` 清掉，`drive_get_token` 失败（refresh token 被撤销）时也清掉。
+- **PWA `aiApiKey` 等本机字段**：桌面端**没换**，仍走 `localStorage`。`aiApiKey` 是 OpenAI-compatible 端点的密码，泄露代价比 `drive.appdata` token 低（后者能写 DayRail 自己的 appdata，前者能扣别家 LLM 余额但不能动 DayRail 数据）。如果将来要给桌面用户额外保护，再迁。
 
 ### 15.4 auto-update 基础设施
 

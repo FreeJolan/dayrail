@@ -624,9 +624,9 @@ dogfood 发现 `claude-opus-4-7 via claude-bridge` 即使经过 5 轮 prompt ite
 
 - 🚧 **v0.9 桌面端方向锁定（doc-only · 当前 PR）** —— ROADMAP 桌面端从❌反转到 v0.9 主线 / ERD 加 §15 桌面端架构。设计动机：1 个月 dogfood 暴露 PWA + Google Drive + 无后端 = 小时级 OAuth 重新授权 UI 不可避免，对日常用户不可接受。Tauri 壳让 sync 走 OS keychain + auth-code refresh token 物理上消除该问题，**同时** auto-update 必须就位。
 - 🟡 **下一步代码 PRs**（拆 4 个）：
-  - PR-A：Tauri 2 scaffold + 复用现有 Vite 产出 + 本地能装能跑
-  - PR-B：auto-update manifest + GitHub Release pipeline + `tauri-plugin-updater`
-  - PR-C：sync 层走 Tauri HTTP client（绕过 CORS）+ `tauri-plugin-stronghold` 存 refresh token
+  - ✅ PR-A：Tauri 2 scaffold + 复用现有 Vite 产出 + 本地能装能跑（PR #13 已 ship）
+  - ✅ PR-B：auto-update manifest + GitHub Release pipeline + `tauri-plugin-updater`（PR #14 已 ship）
+  - 🚧 PR-C：Drive 授权切到 desktop OAuth pattern · authorization-code flow + PKCE + `keyring` crate 把 refresh token 存到 OS keychain。前端 `driveAuth.ts` 通过 `isTauriRuntime()` 检测后桥接到 Rust commands，PWA 路径不动。**当前 PR**
   - PR-D：（可选）平台抛光 —— menu bar / dock / 文件选择器 / 系统通知
 - 🟡 **平台代码签名**：
   - macOS：用户正在注册 Apple Developer Program；先 ship 不签名版本（Gatekeeper 第一次右键 → 打开），证书到位后补 signing + notarization

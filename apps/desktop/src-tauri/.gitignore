@@ -14,3 +14,8 @@
 
 # Updater signatures end up here when we wire PR-B
 *.sig
+
+# PR-C — local OAuth credentials for Google Desktop client. CI sets
+# these via GitHub Secrets; .env is local-only.
+.env
+.env.local

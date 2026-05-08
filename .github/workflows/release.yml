@@ -9,6 +9,9 @@
 #   TAURI_SIGNING_PRIVATE_KEY           — contents of ~/.dayrail/tauri-updater.key
 #                                         (raw text, no quoting)
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — the passphrase set when generating the key
+#   GOOGLE_DESKTOP_CLIENT_ID            — OAuth client ID, "Desktop app" type, from Google Cloud Console
+#   GOOGLE_DESKTOP_CLIENT_SECRET        — matching client secret (per RFC 8252 not actually
+#                                         confidential, but Google's flow still requires it)
 #
 # Optional Secrets (macOS code signing + notarization, once Apple
 # Developer enrollment completes — currently the workflow ships
@@ -83,6 +86,13 @@ jobs:
           # `latest.json` won't be produced and auto-update is broken.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Drive OAuth — REQUIRED. `option_env!()` in
+          # apps/desktop/src-tauri/src/drive_auth.rs reads these at
+          # compile time. Locally they come from `apps/desktop/src-tauri/.env`
+          # (forwarded by build.rs); in CI we set them as process env
+          # so cargo / rustc / `option_env!` see them directly.
+          GOOGLE_DESKTOP_CLIENT_ID: ${{ secrets.GOOGLE_DESKTOP_CLIENT_ID }}
+          GOOGLE_DESKTOP_CLIENT_SECRET: ${{ secrets.GOOGLE_DESKTOP_CLIENT_SECRET }}
           # macOS code signing + notarization — OPTIONAL. Skipped when
           # the secrets aren't set (yields an unsigned .app that
           # Gatekeeper warns on; users right-click → Open once).
