@@ -97,15 +97,14 @@ jobs:
           # so cargo / rustc / `option_env!` see them directly.
           GOOGLE_DESKTOP_CLIENT_ID: ${{ secrets.GOOGLE_DESKTOP_CLIENT_ID }}
           GOOGLE_DESKTOP_CLIENT_SECRET: ${{ secrets.GOOGLE_DESKTOP_CLIENT_SECRET }}
-          # macOS code signing + notarization — OPTIONAL. Skipped when
-          # the secrets aren't set (yields an unsigned .app that
-          # Gatekeeper warns on; users right-click → Open once).
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # NOTE · Apple code-signing env block intentionally absent
+          # until Developer Program enrollment completes. tauri-action
+          # treats an empty `APPLE_CERTIFICATE` env var as "cert
+          # provided, please import" and the keychain import fails;
+          # the only way to skip cleanly is to leave the var unset
+          # (not `${{ secrets.APPLE_CERTIFICATE }}` evaluating to "").
+          # Restore the full APPLE_* block (see header comment) once
+          # the secrets exist.
         with:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
