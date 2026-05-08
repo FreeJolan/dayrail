@@ -96,14 +96,22 @@ export function startSyncBackgroundLoop(): void {
   const onTransaction = (transaction: { origin?: unknown }) => {
     const origin = transaction?.origin;
     if (origin === REMOTE_ORIGIN || origin === OPFS_ORIGIN) return;
-    // First non-remote write since boot means the user has authored
-    // something on top of (or instead of) the v0.7 sample seed.
-    // Clear the samples-only flag so ConnectDrivePanel / BootGate
-    // stop treating local as disposable. Cheap localStorage write;
-    // safe to call repeatedly.
-    if (isLocalSamplesOnly()) {
-      clearLocalIsSamplesOnly();
-    }
+    // SAFETY GATE (added 2026-05-08 after v0.9.0 → v0.9.1 data-loss
+    // incident): when local is the disposable seed (v0.7 first-run
+    // samples, or in v0.9 a re-seed because Tauri's auto-update path
+    // wiped WKWebView OPFS while replacing the .app), DO NOT push to
+    // Drive. Pushing the seed overwrites the user's real cloud data.
+    // The flag is cleared by authoritative paths only:
+    //   - BootGate → replaceLocalFromRemote / applyRemoteDryj on a
+    //     successful pull (local now mirrors remote)
+    //   - BootGate → no-remote / equal branch (Drive has nothing to
+    //     lose, or local already matches)
+    //   - importLocalData (user brought in real data via .dryj)
+    //   - runForcePush success (user explicitly asked to overwrite)
+    //   - ConnectDrivePanel paths in Settings (explicit user action)
+    // Sessions still tick so EditSessionIndicator stays accurate; we
+    // only suppress the dirty bump + push schedule.
+    const samplesOnly = isLocalSamplesOnly();
     // Session activity tracking: when origin is the id of an open
     // session (set by openEditSession + threaded through every
     // session-aware action's `doc.transact(..., sessionId ?? label)`),
@@ -130,6 +138,7 @@ export function startSyncBackgroundLoop(): void {
         }));
       }
     }
+    if (samplesOnly) return;
     const next = bumpDirtyCount();
     syncStore.setDirtyCount(next);
     schedulePush();

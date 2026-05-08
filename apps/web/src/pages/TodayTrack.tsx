@@ -13,6 +13,7 @@ import {
   type Task,
   type TimelineRow,
 } from '@dayrail/core';
+import { EmptyTemplatesHint } from '@/components/EmptyTemplatesHint';
 import { ExternalEventChip } from '@/components/ExternalEventChip';
 import {
   CheckInStrip,
@@ -219,6 +220,13 @@ export function TodayTrack() {
     }
   }, [tasks, today, updateTask]);
 
+  // Empty-templates branch — fresh install, no Drive snapshot pulled
+  // yet, no manual template creation. Replaces the v0.7-era sample
+  // seed (boot.ts comment dated 2026-05-08). Skip the check-in strip
+  // and the timeline; still render the reflection card so the day's
+  // free-text surface is available regardless of template state.
+  const noTemplates = Object.keys(templates).length === 0;
+
   return (
     <div className="flex w-full max-w-[780px] flex-col gap-8 py-10 pl-10 pr-10 lg:pl-14 xl:pl-20">
       <PageHeader
@@ -226,13 +234,19 @@ export function TodayTrack() {
         externalEvents={externalEvents}
         onResetDay={handleResetDay}
       />
-      <CheckInStrip queue={checkinQueue} onAction={handleCheckin} />
-      <Timeline
-        cards={timelineCards}
-        onTaskAction={handleTaskAction}
-        onTaskUndo={handleTaskUndo}
-        onTaskOpenDetail={(taskId) => setDetailTaskId(taskId)}
-      />
+      {noTemplates ? (
+        <EmptyTemplatesHint />
+      ) : (
+        <>
+          <CheckInStrip queue={checkinQueue} onAction={handleCheckin} />
+          <Timeline
+            cards={timelineCards}
+            onTaskAction={handleTaskAction}
+            onTaskUndo={handleTaskUndo}
+            onTaskOpenDetail={(taskId) => setDetailTaskId(taskId)}
+          />
+        </>
+      )}
       <ReflectionCard date={today} />
       <Footnote />
       <ReasonToast

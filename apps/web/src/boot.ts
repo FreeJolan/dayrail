@@ -1,12 +1,13 @@
-// App bootstrap (v0.7) — opens the Y.Doc-backed store from OPFS,
-// seeds defaults on first run. Called from `main.tsx` before the
-// React tree mounts; the app shell renders a loading veil while
-// this promise is pending.
+// App bootstrap — opens the Y.Doc-backed store from OPFS, ensures the
+// Inbox line exists. Called from `main.tsx` before the React tree
+// mounts; the app shell renders a loading veil while this promise is
+// pending.
 //
-// Seeding strategy: if the templates table is empty after hydrate we
-// emit the sample data through the same action surface any user
-// mutation takes, so first-run state is indistinguishable from the
-// output of a user performing those same edits by hand.
+// First-run policy (changed 2026-05-08): no sample seeding. A fresh
+// install boots with empty templates / rails / etc; the UI surfaces
+// (Today Track, Cycle View) render an empty-state hint nudging the
+// user into the template editor. See the "first-run setup" comment
+// in boot() for the data-loss incident that drove this.
 
 import {
   INBOX_LINE_ID,
@@ -16,20 +17,13 @@ import {
   useStore,
   type HolidayDataset,
   type Line,
-  type Rail,
-  type RailColor,
 } from '@dayrail/core';
 import { saveYDocBytes } from '@dayrail/db/yjsPersistence';
-import {
-  SAMPLE_RAILS_BY_TEMPLATE,
-  SAMPLE_TEMPLATES,
-} from './data/sampleTemplate';
 // ERD §14.2 — bundled holiday data sets. Each new region drops in a
 // JSON file here and gets registered. Updating: every December open a
 // PR adding next year's events to the relevant region's file.
 import HOLIDAYS_ZH_CN from './data/holidays/zh-CN.json';
 import { popPendingImport } from './lib/importData';
-import { setLocalIsSamplesOnly } from './lib/sync/identity';
 
 export async function boot(): Promise<void> {
   // 0. Pre-flight capability probe.
@@ -60,51 +54,34 @@ export async function boot(): Promise<void> {
   //    Y.Doc, derive flat state into the zustand store.
   await useStore.getState().hydrate();
 
-  // 2. First-run seeding — when local is empty AND we don't have a
-  //    pending import. Always seed in that case, regardless of
-  //    whether Drive is connected: the samples-only flag (set
-  //    below) tells BootGate's later applyRemoteDryj path that the
-  //    seed is disposable, so it'll use replaceLocalFromRemote
-  //    rather than CRDT-merging samples into the user's actual
-  //    cloud data. Earlier round-4 attempted to peek Drive here and
-  //    skip the seed if a canonical existed; that left users with
-  //    empty UI when Drive was connected but BootGate's apply hadn't
-  //    fired yet (or canonical was empty, or fetch failed silently).
-  //    Removing the peek; round 6's flag-based replace-vs-merge
-  //    gate is the correct mechanism.
-  const s = useStore.getState();
-  if (Object.keys(s.templates).length === 0 && !pending) {
-    await seedFromSamples();
-    await ensureInbox();
-    await ensureBuiltinWeekdayRules();
-    // Mark local as "v0.7 sample seed only — safe to replace
-    // wholesale on first Drive connect / pull". Cleared by the
-    // syncController afterTransaction listener on the first user-
-    // authored transact, by importLocalData when a real .dryj is
-    // imported, and by runPush / runForcePush / replaceLocalFromRemote
-    // on success.
-    setLocalIsSamplesOnly();
-  } else {
-    // Cheap no-op after first run on a populated device.
-    await ensureInbox();
-    await ensureBuiltinWeekdayRules();
-  }
+  // 2. First-run setup — only the bare minimum that's needed for the
+  //    rest of the app to function. Specifically: the Inbox line, so
+  //    "tasks without a project" have somewhere to live.
+  //
+  //    History (2026-05-08): we used to seed sample templates +
+  //    weekday calendar rules here, gated by a `samplesOnly`
+  //    localStorage flag so BootGate could replace the seed
+  //    wholesale on first Drive pull. The flag was out-of-band
+  //    metadata stored separately from the data it gated, and the
+  //    v0.9.0 → v0.9.1 Tauri auto-update wiped WKWebView storage
+  //    (including the flag), letting the re-seeded state push to
+  //    Drive and overwrite the user's real cloud data. The
+  //    architectural fix is here: don't write data that looks like
+  //    user data unless it IS user data. Empty start + UI guidance
+  //    is the new contract; the pre-Drive-pull state is unambiguously
+  //    "nothing here yet" rather than "looks populated but secretly
+  //    disposable".
+  //
+  //    UX impact: a fresh install with no Drive connection sees an
+  //    empty Today Track / Cycle View with a "新建第一个模板 →"
+  //    nudge (see EmptyTemplatesHint). That's strictly better than
+  //    the old "here are some example rails I'll silently replace
+  //    when Drive shows up" implicit handoff.
+  await ensureInbox();
 
   // 5. Materialise today's habit auto-tasks. Idempotent.
   const today = toIsoDate();
   await materializeAutoTasksForToday(today);
-}
-
-async function ensureBuiltinWeekdayRules(): Promise<void> {
-  const store = useStore.getState();
-  const hasRuleFor = (templateKey: string): boolean =>
-    !!store.calendarRules[`cr-weekday-${templateKey}`];
-  if (store.templates['workday'] && !hasRuleFor('workday')) {
-    await store.upsertWeekdayRule('workday', [1, 2, 3, 4, 5]);
-  }
-  if (store.templates['restday'] && !hasRuleFor('restday')) {
-    await store.upsertWeekdayRule('restday', [0, 6]);
-  }
 }
 
 async function ensureInbox(): Promise<void> {
@@ -154,35 +131,3 @@ async function preflight(): Promise<void> {
   }
 }
 
-async function seedFromSamples(): Promise<void> {
-  const store = useStore.getState();
-
-  for (const tpl of SAMPLE_TEMPLATES) {
-    await store.upsertTemplate({
-      key: tpl.key,
-      name: tpl.label,
-      color: tpl.color as RailColor,
-      isDefault: tpl.builtIn,
-    });
-  }
-
-  for (const templateKey of Object.keys(
-    SAMPLE_RAILS_BY_TEMPLATE,
-  ) as Array<keyof typeof SAMPLE_RAILS_BY_TEMPLATE>) {
-    const list = SAMPLE_RAILS_BY_TEMPLATE[templateKey];
-    if (!list) continue;
-    for (const r of list) {
-      const rail: Rail = {
-        id: r.id,
-        templateKey,
-        name: r.name,
-        ...(r.subtitle && { subtitle: r.subtitle }),
-        startMinutes: r.startMin,
-        durationMinutes: r.endMin - r.startMin,
-        color: r.color as RailColor,
-        showInCheckin: r.showInCheckin,
-      };
-      await store.createRail(rail);
-    }
-  }
-}
