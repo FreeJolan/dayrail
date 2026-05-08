@@ -24,6 +24,8 @@ import { saveYDocBytes } from '@dayrail/db/yjsPersistence';
 // PR adding next year's events to the relevant region's file.
 import HOLIDAYS_ZH_CN from './data/holidays/zh-CN.json';
 import { popPendingImport } from './lib/importData';
+import { setAutoDetectedDeviceLabel } from './lib/sync/identity';
+import { isTauriRuntime } from './lib/versionUpdateContext';
 
 export async function boot(): Promise<void> {
   // 0. Pre-flight capability probe.
@@ -38,6 +40,12 @@ export async function boot(): Promise<void> {
   // 0.25. Request persistent storage so the browser doesn't evict
   //       OPFS under disk pressure.
   void requestPersistentStorage();
+
+  // 0.3. On Tauri, query the OS hostname so the device label has a
+  //      real default (e.g. "FreeJolan-MBP") rather than the
+  //      UA-derived "Browser on macOS". Best-effort, fire-and-forget;
+  //      the user can override via Settings → 同步 → 本设备名.
+  void populateAutoDeviceLabel();
 
   // 0.5. Pending import from the previous page (user clicked "Import
   //      from snapshot" in Settings, or finished a sync pull that
@@ -96,6 +104,21 @@ async function ensureInbox(): Promise<void> {
     createdAt: Date.now(),
   };
   await store.createLine(inbox);
+}
+
+async function populateAutoDeviceLabel(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const info = await invoke<{ hostname: string; os: string }>(
+      'get_system_info',
+    );
+    if (info?.hostname && info.hostname.trim().length > 0) {
+      setAutoDetectedDeviceLabel(info.hostname.trim());
+    }
+  } catch {
+    // Best-effort; falls back to UA-derived label silently.
+  }
 }
 
 async function requestPersistentStorage(): Promise<void> {

@@ -29,6 +29,14 @@ tauri-plugin-updater = "2"
 # `tauri-plugin-process` exposes `relaunch()` to the frontend so the
 # updater UX can restart cleanly after install completes.
 tauri-plugin-process = "2"
+# `tauri-plugin-dialog` — native file picker for `.dryj` import on
+# desktop. WKWebView's HTML5 `<input type="file">` silently fails on
+# Tauri (selection succeeds but the resulting File object's bytes
+# read as empty; encountered during the v0.9.0→v0.9.1 incident
+# recovery). The native dialog returns a path which the frontend
+# reads via `tauri-plugin-fs`.
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

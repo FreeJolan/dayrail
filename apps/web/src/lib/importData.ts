@@ -26,7 +26,15 @@ const PENDING_IMPORT_KEY = 'dayrail.pending-import';
  *  function never returns — the reload takes over. */
 export async function importLocalData(file: File): Promise<void> {
   const buf = await file.arrayBuffer();
-  const bytes = new Uint8Array(buf);
+  await importLocalDataFromBytes(new Uint8Array(buf));
+}
+
+/** Bytes-direct variant for callers that already have the raw `.dryj`
+ *  payload (e.g. Tauri's native file picker — `tauri-plugin-fs`'s
+ *  `readFile` returns `Uint8Array` directly, no `File` wrapper). The
+ *  WKWebView HTML5 file input's `files[0]` is unreliable on Tauri,
+ *  which is why the desktop import flow takes this path. */
+export async function importLocalDataFromBytes(bytes: Uint8Array): Promise<void> {
   // Validate the container header before reload so the user sees an
   // immediate error rather than a silent boot into empty state.
   try {

@@ -22,6 +22,8 @@ importers:
       '@radix-ui/react-popover': ^1.1.15
       '@radix-ui/react-tooltip': ^1.2.8
       '@tauri-apps/api': ^2.11.0
+      '@tauri-apps/plugin-dialog': ^2.4.0
+      '@tauri-apps/plugin-fs': ^2.4.2
       '@tauri-apps/plugin-process': ^2.3.1
       '@tauri-apps/plugin-updater': ^2.10.1
       '@types/node': 20.16.14
@@ -52,6 +54,8 @@ importers:
       '@radix-ui/react-popover': 1.1.15_mn6whcxlx7so2an4c3a4lp7zmq
       '@radix-ui/react-tooltip': 1.2.8_mn6whcxlx7so2an4c3a4lp7zmq
       '@tauri-apps/api': 2.11.0
+      '@tauri-apps/plugin-dialog': 2.7.1
+      '@tauri-apps/plugin-fs': 2.5.1
       '@tauri-apps/plugin-process': 2.3.1
       '@tauri-apps/plugin-updater': 2.10.1
       clsx: 2.1.1
@@ -2853,6 +2857,18 @@ packages:
       '@tauri-apps/cli-win32-ia32-msvc': 2.11.1
       '@tauri-apps/cli-win32-x64-msvc': 2.11.1
     dev: true
+
+  /@tauri-apps/plugin-dialog/2.7.1:
+    resolution: {integrity: sha512-OK1UBXYt+ojcmxMktzzuyonYIFta8CmAASpX+CA+DTGK24KlHjhYI6x2iOJ/TjZF4N7/ACK1oFmEOjIY9IhzOQ==}
+    dependencies:
+      '@tauri-apps/api': 2.11.0
+    dev: false
+
+  /@tauri-apps/plugin-fs/2.5.1:
+    resolution: {integrity: sha512-9Lz+Jopp6QyeEWhlpkMx4R/+P9HgR+AVAI4vOZhlT8Xaymtz8iVI/Ov984/XTqgJz/5gz5NretqPB/XEMS3NhQ==}
+    dependencies:
+      '@tauri-apps/api': 2.11.0
+    dev: false
 
   /@tauri-apps/plugin-process/2.3.1:
     resolution: {integrity: sha512-nCa4fGVaDL/B9ai03VyPOjfAHRHSBz5v6F/ObsB73r/dA3MHHhZtldaDMIc0V/pnUw9ehzr2iEG+XkSEyC0JJA==}
