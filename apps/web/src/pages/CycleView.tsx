@@ -18,6 +18,7 @@ import {
 } from '@dayrail/core';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import { CycleSummaryStrip } from '@/components/CycleSummaryStrip';
+import { EmptyTemplatesHint } from '@/components/EmptyTemplatesHint';
 import {
   CycleSection,
   type TemplateChoice,
@@ -502,6 +503,11 @@ export function CycleView() {
 
         <CycleSummaryStrip cycle={cycle} />
 
+        {Object.keys(templates).length === 0 ? (
+          <div className="pt-6 pb-16">
+            <EmptyTemplatesHint />
+          </div>
+        ) : (
         <div className="flex flex-col gap-5 pt-6 pb-16">
           {groups.map(({ key, templateKey, days }) => {
             const tmpl = templateChoices.find((t) => t.key === templateKey);
@@ -542,14 +548,9 @@ export function CycleView() {
             );
           })}
 
-          {groups.length === 0 && (
-            <section className="rounded-md border border-dashed border-hairline/60 bg-surface-1 px-6 py-8 text-sm text-ink-tertiary">
-              没有 Template —— 去 Template Editor 建一条，这里会按日期自动分段。
-            </section>
-          )}
-
         <CycleFooter cycle={cycle} groupCount={groups.length} />
       </div>
+        )}
 
       <ReasonToast
         state={toast}
