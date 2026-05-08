@@ -1,9 +1,8 @@
 // DayRail desktop · runtime library.
 //
-// PR-A scope: minimal Tauri 2 shell that loads the existing web
-// frontend (`apps/web/dist`) into a system webview. No sync-layer
-// adaptation, no auto-update — those land in PR-C and PR-B
-// respectively (ERD §15.3 / §15.4).
+// As of PR-B: shell + auto-update wired. Sync-layer adaptation
+// (PR-C) still pending — Drive auth still uses the web's GIS
+// implicit flow until that lands.
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -13,6 +12,15 @@ pub fn run() {
         // the OAuth consent URL in the user's default browser when we
         // switch sync to the desktop OAuth pattern (ERD §15.3).
         .plugin(tauri_plugin_shell::init())
+        // ERD §15.4 — auto-update. Endpoint URL + public key live in
+        // `tauri.conf.json` under plugins.updater. The frontend
+        // initiates checks via the JS SDK; this `init()` exposes the
+        // IPC bridge.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // `tauri-plugin-process` provides `relaunch()` to the
+        // frontend; the updater calls it after install to land users
+        // on the new version cleanly.
+        .plugin(tauri_plugin_process::init())
         .run(tauri::generate_context!())
         .expect("error while running DayRail desktop");
 }
