@@ -19,7 +19,18 @@ import {
   useCheatsheetToggle,
   useGlobalShortcuts,
 } from './lib/keyboardShortcuts';
-import { VersionUpdateProvider } from './lib/swRegistration';
+import { WebVersionUpdateProvider } from './lib/swRegistration';
+import { DesktopVersionUpdateProvider } from './lib/desktopUpdate';
+import { isTauriRuntime } from './lib/versionUpdateContext';
+
+// ERD §15 — pick the version-update provider based on runtime context.
+// PWA users get the Service Worker-based one; Tauri desktop users get
+// the tauri-plugin-updater-based one. Both populate the same
+// `VersionUpdateContext`, so consumers (`useVersionUpdate()` /
+// `useUpgradeFlow()` / the update banner) work identically.
+const VersionUpdateProvider = isTauriRuntime()
+  ? DesktopVersionUpdateProvider
+  : WebVersionUpdateProvider;
 
 // ERD §5.0 App Shell · v0.2 routing (react-router-dom v6). URL scheme
 // locked in `docs/v0.2-plan.md §3`:

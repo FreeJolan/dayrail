@@ -1,13 +1,21 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useRef,
   useState,
   type ReactNode,
 } from 'react';
 import { useRegisterSW } from 'virtual:pwa-register/react';
+import {
+  VersionUpdateContext,
+  type CheckStatus,
+  type VersionUpdateState,
+} from './versionUpdateContext';
+
+// Re-export for back-compat with code that historically imported from
+// here. New imports should pull from `./versionUpdateContext` directly.
+export { useVersionUpdate, isTauriRuntime } from './versionUpdateContext';
+export type { CheckStatus, VersionUpdateState } from './versionUpdateContext';
 
 // ------------------------------------------------------------------
 // Service Worker registration + version-update state.
@@ -28,33 +36,12 @@ import { useRegisterSW } from 'virtual:pwa-register/react';
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
-export type CheckStatus = 'idle' | 'checking' | 'up-to-date' | 'needs-update';
-
-export interface VersionUpdateState {
-  /** True when a new SW is waiting AND the user hasn't dismissed this
-   *  session. Banner should render iff this is true. */
-  needsRefresh: boolean;
-  offlineReady: boolean;
-  /** Epoch ms of the last `updateSW`/registration.update() resolution;
-   *  `null` until the first check fires. */
-  lastCheckedAt: number | null;
-  status: CheckStatus;
-  /** Commit: skipWaiting the new SW and reload the page. */
-  update: () => Promise<void>;
-  /** "Later" — hide the banner for this session. A subsequent new
-   *  waiting SW will re-open it. */
-  dismiss: () => void;
-  /** Manual "check for updates". Resolves with the outcome for UI
-   *  side-effects (e.g. flashing an "already up to date" toast). */
-  checkNow: () => Promise<'up-to-date' | 'needs-update'>;
-  /** Dismiss the one-time offline-ready notice. */
-  dismissOfflineReady: () => void;
-}
-
-const VersionUpdateContext = createContext<VersionUpdateState | null>(null);
-
-export function VersionUpdateProvider({ children }: { children: ReactNode }) {
-  const value = useVersionUpdateImpl();
+/** Web (PWA) version-update provider. Mount this when running in a
+ *  browser context. For Tauri desktop, mount `DesktopVersionUpdateProvider`
+ *  from `./desktopUpdate` instead — both populate the same shared
+ *  context (`VersionUpdateContext`) so consumer hooks work the same. */
+export function WebVersionUpdateProvider({ children }: { children: ReactNode }) {
+  const value = useWebVersionUpdateImpl();
   return (
     <VersionUpdateContext.Provider value={value}>
       {children}
@@ -62,17 +49,11 @@ export function VersionUpdateProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function useVersionUpdate(): VersionUpdateState {
-  const ctx = useContext(VersionUpdateContext);
-  if (!ctx) {
-    throw new Error(
-      'useVersionUpdate() called outside <VersionUpdateProvider>. Mount the provider in App.tsx before consuming.',
-    );
-  }
-  return ctx;
-}
+/** @deprecated Use `WebVersionUpdateProvider`. Alias kept for one
+ *  release to avoid breaking imports during the v0.9 transition. */
+export const VersionUpdateProvider = WebVersionUpdateProvider;
 
-function useVersionUpdateImpl(): VersionUpdateState {
+function useWebVersionUpdateImpl(): VersionUpdateState {
   const registrationRef = useRef<ServiceWorkerRegistration | undefined>(
     undefined,
   );

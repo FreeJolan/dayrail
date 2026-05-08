@@ -68,21 +68,63 @@ The frontend lives in `apps/web/` and is reused as-is. Tauri config
 points `frontendDist` at `../../web/dist`, so `pnpm build` for the
 web app is a prerequisite for `pnpm desktop:build`.
 
-## What's not in PR-A
+## Releasing a new version
+
+Auto-update infrastructure is wired (PR-B). Cutting a release:
+
+```bash
+# 1. Update version in apps/desktop/src-tauri/tauri.conf.json
+#    (and Cargo.toml if you're tracking package version explicitly)
+
+# 2. Tag + push
+git tag v0.9.0
+git push origin v0.9.0
+```
+
+Pushing a `v*` tag triggers `.github/workflows/release.yml`:
+
+- Builds for macOS (arm64 + x86_64), Linux x86_64, Windows x86_64
+- Signs the update bundle with the Tauri updater key
+- Creates a draft GitHub Release with the platform installers + `latest.json` manifest attached
+- macOS code-signs + notarizes if Apple secrets are present (currently no — first release will ship unsigned)
+
+You then review the draft release on GitHub and click "Publish". Existing desktop app installs check the `latest.json` URL on startup + every 30 minutes; when they see a newer version they prompt the user to install.
+
+### Required GitHub Secrets
+
+Before the first release works, set these on the repo:
+
+| Secret | Value |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.dayrail/tauri-updater.key` (the private key, raw text) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | passphrase used when generating the key |
+
+Set via `gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.dayrail/tauri-updater.key`.
+
+**Don't lose the private key.** Without it you can't sign update bundles, and existing installs won't accept new versions until they're manually reinstalled. The key is stored at `~/.dayrail/tauri-updater.key` and `~/.dayrail/tauri-updater.key.pub`; back both up to a password manager.
+
+### Apple code-signing (later)
+
+Once the Apple Developer Program enrollment completes, add these secrets and the workflow will automatically sign + notarize macOS builds:
+
+- `APPLE_CERTIFICATE` — base64 of the Developer ID Application `.p12`
+- `APPLE_CERTIFICATE_PASSWORD` — `.p12` passphrase
+- `APPLE_SIGNING_IDENTITY` — `Developer ID Application: <Your Name> (TEAM_ID)`
+- `APPLE_ID` — Apple ID email
+- `APPLE_PASSWORD` — app-specific password generated at appleid.apple.com
+- `APPLE_TEAM_ID` — 10-character Apple Developer Team ID
+
+Until then, macOS builds are unsigned and users must right-click → Open the first time.
+
+## What's not in PR-A or PR-B
 
 These are tracked separately per ERD §15:
 
-- **PR-B · auto-update** — `tauri-plugin-updater` + GitHub Releases
-  pipeline + static manifest JSON. Until then the desktop app has
-  no upgrade path; you reinstall manually.
 - **PR-C · sync layer** — Drive auth via desktop OAuth pattern
   (auth-code flow + refresh token in OS keychain via
   `tauri-plugin-stronghold`). Until then desktop reuses the web's
   GIS implicit flow + same hourly re-auth UI as PWA.
 - **PR-D · platform polish** — menu bar / dock / file picker /
   system notifications. Optional and dogfood-driven.
-- **Real icons** — placeholder folder for now; run `pnpm
-  --filter @dayrail/desktop icon <master.png>` to generate the full
-  PNG/ICNS/ICO set when a master logo is ready.
 
 See ERD §15 for the full architecture sketch + rationale.
