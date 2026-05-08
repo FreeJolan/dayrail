@@ -1,6 +1,6 @@
 # DayRail · 当前状态 & 后续迭代
 
-> 最后整理：2026-05-07（v0.8.2 ship 后 · v0.9 桌面端方向锁定）
+> 最后整理：2026-05-08（v0.9.0 桌面端首版 ship · 4 平台 unsigned binaries + auto-update + Drive 永久授权）
 > 本文档与 `ERD.*.md` 分工：ERD 是设计意图 + 历史决策链（append-only
 > 记录），本文档是**当下状态快照** + **待办停车场** + **迭代注记**。
 > 每次大迭代开始前读这里拿到起点，结束后更新这里。
@@ -106,7 +106,7 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 
 ---
 
-### 🚧 v0.9 · 桌面端 + 永久 Drive 授权（在路上）
+### ✓ v0.9 · 桌面端 + 永久 Drive 授权
 
 > 详细设计：ERD §15（桌面端架构）。本版本反转 v0.7 时期"桌面端不做"
 > 的判断 —— 1 个月 dogfood 暴露出 PWA + Google Drive + 无后端架构无法
@@ -114,7 +114,7 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 > 走 OS keychain + auth-code refresh token，物理上消除该问题，同时是
 > Cycle View 拖拽 / 通知 / 文件选择器等其它 PWA 限制的总解。
 
-- 🚧 **v0.9.0 · Tauri 桌面端 + auto-update + Drive 永久授权** —— Tauri 2 壳子复用现有 Vite 产出 webview；同步层 Drive auth 切到 desktop OAuth pattern（`tauri-plugin-shell` 打开浏览器走 authorization code flow + PKCE → 拿到 refresh token → 存 OS keychain via `tauri-plugin-stronghold`）；access token 过期时后台用 refresh token 换新，**用户不感知**。auto-update via `tauri-plugin-updater`（GitHub Releases + 静态 manifest JSON · 无 DayRail 后端）。macOS 代码签名 + notarization 走 Apple Developer Program；Windows / Linux 不签名版本先发，平台抛光后续。**PWA 不下线** —— Web 版本继续作为公开演示 / 临时使用入口；推荐日常用户用桌面版。详见 ERD §15。
+- ✅ **v0.9.0 · Tauri 桌面端 + auto-update + Drive 永久授权**（已 ship · 2026-05-08）—— Tauri 2 壳子复用现有 Vite 产出 webview；同步层 Drive auth 切到 desktop OAuth pattern（authorization-code flow + PKCE + 本进程 loopback `TcpListener`，浏览器走 consent 后 OS keychain via `keyring` crate 存 refresh token；不用 `tauri-plugin-stronghold` 因为 stronghold vault 模型对一个 server-revocable capability 是 overkill）；access token 过期时 Rust 端 `drive_get_token` 静默续期，**用户不感知**。前端 `driveAuth.ts` 通过 `isTauriRuntime()` early-return 桥接到 Rust commands，PWA 路径完全不动。auto-update via `tauri-plugin-updater` + GitHub Releases · 启动时 + 每 30 分钟检查 `latest.json`（无 DayRail 后端 · 与 §7.1 一致）。Windows / Linux unsigned 直接 ship；**macOS 代码签名 + notarization deferred** 等 Apple Developer Program 通过后补（`release.yml` 头部 doc-comment 留了 6 个 `APPLE_*` secret 名 + 注释说明恢复方法）。**PWA 不下线** —— Web 版本继续作为公开演示 / 临时使用入口；推荐日常用户用桌面版。详见 ERD §15 / History 顶部 v0.9.0 ship-notes 条目。
 
 ---
 
@@ -620,17 +620,16 @@ dogfood 发现 `claude-opus-4-7 via claude-bridge` 即使经过 5 轮 prompt ite
 - ✅ **v0.8.1 · §5.4 日历规则重构** —— PR #6 已 ship；后续 PR #7 修了 off-rail label 列宽溢出
 - ✅ **v0.8.2 · AI MVP** —— PR #9 doc-only 设计锁定 → PR #10 代码 ship → PR #11 doc-only ship-notes 收尾。3 个 PR 闭环。完整反转纪要见 ERD §6.6 / History 顶部 v0.8.2 ship-notes 条目。
 
-### v0.9 主线（当下）
+### v0.9 主线（已收官）
 
-- 🚧 **v0.9 桌面端方向锁定（doc-only · 当前 PR）** —— ROADMAP 桌面端从❌反转到 v0.9 主线 / ERD 加 §15 桌面端架构。设计动机：1 个月 dogfood 暴露 PWA + Google Drive + 无后端 = 小时级 OAuth 重新授权 UI 不可避免，对日常用户不可接受。Tauri 壳让 sync 走 OS keychain + auth-code refresh token 物理上消除该问题，**同时** auto-update 必须就位。
-- 🟡 **下一步代码 PRs**（拆 4 个）：
-  - ✅ PR-A：Tauri 2 scaffold + 复用现有 Vite 产出 + 本地能装能跑（PR #13 已 ship）
-  - ✅ PR-B：auto-update manifest + GitHub Release pipeline + `tauri-plugin-updater`（PR #14 已 ship）
-  - 🚧 PR-C：Drive 授权切到 desktop OAuth pattern · authorization-code flow + PKCE + `keyring` crate 把 refresh token 存到 OS keychain。前端 `driveAuth.ts` 通过 `isTauriRuntime()` 检测后桥接到 Rust commands，PWA 路径不动。**当前 PR**
-  - PR-D：（可选）平台抛光 —— menu bar / dock / 文件选择器 / 系统通知
-- 🟡 **平台代码签名**：
-  - macOS：用户正在注册 Apple Developer Program；先 ship 不签名版本（Gatekeeper 第一次右键 → 打开），证书到位后补 signing + notarization
-  - Windows / Linux：先发不签名版本
+- ✅ **v0.9 桌面端方向锁定** —— PR #12 doc-only ship；ROADMAP 桌面端从❌反转到 v0.9 主线 / ERD 加 §15 桌面端架构。
+- ✅ **PR-A · Tauri 2 scaffold** —— PR #13 已 ship。
+- ✅ **PR-B · auto-update infrastructure** —— PR #14 已 ship；`tauri-plugin-updater` + GitHub Release pipeline + minisign 签 updater bundle（不是 Apple cert）。
+- ✅ **PR-C · Drive 授权切到 desktop OAuth pattern** —— PR #15 已 ship；authorization-code flow + PKCE + `keyring` crate 存 refresh token 到 OS keychain。
+- ✅ **桌面图标 × 2** —— PR #16 修原 SVG 嵌套 transform 数学 bug（黑屁股根因）→ PR #17 加 macOS HIG 标准 ~10% 透明 safe-area + 暖底 + 75% 画布填充。
+- ✅ **v0.9.0 release** —— PR #18 bump 三处 desktop 版本号到 0.9.0 → 第一次 tag push 失败（PR #19 修 CI pnpm 10 → 7 匹配 lockfile v5.4；PR #20 整个删掉 `APPLE_*` env 块因 tauri-action 把 set-but-empty 当 "请导入 cert" 处理）→ 第三次 tag push 4/4 平台全绿 → 草稿 release 自动生成 → CLI publish。完整 ship-notes 见 ERD History 顶部 v0.9.0 条目。
+- 🟡 **PR-D 平台抛光**（菜单栏 / dock / 文件选择器 / 系统通知）—— 可选，dogfood 攒到信号再做。
+- 🟡 **macOS 代码签名 + notarization** —— Apple Developer Program enrollment 进行中，下个 v0.9.x 补。`release.yml` 头部已留 doc-comment 块说明恢复哪 6 个 `APPLE_*` env 字段。
 
 ### 接下来可能做（v0.9 ship 后的候选 · 触发条件未到）
 
