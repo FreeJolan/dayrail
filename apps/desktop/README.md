@@ -4,9 +4,9 @@ Per ERD §15. Wraps the existing `@dayrail/web` Vite output in a system
 webview with OS-level integration (keychain, file picker, system
 notifications) and built-in auto-update.
 
-This is a v0.9 work-in-progress. PR-A (this commit) only scaffolds
-the Tauri shell — sync-layer adaptation (PR-C) and auto-update
-infrastructure (PR-B) come in subsequent PRs.
+This is a v0.9 work-in-progress. PR-A scaffolded the Tauri shell;
+PR-B added auto-update infrastructure; PR-C (this commit) wires Drive
+auth via the desktop OAuth pattern (refresh token in OS keychain).
 
 ## Prerequisites
 
@@ -116,14 +116,64 @@ Once the Apple Developer Program enrollment completes, add these secrets and the
 
 Until then, macOS builds are unsigned and users must right-click → Open the first time.
 
-## What's not in PR-A or PR-B
+## Drive OAuth (PR-C)
 
-These are tracked separately per ERD §15:
+The PWA's Google sign-in goes through GIS implicit flow, which doesn't
+issue refresh tokens — that's why every fresh launch beyond the 1 h
+access-token window forces a popup. The desktop build uses the
+**authorization-code flow + PKCE** instead and persists the refresh
+token in the OS keychain (macOS Keychain Services / Windows Credential
+Manager / Linux Secret Service via libsecret), so reconnects are
+silent until the user revokes from Google's account-permissions page.
 
-- **PR-C · sync layer** — Drive auth via desktop OAuth pattern
-  (auth-code flow + refresh token in OS keychain via
-  `tauri-plugin-stronghold`). Until then desktop reuses the web's
-  GIS implicit flow + same hourly re-auth UI as PWA.
+The flow is wired in `src-tauri/src/drive_auth.rs` and exposed to the
+frontend as four Tauri commands (`drive_connect`, `drive_get_token`,
+`drive_disconnect`, `drive_is_connected`). `apps/web/src/lib/sync/
+driveAuth.ts` detects the Tauri runtime and routes through these
+commands; the PWA path is unchanged.
+
+### Local setup — Google Cloud Console
+
+The desktop loopback flow needs an OAuth client of type **"Desktop
+app"**. Google rejects the loopback `redirect_uri` from a "Web
+application" client, so the PWA's existing client cannot be reused.
+
+1. Open [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials)
+   under your existing DayRail project.
+2. Click **Create Credentials → OAuth client ID**.
+3. **Application type**: `Desktop app`. **Name**: `DayRail Desktop`.
+4. Click **Create**. Copy the **Client ID** and **Client secret**.
+5. In `apps/desktop/src-tauri/`:
+   ```bash
+   cp .env.example .env
+   ```
+   Fill the two values into `.env`. The file is gitignored.
+
+`build.rs` reads `.env` and forwards the two keys via
+`cargo:rustc-env=…`; `drive_auth.rs` reads them with `option_env!()`
+at compile time, so there's no runtime file IO and no shipped `.env`.
+
+> **On the "client secret" for native apps.** Per
+> [RFC 8252](https://datatracker.ietf.org/doc/html/rfc8252), the
+> "secret" issued to a desktop app is not actually confidential — it
+> ends up embedded in every distributed binary. Google still issues
+> one because their OAuth library mandates it; treat it as
+> identifying-but-not-secret. The PKCE step is what actually protects
+> the auth-code exchange.
+
+### CI
+
+`.github/workflows/release.yml` (added in PR-B) reads
+`GOOGLE_DESKTOP_CLIENT_ID` and `GOOGLE_DESKTOP_CLIENT_SECRET` from
+GitHub Secrets and exports them as env vars before `cargo build`,
+which `build.rs` picks up the same way it does the local `.env`. Set
+both with `gh secret set GOOGLE_DESKTOP_CLIENT_ID` and
+`gh secret set GOOGLE_DESKTOP_CLIENT_SECRET`.
+
+## What's not in PR-A / PR-B / PR-C
+
+Tracked separately per ERD §15:
+
 - **PR-D · platform polish** — menu bar / dock / file picker /
   system notifications. Optional and dogfood-driven.
 

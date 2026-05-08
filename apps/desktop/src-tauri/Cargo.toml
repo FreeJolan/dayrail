@@ -32,6 +32,23 @@ tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# ERD §15.3 — desktop OAuth pattern for Drive sync.
+# `oauth2` runs the auth-code + PKCE + refresh exchange against
+# Google's token endpoint. `keyring` persists the refresh token in
+# the OS keychain (Keychain Services on macOS / Credential Manager
+# on Windows / Secret Service on Linux). `tokio` is already pulled
+# transitively by Tauri.
+oauth2 = "5"
+keyring = "3"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+url = "2"
+urlencoding = "2"
+# `open` opens the OAuth consent URL in the user's default browser
+# without going through tauri-plugin-shell IPC (we're invoking from
+# Rust side, no need for the capability + frontend round-trip).
+open = "5"
+tokio = { version = "1", features = ["net", "io-util", "macros", "time"] }
+
 # Profile tweaks for release builds — small binary + faster crash
 # reports. v0.9 starts with defaults; we'll tune after PR-B if the
 # bundle size or stripped-symbol output matters.

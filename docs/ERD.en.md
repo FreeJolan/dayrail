@@ -3402,11 +3402,11 @@ Both paths **share the Y.Doc sync stream** (same Drive `appdata` `.dryj` snapsho
 
 - **Tauri 2** — Rust backend process + system webview (macOS WKWebView / Windows WebView2 / Linux WebKitGTK).
 - **Reuses Vite output** — `apps/web/` stays untouched; Tauri config sets `frontendDist = "../web/dist"`. Same React / Zustand / Y.Doc.
-- **Tauri plugins**:
-  - `tauri-plugin-updater` — auto-update (see §15.4)
-  - `tauri-plugin-stronghold` — OS keychain (macOS Keychain / Windows Credential Manager / Linux Secret Service) for refresh-token storage
+- **Tauri plugins** + direct crates:
+  - `tauri-plugin-updater` + `tauri-plugin-process` — auto-update + relaunch (see §15.4)
   - `tauri-plugin-shell` — opens browser for OAuth consent
-  - `tauri-plugin-http` — Drive API calls (bypasses webview CORS)
+  - `keyring` crate (no plugin wrapper) — OS keychain (macOS Keychain / Windows Credential Manager / Linux Secret Service via libsecret) for refresh-token storage. Lighter than `tauri-plugin-stronghold`; no master-password ceremony. Refresh tokens are server-revocable capabilities, not long-lived password material — the stronghold vault model is overkill here.
+  - `oauth2` + `reqwest` crates — authorization-code flow + token exchange + refresh, run inside the Rust process (not the webview), so `tauri-plugin-http` isn't needed for CORS purposes.
   - `tauri-plugin-notification` — system notifications (v0.9.x optional)
 
 ### 15.3 Sync layer adaptation (the core change)
@@ -3420,25 +3420,31 @@ Browser → GIS implicit flow → access token (1h, no refresh) → Drive API
 Desktop path (new):
 
 ```
-Tauri shell → tauri-plugin-shell.open(consent URL) → user grants in browser
-            ↓
-          authorization code returned via deep link / localhost loopback
-            ↓
-          Tauri Rust backend exchanges code → { access_token, refresh_token }
-            ↓
-          tauri-plugin-stronghold.write(refreshToken, OS keychain)
-            ↓
-          frontend uses access_token via tauri-plugin-http
-            ↓
-          on 401 → backend reads refresh_token from keychain → exchanges → returns fresh access_token (no UI)
+Tauri Rust backend (drive_connect command)
+  1. Generate PKCE challenge
+  2. tokio::TcpListener::bind("127.0.0.1:0") → OS picks a free port
+  3. Build authorize URL using that port for redirect_uri
+     (access_type=offline, prompt=consent, PKCE)
+  4. open::that(authorize URL) → opens user's default browser to Google consent page
+  5. User grants in browser → Google redirects to http://127.0.0.1:<port>/callback?code=...
+  6. listener.accept() reads the HTTP request, parses code (5 min timeout)
+  7. exchange_code(code, pkce_verifier) → { access_token, refresh_token, expires_in }
+  8. keyring.set_password(refresh_token) → OS keychain
+  9. Returns { access_token, expires_at } to frontend
+Subsequent Drive API calls:
+  Frontend caches access_token; on near-expiry it invokes drive_get_token →
+    keyring.get_password() → exchange_refresh_token() → returns new access_token (no UI)
 ```
 
 Key decisions:
 
-- **OAuth client type**: Google "Desktop app" credential (distinct from Web app's implicit flow). Issues refresh tokens; no `client_secret` exposure issue (desktop clients don't require one — PKCE replaces it).
-- **Where refresh token lives**: OS keychain, **not in Y.Doc sync stream** (consistent with §6.6 field-split policy — credentials stay local). Each desktop device authorizes once on first launch.
-- **Frontend still uses fetch-shaped APIs**: invokes the Rust HTTP client via Tauri's `__TAURI__` global / IPC, rather than direct browser fetch (avoids CORS).
-- **Other local-only fields** (`aiApiKey` etc): desktop prefers OS keychain, falls back to `localStorage`.
+- **OAuth client type**: Google "Desktop app" credential (distinct from Web app's implicit flow). Issues refresh tokens. Per RFC 8252, the desktop "client_secret" is *not* truly confidential (it ships embedded in every distributed binary) — PKCE is what actually protects the auth-code exchange.
+- **Where refresh token lives**: OS keychain via the `keyring` crate, **not in the Y.Doc sync stream** (consistent with §6.6 field-split policy — credentials stay local). Each desktop device authorizes once on first launch. Stored as `KEYCHAIN_SERVICE = "app.dayrail.desktop" / KEYCHAIN_USERNAME = "google-drive-refresh-token"`.
+- **Frontend uses fetch directly for Drive API calls**: the `drive.appdata` endpoint supports CORS, so the webview can call it just like the PWA does. We don't need `tauri-plugin-http`. The Rust side handles only OAuth (Google's auth/token endpoints don't support CORS, *and* the refresh token has to live in the keychain anyway).
+- **Loopback redirect, not custom URL scheme**: deep links (`dayrail://`) require per-OS plumbing (LaunchServices on macOS, registry on Windows, `.desktop` files on Linux). Loopback is the RFC 8252-recommended native-app pattern: OS picks a random port, zero registration, Google OAuth supports it directly.
+- **How the frontend knows it's in Tauri**: `isTauriRuntime()` in `apps/web/src/lib/versionUpdateContext.ts` (already used by PR-B for auto-update) checks for `__TAURI_INTERNALS__`. The four public exports of `apps/web/src/lib/sync/driveAuth.ts` (`connectDrive` / `disconnectDrive` / `ensureAccessToken` / `isDriveConnected`) early-return to a desktop variant when this is true. The PWA path is unchanged.
+- **`KEY_CONNECTED` localStorage hint stays**: the keychain is the source of truth, but the frontend needs a synchronously-readable "connected" flag to gate UI. `drive_connect` sets `'1'` on success; `drive_disconnect` clears it; `drive_get_token` failure (refresh token revoked) also clears it.
+- **Other local-only fields** (`aiApiKey` etc): desktop **does not** migrate these. They stay in `localStorage`. `aiApiKey` is the credential for an OpenAI-compatible endpoint — the blast radius if leaked is "someone burns your LLM credit", not "someone writes to your DayRail data" (Drive `appdata` scope), so the security cost-benefit doesn't justify the migration. Reconsider if a future user signal points the other way.
 
 ### 15.4 Auto-update infrastructure
 

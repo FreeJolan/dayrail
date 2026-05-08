@@ -1,16 +1,14 @@
 // DayRail desktop · runtime library.
 //
-// As of PR-B: shell + auto-update wired. Sync-layer adaptation
-// (PR-C) still pending — Drive auth still uses the web's GIS
-// implicit flow until that lands.
+// As of PR-C: shell + auto-update + desktop OAuth Drive auth wired.
+// The frontend invokes the `drive_*` commands instead of going
+// through GIS implicit flow when running in Tauri (ERD §15.3).
+
+mod drive_auth;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        // `tauri-plugin-shell` is opt-in and gated by capabilities
-        // (see `capabilities/default.json`). PR-C will use it to open
-        // the OAuth consent URL in the user's default browser when we
-        // switch sync to the desktop OAuth pattern (ERD §15.3).
         .plugin(tauri_plugin_shell::init())
         // ERD §15.4 — auto-update. Endpoint URL + public key live in
         // `tauri.conf.json` under plugins.updater. The frontend
@@ -21,6 +19,17 @@ pub fn run() {
         // frontend; the updater calls it after install to land users
         // on the new version cleanly.
         .plugin(tauri_plugin_process::init())
+        // ERD §15.3 — desktop Drive auth commands. Keep the OAuth
+        // flow + keychain access in Rust so the refresh token never
+        // crosses the IPC boundary; the frontend only sees fresh
+        // access tokens it can drop straight into Authorization
+        // headers.
+        .invoke_handler(tauri::generate_handler![
+            drive_auth::drive_connect,
+            drive_auth::drive_get_token,
+            drive_auth::drive_disconnect,
+            drive_auth::drive_is_connected,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running DayRail desktop");
 }
