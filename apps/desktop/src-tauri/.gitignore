@@ -1,0 +1,16 @@
+# Tauri / Cargo build artifacts (Cargo.lock IS tracked — this crate
+# is a binary, not a library, so the lockfile belongs in version
+# control for reproducible builds).
+/target/
+/gen/
+
+# Tauri-generated installer artifacts (per-build, never tracked)
+*.tar.gz
+*.dmg
+*.AppImage
+*.msi
+*.app
+*.pkg
+
+# Updater signatures end up here when we wire PR-B
+*.sig

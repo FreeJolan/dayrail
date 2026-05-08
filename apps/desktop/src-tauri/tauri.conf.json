@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DayRail",
+  "version": "0.0.0",
+  "identifier": "app.dayrail.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @dayrail/web dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "pnpm --filter @dayrail/web build",
+    "frontendDist": "../../web/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "DayRail",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Productivity",
+    "shortDescription": "Personal rhythm + reflection — Stay on the Rail.",
+    "longDescription": "DayRail is a local-first personal time-tracking + reflection tool. The desktop shell wraps the existing web app with system integration, OS keychain for sync credentials (so Google Drive auth survives sessions), and built-in auto-update.",
+    "macOS": {
+      "frameworks": [],
+      "minimumSystemVersion": "11.0",
+      "exceptionDomain": ""
+    }
+  }
+}

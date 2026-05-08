@@ -1,0 +1,34 @@
+[package]
+name = "dayrail-desktop"
+version = "0.0.0"
+description = "DayRail desktop shell"
+authors = ["FreeJolan"]
+edition = "2021"
+rust-version = "1.77"
+
+# Tauri 2 splits the runtime into a `lib` (so the same code can be
+# reused on mobile entry points later) plus a tiny `main.rs` shim.
+# We don't ship mobile in v0.9 (see ERD §15.7), but the lib/bin split
+# is the upstream-recommended layout regardless.
+[lib]
+name = "dayrail_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Profile tweaks for release builds — small binary + faster crash
+# reports. v0.9 starts with defaults; we'll tune after PR-B if the
+# bundle size or stripped-symbol output matters.
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
