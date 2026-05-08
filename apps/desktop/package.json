@@ -1,0 +1,17 @@
+{
+  "name": "@dayrail/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tauri 2 desktop shell wrapping the @dayrail/web frontend. ERD §15.",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:debug": "tauri build --debug",
+    "icon": "tauri icon",
+    "typecheck": "cargo check --manifest-path src-tauri/Cargo.toml"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}
