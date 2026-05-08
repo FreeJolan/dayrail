@@ -247,6 +247,22 @@ export function SyncSection() {
       <SyncStatusCard connected={status.connected} />
       {!status.connected && <ConnectDrivePanel />}
       {status.connected && <ConnectedSyncControls />}
+
+      {/* Local snapshot import/export is fundamentally a local
+          operation — Y.Doc encoded to a `.dryj` byte buffer, no Drive
+          API touched. It used to live inside ConnectedSyncControls
+          (only visible when Drive is connected), which inverted the
+          dependency: if your Drive is broken and you need to grab a
+          local snapshot to recover, you'd be locked out. v0.9.0→
+          v0.9.1 incident reinforced this: surface backup operations
+          unconditionally, alongside the Drive-specific controls. */}
+      <div className="hairline-t mt-6 flex flex-col pt-4">
+        <span className="pb-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          本地数据
+        </span>
+        <DownloadSnapshotRow />
+        <ImportSnapshotRow />
+      </div>
     </SettingsSectionShell>
   );
 }
@@ -562,8 +578,6 @@ function ConnectedSyncControls() {
       <DeviceLabelRow />
       <BootSyncChoiceRow />
       <SyncNowRow />
-      <DownloadSnapshotRow />
-      <ImportSnapshotRow />
       <DisconnectRow />
       <BackupHistoryRow />
     </div>
@@ -1076,7 +1090,7 @@ function ImportSnapshotRow() {
         }
         const { readFile } = await import('@tauri-apps/plugin-fs');
         const bytes = await readFile(String(path));
-        await importLocalDataFromBytes(bytes);
+        await importLocalDataFromBytes(bytes, { sourceLabel: filename });
       } catch (e2) {
         setErr((e2 as Error).message);
         setBusy(false);

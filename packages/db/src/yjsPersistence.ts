@@ -93,14 +93,28 @@ export async function saveYDocBytes(bytes: Uint8Array): Promise<void> {
     await writable.close();
 
     // 2. Rename .tmp → final. Prefer FileSystemFileHandle.move
-    //    (Chrome 110+, Safari 17+). Fall back to read-and-rewrite
-    //    where unavailable.
+    //    (Chrome 110+, Safari 17+). Chrome accepts the 1-arg form
+    //    `move(newName)`; WKWebView / Safari 17 throws "Not enough
+    //    arguments" on that and requires the 2-arg
+    //    `move(parentDirHandle, newName)` form. Try 2-arg first; fall
+    //    back to 1-arg; final fallback is read-and-rewrite.
     // @ts-expect-error — `move` is in the Storage spec but not in
     //   lib.dom yet on every TS configuration.
     if (typeof tmp.move === 'function') {
-      // @ts-expect-error — see above; runtime check guards this branch.
-      await tmp.move(FILE_NAME);
-      return;
+      try {
+        // @ts-expect-error — see above.
+        await tmp.move(root, FILE_NAME);
+        return;
+      } catch {
+        try {
+          // @ts-expect-error — see above.
+          await tmp.move(FILE_NAME);
+          return;
+        } catch {
+          // Both move forms rejected (older browser / WKWebView with
+          // partial impl). Fall through to read+write+delete below.
+        }
+      }
     }
     // Fallback: read .tmp, write to final, delete .tmp.
     const file = await tmp.getFile();

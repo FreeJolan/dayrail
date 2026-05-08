@@ -20,13 +20,32 @@ import {
 } from './sync/identity';
 
 const PENDING_IMPORT_KEY = 'dayrail.pending-import';
+// One-shot toast sentinel: importLocalDataFromBytes sets this just
+// before triggering the reload; an effect in App.tsx reads + clears
+// + shows a transient banner so the user sees confirmation that the
+// snapshot landed (otherwise import is "click → silent reload → data
+// is just there", which reads as "did anything happen?").
+const IMPORT_SUCCESS_FLAG = 'dayrail.import.justSucceeded';
+
+export function popImportSuccessFlag(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const v = window.sessionStorage.getItem(IMPORT_SUCCESS_FLAG);
+    if (v) window.sessionStorage.removeItem(IMPORT_SUCCESS_FLAG);
+    return v;
+  } catch {
+    return null;
+  }
+}
 
 /** Read a user-picked File, validate the .dryj container, stash the
  *  raw bytes for boot to pick up, then reset OPFS and reload. The
  *  function never returns — the reload takes over. */
 export async function importLocalData(file: File): Promise<void> {
   const buf = await file.arrayBuffer();
-  await importLocalDataFromBytes(new Uint8Array(buf));
+  await importLocalDataFromBytes(new Uint8Array(buf), {
+    sourceLabel: file.name,
+  });
 }
 
 /** Bytes-direct variant for callers that already have the raw `.dryj`
@@ -34,7 +53,10 @@ export async function importLocalData(file: File): Promise<void> {
  *  `readFile` returns `Uint8Array` directly, no `File` wrapper). The
  *  WKWebView HTML5 file input's `files[0]` is unreliable on Tauri,
  *  which is why the desktop import flow takes this path. */
-export async function importLocalDataFromBytes(bytes: Uint8Array): Promise<void> {
+export async function importLocalDataFromBytes(
+  bytes: Uint8Array,
+  opts: { sourceLabel?: string } = {},
+): Promise<void> {
   // Validate the container header before reload so the user sees an
   // immediate error rather than a silent boot into empty state.
   try {
@@ -61,6 +83,18 @@ export async function importLocalDataFromBytes(bytes: Uint8Array): Promise<void>
   // resetLocalData's OPFS wipe, so the bump persists across the
   // reload that this function triggers.
   bumpDirtyCount();
+  // Stash a flag for the post-reload App layer to surface a "已成功
+  // 导入" toast. Without this, the user sees: click → confirm →
+  // silent reload → data is just there, with no signal that the
+  // import succeeded vs the page refreshed for other reasons.
+  try {
+    sessionStorage.setItem(
+      IMPORT_SUCCESS_FLAG,
+      opts.sourceLabel ?? 'snapshot.dryj',
+    );
+  } catch {
+    /* sessionStorage unavailable — degrades to silent success */
+  }
   await resetLocalData(); // wipes OPFS + reload; boot picks up sessionStorage
 }
 
