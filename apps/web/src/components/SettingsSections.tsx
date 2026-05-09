@@ -1052,6 +1052,12 @@ function DownloadSnapshotRow() {
 // boot path picks up the new state cleanly. The previous local state
 // is gone after import — use "Download snapshot" first if you want a
 // fallback.
+// Single source of truth for the import-confirm copy. Tauri and PWA
+// paths both land here so a phrasing change (e.g. wording softening,
+// translation pass) only needs editing once.
+const importConfirmMessage = (filename: string): string =>
+  `用 "${filename}" 替换本地数据？\n\n会先把当前本地清空再载入快照，然后页面会自动刷新。建议先点「下载本地快照」留底。`;
+
 function ImportSnapshotRow() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1080,11 +1086,7 @@ function ImportSnapshotRow() {
           return;
         }
         const filename = String(path).split('/').pop() ?? 'snapshot.dryj';
-        if (
-          !window.confirm(
-            `用 "${filename}" 替换本地数据？\n\n会先把当前本地清空再载入快照，然后页面会自动刷新。建议先点「下载本地快照」留底。`,
-          )
-        ) {
+        if (!window.confirm(importConfirmMessage(filename))) {
           setBusy(false);
           return;
         }
@@ -1103,11 +1105,7 @@ function ImportSnapshotRow() {
     const file = e.target.files?.[0];
     e.target.value = ''; // allow re-selecting the same file later
     if (!file) return;
-    if (
-      !window.confirm(
-        `用 "${file.name}" 替换本地数据？\n\n会先把当前本地清空再载入快照，然后页面会自动刷新。建议先点「下载本地快照」留底。`,
-      )
-    ) {
+    if (!window.confirm(importConfirmMessage(file.name))) {
       return;
     }
     setBusy(true);
@@ -1809,7 +1807,7 @@ function DangerZone() {
 
   const handleReset = async () => {
     const msg =
-      '重置本地数据会清空 OPFS 里的所有事件 / 快照 / 缓存，页面刷新后按初始种子重新跑。\n\n这个操作不可撤销 —— 继续？';
+      '重置本地数据会清空 OPFS 里的所有事件 / 快照 / 缓存，页面刷新后启动到空状态（连了 Drive 的话会优先从远端拉取已有快照）。\n\n这个操作不可撤销 —— 继续？';
     if (!window.confirm(msg)) return;
     setResetting(true);
     try {
@@ -1831,8 +1829,8 @@ function DangerZone() {
           </span>
           <h3 className="text-sm text-ink-primary">重置本地数据</h3>
           <p className="text-xs text-ink-tertiary">
-            清空 OPFS 里的事件日志、快照、缓存；刷新后 `boot()` 会按
-            sample templates / rails 重新 seed。schema 升级或排查坏状态
+            清空 OPFS 里的事件日志、快照、缓存；刷新后启动到空状态。连了
+            Drive 会优先从远端拉取已有快照恢复。schema 升级或排查坏状态
             时用。
           </p>
         </div>
