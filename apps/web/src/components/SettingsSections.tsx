@@ -1990,6 +1990,11 @@ export function AboutSection() {
             value={`${__APP_BUILD_DATE__} · ${__APP_GIT_SHA__}`}
             mono
           />
+          <KeyValue
+            label="环境"
+            value={import.meta.env.DEV ? 'DEV (本地开发)' : 'PROD'}
+            mono
+          />
           <KeyValue label="许可证" value="MIT" />
           <KeyValue label="维护者" value="FreeJolan" />
           {/* PWA-only · the persistence indicator advertises a real
