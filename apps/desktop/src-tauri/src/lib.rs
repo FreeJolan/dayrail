@@ -4,6 +4,7 @@
 // The frontend invokes the `drive_*` commands instead of going
 // through GIS implicit flow when running in Tauri (ERD §15.3).
 
+mod backup;
 mod drive_auth;
 mod system_info;
 
@@ -37,6 +38,11 @@ pub fn run() {
             drive_auth::drive_disconnect,
             drive_auth::drive_is_connected,
             system_info::get_system_info,
+            backup::backup_save,
+            backup::backup_list,
+            backup::backup_read,
+            backup::backup_delete,
+            backup::backup_export_to,
         ])
         .run(tauri::generate_context!())
         .expect("error while running DayRail desktop");

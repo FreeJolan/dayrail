@@ -21,6 +21,7 @@ import {
 import { resetLocalData } from '@/lib/resetLocalData';
 import { exportLocalData } from '@/lib/exportData';
 import { importLocalData, importLocalDataFromBytes } from '@/lib/importData';
+import type { BackupEntry } from '@/lib/sync/backupController';
 import { useVersionUpdate } from '@/lib/swRegistration';
 import { isTauriRuntime } from '@/lib/versionUpdateContext';
 import { applyTheme, getThemePref, type ThemePref } from '@/lib/theme';
@@ -262,6 +263,7 @@ export function SyncSection() {
         </span>
         <DownloadSnapshotRow />
         <ImportSnapshotRow />
+        {isTauriRuntime() && <AutoBackupListRow />}
       </div>
     </SettingsSectionShell>
   );
@@ -999,13 +1001,25 @@ function DownloadSnapshotRow() {
   const [busy, setBusy] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const onClick = () => {
+  // Tauri path uses native save dialog so the user picks the
+  // destination explicitly (no more silent dump into Downloads).
+  // PWA path keeps the legacy <a download> behaviour because
+  // browsers don't expose a save-picker we can reliably hook into.
+  const onClick = async () => {
     setBusy(true);
     setErr(null);
     setHint(null);
     try {
-      const filename = exportDryjSnapshot(getDeviceId(), getDeviceLabel());
-      setHint(`已下载 ${filename}`);
+      if (isTauriRuntime()) {
+        const { exportLocalSnapshotToUserPath } = await import(
+          '@/lib/sync/backupController'
+        );
+        const ok = await exportLocalSnapshotToUserPath();
+        if (ok) setHint('已导出');
+      } else {
+        const filename = exportDryjSnapshot(getDeviceId(), getDeviceLabel());
+        setHint(`已下载 ${filename}`);
+      }
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -1015,12 +1029,12 @@ function DownloadSnapshotRow() {
   return (
     <Row
       label="下载本地快照"
-      description="把当前本地 Y.Doc 导出成 .dryj 二进制文件留底。可通过下方「从快照导入」原样恢复。"
+      description="把当前本地 Y.Doc 导出成 .dryj 二进制文件留底。桌面端会让你选保存位置；可通过下方「从快照导入」原样恢复。"
       control={
         <div className="flex flex-col items-end gap-1">
           <button
             type="button"
-            onClick={onClick}
+            onClick={() => void onClick()}
             disabled={busy}
             className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary disabled:opacity-50"
           >
@@ -1141,6 +1155,177 @@ function ImportSnapshotRow() {
           </button>
           {err && (
             <span className="font-mono text-2xs text-warn">{err}</span>
+          )}
+        </div>
+      }
+    />
+  );
+}
+
+// Settings → 同步 → 本地数据 → 自动备份列表.
+//
+// Tauri-only. Lists `.dryj` backups under `app_data_dir()/backups/`
+// written automatically before high-risk actions (pre-update,
+// pre-import, pre-force-push). Each row offers Restore (re-imports
+// the backup as if user picked it), Export (native save dialog →
+// copy to user-chosen path), and Delete. Auto-refreshes on
+// expand and after destructive ops.
+//
+// Why this exists: v0.9.0→v0.9.1 incident showed we had no last-
+// line-of-defense backup before destructive ops. The user happened
+// to have done a manual `.dryj` download earlier that day, which
+// was the only thing that saved the data. This component makes
+// that safety net automatic instead of "user remembered to back up".
+function AutoBackupListRow() {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState<BackupEntry[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busyOp, setBusyOp] = useState<string | null>(null);
+
+  const refresh = async () => {
+    setErr(null);
+    try {
+      const { listBackups } = await import('@/lib/sync/backupController');
+      setItems(await listBackups());
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+
+  useEffect(() => {
+    if (open) void refresh();
+  }, [open]);
+
+  const restore = async (entry: BackupEntry) => {
+    if (
+      !window.confirm(
+        `用 "${entry.filename}" 替换本地数据？\n\n会先把当前本地清空再载入这份备份，然后页面会自动刷新。当前本地数据会先被自动备份一份（pre-import），所以这步可以反悔。`,
+      )
+    ) {
+      return;
+    }
+    setBusyOp(`restore-${entry.filename}`);
+    try {
+      const { readBackup } = await import('@/lib/sync/backupController');
+      const { importLocalDataFromBytes } = await import('@/lib/importData');
+      const bytes = await readBackup(entry.filename);
+      await importLocalDataFromBytes(bytes, { sourceLabel: entry.filename });
+      // importLocalDataFromBytes triggers reload — control never
+      // returns here on success.
+    } catch (e) {
+      setErr((e as Error).message);
+      setBusyOp(null);
+    }
+  };
+
+  const exportTo = async (entry: BackupEntry) => {
+    setBusyOp(`export-${entry.filename}`);
+    try {
+      const { exportBackupToUserPath } = await import(
+        '@/lib/sync/backupController'
+      );
+      await exportBackupToUserPath(entry);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusyOp(null);
+    }
+  };
+
+  const remove = async (entry: BackupEntry) => {
+    if (
+      !window.confirm(
+        `删除自动备份 "${entry.filename}"？这个操作不可撤销。`,
+      )
+    ) {
+      return;
+    }
+    setBusyOp(`delete-${entry.filename}`);
+    try {
+      const { deleteBackup } = await import('@/lib/sync/backupController');
+      await deleteBackup(entry.filename);
+      await refresh();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusyOp(null);
+    }
+  };
+
+  return (
+    <Row
+      label="自动备份"
+      description="升级前 / 导入快照前 / 强制推送前会自动留一份本地备份。最多保留 10 份；旧的自动 GC。位于系统应用数据目录，不在 Downloads。"
+      control={
+        <div className="flex flex-col items-end gap-1">
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            {open ? '收起' : '查看 / 管理'}
+          </button>
+          {open && (
+            <div className="mt-2 flex w-[420px] flex-col gap-2 rounded-md bg-surface-1 p-3">
+              {items === null && (
+                <span className="font-mono text-2xs text-ink-tertiary">
+                  读取中…
+                </span>
+              )}
+              {items !== null && items.length === 0 && (
+                <span className="text-xs text-ink-tertiary">
+                  暂无自动备份。下次升级 / 导入 / 强制推送时会自动生成。
+                </span>
+              )}
+              {items !== null && items.length > 0 && (
+                <ul className="flex flex-col gap-1.5">
+                  {items.map((it) => (
+                    <li
+                      key={it.filename}
+                      className="flex flex-col gap-1 rounded-sm bg-surface-0 px-3 py-2"
+                    >
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="font-mono text-2xs text-ink-secondary">
+                          {fmtAbsoluteIso(it.created_at)}
+                        </span>
+                        <span className="font-mono text-2xs text-ink-tertiary">
+                          {it.reason} · {fmtBytes(it.size_bytes)}
+                        </span>
+                      </div>
+                      <div className="flex justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void restore(it)}
+                          disabled={busyOp !== null}
+                          className="rounded-sm bg-surface-2 px-2 py-0.5 text-2xs text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary disabled:opacity-50"
+                        >
+                          {busyOp === `restore-${it.filename}` ? '…' : '恢复'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void exportTo(it)}
+                          disabled={busyOp !== null}
+                          className="rounded-sm bg-surface-2 px-2 py-0.5 text-2xs text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary disabled:opacity-50"
+                        >
+                          {busyOp === `export-${it.filename}` ? '…' : '导出'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void remove(it)}
+                          disabled={busyOp !== null}
+                          className="rounded-sm bg-surface-2 px-2 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-3 hover:text-warn disabled:opacity-50"
+                        >
+                          {busyOp === `delete-${it.filename}` ? '…' : '删除'}
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {err && (
+                <span className="font-mono text-2xs text-warn">{err}</span>
+              )}
+            </div>
           )}
         </div>
       }
