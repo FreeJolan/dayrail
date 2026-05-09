@@ -109,11 +109,29 @@ function useDesktopVersionUpdateImpl(): VersionUpdateState {
   const update = useCallback(async () => {
     if (!pendingUpdate) return;
     try {
-      // Pre-update auto-backup. Best-effort; if the backup fails we
-      // still proceed with the update (the user explicitly asked for
-      // it). Provides a recovery point in case the new version's
-      // first boot mishandles state — they can restore from
-      // Settings → 同步 → 自动备份.
+      // (1) Pre-update Drive flush — best-effort sync push so the
+      // last 60s of local writes (still inside the schedulePush
+      // debounce window) make it to Drive too. Combined with the
+      // local auto-backup below, this gives "both local AND remote
+      // have the latest state" before .app replacement, instead of
+      // just "local has it (in a backup file)".
+      try {
+        const { runManualSync } = await import('./sync/syncController');
+        const { isDriveConnected } = await import('./sync/driveAuth');
+        if (isDriveConnected()) {
+          await runManualSync();
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[updater] pre-update sync flush failed:', err);
+        // Best-effort: the local backup below is the primary safety
+        // net. Drive falling slightly behind is recoverable; missing
+        // local backup is not.
+      }
+
+      // (2) Pre-update local auto-backup. Provides a recovery point
+      // in case the new version's first boot mishandles state — user
+      // can restore from Settings → 同步 → 本地数据 → 自动备份.
       const { autoBackup } = await import('./sync/backupController');
       await autoBackup('pre-update');
 
