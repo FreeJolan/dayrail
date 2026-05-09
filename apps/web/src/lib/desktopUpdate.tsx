@@ -109,6 +109,14 @@ function useDesktopVersionUpdateImpl(): VersionUpdateState {
   const update = useCallback(async () => {
     if (!pendingUpdate) return;
     try {
+      // Pre-update auto-backup. Best-effort; if the backup fails we
+      // still proceed with the update (the user explicitly asked for
+      // it). Provides a recovery point in case the new version's
+      // first boot mishandles state — they can restore from
+      // Settings → 同步 → 自动备份.
+      const { autoBackup } = await import('./sync/backupController');
+      await autoBackup('pre-update');
+
       // Tauri's downloadAndInstall() resolves *after* install
       // completes; we then trigger a relaunch to land on the new
       // version. The user perceives this as: click → brief "applying

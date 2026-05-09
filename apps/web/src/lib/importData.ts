@@ -95,6 +95,16 @@ export async function importLocalDataFromBytes(
   } catch {
     /* sessionStorage unavailable — degrades to silent success */
   }
+  // Pre-import auto-backup. The user's CURRENT local state is about
+  // to be wiped; if the imported snapshot turns out to be wrong /
+  // partial / corrupted, this is their last "I just had X" recovery
+  // point. Best-effort, doesn't block the import.
+  try {
+    const { autoBackup } = await import('./sync/backupController');
+    await autoBackup('pre-import');
+  } catch {
+    /* swallow */
+  }
   await resetLocalData(); // wipes OPFS + reload; boot picks up sessionStorage
 }
 

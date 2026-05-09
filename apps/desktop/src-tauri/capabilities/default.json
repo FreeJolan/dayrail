@@ -9,8 +9,18 @@
     "updater:default",
     "process:allow-restart",
     "dialog:allow-open",
+    "dialog:allow-save",
     {
       "identifier": "fs:allow-read-file",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOWNLOAD/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
       "allow": [
         { "path": "$HOME/**" },
         { "path": "$DESKTOP/**" },

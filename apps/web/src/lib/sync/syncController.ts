@@ -379,6 +379,19 @@ export async function runForcePush(): Promise<void> {
     }
   }
   syncStore.setPhase({ kind: 'syncing', reason: 'push' });
+  // Pre-force-push auto-backup. The user is about to overwrite the
+  // Drive canonical with whatever this device has — best-effort
+  // capture the current local state to a backup file first so they
+  // can roll back if the force-push outcome is surprising. Outside
+  // the inFlightPush IIFE so a backup failure doesn't taint the
+  // promise, but awaited so the timing is "backup THEN upload" not
+  // a race.
+  try {
+    const { autoBackup } = await import('./backupController');
+    await autoBackup('pre-force-push');
+  } catch {
+    /* swallow */
+  }
   inFlightPush = (async () => {
     try {
       // runForcePush intentionally bypasses the runPush sanity gate —
