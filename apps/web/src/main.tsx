@@ -176,7 +176,7 @@ function BootError({ error }: { error: Error }) {
           {resetting ? '正在清空…' : '清空本地数据并重新启动'}
         </button>
         <p className="text-2xs text-ink-tertiary">
-          会清掉 OPFS 里 dayrail-state.dryj，刷新后按初始种子重跑（连了
+          会清掉 OPFS 里 dayrail-state.dryj，刷新后启动到空状态（连了
           Drive 的话会优先从远端拉取已有快照）。
         </p>
         {resetError && (

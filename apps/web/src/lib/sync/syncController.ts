@@ -111,16 +111,16 @@ function buildSanityWarning(
   }
   if (issues.length === 0) return null;
   return [
-    '⚠️ 本地状态比上次推送时少了很多内容：',
+    '⚠️ 本地比上次推送少了很多内容：',
     '',
     ...issues.map((s) => `  · ${s}`),
     '',
     `（上次推送：${new Date(prevAt).toLocaleString('zh-CN')}）`,
     '',
-    '继续推送会用当前本地状态覆盖云端。如果是 Tauri 升级后等异常情况，',
-    '建议先点取消，然后 Settings → 同步 →「从快照导入」恢复一份 .dryj 备份再推。',
+    '继续推送会用当前本地覆盖云端。如果是升级 / 重装 / 异常重启后看到这个，',
+    '建议取消，先在 Settings → 同步 →「从快照导入」恢复一份 .dryj 备份再推。',
     '',
-    '确定要推送吗？',
+    '继续推送？取消会保留本地，不动云端。',
   ].join('\n');
 }
 
