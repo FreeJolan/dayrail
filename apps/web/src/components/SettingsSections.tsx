@@ -1430,17 +1430,35 @@ function BackupHistoryItem({
     setErr(null);
     try {
       const bytes = await downloadDryjById(entry.fileId);
-      const blob = new Blob([bytes as BlobPart], {
-        type: 'application/octet-stream',
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = entry.filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      if (isTauriRuntime()) {
+        // Match the v0.9.7 desktop convention: native save dialog
+        // instead of silently dumping into Downloads. Consistent with
+        // 「下载本地快照」 + 「自动备份 → 导出」.
+        const { save } = await import('@tauri-apps/plugin-dialog');
+        const dest = await save({
+          title: '导出 Drive 历史快照',
+          defaultPath: entry.filename,
+          filters: [{ name: 'DayRail snapshot', extensions: ['dryj'] }],
+        });
+        if (dest) {
+          const { writeFile } = await import('@tauri-apps/plugin-fs');
+          await writeFile(String(dest), bytes);
+        }
+      } else {
+        // PWA path keeps the legacy `<a download>` flow — browsers
+        // don't expose a save-picker we can hook into reliably.
+        const blob = new Blob([bytes as BlobPart], {
+          type: 'application/octet-stream',
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = entry.filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
     } catch (e) {
       setErr((e as Error).message);
     } finally {
