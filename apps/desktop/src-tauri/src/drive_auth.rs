@@ -13,6 +13,7 @@
 // refresh token lives in the OS keychain forever (until revoked); the
 // frontend just asks for fresh access tokens whenever it needs one.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, Utc};
@@ -24,7 +25,7 @@ use oauth2::{
     PkceCodeChallenge, RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
 };
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -35,6 +36,11 @@ use tokio::net::TcpListener;
 /// don't collide with anything else the user has stored.
 const KEYCHAIN_SERVICE: &str = "app.dayrail.desktop";
 const KEYCHAIN_USERNAME: &str = "google-drive-refresh-token";
+
+/// Filename for the file-fallback storage location under
+/// `app.path().app_data_dir()` (resolved per OS). Used when keychain
+/// is inaccessible — see refresh_token_io.rs-style helpers below.
+const TOKEN_FILE_NAME: &str = "drive-refresh-token";
 
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -56,6 +62,117 @@ pub struct AccessTokenInfo {
     pub access_token: String,
     /// Epoch milliseconds. Frontend compares against `Date.now()`.
     pub expires_at: i64,
+}
+
+// ============ Refresh token storage (hybrid: keychain + file) ============
+//
+// Why both: macOS unsigned apps rotate their ad-hoc code-signing
+// hash on every binary replacement (every auto-update). The keychain
+// access ACL is keyed off that hash, so the keychain entry written
+// by the previous build becomes inaccessible to the new build → user
+// sees "Drive disconnected" after each update. Apple Developer cert
+// fixes this (stable Developer ID hash); until then we need a backup
+// store that doesn't depend on signing identity.
+//
+// Strategy:
+//   - Write: try keychain (best-effort), ALWAYS write file. File is
+//     authoritative; keychain is cache.
+//   - Read: keychain first (preferred — encrypted at rest with the
+//     login keychain master key); fall back to file if keychain
+//     unavailable / inaccessible.
+//   - Delete: clear both.
+//
+// Cross-platform note (per ERD §15.x):
+//   - Windows (Credential Manager) — entries indexed by (target, user),
+//     not by code-signing → reliable across updates. File fallback
+//     is dark-redundant.
+//   - Linux (Secret Service via libsecret) — entries indexed by
+//     (label, attrs) → reliable across updates. File fallback dark.
+//   - macOS signed (future) — keychain is reliable. File fallback dark.
+//   - macOS unsigned (current) — keychain unreliable. File path
+//     wins.
+//
+// Threat model justification for plain-text file: the file lives at
+// `~/Library/Application Support/app.dayrail.desktop/` (and
+// equivalents on Win / Linux), which is per-user OS-protected. An
+// attacker with read access to that directory ALSO has access to the
+// user's local DayRail data, SSH keys, browser cookies, etc. The
+// refresh token's blast radius is "read/write Drive `appdata` folder
+// for DayRail" — strictly smaller than what a fs-access attacker
+// already gets. So plain-text is acceptable for our threat model.
+
+fn token_file_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {}", e))?;
+    Ok(dir.join(TOKEN_FILE_NAME))
+}
+
+/// Try keychain first, then file. Returns the refresh token string or
+/// a "not connected" error string verbatim from whichever read failed.
+fn read_refresh_token(app: &AppHandle) -> Result<String, String> {
+    if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USERNAME) {
+        if let Ok(token) = entry.get_password() {
+            return Ok(token);
+        }
+    }
+    let path = token_file_path(app)?;
+    std::fs::read_to_string(&path)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("not connected: {}", e))
+}
+
+/// Write to BOTH keychain (best-effort) and file (must succeed).
+fn write_refresh_token(app: &AppHandle, token: &str) -> Result<(), String> {
+    // File is authoritative: if this fails, the operation fails.
+    let path = token_file_path(app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create app_data_dir: {}", e))?;
+    }
+    std::fs::write(&path, token)
+        .map_err(|e| format!("write token file: {}", e))?;
+    // Best-effort tighten: 0600 on Unix so other users on the box
+    // can't peek. No-op on Windows.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    // Keychain is dark redundancy: if it succeeds (signed mac / win /
+    // linux), great; if not (unsigned mac post-update), file alone
+    // carries us through.
+    if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USERNAME) {
+        let _ = entry.set_password(token);
+    }
+    Ok(())
+}
+
+/// Forget both copies. Idempotent — succeeds even if neither exists.
+fn forget_refresh_token(app: &AppHandle) {
+    if let Ok(path) = token_file_path(app) {
+        let _ = std::fs::remove_file(&path);
+    }
+    if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USERNAME) {
+        let _ = entry.delete_credential();
+    }
+}
+
+/// Cheap probe: does either store have a token? Used by the
+/// `drive_is_connected` command for UI gating.
+fn has_refresh_token(app: &AppHandle) -> bool {
+    if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USERNAME) {
+        if entry.get_password().is_ok() {
+            return true;
+        }
+    }
+    if let Ok(path) = token_file_path(app) {
+        if path.exists() {
+            return true;
+        }
+    }
+    false
 }
 
 // ============ OAuth client construction ============
@@ -115,7 +232,7 @@ fn http_client() -> Result<reqwest::Client, String> {
 /// Errors propagate verbatim to the frontend as strings; the JS side
 /// surfaces them in the existing connect-flow error UI.
 #[tauri::command]
-pub async fn drive_connect(_app: AppHandle) -> Result<AccessTokenInfo, String> {
+pub async fn drive_connect(app: AppHandle) -> Result<AccessTokenInfo, String> {
     // 1. PKCE
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
@@ -190,12 +307,9 @@ pub async fn drive_connect(_app: AppHandle) -> Result<AccessTokenInfo, String> {
         .secret()
         .to_string();
 
-    // 7. Store refresh token in OS keychain
-    let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USERNAME)
-        .map_err(|e| format!("keychain entry: {}", e))?;
-    entry
-        .set_password(&refresh_token)
-        .map_err(|e| format!("keychain write: {}", e))?;
+    // 7. Persist refresh token. Hybrid: keychain (when usable) + file
+    //    (authoritative for unsigned-mac post-update reliability).
+    write_refresh_token(&app, &refresh_token)?;
 
     Ok(AccessTokenInfo {
         access_token,
@@ -212,17 +326,13 @@ pub async fn drive_connect(_app: AppHandle) -> Result<AccessTokenInfo, String> {
 /// re-authorize") or when Google rejects the refresh (token revoked
 /// — same path).
 #[tauri::command]
-pub async fn drive_get_token() -> Result<AccessTokenInfo, String> {
-    let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USERNAME)
-        .map_err(|e| format!("keychain entry: {}", e))?;
-    let refresh_token = entry
-        .get_password()
-        .map_err(|e| format!("not connected: {}", e))?;
+pub async fn drive_get_token(app: AppHandle) -> Result<AccessTokenInfo, String> {
+    let refresh_token = read_refresh_token(&app)?;
 
     let client = oauth_client(None)?;
     let http = http_client()?;
     let token_result = client
-        .exchange_refresh_token(&RefreshToken::new(refresh_token))
+        .exchange_refresh_token(&RefreshToken::new(refresh_token.clone()))
         .request_async(&http)
         .await
         .map_err(|e| format!("refresh: {}", e))?;
@@ -235,6 +345,17 @@ pub async fn drive_get_token() -> Result<AccessTokenInfo, String> {
         + ChronoDuration::from_std(expires_in).unwrap_or(ChronoDuration::seconds(3600)))
     .timestamp_millis();
 
+    // If Google rotated the refresh token (rare, but happens for
+    // long-lived `appdata`-scoped tokens), persist the new one. The
+    // old refresh token will be invalidated server-side; if we don't
+    // capture the new one, the next refresh fails.
+    if let Some(new_rt) = token_result.refresh_token() {
+        let new_secret = new_rt.secret();
+        if new_secret != &refresh_token {
+            let _ = write_refresh_token(&app, new_secret);
+        }
+    }
+
     Ok(AccessTokenInfo {
         access_token,
         expires_at,
@@ -244,12 +365,8 @@ pub async fn drive_get_token() -> Result<AccessTokenInfo, String> {
 /// Forget the stored refresh token. Idempotent — calling on a
 /// not-connected state succeeds.
 #[tauri::command]
-pub async fn drive_disconnect() -> Result<(), String> {
-    let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USERNAME)
-        .map_err(|e| format!("keychain entry: {}", e))?;
-    // Ignore "no entry" errors — disconnect is a no-op when nothing's
-    // there to delete.
-    let _ = entry.delete_credential();
+pub async fn drive_disconnect(app: AppHandle) -> Result<(), String> {
+    forget_refresh_token(&app);
     Ok(())
 }
 
@@ -257,12 +374,8 @@ pub async fn drive_disconnect() -> Result<(), String> {
 /// Frontend uses this to render "Connect Drive" vs "Disconnect Drive"
 /// without having to round-trip a full refresh.
 #[tauri::command]
-pub async fn drive_is_connected() -> bool {
-    let entry = match Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USERNAME) {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-    entry.get_password().is_ok()
+pub async fn drive_is_connected(app: AppHandle) -> bool {
+    has_refresh_token(&app)
 }
 
 // ============ Loopback callback parsing ============
