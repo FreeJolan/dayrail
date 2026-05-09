@@ -265,7 +265,177 @@ export function SyncSection() {
         <ImportSnapshotRow />
         {isTauriRuntime() && <AutoBackupListRow />}
       </div>
+
+      <div className="hairline-t mt-6 flex flex-col pt-4">
+        <span className="pb-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          可读格式导出
+        </span>
+        <p className="pb-3 text-2xs leading-relaxed text-ink-tertiary">
+          把数据导出成其它软件能直接吃的格式 ——「作者跑路了我也能继续用我的数据」心智的真正闭环。
+          有损导出（DayRail 的模板 / Rail / 节奏概念其它工具不认），但反思 / 任务 /
+          已排期项的核心信息都带得出去。完整无损 round-trip 仍走「下载本地快照」(.dryj)。
+        </p>
+        <ExportReflectionsRow />
+        <ExportTasksRow />
+        <ExportScheduleRow />
+      </div>
     </SettingsSectionShell>
+  );
+}
+
+function ExportReflectionsRow() {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+  const onClick = async () => {
+    setBusy(true);
+    setErr(null);
+    setHint(null);
+    try {
+      const { formatReflectionsAsMarkdown, snapshotState, saveTextToUserPath } =
+        await import('@/lib/exportReadable');
+      const content = formatReflectionsAsMarkdown(snapshotState());
+      const today = new Date().toISOString().slice(0, 10);
+      const ok = await saveTextToUserPath(
+        content,
+        `dayrail-reflections-${today}.md`,
+        'Markdown',
+        'md',
+      );
+      if (ok) setHint('已导出');
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Row
+      label="反思 → Markdown"
+      description="所有 DailyReflection 按日期倒序拼成单个 .md 文件。Obsidian / Logseq / 任意笔记软件都能开。"
+      control={
+        <div className="flex flex-col items-end gap-1">
+          <button
+            type="button"
+            onClick={() => void onClick()}
+            disabled={busy}
+            className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary disabled:opacity-50"
+          >
+            {busy ? '生成中…' : '导出 .md'}
+          </button>
+          {hint && (
+            <span className="font-mono text-2xs text-ink-tertiary">{hint}</span>
+          )}
+          {err && (
+            <span className="font-mono text-2xs text-warn">{err}</span>
+          )}
+        </div>
+      }
+    />
+  );
+}
+
+function ExportTasksRow() {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+  const onClick = async () => {
+    setBusy(true);
+    setErr(null);
+    setHint(null);
+    try {
+      const { formatTasksAsCsv, snapshotState, saveTextToUserPath } =
+        await import('@/lib/exportReadable');
+      const content = formatTasksAsCsv(snapshotState());
+      const today = new Date().toISOString().slice(0, 10);
+      const ok = await saveTextToUserPath(
+        content,
+        `dayrail-tasks-${today}.csv`,
+        'CSV',
+        'csv',
+      );
+      if (ok) setHint('已导出');
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Row
+      label="任务 → CSV"
+      description="所有任务一行一条 · 列：date / line / title / status / priority / note / done_at 等。Excel / Google Sheets / 数据分析。"
+      control={
+        <div className="flex flex-col items-end gap-1">
+          <button
+            type="button"
+            onClick={() => void onClick()}
+            disabled={busy}
+            className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary disabled:opacity-50"
+          >
+            {busy ? '生成中…' : '导出 .csv'}
+          </button>
+          {hint && (
+            <span className="font-mono text-2xs text-ink-tertiary">{hint}</span>
+          )}
+          {err && (
+            <span className="font-mono text-2xs text-warn">{err}</span>
+          )}
+        </div>
+      }
+    />
+  );
+}
+
+function ExportScheduleRow() {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+  const onClick = async () => {
+    setBusy(true);
+    setErr(null);
+    setHint(null);
+    try {
+      const { formatScheduleAsIcal, snapshotState, saveTextToUserPath } =
+        await import('@/lib/exportReadable');
+      const content = formatScheduleAsIcal(snapshotState());
+      const today = new Date().toISOString().slice(0, 10);
+      const ok = await saveTextToUserPath(
+        content,
+        `dayrail-schedule-${today}.ics`,
+        'iCalendar',
+        'ics',
+      );
+      if (ok) setHint('已导出');
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Row
+      label="日程 → iCal"
+      description="已绑 Rail 的任务（Mode A）每条变成一个 VEVENT，按 Rail 时间窗口生成 DTSTART / DTEND。macOS Calendar / Google Calendar 直接 import。Mode B 自由时间 + 未排期任务不在内。"
+      control={
+        <div className="flex flex-col items-end gap-1">
+          <button
+            type="button"
+            onClick={() => void onClick()}
+            disabled={busy}
+            className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary disabled:opacity-50"
+          >
+            {busy ? '生成中…' : '导出 .ics'}
+          </button>
+          {hint && (
+            <span className="font-mono text-2xs text-ink-tertiary">{hint}</span>
+          )}
+          {err && (
+            <span className="font-mono text-2xs text-warn">{err}</span>
+          )}
+        </div>
+      }
+    />
   );
 }
 
