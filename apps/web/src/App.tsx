@@ -9,6 +9,7 @@ import { Pending } from './pages/Pending';
 import { Settings } from './pages/Settings';
 import { Calendar } from './pages/Calendar';
 import { BacklogDrawer } from './components/BacklogDrawer';
+import { DevModeIndicator } from './components/DevModeIndicator';
 import { ImportSuccessToast } from './components/ImportSuccessToast';
 import { ReasonToast } from './components/ReasonToast';
 import { SideNav } from './components/SideNav';
@@ -79,6 +80,7 @@ function Shell() {
   const shiftPrompt = useShiftPrompt();
   return (
     <div className="flex min-h-screen w-full bg-surface-0">
+      <DevModeIndicator />
       <UpdateBanner />
       <SideNav />
       <main className="min-w-0 flex-1">

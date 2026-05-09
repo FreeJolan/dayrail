@@ -47,6 +47,13 @@ export async function boot(): Promise<void> {
   //      the user can override via Settings → 同步 → 本设备名.
   void populateAutoDeviceLabel();
 
+  // 0.4. Dev-build labelling. import.meta.env.DEV is true under both
+  //      `pnpm dev` (PWA) and `pnpm desktop:dev` (Tauri); paint the
+  //      window/tab title so I can't accidentally treat a dev-server
+  //      window as my daily DayRail and write real data into the
+  //      isolated dev container.
+  void labelDevBuild();
+
   // 0.5. Pending import from the previous page (user clicked "Import
   //      from snapshot" in Settings, or finished a sync pull that
   //      wanted a clean reload). The pending bytes are the `.dryj`
@@ -104,6 +111,23 @@ async function ensureInbox(): Promise<void> {
     createdAt: Date.now(),
   };
   await store.createLine(inbox);
+}
+
+async function labelDevBuild(): Promise<void> {
+  if (!import.meta.env.DEV) return;
+  if (typeof document !== 'undefined') {
+    document.title = `DEV · ${document.title || 'DayRail'}`;
+  }
+  if (!isTauriRuntime()) return;
+  // Tauri webview window title is independent of document.title;
+  // setting it explicitly so Cmd+Tab / dock hover / title bar all
+  // show the DEV marker.
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    await getCurrentWindow().setTitle('DayRail · DEV');
+  } catch {
+    /* best-effort */
+  }
 }
 
 async function populateAutoDeviceLabel(): Promise<void> {
