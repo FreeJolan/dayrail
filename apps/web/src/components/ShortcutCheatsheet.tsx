@@ -1,4 +1,4 @@
-import { SHORTCUTS } from '@/lib/keyboardShortcuts';
+import { PAGE_SHORTCUTS, SHORTCUTS } from '@/lib/keyboardShortcuts';
 
 // Lightweight cheatsheet overlay triggered by `?`. Intentionally not a
 // Radix Dialog — we don't need focus-trapping or a portal; a keydown on
@@ -43,6 +43,26 @@ export function ShortcutCheatsheet({ open, onClose }: Props) {
             <KeyCombo value="?" />
           </li>
         </ul>
+
+        {PAGE_SHORTCUTS.length > 0 && (
+          <>
+            <div className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              在 Pending 页面
+            </div>
+            <ul className="flex flex-col gap-1.5">
+              {PAGE_SHORTCUTS.map((s) => (
+                <li
+                  key={s.keys}
+                  className="flex items-center justify-between text-sm text-ink-secondary"
+                >
+                  <span>{s.label}</span>
+                  <KeyCombo value={s.keys} />
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
         <footer className="text-2xs text-ink-tertiary">
           按 <kbd className="font-mono">g</kbd> 再按目标键（1.2s 内）。在输入框里不生效。
         </footer>

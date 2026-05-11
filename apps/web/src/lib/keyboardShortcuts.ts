@@ -24,6 +24,25 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: 'g b', label: 'Toggle Backlog', action: 'toggle-backlog' },
 ];
 
+/** Page-local shortcuts · purely for cheatsheet display. The actual
+ *  handlers live on the page component (e.g. Pending.tsx subscribes
+ *  to keydown directly so it can access local cursor state). Page
+ *  shortcuts use bare keys (no `g` leader), they don't collide with
+ *  the global bigraphs above because the leader is required there. */
+export interface PageShortcut {
+  page: string; // human-readable page name
+  keys: string; // single key or space-separated combo
+  label: string;
+}
+
+export const PAGE_SHORTCUTS: PageShortcut[] = [
+  { page: 'Pending', keys: 'j', label: '下一条' },
+  { page: 'Pending', keys: 'k', label: '上一条' },
+  { page: 'Pending', keys: 'd', label: '完成当前条' },
+  { page: 'Pending', keys: 'x', label: '归档当前条' },
+  { page: 'Pending', keys: '.', label: '打开详情抽屉' },
+];
+
 const LEADER_TIMEOUT_MS = 1200;
 
 function isTypingTarget(target: EventTarget | null): boolean {
