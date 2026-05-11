@@ -9,9 +9,10 @@
 // surface; the user just sees field-level merges happen.
 //
 // Push path:
-//   1. caller (subscription / manual button / pagehide) calls
-//      requestPush().
-//   2. controller debounces 60s; first event after a quiet window
+//   1. caller (subscription / manual button / pagehide / Tauri
+//      window blur) calls requestPush().
+//   2. controller debounces PUSH_DEBOUNCE_MS (8s · ERD §7.8 P4 ·
+//      down from v0.7's 60s); first event after a quiet window
 //      goes through immediately, follow-ups within the window are
 //      collapsed.
 //   3. encodes Y.Doc → .dryj → uploads as application/octet-stream.
@@ -61,8 +62,13 @@ import {
   loadLastPulledDocBytes,
   saveLastPulledDocBytes,
 } from './lastPulledDoc';
+import { isTauriRuntime } from '../versionUpdateContext';
 
-const PUSH_DEBOUNCE_MS = 60 * 1000;
+// 8s · ERD §7.8 P4 trigger tightening (was 60s in v0.7). Short
+// enough to feel responsive cross-device, long enough to coalesce
+// typing bursts. Desktop OAuth makes Drive API calls cheap; free-
+// tier quota is well within reach at this cadence.
+const PUSH_DEBOUNCE_MS = 8 * 1000;
 
 /** Decode dryj-wrapped bytes into a fresh Y.Doc (no aliasing with
  *  the live local Y.Doc). Used by smart-diff classify to compare
@@ -148,6 +154,7 @@ const RETRY_BACKOFF_MS = 5 * 60 * 1000;
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let unsubStore: (() => void) | null = null;
+let tauriFocusUnlisten: (() => void) | null = null;
 let inFlightPush: Promise<void> | null = null;
 let inFlightPull: Promise<void> | null = null;
 
@@ -235,6 +242,10 @@ export function startSyncBackgroundLoop(): void {
     window.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('pagehide', onPageHide);
     window.addEventListener('beforeunload', onBeforeUnload);
+    // ERD §7.8 P4 · Tauri window blur as a natural push trigger.
+    // "User switched to another app = natural commit point" — and
+    // the desktop runtime gives us a clean signal the PWA doesn't.
+    void registerTauriBlurListener();
   }
 
   if (isDriveConnected() && !isSyncProbeSuppressed() && getDirtyCount() > 0) {
@@ -289,6 +300,36 @@ function onBeforeUnload(): void {
   });
 }
 
+// Tauri-only: register a window focus listener so the desktop app
+// fires a push when the user switches away (the equivalent of
+// pagehide for the desktop runtime). Registration is async because
+// Tauri's `onFocusChanged` returns an unlisten Promise. PWA users
+// already have `visibilitychange` as their analog; Tauri windows
+// don't fire `visibilitychange` on focus-out (the WKWebView stays
+// "visible") so we need this separate hook.
+async function registerTauriBlurListener(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    const unlisten = await getCurrentWindow().onFocusChanged((event) => {
+      const focused = Boolean(event.payload);
+      if (focused) return;
+      if (
+        getDirtyCount() > 0 &&
+        isDriveConnected() &&
+        !isSyncProbeSuppressed()
+      ) {
+        void runPush({ trigger: 'tauri-blur' }).catch((err) => {
+          console.warn('[sync] tauri-blur push failed:', err);
+        });
+      }
+    });
+    tauriFocusUnlisten = unlisten;
+  } catch (err) {
+    console.warn('[sync] failed to register tauri focus listener:', err);
+  }
+}
+
 interface RunPushOpts {
   trigger:
     | 'manual'
@@ -297,7 +338,8 @@ interface RunPushOpts {
     | 'pagehide'
     | 'beforeunload'
     | 'recovery'
-    | 'retry';
+    | 'retry'
+    | 'tauri-blur';
   keepalive?: boolean;
 }
 
