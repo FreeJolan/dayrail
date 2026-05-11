@@ -1272,6 +1272,8 @@ DayRail **不运营账号后端**。没有 DayRail 登录、没有托管的用�
 
 ### 7.4 冲突合并
 
+> **v1.0 推翻**：本节描述的"Yjs 作 cross-device merge 引擎 + HLC 字段级 LWW"在 v1.0 重审中被 §7.8 取代。Yjs 保留作本地存储 + undo 引擎；跨设备合并改为 snapshot 粒度 + 应用层 smart diff（同向 fast-forward / 正交 union / 真冲突弹卡）。本节作为历史记录保留，**不再代表当前设计**。
+
 - 采用 **Yjs** 在设备之间无中心合并 Shift / Template / Line 等操作。选 Yjs 的理由：生态最成熟、文档齐、与 React 状态整合方案多。
 - Yjs 包体 \~60 KB gzip，作为**按需加载模块**（仅开启同步的用户下载），不影响默认 PWA 冷启动体积。
 - CRDT 的代价是运行时事件稍重，但换来可预测的多设备行为：偏离不会因合并冲突"被丢"，与"Shift 永远是一等操作"的承诺一致。
@@ -1467,6 +1469,8 @@ React 主路由（`App.tsx`）在闸门 resolve 之前**不挂载**。闸门期�
 
 ### 7.7 v0.7 实施说明 — Yjs CRDT · 字段级合并
 
+> **v1.0 部分推翻**：本节描述的 sync 路径（用 `Y.applyUpdate` 在两端做 cross-device CRDT merge · HLC 嵌事件 · 字段级沉默 LWW 收敛）在 v1.0 重审中被 §7.8 取代。**保留**部分：Yjs 作本地存储格式 + UndoManager + Y.encodeStateAsUpdate 作 sync 传输格式（snapshot 字节 · 不再做 cross-device merge）。**推翻**部分：`Y.applyUpdate(localDoc, remoteUpdate)` 这条合并路径 · HLC 时钟 · 沉默 LWW 收敛。本节作为 v0.7 实装的历史快照保留。
+
 > 状态：2026-04-30 设计已锁定，v0.7 ship。承接 §7.6 已落地的 Drive 通道、auth 生命周期、推送/拉取触发器骨架、Settings 同步页布局。**§7.4 / §7.6 footer 中关于 Yjs CRDT 的"停车"在 v0.7 解冻**；其它停车项（§7.5 加密事件日志 / §7.5 passphrase + 恢复码 + 双写 E2E 迁移 / §7.2.1 三档同步开关 / §7.3 多后端）继续停车。v0.7 的边界是"修 v0.6 暴露的两个 UX 痛点"，不扩大其它维度。
 
 **v0.7 触发因素**
@@ -1628,6 +1632,107 @@ v0.6 的「立即同步」按钮 = `runManualPush`（只推），与"立即同�
 - **`saveYDocBytes` 串行化** —— round 4 加的 `inFlightSave`。round 5 修了 round-4 的 cleanup bug:`task.finally(...)` 返回新 promise,与 `task` 比对永远 false,清理永不执行 → 内存里的 prev 链长度无界。改成 `wrapped` 引用比对。
 - **dedupRevisions caveat 诚实** —— round 2 就标了 same-id revision 的内容**未必**等价(两端并发 update 同一个 entity 不同字段),只是合并语义在 live state 上是对的;revision-history fidelity 在多用户场景下需要重做 id schema(加 deviceId)。
 - **测试覆盖率仍是 0** —— action 层 + 同步控制器 + samples-only flag 生命周期。单用户 beta 阶段接受,作者手动验证。round 5/6/7 都 flag 了这件事;数据破坏类 bug 6 轮间出现 2 次("round 3 修了但没修对" + "round 5 引入新 bug"),整体应当评估等用户基数扩大时尽快补集成测试。
+
+### 7.8 v1.0 实施说明 — sync 重审 · 弃 CRDT merge / 启用 snapshot smart diff
+
+> 状态：2026-05-11 决策已锁定（doc-only PR · 实施分阶段独立 PR）。本节**取代** §7.4 关于 Yjs 作 cross-device merge 引擎的设计 + §7.7 v0.7 实装中 CRDT-merge 的 sync 路径；§7.6（Drive 通道 / auth 生命周期 / Settings 同步页骨架）+ §7.5 加密 / 恢复码部分继续停车，与本节无冲突。
+
+**触发因素**
+
+v0.9.0→v0.9.1 数据丢失事故（PR #24 修浅因）暴露的**深因**：push 路径像 server-authoritative（全量上传本地状态），pull 路径像 peer-to-peer（CRDT 合并），同一条数据流里既当 server 又当 peer。事故的根因不是"`samplesOnly` flag 与 seed 数据 out-of-band 容易丢"（那是浅因，已经修），而是**push 在"本地状态不可信窗口"内仍能上传**，没有数据层 firewall —— BootGate 那种 app-layer convention 不够。
+
+叠加 v0.7 ship 半年后 dogfood 的两点观察：
+
+1. **CRDT 的核心红利在单用户场景没兑现**。Yjs 是 §7.4 选定的"无中心合并"方案，核心红利是并发编辑自动合并。但 DayRail 现阶段（单用户 + 极小 beta）真实并发编辑**几乎零频次**——所谓"冲突"99% 是 push 时序滞后（设备 A 改完 60s debounce 还没 push，设备 B 又改，A 后续 push 撞分叉），不是真同时刻并发。
+
+2. **Yjs 沉默 LWW 在单用户场景是 anti-feature**。两端改同字段不同值，Yjs 按 Lamport 时钟挑一边赢，另一边沉默丢弃 —— 用户无感。**在多用户协作里这是 feature**（自动收敛、零打扰），**在单用户里是 bug**（"我刚在 B 上故意覆盖 A 的旧值，被 Yjs 时钟吞了，我看不到")。dogfood 实际撞到过几次。
+
+**决策 · B-revised**
+
+保留 Yjs 作本地存储格式（移除代价远高于收益），sync 层抛弃 CRDT merge 语义，回到 **snapshot 粒度 + 应用层 smart diff**：
+
+1. **Push firewall · HEAD check**（解事故根因）
+
+   任何 push 前先打一次 Drive metadata API 拿远端 `snapshotId`：
+
+   | 状态 | 行为 |
+   |---|---|
+   | 远端 `snapshotId == lastPulledSnapshotId` | lineage 干净 · 直接 push |
+   | 远端动了 | push 拦截 · 强制走 pull-then-smart-diff |
+   | 远端不可达 | push 拦截 · 留 dirty 等下次 |
+
+   这条门**结构性消除**"本地不可信窗口里也能 push 出去"的可能。`samplesOnly` flag 不再 load-bearing（不依赖 app-layer convention），保留作 dead-man-switch。
+
+2. **Pull-then-smart-diff**（解 push 时序冲突 + 沉默 LWW）
+
+   拉远端 Y.Doc 字节后，**不调** `Y.applyUpdate(localDoc, remoteUpdate)`（这是 v0.7 LWW 的来源）。改为：
+
+   ```
+   remoteDoc = applyUpdate(new Y.Doc(), remoteBytes)
+   localDiff  = diff(localDoc,  lastPulledDoc)   // 自上次同步起本地的修改
+   remoteDiff = diff(remoteDoc, lastPulledDoc)   // 自上次同步起远端的修改
+   ```
+
+   按 entity-id 比对两个 diff 的并集，三档分类：
+
+   | 情况 | 判定 | 行为 |
+   |---|---|---|
+   | **同向** | `localDiff` ⊆ `remoteDiff`（按字段值 deep-equal） | 静默 fast-forward · 用 `remoteDoc` 替换本地 · 无 UI |
+   | **正交** | entity-id 集合无交集 · 或同 entity 但字段不重合 | 自动 union 合并 · push 合并后 snapshot · 无 UI |
+   | **真冲突** | 同 entity 同字段且新值不等 | 弹冲突卡 · **字段级**展示左右差异 · 用户逐字段挑边 · 其它字段自动 union |
+
+   "同向"档解 push 时序冲突（A 慢、B 已经把同样的改动写进远端，A 拉回来发现自己的本地改动已经在远端里了 → 静默 fast-forward，不弹卡）。
+
+   "真冲突"档解沉默 LWW（同字段不同值 → 用户**看见**并选 · 不再被时钟沉默裁决）。
+
+3. **Push / Pull 触发器收紧**（与 sync 模型正交 · 同 milestone 一起做）
+
+   - **Push debounce**：60s → 5-10s（桌面端永久 OAuth + Drive 免费配额充足，无需重 throttle）
+   - **Tauri window blur**：监听桌面应用失焦 · blur 即触发 push（"用户切到别的应用 = 自然 commit 点"）
+   - **Pull 触发器**：现有 visibility-probe + 启动闸门保留 + 加 5 分钟周期 background pull
+   - **BroadcastChannel cross-tab**：一个 tab pull 到新远端 → 通知其它 tab refresh（避免多 tab 间陈旧态）
+
+4. **Drive multi-version history · 强化 + 暴露**
+
+   v0.6 已有 `appdata/history/dayrail-snapshot-{ts}-{device}.json` 滚 14 份。v1.0 在 Settings → 同步 → 备份历史 升级到首屏可见，每行支持：预览（diff vs current）+ 一键回滚（自动先 dump 当前到 Downloads 再覆盖）。冲突卡片"覆盖远端"分支保留 v0.6 的 "强制先 dump 远端再 push" 语义，且 dump 同时写一份到 Drive history（一键反悔走 Settings 回滚）。
+
+**为什么不走方向 A · "保 CRDT + Drive 权威化"**
+
+方向 A（继续用 Yjs CRDT merge 但让 Drive 成真权威：pull-before-push + push Yjs delta + Drive 多版本 update log）能解决事故根因（pull-before-push 的 firewall 效果跟 B-revised 一样），但**不解沉默 LWW**——CRDT 沉默 merge 还在。复杂度上还得维护 delta 协议 + Drive 多版本 update log。**性价比不够**。
+
+**为什么不走方向 C · "真后端 (PostgreSQL + DayRail 账号)"**
+
+方向 C（破例 §7.1，加 PostgreSQL ground truth + 账号系统）能彻底解决 auth refresh、sync 模型、未来多用户协作三个问题，但**当前阶段不具备实施条件**（个人精力 / 托管成本 / 自托管运维 / 与"本地优先"立场相容性）。**显式停车**，重启信号：(1) 用户基数扩大到运维成本可摊销 · (2) 真有多用户并发编辑需求 · (3) §7.1 立场被显式重审。
+
+**Yjs 角色再定位**
+
+| 用途 | v0.7 设计 | v1.0 设计 |
+|---|---|---|
+| 本地存储格式（IndexedDB + Y.Map / Y.Array） | ✅ | ✅ 保留 |
+| 本地 undo / redo（UndoManager） | ✅ | ✅ 保留 |
+| 跨设备 sync merge 引擎（`Y.applyUpdate` on localDoc） | ✅ load-bearing | ❌ **不再使用** |
+| HLC（混合逻辑时钟）嵌在事件里 | ✅ | ❌ 移除（snapshot 粒度无需 HLC · `lastPulledSnapshotId` lineage 替代） |
+
+Y.Doc 序列化字节仍是 sync 传输格式（`Y.encodeStateAsUpdate(doc)`），但接收端把远端 update apply 到一个**独立的 remote Y.Doc**，再对 local vs remote 走 smart diff。结果 snapshot 作为**新本地 Y.Doc 完整替换**原本地（不是 merge）。
+
+**实施分阶段 PR 计划**
+
+| Phase | PR 范围 | 风险 |
+|---|---|---|
+| P1 · Push firewall | 加 HEAD check + pull-before-push gate · syncController 内 | 低（纯加 gate） |
+| P2 · Smart diff 引擎 | 实现 entity-级 snapshot diff + 三档分类器 + 单元测试 | 中（diff 算法是新代码 · 需 well-tested） |
+| P3 · 接入 sync 路径 | 替换 `runPush` 内的 CRDT merge 调用为 smart diff · 同向/正交分支静默 · 真冲突走新版 ConflictPanel | 中（替换关键路径） |
+| P4 · 触发器收紧 | debounce 5-10s · Tauri blur listener · 周期 pull · BroadcastChannel | 低（独立改动） |
+| P5 · History UI | Settings → 同步 → 备份历史 升级 · 预览 / 回滚 / 反悔 | 低（纯 UI） |
+
+每 phase 独立 PR · 每 PR 跑现有 203 测试 + 加新单测 + 手工 dogfood。**P1 单独可 ship**（不依赖其它），作为"先把事故根因架构性堵死"的最小步。
+
+**v1.0 显式停车**（不在本轮范围）
+
+- §7.5 端到端加密 + passphrase + 恢复码（appdata scope 已 user-private · scope 扩大前不重启）
+- §7.2.1 三档同步开关（一律全量同步够用）
+- §7.3 Google Drive 之外的后端（同 v0.6 / v0.7 立场）
+- 多用户协作（方向 C 附带 · 至少要先重审 §7.1 才能开始讨论）
 
 ***
 

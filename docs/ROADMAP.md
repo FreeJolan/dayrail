@@ -118,9 +118,9 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 
 ---
 
-### 🚧 v1.0 候选（值得专门讨论，不是停车场级别）
+### 🚧 v1.0 主线 · 已锁定方案，待实施
 
-- **重审 sync 模型**（触发：v0.9.0→v0.9.1 数据丢失事故 · 2026-05-08）—— 当前架构是 push 阶段做 full upload（像 server-authoritative）+ pull 阶段做 CRDT 合并（纯 local-first），同一条数据流里既当 server 又当 peer，是这次事故几乎所有混乱的根源。**核心问题**：CRDT 没有"权威"概念，所有 client 的本地写都被视为同等可信，merge 时按 LWW per-key 机械裁决，"收敛到什么"不一定是用户想要的。**讨论入口**：(1) DayRail 的真实并发场景是不是真需要 CRDT —— 单用户跨设备**顺序使用**和 Notion-style 多人并发编辑的需求差很多，可能选了 Y.Doc 这个工具但没用上它的核心收益、只吃了它的复杂度；(2) 不引入后端的中间方案（pull-before-push 时窗 + replace-on-pull 取代 merge-on-pull + Drive `appdata` 多版本快照历史），把 Drive 升级成真权威；(3) 真后端方案（PostgreSQL + 服务端 ground truth），代价是后端运维 / 账户系统 / 隐私边界 / 离线 UX 复杂度，与 §7.1「无 DayRail 后端」立场冲突，需重新评估这个立场。**这件事重要到不能塞进停车场表格**，单独立项 v1.0 候选；触发条件不是某个产品信号，而是**讨论本身已经发生了**。下一步：开一个 doc-only PR 做完整 ERD §7.x 重写 + 三个方向的取舍分析 + 决策。
+- **sync 模型重审 → B-revised**（doc-only 决策 2026-05-11 · 详见 ERD §7.8）—— 弃用 v0.7 Yjs CRDT cross-device merge 语义，回到 snapshot 粒度 + 应用层 smart diff（同向 fast-forward / 正交 union / 真冲突弹卡）；Yjs 保留作本地存储 + undo 引擎；push 前强制 HEAD check 作架构 firewall（结构性消除 v0.9.0→v0.9.1 事故根因 · push 在"本地状态不可信窗口"内仍能上传这种可能）。决策过程：方向 A（保 CRDT + Drive 权威化）不解沉默 LWW · 方向 C（真后端 + PostgreSQL）当前不具备条件（精力 / 金钱 / 自托管运维 / 与 §7.1 立场相容）—— C **显式停车**，重启信号写在 §7.8。实施分 5 个独立 PR（P1 push firewall · P2 smart diff 引擎 · P3 接入 sync 路径 · P4 触发器收紧 · P5 history UI），P1 单独可 ship 作最小步。
 
 ---
 
@@ -151,7 +151,7 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 - §7.3 多后端（iCloud / WebDAV / Dropbox）· Drive `appdata` 已够用（**注**：v0.8.2 dogfood 后增设了"桌面端 + 永久 Drive 授权"为 v0.9 主线，但这是 Drive 授权方式的升级而不是后端切换，§7.3 多后端依然停车）
 - §7.5 端到端加密 / passphrase / 恢复码 / 双写 E2E 迁移
 - §7.2.1 三档 `{仅数据 / 仅设置 / 全部}` 同步开关
-- 字段级真冲突 UI（Yjs LWW + Lamport 自动决）
+- ~~字段级真冲突 UI（Yjs LWW + Lamport 自动决）~~ —— **v1.0 反转**：v0.7 时的判断是"沉默 LWW 是 feature，不开冲突 UI"；半年 dogfood 后改判沉默 LWW 在单用户场景是 anti-feature（在 B 故意覆盖 A 的旧值，Yjs 时钟可能把改动吞掉，用户看不到）。v1.0 sync 重审里**真冲突会弹字段级冲突卡**，见 ERD §7.8 + ROADMAP 上方 v1.0 主线段。
 - §6 多 provider 适配层（OpenAI-compat 已覆盖 99%，特殊功能走桥接软件）
 - AI 调用走 DayRail 自建后端代理（浏览器直连 + 用户 BYOK，没后端这事 v0.8 不变）
 - 移动端响应式 / 首次运行引导 / E2E 测试框架（**反转**：原"Tauri 桌面壳不做"已移到 v0.9 主线 —— 见上方 v0.9 段，论据见 ERD History v0.9 方向锁定条目）

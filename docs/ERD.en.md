@@ -1347,6 +1347,8 @@ Ranked by ease-of-onboarding for ordinary users:
 
 ### 7.4 Conflict Resolution
 
+> **Superseded in v1.0**: the "Yjs as cross-device merge engine + HLC field-level LWW" design described in this section is overturned by §7.8. Yjs is retained as local storage + undo engine; cross-device merge moves to snapshot-grain + application-layer smart diff (same-direction fast-forward / orthogonal union / true-conflict UI). This section is kept as historical record and **no longer represents the current design**.
+
 - We use **Yjs** for decentralized merge of Shifts / Templates / Lines across devices. Yjs has the most mature ecosystem (persistence, y-protocols, awareness), the richest real-world validation, and maps cleanly onto our append-only event log.
 - Yjs is **lazy-loaded**: the ~60 KB gzip runtime is fetched only when sync is enabled, keeping single-device / local-only cold start unaffected.
 - CRDT gains predictable multi-device behavior: deviations are never dropped by merge conflicts — consistent with the promise that "a Shift is always first-class".
@@ -1541,6 +1543,8 @@ The user's actual workflow is **temporal handoff** (work-machine in the day, per
 
 ### 7.7 v0.7 implementation note — Yjs CRDT · field-level merge
 
+> **Partially superseded in v1.0**: the sync path described in this section (using `Y.applyUpdate` for cross-device CRDT merge · HLC embedded in events · field-level silent LWW convergence) is replaced by §7.8 in the v1.0 sync redesign. **Retained**: Yjs as local storage format + UndoManager + Y.encodeStateAsUpdate as the sync transport (snapshot bytes · no longer cross-device merge). **Overturned**: the `Y.applyUpdate(localDoc, remoteUpdate)` merge path · HLC · silent LWW convergence. This section is kept as a historical snapshot of the v0.7 implementation.
+
 > Status: design locked 2026-04-30, ships in v0.7. Inherits the Drive transport, auth lifecycle, push/pull trigger skeleton, and Settings sync layout that landed in §7.6. **The Yjs CRDT parking decision in §7.4 / the §7.6 footer thaws in v0.7**; the rest stays parked (§7.5 encrypted event log / §7.5 passphrase + recovery code + dual-write E2E migration / §7.2.1 three-mode toggle / §7.3 multi-backend). v0.7's scope is "fix the two UX pain points exposed by v0.6"; it deliberately does not expand other dimensions.
 
 **Why v0.7**
@@ -1702,6 +1706,107 @@ Three more review rounds caught real bugs at the data-flow edges:
 - **`saveYDocBytes` serialization.** Round 4 added `inFlightSave` chaining. Round 5 fixed a cleanup bug where the `task.finally(...)` callback's `=== task` comparison never matched (finally returns a new promise) — the inFlightSave reference grew unbounded. Now compares against the wrapped promise reference.
 - **`dedupRevisions` caveat documented.** Round 2's comment claimed same-id revisions encode identical content "by construction"; round 5 corrected to acknowledge two devices can produce same-id revisions with different bodies (live state stays correct via field-level CRDT, but revision-history fidelity is the casualty). Acceptable for current single-user scale; needs deviceId in id schema if revision-history surfaces ever ship.
 - **Test coverage at the system seam is still zero.** Action layer, sync controller, samples-only flag lifecycle — none have automated tests. Across 7 review rounds, two data-destruction-class bugs surfaced: (a) round 3 attempted a fix that didn't address the root cause (round 4 found it), (b) round 5 introduced a NEW data-destruction path (round 6 caught it). The fix-then-regress pattern is exactly what an integration test against the connect-flow would catch. Acceptable for the v0.7 single-user beta where the author validates manually, but the cost-vs-confidence ratio tilts strongly toward landing at minimum a smoke test for `setLocalIsSamplesOnly` lifecycle and a sanity test for `runForcePush` cancellation when the user base widens.
+
+### 7.8 v1.0 implementation note — sync redesign · drop CRDT merge / adopt snapshot smart diff
+
+> Status: 2026-05-11 decision locked (doc-only PR · phased implementation PRs follow). This section **supersedes** §7.4's "Yjs as cross-device merge engine" design and the CRDT-merge sync path in §7.7's v0.7 implementation; §7.6 (Drive channel / auth lifecycle / Settings sync page skeleton) and §7.5's encryption / recovery code parts remain parked and are not in conflict with this section.
+
+**Trigger**
+
+The v0.9.0→v0.9.1 data-loss incident (proximate cause patched in PR #24) surfaced a **deeper architectural problem**: the push path acted server-authoritative (full upload of local state) while the pull path acted peer-to-peer (CRDT merge), with one data flow playing both roles. The root cause was not "the `samplesOnly` flag and its seed data were stored out-of-band and could be lost separately" (that's the proximate cause, already patched). The root cause was **that push could fire during the "local-state-not-yet-trustworthy" window with no data-layer firewall** — BootGate's app-layer convention was insufficient.
+
+Compounded by two observations from six months of dogfooding v0.7:
+
+1. **CRDT's core upside doesn't pay off in single-user scenarios.** Yjs was §7.4's chosen "decentralized merge" answer, premised on concurrent edits auto-merging. In DayRail's actual usage (single user + tiny beta), true concurrent edits are **near-zero frequency** — 99% of "conflicts" come from push-timing lag (device A modified, didn't push within the 60s debounce, device B modified, A then pushes and hits a divergence), not from same-moment concurrency.
+
+2. **Yjs's silent LWW is an anti-feature for single-user.** When two devices change the same field to different values, Yjs picks one winner by Lamport clock and silently discards the other — invisible to the user. **In multi-user collab this is a feature** (auto-convergence, zero interruption). **For a single user, it's a bug** ("I just intentionally overwrote my old value on device B; Yjs's clock ate my change; I never saw it"). Has happened in actual dogfood use.
+
+**Decision · B-revised**
+
+Keep Yjs as the local storage format (rip-out cost is much higher than the upside). Drop CRDT merge semantics from the sync layer — sync moves back to **snapshot-grain + application-layer smart diff**:
+
+1. **Push firewall · HEAD check** (closes the incident root cause)
+
+   Every push first hits the Drive metadata API for the remote `snapshotId`:
+
+   | Remote state | Behavior |
+   |---|---|
+   | Remote `snapshotId == lastPulledSnapshotId` | Lineage clean · push proceeds |
+   | Remote has moved | Push blocked · fall through to pull-then-smart-diff |
+   | Remote unreachable | Push blocked · leave dirty for next try |
+
+   This gate **structurally eliminates** "push fires while local state is untrustworthy". The `samplesOnly` flag stops being load-bearing (no longer depends on app-layer convention); it stays as a dead-man-switch.
+
+2. **Pull-then-smart-diff** (closes push-timing conflicts + silent LWW)
+
+   After pulling remote Y.Doc bytes, **do not** call `Y.applyUpdate(localDoc, remoteUpdate)` (that's the v0.7 LWW path). Instead:
+
+   ```
+   remoteDoc  = applyUpdate(new Y.Doc(), remoteBytes)
+   localDiff  = diff(localDoc,  lastPulledDoc)   // local changes since last sync
+   remoteDiff = diff(remoteDoc, lastPulledDoc)   // remote changes since last sync
+   ```
+
+   Classify the union of changed entities into three branches:
+
+   | Case | Detection | Behavior |
+   |---|---|---|
+   | **Same-direction** | `localDiff` ⊆ `remoteDiff` (deep-equal on field values) | Silent fast-forward · replace local with `remoteDoc` · no UI |
+   | **Orthogonal** | Entity-id sets disjoint · or same entity but non-overlapping fields | Auto-union merge · push merged snapshot · no UI |
+   | **True conflict** | Same entity, same field, different values | Surface conflict card · **field-level** side-by-side · user picks per field · other fields auto-union |
+
+   The same-direction branch handles push-timing conflicts (A is slow; B already wrote the same change to remote; A pulls and finds its local diff is already in remote → silent fast-forward, no card).
+
+   The true-conflict branch fixes silent LWW (same-field different-value → user **sees** and **picks** · no longer adjudicated silently by clock).
+
+3. **Push / Pull trigger tightening** (orthogonal to the sync model · landed in the same milestone)
+
+   - **Push debounce**: 60s → 5-10s (desktop's permanent OAuth + Drive's free quota make API calls cheap; no need to re-throttle)
+   - **Tauri window blur**: listen for desktop app focus loss; blur fires a push ("user switched to another app = natural commit point")
+   - **Pull triggers**: existing visibility-probe + BootGate retained; add a 5-minute periodic background pull
+   - **BroadcastChannel cross-tab**: one tab pulls a new remote → notifies sibling tabs to refresh (avoids stale-state across tabs)
+
+4. **Drive multi-version history · strengthen + surface**
+
+   v0.6 already maintains `appdata/history/dayrail-snapshot-{ts}-{device}.json` rolling 14 files. v1.0 promotes the Settings → Sync → Backup history surface to first-class: each row supports preview (diff vs current) + one-click rollback (auto-dumps current to Downloads before overwriting). The conflict card's "overwrite remote" branch keeps v0.6's "force-dump remote first then push" semantic, and the dump is also written to Drive history (one-click undo via Settings rollback).
+
+**Why not Direction A · "keep CRDT + make Drive authoritative"**
+
+Direction A (keep Yjs CRDT merge but elevate Drive to true authority: pull-before-push + push Yjs deltas + Drive multi-version update log) closes the incident root cause (the pull-before-push firewall is the same as B-revised), but **doesn't fix silent LWW** — CRDT silent merge stays. Complexity-wise it requires maintaining a delta protocol + multi-version update log on Drive. **Cost-benefit doesn't justify it.**
+
+**Why not Direction C · "real backend (PostgreSQL + DayRail accounts)"**
+
+Direction C (break §7.1, add PostgreSQL ground truth + account system) cleanly solves auth refresh, sync model, and future multi-user collab. **Current stage doesn't meet implementation conditions** (personal bandwidth / hosting cost / self-hosted ops / compatibility with the "local-first" stance). **Explicitly parked.** Re-open signals: (1) user base scales to where ops cost amortizes · (2) genuine multi-user concurrent-editing need surfaces · (3) §7.1 itself is explicitly re-litigated.
+
+**Yjs role re-positioning**
+
+| Role | v0.7 design | v1.0 design |
+|---|---|---|
+| Local storage format (IndexedDB + Y.Map / Y.Array) | ✅ | ✅ retained |
+| Local undo / redo (UndoManager) | ✅ | ✅ retained |
+| Cross-device sync merge engine (`Y.applyUpdate` on localDoc) | ✅ load-bearing | ❌ **no longer used** |
+| HLC (hybrid logical clock) embedded in events | ✅ | ❌ removed (snapshot grain doesn't need HLC · `lastPulledSnapshotId` lineage replaces it) |
+
+Y.Doc serialized bytes remain the sync transport format (`Y.encodeStateAsUpdate(doc)`), but the receiving side applies the remote update to an **isolated remote Y.Doc**, then runs smart diff between local and remote. The resulting snapshot **fully replaces** the local Y.Doc (not a merge).
+
+**Phased PR plan**
+
+| Phase | PR scope | Risk |
+|---|---|---|
+| P1 · Push firewall | Add HEAD check + pull-before-push gate inside syncController | Low (pure gate add) |
+| P2 · Smart diff engine | Entity-level snapshot diff + three-branch classifier + unit tests | Medium (new algorithm code · needs well-tested) |
+| P3 · Wire into sync path | Replace `runPush`'s CRDT merge call with smart diff · same-direction/orthogonal silent · true-conflict via new ConflictPanel | Medium (replacing the hot path) |
+| P4 · Trigger tightening | debounce 5-10s · Tauri blur listener · periodic pull · BroadcastChannel | Low (independent changes) |
+| P5 · History UI | Settings → Sync → Backup history promotion · preview / rollback / undo | Low (pure UI) |
+
+Each phase ships as an independent PR · each PR runs the existing 203 tests + new unit tests + manual dogfood. **P1 is shippable on its own** (no dependency on later phases), as the smallest step that structurally closes the incident root cause.
+
+**Explicit parking (out of scope for v1.0)**
+
+- §7.5 end-to-end encryption + passphrase + recovery code (appdata scope is already user-private · don't re-open until scope expands)
+- §7.2.1 three-tier sync toggles (full sync is sufficient)
+- §7.3 backends beyond Google Drive (same stance as v0.6 / v0.7)
+- Multi-user collaboration (an artifact of Direction C · re-litigating §7.1 must come first)
 
 ---
 
