@@ -542,47 +542,105 @@ async function runPush(opts: RunPushOpts): Promise<void> {
 
   inFlightPush = (async () => {
     try {
-      // Pre-flight: if remote has moved past our last pull, pull-and-
-      // merge BEFORE encoding the upload. Drive isn't a Yjs server,
-      // so it stores whatever bytes the last pusher uploaded — without
-      // this step, A's push would overwrite a canonical that already
-      // contained B's edits.
+      // PUSH FIREWALL (ERD §7.8 P1 · 2026-05-11).
       //
-      // This SHRINKS the wipe window from "anywhere between A's last
-      // pull and A's upload" to "between A's preflight getRemoteMeta
-      // and A's uploadDryj" — it does NOT close it. Drive REST has
-      // no etag/precondition on the upload here, so a B-push that
-      // lands inside the gap still overwrites. Local Y.Docs converge
-      // eventually (next pull on either device merges everything),
-      // but a freshly-provisioned device pulling Drive in the gap
-      // sees a snapshot missing one side's ops until either device
-      // pushes again. Acceptable for the single-user / occasional-
-      // multi-device workload v0.7 targets; tighten with Drive
-      // headRevisionId precondition if/when this ever bites.
+      // Before encoding any upload, confirm the remote state via a
+      // HEAD-style metadata read. The firewall is FAIL-CLOSED: if we
+      // cannot read remote, we do not upload — that's exactly the
+      // v0.9.0→v0.9.1 incident pattern (push uploads local state
+      // without knowing what's already on Drive, overwrites canonical).
       //
-      // Skip the preflight for keepalive (pagehide budget) — the
-      // next active push from this device will repair lineage.
+      // Three guards run before the upload, in order:
+      //   (1) getRemoteMeta() must succeed. Throwing → block + retry.
+      //   (2) If `isLocalSamplesOnly()` AND remote has canonical
+      //       diverging from our lastPulled → block. This covers
+      //       paths that bypass schedulePush's samples-only gate
+      //       (recovery / retry / manual paths called directly).
+      //   (3) If remote moved past lastPulled → pull-and-merge into
+      //       local (CRDT merge for now · ERD §7.8 P3 replaces with
+      //       smart diff). If the merge download fails → block.
+      //
+      // The HEAD-check + merge does NOT close the race between the
+      // metadata read and the actual upload — Drive REST has no
+      // ifMatch precondition on multipart upload. A B-push landing
+      // in that ~100ms window still overwrites. ERD §7.8 P3 adds
+      // post-upload verification + smart-diff recovery; P1's job is
+      // to plug the much larger "we never read remote at all" hole.
+      //
+      // Skip the firewall for keepalive (pagehide budget) — pagehide
+      // can't await metadata, and the next active push from this
+      // device will repair lineage via the firewall path.
       if (!opts.keepalive) {
+        let remoteBefore: RemoteMeta | null;
         try {
-          const remoteBefore = await getRemoteMeta();
-          const lastPulled = getLastPulledSnapshotId();
+          remoteBefore = await getRemoteMeta();
+        } catch (headErr) {
+          console.warn(
+            '[sync] push firewall · HEAD check failed · blocking push:',
+            headErr,
+          );
+          syncStore.setPhase(phaseBefore);
+          // Schedule a retry like other transient errors do below.
+          // Dirty count is left untouched so the retry can re-attempt
+          // the same set of ops.
           if (
-            remoteBefore &&
-            remoteBefore.snapshotId &&
-            remoteBefore.snapshotId !== lastPulled
+            opts.trigger !== 'manual' &&
+            opts.trigger !== 'retry' &&
+            isDriveConnected()
           ) {
+            if (retryTimer) clearTimeout(retryTimer);
+            retryTimer = setTimeout(() => {
+              retryTimer = null;
+              if (!isDriveConnected() || getDirtyCount() === 0) return;
+              void runPush({ trigger: 'retry' }).catch(() => {});
+            }, RETRY_BACKOFF_MS);
+          }
+          return;
+        }
+
+        const lastPulled = getLastPulledSnapshotId();
+        if (
+          isLocalSamplesOnly() &&
+          remoteBefore &&
+          remoteBefore.snapshotId &&
+          remoteBefore.snapshotId !== lastPulled
+        ) {
+          // Defense-in-depth: samples-only state + remote canonical
+          // already exists is exactly the v0.9.0→v0.9.1 shape. Refuse
+          // to push regardless of trigger source. BootGate / the
+          // ConnectDrivePanel pull path is responsible for resolving
+          // this state (replace local from remote, which clears the
+          // flag).
+          console.warn(
+            '[sync] push firewall · samples-only state + remote canonical exists · blocking push (v0.9.0→v0.9.1 guard)',
+          );
+          syncStore.setPhase(phaseBefore);
+          return;
+        }
+
+        if (
+          remoteBefore &&
+          remoteBefore.snapshotId &&
+          remoteBefore.snapshotId !== lastPulled
+        ) {
+          try {
             const remoteBytes = await downloadDryjById(remoteBefore.fileId);
             applyRemoteUpdate(remoteBytes);
             setLastPulledSnapshotId(remoteBefore.snapshotId);
             // Don't clearDirtyCount here — local still has unpushed
             // ops the upload below will carry. The merge added
             // remote ops on top; the union is what we encode.
+          } catch (mergeErr) {
+            // We know remote moved but can't download/merge it.
+            // Continuing the push would overwrite remote's new
+            // canonical — fail-closed.
+            console.warn(
+              '[sync] push firewall · pull-and-merge of remote canonical failed · blocking push:',
+              mergeErr,
+            );
+            syncStore.setPhase(phaseBefore);
+            return;
           }
-        } catch (preflightErr) {
-          // If the preflight fails, fall through to a plain push —
-          // worst case we re-introduce the v0.6 wipe-window for one
-          // upload cycle, which is the prior behavior anyway.
-          console.warn('[sync] pull-before-push preflight failed:', preflightErr);
         }
       }
 
