@@ -1,6 +1,6 @@
 [package]
 name = "dayrail-desktop"
-version = "0.9.10"
+version = "0.10.0"
 description = "DayRail desktop shell"
 authors = ["FreeJolan"]
 edition = "2021"
