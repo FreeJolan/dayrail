@@ -56,33 +56,11 @@ export function CycleView() {
   const navigate = useNavigate();
   const [anchorDate, setAnchorDate] = useState<Date>(() => new Date());
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
-  // Drag-hover key shared across all CycleSection instances. Lifted
-  // here so dragging a task across a section boundary doesn't strand
-  // the previous section's highlight — only one cell + rail glows at
-  // a time across the whole grid. Format: `${railId}|${date}`.
-  const [dragHoverKey, setDragHoverKey] = useState<string | null>(null);
-  useEffect(() => {
-    const clear = () => setDragHoverKey(null);
-    // capture-phase drop so we clear before any per-cell drop handler
-    // mutates state, mirroring the pre-lift behavior.
-    window.addEventListener('dragend', clear);
-    window.addEventListener('drop', clear, true);
-    // Belt-and-suspenders: macOS WKWebView occasionally drops the
-    // `dragend` event for some gesture paths (cancelled drag dropped
-    // outside any drop zone / ESC abort / drag-out-of-window). Pointer
-    // events fire reliably on mouse release regardless of drag state,
-    // so subscribing here clears the residual highlight when the
-    // gesture ends without a clean dragend. Touch / interrupted drags
-    // fire pointercancel instead of pointerup.
-    window.addEventListener('pointerup', clear);
-    window.addEventListener('pointercancel', clear);
-    return () => {
-      window.removeEventListener('dragend', clear);
-      window.removeEventListener('drop', clear, true);
-      window.removeEventListener('pointerup', clear);
-      window.removeEventListener('pointercancel', clear);
-    };
-  }, []);
+  // Drag-drop dispatched from App-level DndContext (see App.tsx);
+  // CycleSection cells use useDroppable/SortableContext directly.
+  // No view-level drag state needed — dnd-kit's `over` is the single
+  // source of truth for "what's being hovered" and clears itself on
+  // gesture end via pointer-event semantics.
 
   const templates = useStore((s) => s.templates);
   const rails = useStore((s) => s.rails);
@@ -93,8 +71,6 @@ export function CycleView() {
   const calendarRules = useStore((s) => s.calendarRules);
   const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
   const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
-  const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
-  const setSlotTaskOrder = useStore((s) => s.setSlotTaskOrder);
   const unscheduleTask = useStore((s) => s.unscheduleTask);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
   const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
@@ -284,54 +260,11 @@ export function CycleView() {
     return m;
   }, [cycle]);
 
-  const handleDropTask = useCallback(
-    (taskId: string, date: string, railId: string) => {
-      // No-op if the task was dragged back onto its own (date, rail) —
-      // scheduleTaskToRail would still write a redundant task.scheduled
-      // event otherwise, which pads the Edit-Session change count for
-      // no user-visible effect.
-      const existing = tasks[taskId]?.slot;
-      if (
-        existing &&
-        existing.date === date &&
-        existing.railId === railId
-      ) {
-        return;
-      }
-      void scheduleTaskToRail(
-        taskId,
-        { cycleId: `cycle-${date}`, date, railId },
-        sessionId ?? undefined,
-      );
-    },
-    [scheduleTaskToRail, sessionId, tasks],
-  );
-
-  const handleDropTaskAt = useCallback(
-    async (
-      taskId: string,
-      date: string,
-      railId: string,
-      orderedTaskIds: string[],
-    ) => {
-      // Same-slot reorder: just persist the new order.
-      // Cross-slot: schedule first (so the dragged task's `slot`
-      // points at the destination), then persist the order.
-      const existing = tasks[taskId]?.slot;
-      const sameSlot =
-        existing && existing.date === date && existing.railId === railId;
-      const slot = {
-        cycleId: existing?.cycleId ?? `cycle-${date}`,
-        date,
-        railId,
-      };
-      if (!sameSlot) {
-        await scheduleTaskToRail(taskId, slot, sessionId ?? undefined);
-      }
-      await setSlotTaskOrder(slot, orderedTaskIds, sessionId ?? undefined);
-    },
-    [scheduleTaskToRail, setSlotTaskOrder, sessionId, tasks],
-  );
+  // Drag-task scheduling (cross-cell drop + intra-slot reorder) is
+  // now dispatched from App-level DndContext via handleDragEnd
+  // (App.tsx). The handler reads currentCycleEditSessionRef for this
+  // view's session ID so the resulting mutations join the same
+  // Edit-Session undo chain as everything else in this view.
 
   const handleClearSlot = useCallback(
     (taskId: string) => {
@@ -545,8 +478,6 @@ export function CycleView() {
                 days={days}
                 slotsByKey={slotMap}
                 offRailByDate={offRailByDate}
-                dragHoverKey={dragHoverKey}
-                onDragHoverKeyChange={setDragHoverKey}
                 todayISO={todayISO}
                 templateChoices={templateChoices}
                 reflectedDates={reflectedDates}
@@ -554,8 +485,6 @@ export function CycleView() {
                 onOpenReflection={handleOpenReflection}
                 onOverride={overrideDay}
                 onClearOverride={clearOverride}
-                onDropTask={handleDropTask}
-                onDropTaskAt={handleDropTaskAt}
                 onClearSlot={handleClearSlot}
                 onMarkTaskDone={handleMarkTaskDone}
                 onUndoTaskDone={handleUndoTaskDone}
