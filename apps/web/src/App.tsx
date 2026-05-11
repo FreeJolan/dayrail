@@ -1,5 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  pointerWithin,
+  rectIntersection,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type CollisionDetection,
+} from '@dnd-kit/core';
+import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
+import { useStore } from '@dayrail/core';
+import { currentCycleEditSessionRef } from './lib/dndContext';
 import { TodayTrack } from './pages/TodayTrack';
 import { TemplateEditor } from './pages/TemplateEditor';
 import { CycleView } from './pages/CycleView';
@@ -78,7 +92,100 @@ function Shell() {
   // toast without each having to mount its own. Handles both
   // `type='reschedule'` and `type='unschedule'` shifts.
   const shiftPrompt = useShiftPrompt();
+
+  // App-level DndContext (dnd-kit migration). Wraps both CycleView
+  // (cells as drop targets + their pills as sortables) AND
+  // BacklogDrawer (pills as drag sources) so cross-surface drags
+  // share one gesture system. PointerSensor with a 4px activation
+  // distance keeps plain clicks (e.g. open-task-detail) from being
+  // misread as drag starts.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  // Hybrid collision detection: pointer-within finds pills the
+  // cursor is directly on (best for intra-slot reorder); rect-
+  // intersection catches cell drops on the wider drop zone. Trying
+  // pointer first and falling through covers both cases.
+  const collisionDetection: CollisionDetection = useCallback((args) => {
+    const pointer = pointerWithin(args);
+    if (pointer.length > 0) return pointer;
+    return rectIntersection(args);
+  }, []);
+
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over) return;
+    const activeData = (active.data.current ?? {}) as Record<string, unknown>;
+    const overData = (over.data.current ?? {}) as Record<string, unknown>;
+    if (activeData.type !== 'task') return;
+
+    const taskId = String(active.id);
+    const store = useStore.getState();
+    const sessionId = currentCycleEditSessionRef.current ?? undefined;
+
+    // Compute target cell from over.data. Two shapes:
+    //   - over is a cell-droppable → { type: 'cell', cycleId, date, railId }
+    //   - over is a sortable pill in a cell → { type: 'pill', cellKey, cycleId, date, railId, index, slotTaskIds }
+    let target: { cycleId: string; date: string; railId: string } | null = null;
+    let targetIndex: number | null = null;
+    let slotTaskIds: string[] | null = null;
+    if (overData.type === 'cell') {
+      target = {
+        cycleId: String(overData.cycleId),
+        date: String(overData.date),
+        railId: String(overData.railId),
+      };
+    } else if (overData.type === 'pill') {
+      target = {
+        cycleId: String(overData.cycleId),
+        date: String(overData.date),
+        railId: String(overData.railId),
+      };
+      targetIndex = (overData.index as number) ?? null;
+      slotTaskIds = (overData.slotTaskIds as string[] | undefined) ?? null;
+    }
+    if (!target) return;
+
+    const existing = store.tasks[taskId]?.slot;
+    const sameSlot =
+      !!existing &&
+      existing.date === target.date &&
+      existing.railId === target.railId;
+
+    void (async () => {
+      // Cross-slot move: schedule the task to the new (cycleId, date,
+      // railId) first so its `slot` reflects the destination before we
+      // touch slotOrder.
+      if (!sameSlot) {
+        await store.scheduleTaskToRail(taskId, target, sessionId);
+      }
+      // If the drop landed on a specific pill (intra-slot reorder or
+      // cross-slot drop at a precise position), persist the new
+      // ordered list. setSlotTaskOrder is idempotent — calling it with
+      // the same order as currently stored is a no-op event.
+      if (targetIndex !== null && slotTaskIds !== null) {
+        const without = slotTaskIds.filter((id) => id !== taskId);
+        const clamped = Math.max(0, Math.min(targetIndex, without.length));
+        const ordered = [
+          ...without.slice(0, clamped),
+          taskId,
+          ...without.slice(clamped),
+        ];
+        await store.setSlotTaskOrder(target, ordered, sessionId);
+      }
+    })();
+  }, []);
+
   return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={collisionDetection}
+      onDragEnd={handleDragEnd}
+    >
     <div className="flex min-h-screen w-full bg-surface-0">
       <DevModeIndicator />
       <UpdateBanner />
@@ -114,6 +221,7 @@ function Shell() {
       />
       <ImportSuccessToast />
     </div>
+    </DndContext>
   );
 }
 

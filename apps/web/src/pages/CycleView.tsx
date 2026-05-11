@@ -18,6 +18,7 @@ import {
 } from '@dayrail/core';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import { CycleSummaryStrip } from '@/components/CycleSummaryStrip';
+import { currentCycleEditSessionRef } from '@/lib/dndContext';
 import { EmptyTemplatesHint } from '@/components/EmptyTemplatesHint';
 import {
   CycleSection,
@@ -127,6 +128,17 @@ export function CycleView() {
       if (openedId) void closeEditSession(openedId);
     };
   }, [openEditSession, closeEditSession]);
+  // Surface sessionId to App-level drag-end handler (dnd-kit migration).
+  // Drag drop in CycleView dispatches from App.tsx (because BacklogDrawer
+  // pills also live there and must share the same DndContext); this ref
+  // is how the App-level handler tags the resulting mutation as part
+  // of this view's edit session.
+  useEffect(() => {
+    currentCycleEditSessionRef.current = sessionId;
+    return () => {
+      currentCycleEditSessionRef.current = null;
+    };
+  }, [sessionId]);
   const session = useStore((s) =>
     sessionId ? s.sessions[sessionId] : undefined,
   );
