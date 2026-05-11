@@ -29,7 +29,13 @@ export const TooltipContent = forwardRef<
       ref={ref}
       sideOffset={sideOffset}
       className={clsx(
-        'z-50 rounded-sm bg-ink-primary px-2 py-1 font-mono text-2xs uppercase tracking-widest text-surface-0 shadow-md',
+        // `pointer-events-none` so a tooltip floating over a drop
+        // target doesn't intercept drag-over events. Tooltips here
+        // are read-only labels — no interactive content needs to
+        // receive clicks/drags. Without this, hovering a CycleCell
+        // pill to read its tooltip would briefly block dragging it
+        // toward the right-side rails that the tooltip overlaps.
+        'pointer-events-none z-50 rounded-sm bg-ink-primary px-2 py-1 font-mono text-2xs uppercase tracking-widest text-surface-0 shadow-md',
         'data-[state=delayed-open]:animate-[tooltipIn_120ms_cubic-bezier(0.22,0.61,0.36,1)]',
         className,
       )}

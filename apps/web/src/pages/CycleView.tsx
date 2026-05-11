@@ -66,9 +66,20 @@ export function CycleView() {
     // mutates state, mirroring the pre-lift behavior.
     window.addEventListener('dragend', clear);
     window.addEventListener('drop', clear, true);
+    // Belt-and-suspenders: macOS WKWebView occasionally drops the
+    // `dragend` event for some gesture paths (cancelled drag dropped
+    // outside any drop zone / ESC abort / drag-out-of-window). Pointer
+    // events fire reliably on mouse release regardless of drag state,
+    // so subscribing here clears the residual highlight when the
+    // gesture ends without a clean dragend. Touch / interrupted drags
+    // fire pointercancel instead of pointerup.
+    window.addEventListener('pointerup', clear);
+    window.addEventListener('pointercancel', clear);
     return () => {
       window.removeEventListener('dragend', clear);
       window.removeEventListener('drop', clear, true);
+      window.removeEventListener('pointerup', clear);
+      window.removeEventListener('pointercancel', clear);
     };
   }, []);
 
