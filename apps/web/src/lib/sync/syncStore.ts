@@ -6,6 +6,7 @@
 // status (idle / syncing / error reason) lives only here.
 
 import { useSyncExternalStore } from 'react';
+import type { FieldConflict } from '@dayrail/core';
 import {
   getDeviceLabel,
   getDirtyCount,
@@ -20,6 +21,23 @@ export type SyncPhase =
   | { kind: 'offline'; message: string }
   | { kind: 'error'; message: string };
 
+/** State surfaced when smart-diff classify (ERD §7.8) returns
+ *  'true-conflict' during a push preflight. Push is paused; the
+ *  SyncConflictPanel reads this state, lets the user pick a side
+ *  per field, then dispatches `applyConflictResolutions` + clears
+ *  this state via `syncStore.clearPendingConflict`. */
+export interface PendingConflict {
+  conflicts: FieldConflict[];
+  /** The remote Y.Doc bytes that classify just compared against;
+   *  the resolver re-applies these via CRDT merge then overrides
+   *  user-chosen local fields. */
+  remoteBytes: Uint8Array;
+  /** The remote snapshotId · written to `lastPulledSnapshotId` once
+   *  the user resolves and the push succeeds. */
+  remoteSnapshotId: string;
+  detectedAt: number;
+}
+
 export interface SyncSnapshot {
   /** OAuth-connected on this device. Mirrors identity flag; cached
    *  here so subscribers re-render on connect/disconnect. */
@@ -28,6 +46,9 @@ export interface SyncSnapshot {
   dirtyCount: number;
   lastSync: LastSyncInfo | null;
   deviceLabel: string;
+  /** Set when classify returns 'true-conflict'; null otherwise. The
+   *  SyncConflictPanel mounts iff this is non-null. */
+  pendingConflict: PendingConflict | null;
 }
 
 let snapshot: SyncSnapshot = readSnapshot();
@@ -40,6 +61,7 @@ function readSnapshot(): SyncSnapshot {
     dirtyCount: getDirtyCount(),
     lastSync: getLastSyncInfo(),
     deviceLabel: getDeviceLabel(),
+    pendingConflict: null,
   };
 }
 
@@ -74,6 +96,9 @@ export const syncStore = {
   },
   setDeviceLabel(label: string): void {
     update({ deviceLabel: label });
+  },
+  setPendingConflict(c: PendingConflict | null): void {
+    update({ pendingConflict: c });
   },
 };
 

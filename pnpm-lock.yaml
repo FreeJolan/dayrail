@@ -47,6 +47,7 @@ importers:
       vite: 5.4.11
       vite-plugin-pwa: ^1.2.0
       workbox-window: ^7.4.0
+      yjs: ^13.6.0
     dependencies:
       '@dayrail/core': link:../../packages/core
       '@dayrail/db': link:../../packages/db
@@ -71,6 +72,7 @@ importers:
       react-markdown: 10.1.0_ryhct6r6jz2fex4xfo2quarxhi
       react-router-dom: 7.14.1_nnrd3gsncyragczmpvfhocinkq
       remark-gfm: 4.0.1
+      yjs: 13.6.30
     devDependencies:
       '@types/node': 20.16.14
       '@types/react': 18.3.12

@@ -22,16 +22,18 @@
 //      observer re-derives flat state and zustand setState fires —
 //      no page reload needed.
 
+import * as Y from 'yjs';
 import {
   useStore,
   exportYDocAsUpdate,
   applyRemoteUpdate,
   replaceFromRemote,
   getYDoc,
+  classify,
   REMOTE_ORIGIN,
   OPFS_ORIGIN,
 } from '@dayrail/core';
-import { encodeDryj, type DryjMeta } from '@dayrail/db/dryj';
+import { decodeDryj, encodeDryj, type DryjMeta } from '@dayrail/db/dryj';
 import {
   bumpDirtyCount,
   clearDirtyCount,
@@ -55,8 +57,22 @@ import {
 } from './driveBackend';
 import { isDriveConnected } from './driveAuth';
 import { syncStore } from './syncStore';
+import {
+  loadLastPulledDocBytes,
+  saveLastPulledDocBytes,
+} from './lastPulledDoc';
 
 const PUSH_DEBOUNCE_MS = 60 * 1000;
+
+/** Decode dryj-wrapped bytes into a fresh Y.Doc (no aliasing with
+ *  the live local Y.Doc). Used by smart-diff classify to compare
+ *  base / remote against the live local doc. */
+function bytesToYDoc(dryjBytes: Uint8Array): Y.Doc {
+  const decoded = decodeDryj(dryjBytes);
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, decoded.update);
+  return doc;
+}
 
 // Sanity-check thresholds for the pre-push data-loss gate (added
 // 2026-05-08 after v0.9.0→v0.9.1 incident). Triggered when the
@@ -419,6 +435,11 @@ export async function runForcePush(): Promise<void> {
       });
       setLastPulledSnapshotId(snapshotId);
       setLastPushedCounts(currCounts);
+      // ERD §7.8 P3 · force-push makes local the new canonical; the
+      // next classify must use these bytes as the base.
+      await saveLastPulledDocBytes(bytes).catch((e) =>
+        console.warn('[sync] saveLastPulledDocBytes failed:', e),
+      );
       clearDirtyCount();
       syncStore.setDirtyCount(0);
       clearLocalIsSamplesOnly();
@@ -465,6 +486,13 @@ async function runPullFromRemote(remote: RemoteMeta): Promise<void> {
       const bytes = await downloadDryjById(remote.fileId);
       applyRemoteUpdate(bytes);
       setLastPulledSnapshotId(remote.snapshotId);
+      // ERD §7.8 P3 · the bytes we just merged in become the new
+      // base for the next classify. Best-effort: persistence error
+      // doesn't block the pull (next push falls back to v0.7 CRDT
+      // merge until base is re-seeded).
+      await saveLastPulledDocBytes(bytes).catch((e) =>
+        console.warn('[sync] saveLastPulledDocBytes failed:', e),
+      );
       // Do NOT clearDirtyCount here. After Y.applyUpdate, the merged
       // Y.Doc holds the union of remote + local ops, but the *local*
       // ops are still unsynced — Drive's canonical only carries the
@@ -623,23 +651,100 @@ async function runPush(opts: RunPushOpts): Promise<void> {
           remoteBefore.snapshotId &&
           remoteBefore.snapshotId !== lastPulled
         ) {
+          // Download the remote bytes; on failure we fail-closed.
+          let remoteBytes: Uint8Array;
           try {
-            const remoteBytes = await downloadDryjById(remoteBefore.fileId);
-            applyRemoteUpdate(remoteBytes);
-            setLastPulledSnapshotId(remoteBefore.snapshotId);
-            // Don't clearDirtyCount here — local still has unpushed
-            // ops the upload below will carry. The merge added
-            // remote ops on top; the union is what we encode.
-          } catch (mergeErr) {
-            // We know remote moved but can't download/merge it.
-            // Continuing the push would overwrite remote's new
-            // canonical — fail-closed.
+            remoteBytes = await downloadDryjById(remoteBefore.fileId);
+          } catch (downloadErr) {
             console.warn(
-              '[sync] push firewall · pull-and-merge of remote canonical failed · blocking push:',
-              mergeErr,
+              '[sync] push firewall · remote download failed · blocking push:',
+              downloadErr,
             );
             syncStore.setPhase(phaseBefore);
             return;
+          }
+
+          // SMART DIFF DISPATCH (ERD §7.8 P3 · 2026-05-11).
+          //
+          // Replace v0.7's blanket `applyRemoteUpdate(remoteBytes)`
+          // with classify-based routing. classify needs a baseDoc
+          // (the state both sides agreed on at last sync) — that
+          // comes from `lastPulledDoc` OPFS file (P3 storage). When
+          // base is missing (first run after upgrade, or after a
+          // resetLocalData), fall back to v0.7 CRDT merge and seed
+          // the base for next time.
+          const baseBytes = await loadLastPulledDocBytes().catch(() => null);
+          let routed = false;
+          if (baseBytes !== null) {
+            try {
+              const baseDoc = bytesToYDoc(baseBytes);
+              const remoteDoc = bytesToYDoc(remoteBytes);
+              const cls = classify(baseDoc, getYDoc(), remoteDoc);
+              if (cls.type === 'same-direction') {
+                // Remote already contains everything local has.
+                // Adopt remote wholesale — no push needed.
+                replaceFromRemote(remoteBytes);
+                setLastPulledSnapshotId(remoteBefore.snapshotId);
+                await saveLastPulledDocBytes(remoteBytes).catch((e) =>
+                  console.warn('[sync] saveLastPulledDocBytes failed:', e),
+                );
+                clearDirtyCount();
+                syncStore.setDirtyCount(0);
+                clearLocalIsSamplesOnly();
+                const info = { at: Date.now(), label: getDeviceLabel() };
+                setLastSyncInfo(info);
+                syncStore.setLastSync(info);
+                syncStore.setPhase({ kind: 'idle' });
+                return;
+              }
+              if (cls.type === 'true-conflict') {
+                // Hand off to SyncConflictPanel. Push is paused until
+                // the user resolves; resolver calls runPush again
+                // after applying the chosen values.
+                syncStore.setPendingConflict({
+                  conflicts: cls.conflicts,
+                  remoteBytes,
+                  remoteSnapshotId: remoteBefore.snapshotId,
+                  detectedAt: Date.now(),
+                });
+                syncStore.setPhase(phaseBefore);
+                return;
+              }
+              // 'orthogonal' · CRDT merge gives the correct result
+              // (no conflicting fields to silently LWW-pick). Fall
+              // through to the existing merge path.
+              applyRemoteUpdate(remoteBytes);
+              setLastPulledSnapshotId(remoteBefore.snapshotId);
+              await saveLastPulledDocBytes(remoteBytes).catch((e) =>
+                console.warn('[sync] saveLastPulledDocBytes failed:', e),
+              );
+              routed = true;
+            } catch (classifyErr) {
+              console.warn(
+                '[sync] classify failed · falling back to CRDT merge:',
+                classifyErr,
+              );
+            }
+          }
+          if (!routed) {
+            // Fallback path: no base yet (first sync after P3
+            // upgrade · or reset) OR classify threw. v0.7 behavior:
+            // CRDT merge and seed the base file so next time uses
+            // smart diff.
+            try {
+              applyRemoteUpdate(remoteBytes);
+              setLastPulledSnapshotId(remoteBefore.snapshotId);
+              await saveLastPulledDocBytes(remoteBytes).catch((e) =>
+                console.warn('[sync] saveLastPulledDocBytes failed:', e),
+              );
+            } catch (mergeErr) {
+              console.warn(
+                '[sync] push firewall · CRDT merge of remote canonical failed · blocking push:',
+                mergeErr,
+              );
+              syncStore.setPhase(phaseBefore);
+              return;
+            }
           }
         }
       }
@@ -694,6 +799,11 @@ async function runPush(opts: RunPushOpts): Promise<void> {
 
       setLastPulledSnapshotId(snapshotId);
       setLastPushedCounts(currCounts);
+      // ERD §7.8 P3 · save the bytes we just pushed as the new
+      // base. Next sync's smart-diff classify compares against this.
+      await saveLastPulledDocBytes(bytes).catch((e) =>
+        console.warn('[sync] saveLastPulledDocBytes failed:', e),
+      );
       clearDirtyCount();
       syncStore.setDirtyCount(0);
       // After a successful push, local has been committed to Drive.
@@ -865,6 +975,12 @@ export async function replaceLocalFromRemote(remote: RemoteMeta): Promise<void> 
       const bytes = await downloadDryjById(remote.fileId);
       replaceFromRemote(bytes);
       setLastPulledSnapshotId(remote.snapshotId);
+      // ERD §7.8 P3 · seed lastPulledDoc so future syncs use smart
+      // diff. After replace-from-remote, local is byte-identical to
+      // remote, making remote bytes the correct base.
+      await saveLastPulledDocBytes(bytes).catch((e) =>
+        console.warn('[sync] saveLastPulledDocBytes failed:', e),
+      );
       // Replace semantics: local is now exactly remote, nothing
       // unsynced. Clear the samples-only flag too — local now
       // mirrors a real Drive canonical, not a v0.7 sample seed.
