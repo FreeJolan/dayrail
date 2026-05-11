@@ -759,7 +759,93 @@ function ConnectedSyncControls() {
       <SyncNowRow />
       <DisconnectRow />
       <BackupHistoryRow />
+      <ConflictDemoRow />
     </div>
+  );
+}
+
+// Dev-only · "试看冲突 UI" button. Synthesizes fake FieldConflicts
+// against invented entity IDs and pushes them through
+// `syncStore.setPendingConflict({ demo: true, ... })`. The panel
+// mounts, lets the user click around (radios / 全用本地·云端 /
+// 应用并推送 / 取消), but "应用并推送" is a no-op when demo=true
+// (see SyncConflictPanel.onApply). Lets the user verify the UI
+// without ever triggering a real Drive push or corrupting
+// lastPulled state.
+//
+// Gated on `import.meta.env.DEV` so the entry is tree-shaken out
+// of production bundles (vite static eval).
+function ConflictDemoRow() {
+  if (!import.meta.env.DEV) return null;
+  const onTrigger = () => {
+    // Empty remote bytes = valid Y.Doc serialization with no top-
+    // level types. Carried for shape consistency only; the Apply
+    // path bails before touching them.
+    const emptyDoc = new Y.Doc();
+    const emptyBytes = Y.encodeStateAsUpdate(emptyDoc);
+    syncStore.setPendingConflict({
+      demo: true,
+      detectedAt: Date.now(),
+      remoteBytes: emptyBytes,
+      remoteSnapshotId: 'demo-fake-snapshot',
+      conflicts: [
+        {
+          storeKey: 'tasks',
+          entityId: 'demo-task-001',
+          field: 'title',
+          baseValue: '完成季度计划',
+          localValue: '完成 v1.0 sync 重审',
+          remoteValue: '完成季度计划 (rev)',
+        },
+        {
+          storeKey: 'tasks',
+          entityId: 'demo-task-001',
+          field: 'priority',
+          baseValue: 'P1',
+          localValue: 'P0',
+          remoteValue: 'P2',
+        },
+        {
+          storeKey: 'tasks',
+          entityId: 'demo-task-002',
+          field: '__entity__',
+          baseValue: undefined,
+          localValue: null, // null = "本地已删除"
+          remoteValue: { id: 'demo-task-002', title: '远端编辑过的任务' },
+        },
+        {
+          storeKey: 'reflections',
+          entityId: 'demo-reflection-2026-05-10',
+          field: 'body',
+          baseValue: '原本的反思内容',
+          localValue: '我改写的本地反思内容，比较长一点试试看截断效果 lorem ipsum dolor sit amet…',
+          remoteValue: '另一台设备改的远端反思内容',
+        },
+        {
+          storeKey: 'lines',
+          entityId: 'demo-line-inbox',
+          field: 'tags',
+          baseValue: ['work'],
+          localValue: ['work', 'urgent'],
+          remoteValue: ['work', 'review'],
+        },
+      ],
+    });
+  };
+  return (
+    <Row
+      label="试看冲突 UI（dev only）"
+      description="合成假冲突触发 SyncConflictPanel · 用来验证 UX · 应用并推送会短路掉，不写本地不动 Drive。"
+      control={
+        <button
+          type="button"
+          onClick={onTrigger}
+          className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          打开演示
+        </button>
+      }
+    />
   );
 }
 

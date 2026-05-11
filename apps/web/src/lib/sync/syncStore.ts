@@ -36,6 +36,12 @@ export interface PendingConflict {
    *  the user resolves and the push succeeds. */
   remoteSnapshotId: string;
   detectedAt: number;
+  /** Set by the dev-only "试看冲突 UI" button. When true,
+   *  SyncConflictPanel's Apply button is a no-op (just closes the
+   *  panel) — the test data references fake entity IDs and applying
+   *  it for real would corrupt lastPulled state. Production code
+   *  paths never set this. */
+  demo?: boolean;
 }
 
 export interface SyncSnapshot {

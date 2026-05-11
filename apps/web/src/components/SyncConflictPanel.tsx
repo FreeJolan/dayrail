@@ -74,6 +74,17 @@ function Panel() {
     setApplying(true);
     setErrMsg(null);
     try {
+      // Demo mode short-circuit: just close the panel without
+      // touching Y.Doc / lastPulled / Drive. The dev-only test
+      // button sets pendingConflict.demo=true · its fake conflicts
+      // reference invented entity IDs that would no-op on real
+      // Y.Doc lookups, but it would still corrupt lastPulledDocBytes
+      // / lastPulledSnapshotId and trigger a real Drive push. Bail
+      // before any of that.
+      if (pendingConflict.demo) {
+        syncStore.setPendingConflict(null);
+        return;
+      }
       // Clear pending FIRST so the panel unmounts; then run the
       // resolve-and-push pipeline. If the push surfaces a fresh
       // conflict (rare — would require yet another device pushing
@@ -109,14 +120,28 @@ function Panel() {
         <div className="flex flex-col gap-4 px-5 py-5">
           <div className="flex flex-col gap-1">
             <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-              同步冲突 · v1.0 smart diff
+              {pendingConflict.demo
+                ? '冲突 UI 预览（演示 · 不会触动真数据）'
+                : '同步冲突 · v1.0 smart diff'}
             </span>
             <p className="text-sm text-ink-primary">
-              检测到 <strong>{conflicts.length}</strong>{' '}
-              个字段在本地和云端被同时改成了不同值。请逐项选择保留哪边。
+              {pendingConflict.demo ? (
+                <>
+                  这是 dev-only 测试入口合成的{' '}
+                  <strong>{conflicts.length}</strong>{' '}
+                  个假冲突，用来预览真冲突时的交互。
+                </>
+              ) : (
+                <>
+                  检测到 <strong>{conflicts.length}</strong>{' '}
+                  个字段在本地和云端被同时改成了不同值。请逐项选择保留哪边。
+                </>
+              )}
             </p>
             <p className="text-2xs text-ink-tertiary">
-              默认保留云端（更安全）· 选完后点「应用并推送」会把你的选择合并到本地，并把合并结果推到 Drive。
+              {pendingConflict.demo
+                ? '点「应用并推送」会直接关掉这个面板 · 不写 Y.Doc · 不动 lastPulled · 不推 Drive。'
+                : '默认保留云端（更安全）· 选完后点「应用并推送」会把你的选择合并到本地，并把合并结果推到 Drive。'}
             </p>
           </div>
 
