@@ -286,7 +286,25 @@ export function SyncSection() {
         <ExportTasksRow />
         <ExportScheduleRow />
       </div>
+
+      <ConflictDemoSection />
     </SettingsSectionShell>
+  );
+}
+
+// Dev-only · "试看冲突 UI" entry. Unconditional on Drive connection
+// (the demo button synthesizes fake data into syncStore directly —
+// no Drive API touched). Gated on `import.meta.env.DEV` so vite
+// tree-shakes it out of prod bundles.
+function ConflictDemoSection() {
+  if (!import.meta.env.DEV) return null;
+  return (
+    <div className="hairline-t mt-6 flex flex-col pt-4">
+      <span className="pb-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+        Dev tools
+      </span>
+      <ConflictDemoRow />
+    </div>
   );
 }
 
@@ -759,24 +777,19 @@ function ConnectedSyncControls() {
       <SyncNowRow />
       <DisconnectRow />
       <BackupHistoryRow />
-      <ConflictDemoRow />
     </div>
   );
 }
 
-// Dev-only · "试看冲突 UI" button. Synthesizes fake FieldConflicts
-// against invented entity IDs and pushes them through
-// `syncStore.setPendingConflict({ demo: true, ... })`. The panel
-// mounts, lets the user click around (radios / 全用本地·云端 /
-// 应用并推送 / 取消), but "应用并推送" is a no-op when demo=true
-// (see SyncConflictPanel.onApply). Lets the user verify the UI
-// without ever triggering a real Drive push or corrupting
-// lastPulled state.
-//
-// Gated on `import.meta.env.DEV` so the entry is tree-shaken out
-// of production bundles (vite static eval).
+// Synthesizes fake FieldConflicts against invented entity IDs and
+// pushes them through `syncStore.setPendingConflict({ demo: true,
+// ... })`. The panel mounts, lets the user click around (radios /
+// 全用本地·云端 / 应用并推送 / 取消), but "应用并推送" is a
+// no-op when demo=true (see SyncConflictPanel.onApply). Lets the
+// user verify the UI without ever triggering a real Drive push or
+// corrupting lastPulled state. Caller (ConflictDemoSection) gates
+// on `import.meta.env.DEV` so the prod bundle drops this entirely.
 function ConflictDemoRow() {
-  if (!import.meta.env.DEV) return null;
   const onTrigger = () => {
     // Empty remote bytes = valid Y.Doc serialization with no top-
     // level types. Carried for shape consistency only; the Apply
