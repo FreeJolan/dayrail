@@ -570,9 +570,24 @@ function BacklogCard({
   // against the target cell. PointerSensor's 4px activation constraint
   // (set in App.tsx) means a plain click on the card to open detail
   // doesn't accidentally start a drag.
+  // Build a SlotTaskSummary preview from the Task so the multi-
+  // container mirror (dragMirror.tsx) can render this pill inside a
+  // cycle cell during drag without reaching back into the store.
+  // Backlog tasks are pending by definition (filtered by status in
+  // selectBacklogTasks); other fields default to the empty shape.
+  const summary = {
+    taskId: task.id,
+    title: task.title,
+    state: 'pending' as const,
+    isAutoTask: false,
+    hasNote: false,
+    subItemsDone: 0,
+    subItemsTotal: 0,
+    ...(task.priority && { priority: task.priority }),
+  };
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: task.id,
-    data: { type: 'task', source: 'backlog' },
+    data: { type: 'task', source: 'backlog', summary },
   });
   return (
     <div

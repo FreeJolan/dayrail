@@ -23,6 +23,7 @@ import {
 import type { RailColor } from '@/data/sample';
 import { RAIL_COLOR_HEX } from './railColors';
 import { CycleCell } from './CycleCell';
+import { useDragMirror } from '@/lib/dragMirror';
 import {
   Popover,
   PopoverContent,
@@ -140,6 +141,10 @@ export function CycleSection({
   // can produce multiple sections rendering the same rail.id, and a
   // bare railId match would light up every clone across all A sections.
   const dndCtx = useDndContext();
+  // Multi-container drag mirror — overrides per-cell taskId order
+  // during an active drag so the source cell shrinks and the target
+  // cell expands as the cursor moves. See `apps/web/src/lib/dragMirror.tsx`.
+  const { mirror } = useDragMirror();
   const hoverRailId = useMemo(() => {
     const over = dndCtx.over;
     if (!over) return null;
@@ -207,12 +212,30 @@ export function CycleSection({
                 {days.map((d) => {
                   const slot = slotsByKey.get(`${rail.id}|${d.date}`);
                   const cellKey = `${rail.id}|${d.date}`;
-                  const tasks = slot?.tasks ?? [];
+                  const rawTasks = slot?.tasks ?? [];
                   // CycleSlot doesn't carry a cycleId field; the
                   // store layer uses date-derived synthetic IDs of
                   // the form `cycle-${date}`, matching what CycleView's
                   // legacy handleDropTask used as fallback.
                   const cycleId = `cycle-${d.date}`;
+                  // Mirror override: during drag, replace the slot's
+                  // store-derived order with the mirror's ordering for
+                  // this cell. Foreign tasks (active dragged in from
+                  // elsewhere) get their summary from mirror.taskData.
+                  const override = mirror?.orders[cellKey];
+                  const tasks = override
+                    ? (() => {
+                        const bySlotId = new Map(
+                          rawTasks.map((t) => [t.taskId, t] as const),
+                        );
+                        return override
+                          .map(
+                            (id) =>
+                              bySlotId.get(id) ?? mirror.taskData[id],
+                          )
+                          .filter((t): t is SlotTaskSummary => !!t);
+                      })()
+                    : rawTasks;
                   const taskIds = tasks.map((t) => t.taskId);
                   return (
                     <DroppableCellTd
@@ -222,6 +245,7 @@ export function CycleSection({
                       cycleId={cycleId}
                       date={d.date}
                       railId={rail.id}
+                      slotTaskIds={taskIds}
                       railSoftHover={railIsDropTarget}
                       isToday={d.date === todayISO}
                     >
@@ -267,8 +291,27 @@ export function CycleSection({
                   <OffRailRowLabel />
                 </th>
                 {days.map((d) => {
-                  const offRailTasks = sectionOffRail.get(d.date) ?? [];
                   const offRailCellKey = `__offrail__|${d.date}`;
+                  const rawOffRailTasks = sectionOffRail.get(d.date) ?? [];
+                  // Off-rail rows participate in the same mirror so
+                  // pills dragged out of an off-rail cell visually
+                  // leave it just like real rails do.
+                  const override = mirror?.orders[offRailCellKey];
+                  const offRailTasks = override
+                    ? (() => {
+                        const bySlotId = new Map(
+                          rawOffRailTasks.map(
+                            (t) => [t.taskId, t] as const,
+                          ),
+                        );
+                        return override
+                          .map(
+                            (id) =>
+                              bySlotId.get(id) ?? mirror.taskData[id],
+                          )
+                          .filter((t): t is SlotTaskSummary => !!t);
+                      })()
+                    : rawOffRailTasks;
                   const offRailTaskIds = offRailTasks.map((t) => t.taskId);
                   return (
                     <td
@@ -333,6 +376,7 @@ function DroppableCellTd({
   cycleId,
   date,
   railId,
+  slotTaskIds,
   railSoftHover,
   isToday,
   children,
@@ -342,6 +386,7 @@ function DroppableCellTd({
   cycleId: string;
   date: string;
   railId: string;
+  slotTaskIds: string[];
   railSoftHover: boolean;
   isToday: boolean;
   children: ReactNode;
@@ -349,7 +394,7 @@ function DroppableCellTd({
   const { setNodeRef, isOver } = useDroppable({
     id: cellKey,
     disabled: !enabled,
-    data: { type: 'cell', cellKey, cycleId, date, railId },
+    data: { type: 'cell', cellKey, cycleId, date, railId, slotTaskIds },
   });
   const showOver = enabled && isOver;
   const showSoftRail = enabled && railSoftHover && !showOver;

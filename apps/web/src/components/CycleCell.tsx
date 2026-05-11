@@ -219,6 +219,12 @@ function SortableTaskPillRow({
       railId,
       index,
       slotTaskIds,
+      // SlotTaskSummary carried in drag data so the multi-container
+      // mirror can render this pill inside whichever cell the active
+      // currently belongs to during drag (dragMirror.tsx). Without it
+      // a destination cell has no way to look up the dragged task's
+      // title/state/badges.
+      summary: task,
     },
   });
   const style: React.CSSProperties = {
