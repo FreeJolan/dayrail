@@ -269,30 +269,51 @@ function SingleDateSection({
   templates: Template[];
   effectiveFrom: string | undefined;
 }) {
-  const [formOpen, setFormOpen] = useState(false);
+  // Inline-edit pattern matched to DateRangeSection / CycleSection /
+  // WeekdaySection. `null` = closed; `'new'` = create; `ruleId` = edit
+  // existing. Single-slot state keeps only one form open at a time.
+  // The rule id is date-derived (`singleDateRuleId(date)`), so edit
+  // mode locks the date and lets the user only change the template
+  // (same constraint pattern as WeekdaySection locking templateKey).
+  const [formMode, setFormMode] = useState<null | 'new' | string>(null);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
   return (
     <SectionShell
       title="单日覆盖"
       subtitle="对某一天单独指定模板；日历里点日期弹 popover 也写这一类"
       addCTA="新建单日"
-      onAdd={() => setFormOpen((v) => !v)}
+      onAdd={() => setFormMode((v) => (v === 'new' ? null : 'new'))}
     >
-      {formOpen && (
+      {formMode === 'new' && (
         <SingleDateForm
           templates={templates}
           onSubmit={async (date, tk) => {
             await overrideCycleDay(date, tk, undefined, effectiveFrom);
-            setFormOpen(false);
+            setFormMode(null);
           }}
-          onCancel={() => setFormOpen(false)}
+          onCancel={() => setFormMode(null)}
         />
       )}
-      {rules.length === 0 && !formOpen ? (
+      {rules.length === 0 && formMode !== 'new' ? (
         <EmptyHint text="暂无单日覆盖" />
       ) : (
         rules.map((r) => {
           const v = r.value as CalendarRuleSingleDate;
+          if (formMode === r.id) {
+            return (
+              <SingleDateForm
+                key={r.id}
+                templates={templates}
+                initial={{ date: v.date, templateKey: v.templateKey }}
+                dateLocked
+                onSubmit={async (date, tk) => {
+                  await overrideCycleDay(date, tk, undefined, effectiveFrom);
+                  setFormMode(null);
+                }}
+                onCancel={() => setFormMode(null)}
+              />
+            );
+          }
           return (
             <div
               key={r.id}
@@ -303,6 +324,7 @@ function SingleDateSection({
               </span>
               <div className="flex items-center gap-2">
                 <TemplateTag templates={templates} templateKey={v.templateKey} />
+                <EditButton onClick={() => setFormMode(r.id)} />
                 <RemoveButton id={r.id} effectiveFrom={effectiveFrom} />
               </div>
             </div>
@@ -316,11 +338,18 @@ function SingleDateSection({
 function SingleDateForm({
   templates,
   initial,
+  dateLocked,
   onSubmit,
   onCancel,
 }: {
   templates: Template[];
   initial?: { date: string; templateKey: string };
+  /** Lock the date input. Used in edit mode — the rule id is
+   *  date-derived (`singleDateRuleId(date)`), so changing the date
+   *  would create a NEW rule rather than edit the existing one.
+   *  Edit mode forces date-fixed; users who want a different date
+   *  delete the rule and create a new one. */
+  dateLocked?: boolean;
   onSubmit: (date: string, templateKey: string) => Promise<void>;
   onCancel: () => void;
 }) {
@@ -342,7 +371,8 @@ function SingleDateForm({
           type="date"
           value={date}
           onChange={(e) => setDate(e.target.value)}
-          className="h-7 rounded-sm border border-hairline/60 bg-surface-0 px-2 font-mono text-xs text-ink-primary outline-none focus:border-ink-secondary"
+          disabled={dateLocked}
+          className="h-7 rounded-sm border border-hairline/60 bg-surface-0 px-2 font-mono text-xs text-ink-primary outline-none focus:border-ink-secondary disabled:opacity-60"
         />
       </label>
       <label className="flex items-center gap-2 text-xs text-ink-secondary">
