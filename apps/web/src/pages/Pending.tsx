@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { clsx } from 'clsx';
 import { Archive, CalendarClock, CircleDashed, Clock, Inbox } from 'lucide-react';
 import {
@@ -60,6 +60,13 @@ export function Pending() {
   const updateTask = useStore((s) => s.updateTask);
 
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
+  // Keyboard navigation cursor (Pending page · ROADMAP 停车场 ·
+  // 键盘快捷键扩展). Tracked by taskId rather than index so rows
+  // shifting (after archive/complete) don't move the cursor off the
+  // intended row. Auto-selects the first row when rows change and
+  // cursor is unset / stale.
+  const [cursorTaskId, setCursorTaskId] = useState<string | null>(null);
+  const cursorRowRef = useRef<HTMLDivElement | null>(null);
   const { toast, fire, handleAddTag, handleUndo, handleClose } = useReasonToast(
     'pending-queue',
   );
@@ -113,6 +120,92 @@ export function Pending() {
     setDetailTaskId(row.taskId);
   }, []);
 
+  // Keep cursor pointing at a row that still exists. If the focused
+  // row was just completed / archived / disappeared, snap to the
+  // next-nearest row (prefer the row that took its index slot).
+  useEffect(() => {
+    if (rows.length === 0) {
+      if (cursorTaskId !== null) setCursorTaskId(null);
+      return;
+    }
+    if (cursorTaskId === null) {
+      setCursorTaskId(rows[0]!.taskId);
+      return;
+    }
+    const stillExists = rows.some((r) => r.taskId === cursorTaskId);
+    if (!stillExists) {
+      // Best-effort: pick row 0 (oldest) when our row disappeared.
+      // Could try to preserve index, but the row order can shift
+      // unpredictably after a write, so "back to top" is safer.
+      setCursorTaskId(rows[0]!.taskId);
+    }
+  }, [rows, cursorTaskId]);
+
+  // Auto-scroll focused row into view (smooth, nearest). Fires when
+  // cursor moves or row layout shifts.
+  useEffect(() => {
+    cursorRowRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [cursorTaskId]);
+
+  // Page-local shortcuts (ROADMAP 停车场 · 键盘快捷键扩展):
+  //   j / k · move cursor down / up
+  //   d     · mark current row done (via the same reason-toast path
+  //           as clicking the 完成 chip)
+  //   .     · open the task detail drawer for the current row
+  //   x     · archive (extra · also useful for the eligible-old rows)
+  // Bare keys (not bigraph) — won't collide with global `g <key>`
+  // navigation because the leader hasn't been pressed. Ignored when
+  // a typing target has focus (matches keyboardShortcuts.ts).
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      return target.isContentEditable;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (isTypingTarget(e.target)) return;
+      // Don't fire while a modal sits in front (detail drawer / dialog).
+      if (detailTaskId !== null) return;
+      if (rows.length === 0) return;
+      const idx = cursorTaskId
+        ? rows.findIndex((r) => r.taskId === cursorTaskId)
+        : -1;
+      const key = e.key.toLowerCase();
+      if (key === 'j') {
+        e.preventDefault();
+        const next = idx < 0 ? 0 : Math.min(rows.length - 1, idx + 1);
+        setCursorTaskId(rows[next]!.taskId);
+      } else if (key === 'k') {
+        e.preventDefault();
+        const next = idx <= 0 ? 0 : idx - 1;
+        setCursorTaskId(rows[next]!.taskId);
+      } else if (key === 'd') {
+        if (idx < 0) return;
+        e.preventDefault();
+        handleComplete(rows[idx]!);
+      } else if (key === 'x') {
+        if (idx < 0) return;
+        e.preventDefault();
+        handleArchive(rows[idx]!);
+      } else if (key === '.') {
+        if (idx < 0) return;
+        e.preventDefault();
+        handleOpenDetail(rows[idx]!);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [
+    rows,
+    cursorTaskId,
+    detailTaskId,
+    handleComplete,
+    handleArchive,
+    handleOpenDetail,
+  ]);
+
   const handleBulkArchive = useCallback(() => {
     if (summary.eligible === 0) return;
     const msg = `归档超过 ${STALE_THRESHOLD_DAYS} 天仍未决定的 ${summary.eligible} 条事项？\n它们在历史里仍可检索，但不再出现在此队列。`;
@@ -146,6 +239,8 @@ export function Pending() {
               weekdayShort={g.weekdayShort}
               dayLabel={g.dayLabel}
               items={g.items}
+              focusedTaskId={cursorTaskId}
+              focusedRowRef={cursorRowRef}
               onComplete={handleComplete}
               onArchive={handleArchive}
               onOpenDetail={handleOpenDetail}
@@ -358,6 +453,8 @@ function DateGroup({
   weekdayShort,
   dayLabel,
   items,
+  focusedTaskId,
+  focusedRowRef,
   onComplete,
   onArchive,
   onOpenDetail,
@@ -367,6 +464,8 @@ function DateGroup({
   weekdayShort: string;
   dayLabel: string;
   items: PendingRow[];
+  focusedTaskId: string | null;
+  focusedRowRef: React.RefObject<HTMLDivElement>;
   onComplete: (row: PendingRow) => void;
   onArchive: (row: PendingRow) => void;
   onOpenDetail: (row: PendingRow) => void;
@@ -384,17 +483,22 @@ function DateGroup({
         <span className="text-xs text-ink-tertiary">· {items.length} 条</span>
       </header>
       <ul className="flex flex-col gap-1">
-        {items.map((it) => (
-          <li key={it.taskId}>
-            <PendingItemRow
-              row={it}
-              eligible={it.ageDays > STALE_THRESHOLD_DAYS}
-              onComplete={onComplete}
-              onArchive={onArchive}
-              onOpenDetail={onOpenDetail}
-            />
-          </li>
-        ))}
+        {items.map((it) => {
+          const isFocused = it.taskId === focusedTaskId;
+          return (
+            <li key={it.taskId}>
+              <PendingItemRow
+                row={it}
+                eligible={it.ageDays > STALE_THRESHOLD_DAYS}
+                focused={isFocused}
+                {...(isFocused && { focusedRowRef })}
+                onComplete={onComplete}
+                onArchive={onArchive}
+                onOpenDetail={onOpenDetail}
+              />
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
@@ -403,12 +507,16 @@ function DateGroup({
 function PendingItemRow({
   row,
   eligible,
+  focused,
+  focusedRowRef,
   onComplete,
   onArchive,
   onOpenDetail,
 }: {
   row: PendingRow;
   eligible: boolean;
+  focused: boolean;
+  focusedRowRef?: React.RefObject<HTMLDivElement>;
   onComplete: (row: PendingRow) => void;
   onArchive: (row: PendingRow) => void;
   onOpenDetail: (row: PendingRow) => void;
@@ -419,6 +527,7 @@ function PendingItemRow({
     row.source === 'deferred' ? '显式「以后再说」' : '结束时未标记';
   return (
     <div
+      ref={focusedRowRef}
       role="button"
       tabIndex={0}
       onClick={() => onOpenDetail(row)}
@@ -431,6 +540,7 @@ function PendingItemRow({
       className={clsx(
         'group flex cursor-pointer items-center gap-3 rounded-md bg-surface-1 px-3 py-2.5 transition hover:bg-surface-2',
         eligible && 'opacity-85',
+        focused && 'ring-2 ring-cta/60 ring-offset-1 ring-offset-surface-0',
       )}
     >
       <span
