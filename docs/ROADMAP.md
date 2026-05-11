@@ -118,9 +118,24 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 
 ---
 
-### 🚧 v1.0 主线 · 已锁定方案，待实施
+### ✓ v0.10 · sync 模型重审（v1.0 主线分阶段 ship · ERD §7.8）
 
-- **sync 模型重审 → B-revised**（doc-only 决策 2026-05-11 · 详见 ERD §7.8）—— 弃用 v0.7 Yjs CRDT cross-device merge 语义，回到 snapshot 粒度 + 应用层 smart diff（同向 fast-forward / 正交 union / 真冲突弹卡）；Yjs 保留作本地存储 + undo 引擎；push 前强制 HEAD check 作架构 firewall（结构性消除 v0.9.0→v0.9.1 事故根因 · push 在"本地状态不可信窗口"内仍能上传这种可能）。决策过程：方向 A（保 CRDT + Drive 权威化）不解沉默 LWW · 方向 C（真后端 + PostgreSQL）当前不具备条件（精力 / 金钱 / 自托管运维 / 与 §7.1 立场相容）—— C **显式停车**，重启信号写在 §7.8。实施分 5 个独立 PR（P1 push firewall · P2 smart diff 引擎 · P3 接入 sync 路径 · P4 触发器收紧 · P5 history UI），P1 单独可 ship 作最小步。
+> 详细设计：ERD §7.8。触发因素是 v0.9.0→v0.9.1 数据丢失事故的
+> 深因（push full-upload + pull CRDT-merge 同一数据流双角色 ·
+> 没有数据层 firewall）。决策走 B-revised：保 Yjs 本地存储 +
+> undo · sync 层抛弃 CRDT merge 语义 · 回到 snapshot 粒度 +
+> 应用层 smart diff（同向 fast-forward / 正交 union / 真冲突
+> 弹字段级冲突卡）。方向 A（保 CRDT + Drive 权威化）+ 方向 C
+> （真后端 PostgreSQL）显式拒绝 · 重启信号写在 §7.8。
+
+- ✅ **doc-only 决策 PR #45** —— ERD §7.8 完整设计 + §7.4 / §7.7 supersede banner + ROADMAP 立项。
+- ✅ **P1 push firewall** (PR #46) —— fail-closed HEAD check + samplesOnly defense-in-depth · 结构性消除事故根因模式。
+- ✅ **P2 smart diff 引擎** (PR #47) —— `packages/core/src/smartDiff.ts` · entity-级 snapshot diff + 三档分类器 + 23 单测覆盖。
+- ✅ **P3 接入 sync 路径 + 字段级 ConflictPanel** (PR #48) —— `runPush` 预拉取替换为 classify 分发 · `lastPulledDoc` OPFS 字节持久化 · `SyncConflictPanel` modal UI · `applyConflictResolutions` 把用户选择写回 Y.Doc。
+- ✅ **P4 触发器收紧** (PR #49) —— push debounce 60s → 8s · Tauri window blur 即触发 push（PWA 已有 visibilitychange 覆盖）。
+- ✅ **P5 备份历史 UI 升级** (PR #50) —— Settings → 同步 → 备份历史默认首屏可见 · 「预览」(diff vs current counts) + 「回滚到此」(自动备份当前 + replaceFromRemote + runForcePush)。
+- ✅ **dev-only 冲突 UI 演示按钮** (PR #51) —— Settings → 同步 → Dev tools · 合成假冲突触发 ConflictPanel · Apply 短路不动真数据；让用户不需要造真冲突就能验证 UX。
+- ✅ **v0.10.0 release** —— Tag v0.10.0 · Apple Silicon 桌面 + Windows + Linux + Intel Mac DMG 全平台 ship。
 
 ---
 
@@ -141,7 +156,6 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 | §6.4 首次启动「可关闭 AI 引导卡」 | v0.8.2 ship 后两周看 AI 启用率，普遍未启用再设计 | ERD §6.4 |
 | 推荐 model 文档化（opus-via-bridge 偏 structured · sonnet/gpt 更 prose） | v0.8.2 dogfood 已观察到，但样本只有 1 用户；扩 beta 用户后再写入 ERD §6.6 | ERD §6.6 |
 | 定时自动备份 · 用户可见可配置 | 扩用户基数前 | ROADMAP 数据安全段 |
-| **可读格式导出**（Markdown 反思 / CSV 任务 / iCal 日程） | "作者跑路了我也能拿到自己数据"心智的真正闭环。当前 JSON / `.dryj` 导出只是底线门槛——schema 太 DayRail-specific，没有别的软件能直接吃；要真"换软件继续用"得有 markdown / csv / ical 这种通用格式。触发：我自己想用 jq 之外的方式查老反思 / 想把日程导进系 macOS Calendar / 有 beta 用户提"我导出来想给别的工具看"；或者 v1.0 sync 重审时一起做 | 待写 ERD §7.x 草稿 |
 | action 层 + syncController 端到端集成测 | 扩用户基数前 | ERD §7.7 round 5/6/7 |
 | WebDAV / iCloud / Dropbox 等替代同步后端 | 真实用户提出 Drive 不便 / 想自托管 —— v0.7 设计阶段判定 Drive 够用，v0.8.2 dogfood 后转向桌面端 + Drive refresh token 解决体验问题，多后端进一步停车 | ERD §7.3 |
 | **PWA `KEY_CONNECTED` localStorage 在 SW 升级后被清的 bug** | 桌面端 ship 后 PWA 同步问题不再是用户主路径，bug 影响降级；v0.9 实装中如果路过 SW 升级路径顺手修也行 | `apps/web/src/lib/sync/driveAuth.ts:28` |
@@ -635,14 +649,23 @@ dogfood 发现 `claude-opus-4-7 via claude-bridge` 即使经过 5 轮 prompt ite
 - ✅ **PR-C · Drive 授权切到 desktop OAuth pattern** —— PR #15 已 ship；authorization-code flow + PKCE + `keyring` crate 存 refresh token 到 OS keychain。
 - ✅ **桌面图标 × 2** —— PR #16 修原 SVG 嵌套 transform 数学 bug（黑屁股根因）→ PR #17 加 macOS HIG 标准 ~10% 透明 safe-area + 暖底 + 75% 画布填充。
 - ✅ **v0.9.0 release** —— PR #18 bump 三处 desktop 版本号到 0.9.0 → 第一次 tag push 失败（PR #19 修 CI pnpm 10 → 7 匹配 lockfile v5.4；PR #20 整个删掉 `APPLE_*` env 块因 tauri-action 把 set-but-empty 当 "请导入 cert" 处理）→ 第三次 tag push 4/4 平台全绿 → 草稿 release 自动生成 → CLI publish。完整 ship-notes 见 ERD History 顶部 v0.9.0 条目。
+- ✅ **v0.9.1-0.9.10 patch 串** —— 桌面端 dogfood 收尾各种小修：drag-drop 工具栏 misleading storage indicator 隐藏 (#22) · `samplesOnly` 数据丢失根因事故 (#24) · 自动备份机制 · Mac dev mode strip indicator · etc. v0.9.10 收尾 PWA + 桌面端共用 codebase 的稳态。
+- ✅ **v0.9.11 dnd-kit 完整迁移** —— PR #43（日历规则抽屉）+ PR #44（CycleView + BacklogDrawer + 跨 cell 多容器视觉反馈 · dnd-kit 官方 multipleContainers 模式）· 弃用之前手卷的 HTML5 drag 整套。v0.9.11 release。
 - 🟡 **PR-D 平台抛光**（菜单栏 / dock / 文件选择器 / 系统通知）—— 可选，dogfood 攒到信号再做。
-- 🟡 **macOS 代码签名 + notarization** —— Apple Developer Program enrollment 进行中，下个 v0.9.x 补。`release.yml` 头部已留 doc-comment 块说明恢复哪 6 个 `APPLE_*` env 字段。
+- 🟡 **macOS 代码签名 + notarization** —— Apple Developer Program enrollment 进行中，下个 v0.10.x 补。`release.yml` 头部已留 doc-comment 块说明恢复哪 6 个 `APPLE_*` env 字段。
 
-### 接下来可能做（v0.9 ship 后的候选 · 触发条件未到）
+### v0.10 主线（已收官 · 2026-05-11）
 
-- v0.9.1 候选：通知 API / 文件选择器 / 全局快捷键等 PWA 限制项的桌面端补全（dogfood 攒到信号再做）
-- v0.9.x 候选：**AI 全局记忆**（结论未定）/ AI 多场景全开（Decompose / Observe）—— 等 v0.8.2 累积更多反思数据再决定
-- v0.8.3 小修候选：§6.4 AI 引导卡 UI / 「AI 优化我的背景」按钮 / 推荐 model 文档化 —— 桌面端 ship 优先；这些慢慢来
+- ✅ **v1.0 sync 重审 5 期 PR 全部 ship** —— 详见上方「v0.10 · sync 模型重审」段。
+- ✅ **可读格式导出**（Markdown 反思 / CSV 任务 / iCal 日程）—— 此前停车场项 · ship 时间忘记标，本次清理同步 confirmed shipped。位于 Settings → 同步 → 可读格式导出。"作者跑路了我也能拿到自己数据" 心智的真正闭环 —— DayRail-specific 的 JSON / `.dryj` 只是底线，markdown / csv / ical 让用户能换软件继续用。
+- ✅ **v0.10.0 release** —— Tag v0.10.0 · 4 平台全过（v0.9.11 时 Intel Mac DMG 因 cross-compile bundle_dmg.sh 偶发 CI flake 失败 · v0.10.0 自然恢复，无需修 release.yml）。
+
+### 接下来可能做（v0.10 ship 后的候选 · 触发条件未到）
+
+- v0.10.1 候选：dogfood v0.10.0 攒到具体反馈再开工 —— 8s debounce 体感 · ConflictPanel 是否真触发过 · smartDiff 误判
+- v0.10.x 候选：**AI 全局记忆**（结论未定 · 不过 v0.8.2 已经 ship 2 周以上，可以开始评估了）/ AI 多场景全开（Decompose / Observe）
+- v0.10.x 小修候选：§6.4 AI 引导卡 UI / 「AI 优化我的背景」按钮 / 键盘快捷键扩展 / Calendar 规则 inline 编辑
+- v0.11+ 候选：定时自动备份 UI · action 层集成测 · ICS 订阅 · HabitPhase 结构化目标
 
 ### 通用回归 checklist（每轮迭代结束都跑一遍）
 
