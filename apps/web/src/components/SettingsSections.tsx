@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { clsx } from 'clsx';
 import {
   Archive,
@@ -67,11 +67,18 @@ import {
 import { syncStore, useSyncStatus } from '@/lib/sync/syncStore';
 import {
   applyImportedUpdate,
+  classify,
+  exportYDocAsUpdate,
   getHolidayDatasetDisplayName,
+  getYDoc,
   listHolidayRegions,
+  replaceFromRemote,
   resolveEnabledHolidayRegions,
+  snapshotDiff,
+  unionTopLevelKeys,
   useStore,
 } from '@dayrail/core';
+import * as Y from 'yjs';
 import { decodeDryj } from '@dayrail/db/dryj';
 import { exportDryjSnapshot } from '@/lib/exportData';
 import {
@@ -1504,7 +1511,10 @@ function AutoBackupListRow() {
 }
 
 function BackupHistoryRow() {
-  const [open, setOpen] = useState(false);
+  // ERD §7.8 P5 · default-open. v1.0 promotes backup history from
+  // a hidden subview to first-class — it's the user's rollback
+  // surface when smart-diff's silent same-direction / orthogonal /
+  // conflict-resolved merge produces a state they want to undo.
   const [items, setItems] = useState<HistoryEntry[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const refresh = async () => {
@@ -1517,43 +1527,41 @@ function BackupHistoryRow() {
     }
   };
   useEffect(() => {
-    if (open && items === null) void refresh();
-  }, [open, items]);
+    if (items === null) void refresh();
+  }, [items]);
   return (
     <div className="flex flex-col">
       <Row
         label="备份历史"
-        description={`Drive 上滚动保留最近 14 份历史快照（按设备 + 时间命名）。`}
+        description={`Drive 上滚动保留最近 14 份历史快照（按设备 + 时间命名）。点「预览」看会变什么；「回滚到此」前自动备份当前到 Downloads。`}
         control={
           <button
             type="button"
-            onClick={() => setOpen((v) => !v)}
+            onClick={() => void refresh()}
             className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
           >
-            {open ? '收起' : '展开'}
+            刷新
           </button>
         }
       />
-      {open && (
-        <div className="flex flex-col gap-2 px-1 pb-3">
-          {err && (
-            <p className="rounded-sm bg-surface-1 px-3 py-2 text-2xs text-warn">{err}</p>
-          )}
-          {items === null && (
-            <p className="text-2xs text-ink-tertiary">读取中…</p>
-          )}
-          {items && items.length === 0 && (
-            <p className="text-2xs text-ink-tertiary">暂无历史。第一次推送后会出现。</p>
-          )}
-          {items && items.length > 0 && (
-            <ul className="flex flex-col gap-1.5">
-              {items.map((it) => (
-                <BackupHistoryItem key={it.fileId} entry={it} onMutated={refresh} />
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
+      <div className="flex flex-col gap-2 px-1 pb-3">
+        {err && (
+          <p className="rounded-sm bg-surface-1 px-3 py-2 text-2xs text-warn">{err}</p>
+        )}
+        {items === null && (
+          <p className="text-2xs text-ink-tertiary">读取中…</p>
+        )}
+        {items && items.length === 0 && (
+          <p className="text-2xs text-ink-tertiary">暂无历史。第一次推送后会出现。</p>
+        )}
+        {items && items.length > 0 && (
+          <ul className="flex flex-col gap-1.5">
+            {items.map((it) => (
+              <BackupHistoryItem key={it.fileId} entry={it} onMutated={refresh} />
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
@@ -1565,33 +1573,50 @@ function BackupHistoryItem({
   entry: HistoryEntry;
   onMutated: () => void;
 }) {
-  const [busy, setBusy] = useState<null | 'restore' | 'download' | 'delete'>(null);
+  const [busy, setBusy] = useState<
+    null | 'preview' | 'rollback' | 'download' | 'delete'
+  >(null);
   const [err, setErr] = useState<string | null>(null);
-  const onRestore = async () => {
+  const [previewing, setPreviewing] = useState<Uint8Array | null>(null);
+  const onPreview = async () => {
+    setBusy('preview');
+    setErr(null);
+    try {
+      const bytes = await downloadDryjById(entry.fileId);
+      decodeDryj(bytes); // validate
+      setPreviewing(bytes);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const onRollback = async () => {
+    // Auto-backup gate: dump current local to Downloads BEFORE
+    // replacing it, so the user can always recover whatever they
+    // had before this rollback. ERD §7.8 P5 ("回滚 + 反悔" gate).
     if (
       !window.confirm(
-        `从这份历史快照合并到本地？\n\nv0.7 用 CRDT 合并（不覆盖）：历史快照里的数据会和当前本地的并集呈现。下一次推送会把合并结果同步到云端。`,
+        `回滚到这份历史快照？\n\n- 当前本地数据会先自动备份到 Downloads / 下载（dryj 文件 · 之后可以再导回）\n- 然后本地被替换为这份快照的内容\n- 自动推送到 Drive · 替换云端 canonical\n\n继续？`,
       )
     )
       return;
-    setBusy('restore');
+    setBusy('rollback');
     setErr(null);
     try {
-      // v0.7: pulling a history `.dryj` merges into the local Y.Doc
-      // (no overwrite). Useful for "I want to recover something this
-      // history snapshot had that the current state lost".
+      // (1) Auto-backup current local first.
+      exportDryjSnapshot(getDeviceId(), getDeviceLabel());
+      // (2) Download the history bytes and replace local.
       const bytes = await downloadDryjById(entry.fileId);
-      // Validate the container before applying so a corrupt history
-      // file fails clean.
-      decodeDryj(bytes);
-      // applyImportedUpdate (NOT applyRemoteUpdate) so syncController's
-      // afterTransaction listener bumps the dirty cursor — the merged
-      // state is local-only until a push fires; with REMOTE_ORIGIN
-      // dirty would stay 0 and the restore would be stranded.
-      applyImportedUpdate(bytes);
-      setBusy(null);
+      decodeDryj(bytes); // validate
+      replaceFromRemote(bytes);
+      // (3) Force-push so Drive's canonical mirrors the rollback
+      // immediately (other devices' next sync will smart-diff
+      // against this new canonical).
+      await runForcePush();
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
       setBusy(null);
     }
   };
@@ -1662,11 +1687,19 @@ function BackupHistoryItem({
         <div className="flex shrink-0 items-center gap-1">
           <button
             type="button"
-            onClick={onRestore}
+            onClick={onPreview}
             disabled={busy !== null}
             className="rounded-sm bg-surface-2 px-2 py-1 text-2xs font-medium text-ink-secondary hover:bg-surface-3 hover:text-ink-primary disabled:opacity-50"
           >
-            恢复
+            {busy === 'preview' ? '加载…' : '预览'}
+          </button>
+          <button
+            type="button"
+            onClick={onRollback}
+            disabled={busy !== null}
+            className="rounded-sm bg-surface-2 px-2 py-1 text-2xs font-medium text-ink-secondary hover:bg-warn hover:text-surface-0 disabled:opacity-50"
+          >
+            {busy === 'rollback' ? '回滚中…' : '回滚到此'}
           </button>
           <button
             type="button"
@@ -1686,11 +1719,223 @@ function BackupHistoryItem({
           </button>
         </div>
       </div>
-      {err && (
-        <p className="font-mono text-2xs text-warn">{err}</p>
+      {err && <p className="font-mono text-2xs text-warn">{err}</p>}
+      {previewing && (
+        <RollbackPreviewModal
+          historyBytes={previewing}
+          entry={entry}
+          onClose={() => setPreviewing(null)}
+          onConfirmRollback={async () => {
+            setPreviewing(null);
+            await onRollback();
+          }}
+        />
       )}
     </li>
   );
+}
+
+// Rollback preview · summarizes the snapshotDiff between the live
+// local Y.Doc and the chosen history snapshot. Counts only (added /
+// removed / modified entities) — gives the user a sense of blast
+// radius without committing to a full diff viewer in P5's "low (纯
+// UI)" scope. Per-store breakdown is the meaningful axis ("4 tasks
+// will reappear, 12 reflections will be lost"); per-entity sample
+// listing is left for follow-up if needed.
+function RollbackPreviewModal({
+  historyBytes,
+  entry,
+  onClose,
+  onConfirmRollback,
+}: {
+  historyBytes: Uint8Array;
+  entry: HistoryEntry;
+  onClose: () => void;
+  onConfirmRollback: () => Promise<void>;
+}) {
+  const stats = useMemo(() => computeRollbackStats(historyBytes), [historyBytes]);
+  return (
+    <div
+      role="dialog"
+      aria-modal
+      className="fixed inset-0 z-[210] flex items-center justify-center bg-ink-primary/40 px-6 backdrop-blur-sm"
+    >
+      <div className="w-full max-w-xl rounded-md bg-surface-0 shadow-xl">
+        <div className="flex flex-col gap-4 px-5 py-5">
+          <div className="flex flex-col gap-1">
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              回滚预览
+            </span>
+            <p className="text-sm text-ink-primary">
+              快照来源：
+              <span className="text-ink-secondary">
+                {' '}
+                {entry.deviceLabel || '设备'} · {fmtAbsoluteIso(entry.modifiedTime)}
+              </span>
+            </p>
+            <p className="text-2xs text-ink-tertiary">
+              如果回滚，下列变化会立即生效（并自动推送到 Drive 替换云端 canonical）：
+            </p>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            <Stat
+              label="将恢复"
+              value={stats.added}
+              hint="历史里有 · 当前没有"
+            />
+            <Stat
+              label="将删除"
+              value={stats.removed}
+              hint="当前有 · 历史里没有"
+              warn
+            />
+            <Stat
+              label="将变更"
+              value={stats.modified}
+              hint="entity 字段不一样"
+            />
+          </div>
+
+          {stats.byStore.length > 0 && (
+            <div className="rounded-md border border-surface-3 px-3 py-2">
+              <div className="mb-1 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                按 store 拆分
+              </div>
+              <ul className="flex flex-col gap-0.5 font-mono text-2xs text-ink-secondary">
+                {stats.byStore.map(
+                  (s: RollbackStats['byStore'][number]) => (
+                    <li key={s.storeKey}>
+                      {s.storeKey} · +{s.added} / -{s.removed} / ~{s.modified}
+                    </li>
+                  ),
+                )}
+              </ul>
+            </div>
+          )}
+
+          <p className="rounded-md bg-surface-1 px-3 py-2 text-2xs text-ink-tertiary">
+            提示：点「回滚到此」前会先把<strong>当前本地</strong>自动备份成 .dryj
+            文件到 Downloads；如果回滚后想反悔，把那个文件再 import 回来即可。
+          </p>
+
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md bg-surface-2 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => void onConfirmRollback()}
+              className="rounded-md bg-warn px-3 py-1.5 text-xs font-medium text-surface-0 transition hover:brightness-95"
+            >
+              回滚到此
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  hint,
+  warn,
+}: {
+  label: string;
+  value: number;
+  hint: string;
+  warn?: boolean;
+}) {
+  return (
+    <div
+      className={
+        warn
+          ? 'rounded-md border border-warn/40 bg-warn/5 px-3 py-2'
+          : 'rounded-md border border-surface-3 bg-surface-1 px-3 py-2'
+      }
+    >
+      <div className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+        {label}
+      </div>
+      <div
+        className={
+          warn
+            ? 'mt-0.5 text-lg font-semibold text-warn'
+            : 'mt-0.5 text-lg font-semibold text-ink-primary'
+        }
+      >
+        {value}
+      </div>
+      <div className="font-mono text-[10px] text-ink-tertiary">{hint}</div>
+    </div>
+  );
+}
+
+interface RollbackStats {
+  added: number;
+  removed: number;
+  modified: number;
+  byStore: Array<{
+    storeKey: string;
+    added: number;
+    removed: number;
+    modified: number;
+  }>;
+}
+
+function computeRollbackStats(historyBytes: Uint8Array): RollbackStats {
+  // Clone the live Y.Doc so snapshotDiff doesn't read mid-mutation.
+  const currentBytes = exportYDocAsUpdate();
+  const currentDoc = new Y.Doc();
+  Y.applyUpdate(currentDoc, currentBytes);
+  const historyDoc = new Y.Doc();
+  Y.applyUpdate(historyDoc, decodeDryj(historyBytes).update);
+  const keys = unionTopLevelKeys([currentDoc, historyDoc]);
+  // Direction: current → history. So `added` = in history but not
+  // current (would be restored on rollback); `removed` = in current
+  // but not history (would be lost). `classify` itself isn't needed
+  // here — we just want the raw diff counts.
+  const diff = snapshotDiff(currentDoc, historyDoc, keys);
+  const byStoreMap = new Map<
+    string,
+    { added: number; removed: number; modified: number }
+  >();
+  let added = 0;
+  let removed = 0;
+  let modified = 0;
+  for (const c of diff.changes) {
+    if (c.kind === 'added') added++;
+    else if (c.kind === 'removed') removed++;
+    else if (c.kind === 'modified') modified++;
+    const bucket =
+      byStoreMap.get(c.storeKey) ?? { added: 0, removed: 0, modified: 0 };
+    if (c.kind === 'added') bucket.added++;
+    else if (c.kind === 'removed') bucket.removed++;
+    else bucket.modified++;
+    byStoreMap.set(c.storeKey, bucket);
+  }
+  // Bridge the classify import so the prod bundle keeps the symbol —
+  // future P5.x preview can show classification (same-direction /
+  // orthogonal / conflict) too.
+  void classify;
+  void applyImportedUpdate;
+  return {
+    added,
+    removed,
+    modified,
+    byStore: [...byStoreMap.entries()]
+      .map(([storeKey, v]) => ({ storeKey, ...v }))
+      .sort(
+        (a, b) =>
+          b.added + b.removed + b.modified - (a.added + a.removed + a.modified),
+      ),
+  };
 }
 
 function fmtRelativeMs(ms: number): string {
