@@ -1,7 +1,12 @@
 import { clsx } from 'clsx';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { Check, ChevronDown, NotebookPen } from 'lucide-react';
 import * as RadixHoverCard from '@radix-ui/react-hover-card';
+import { useDndContext, useDroppable } from '@dnd-kit/core';
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
 import type { ExternalEvent, TaskPriority } from '@dayrail/core';
 import { ExternalEventChip } from './ExternalEventChip';
 import {
@@ -18,7 +23,7 @@ import {
 import type { RailColor } from '@/data/sample';
 import { RAIL_COLOR_HEX } from './railColors';
 import { CycleCell } from './CycleCell';
-import { TASK_DRAG_MIME } from './BacklogDrawer';
+import { useDragMirror } from '@/lib/dragMirror';
 import {
   Popover,
   PopoverContent,
@@ -50,14 +55,6 @@ interface Props {
    *  renders when at least one of `days` has entries; pills inside
    *  remain draggable so the user can drop them back onto any rail. */
   offRailByDate?: Record<string, SlotTaskSummary[]>;
-  /** Drag-hover state, lifted to CycleView so it's shared across all
-   *  sections. With per-section state, dragging across a section
-   *  boundary stranded the previous section's highlight (its dragOver
-   *  no longer fires, and window-level dragend only clears at the
-   *  end of the drag). One shared key means at most one cell + rail
-   *  glows at a time across the whole grid. Format: `${railId}|${date}`. */
-  dragHoverKey: string | null;
-  onDragHoverKeyChange: (next: string | null) => void;
   todayISO: string;
   templateChoices: TemplateChoice[];
   /** Dates in this section's `days` slice that already have a written
@@ -73,20 +70,11 @@ interface Props {
   onOpenReflection: (date: string) => void;
   onOverride: (date: string, nextTemplate: TemplateKey) => void;
   onClearOverride: (date: string) => void;
-  /** End-of-slot drop (drag onto cell whitespace). Position is omitted
-   *  → store action assigns no `slotOrder`, leaves the derived sort. */
-  onDropTask?: (taskId: string, date: string, railId: string) => void;
-  /** §4.1 v0.4.4 · between-pill drop. CycleCell resolves the drop
-   *  position into a final ordered list (since only the UI knows the
-   *  current visual order of the destination slot). Parent decides
-   *  same-slot reorder vs cross-slot move-and-place from `(date,
-   *  railId)` and the dragged task's current slot. */
-  onDropTaskAt?: (
-    taskId: string,
-    date: string,
-    railId: string,
-    orderedTaskIds: string[],
-  ) => void;
+  /** Whether drag-drop is wired (i.e. CycleView is mounted). When
+   *  false, cells render without useDroppable so other surfaces using
+   *  CycleSection (none currently, but kept as an opt-in for future
+   *  read-only views) don't accidentally accept drops. */
+  draggable?: boolean;
   onClearSlot?: (taskId: string) => void;
   onMarkTaskDone?: (taskId: string) => void;
   onUndoTaskDone?: (taskId: string) => void;
@@ -110,8 +98,6 @@ export function CycleSection({
   days,
   slotsByKey,
   offRailByDate,
-  dragHoverKey,
-  onDragHoverKeyChange,
   todayISO,
   templateChoices,
   reflectedDates,
@@ -119,8 +105,7 @@ export function CycleSection({
   onOpenReflection,
   onOverride,
   onClearOverride,
-  onDropTask,
-  onDropTaskAt,
+  draggable = true,
   onClearSlot,
   onMarkTaskDone,
   onUndoTaskDone,
@@ -148,22 +133,28 @@ export function CycleSection({
     }
     return any ? perDay : null;
   }, [offRailByDate, days]);
-  // `hoverRailId` falls out of the shared hoverKey (railId|date), but
-  // ONLY when that date belongs to this section's days slice. Without
-  // the date check, contiguous-run grouping breaks the highlight: the
-  // same template can produce several sections (sequence A→B→A → two
-  // A-sections, both rendering the same rail.ids). A bare `railId`
-  // match would light up every clone of the rail across all A
-  // sections. The drag-end / drop window listeners live in CycleView
-  // so the shared state clears exactly once when the gesture ends.
+  // `hoverRailId` derives from dnd-kit's current `over` element. When
+  // the user is dragging a task and `over` points at one of this
+  // section's cells (or a sortable pill inside one), highlight the
+  // rail across this section's days. The date-belongs-to-this-section
+  // check is critical: contiguous-run grouping means the same template
+  // can produce multiple sections rendering the same rail.id, and a
+  // bare railId match would light up every clone across all A sections.
+  const dndCtx = useDndContext();
+  // Multi-container drag mirror — overrides per-cell taskId order
+  // during an active drag so the source cell shrinks and the target
+  // cell expands as the cursor moves. See `apps/web/src/lib/dragMirror.tsx`.
+  const { mirror } = useDragMirror();
   const hoverRailId = useMemo(() => {
-    if (!dragHoverKey) return null;
-    const sep = dragHoverKey.indexOf('|');
-    if (sep < 0) return null;
-    const railId = dragHoverKey.slice(0, sep);
-    const date = dragHoverKey.slice(sep + 1);
-    return days.some((d) => d.date === date) ? railId : null;
-  }, [dragHoverKey, days]);
+    const over = dndCtx.over;
+    if (!over) return null;
+    const data = over.data.current as
+      | { railId?: string; date?: string }
+      | null
+      | undefined;
+    if (!data?.railId || !data.date) return null;
+    return days.some((d) => d.date === data.date) ? data.railId : null;
+  }, [dndCtx.over, days]);
 
   return (
     <section
@@ -221,82 +212,71 @@ export function CycleSection({
                 {days.map((d) => {
                   const slot = slotsByKey.get(`${rail.id}|${d.date}`);
                   const cellKey = `${rail.id}|${d.date}`;
-                  const tasks = slot?.tasks ?? [];
-                  const canDrop = onDropTask != null;
-                  const isHover = dragHoverKey === cellKey;
-                  const railSoftHover = railIsDropTarget && !isHover;
+                  const rawTasks = slot?.tasks ?? [];
+                  // CycleSlot doesn't carry a cycleId field; the
+                  // store layer uses date-derived synthetic IDs of
+                  // the form `cycle-${date}`, matching what CycleView's
+                  // legacy handleDropTask used as fallback.
+                  const cycleId = `cycle-${d.date}`;
+                  // Mirror override: during drag, replace the slot's
+                  // store-derived order with the mirror's ordering for
+                  // this cell. Foreign tasks (active dragged in from
+                  // elsewhere) get their summary from mirror.taskData.
+                  const override = mirror?.orders[cellKey];
+                  const tasks = override
+                    ? (() => {
+                        const bySlotId = new Map(
+                          rawTasks.map((t) => [t.taskId, t] as const),
+                        );
+                        return override
+                          .map(
+                            (id) =>
+                              bySlotId.get(id) ?? mirror.taskData[id],
+                          )
+                          .filter((t): t is SlotTaskSummary => !!t);
+                      })()
+                    : rawTasks;
+                  const taskIds = tasks.map((t) => t.taskId);
                   return (
-                    <td
+                    <DroppableCellTd
                       key={d.date}
-                      onDragOver={
-                        canDrop
-                          ? (e) => {
-                              if (!hasTaskPayload(e)) return;
-                              e.preventDefault();
-                              e.dataTransfer.dropEffect = 'move';
-                              // Monotonic set — React bails when next
-                              // state equals prev, so the ~60Hz dragover
-                              // cadence doesn't cause re-renders once
-                              // the cursor stabilizes on a cell.
-                              if (dragHoverKey !== cellKey) {
-                                onDragHoverKeyChange(cellKey);
-                              }
-                            }
-                          : undefined
-                      }
-                      onDrop={
-                        canDrop
-                          ? (e) => {
-                              const taskId = e.dataTransfer.getData(
-                                TASK_DRAG_MIME,
-                              );
-                              onDragHoverKeyChange(null);
-                              if (!taskId) return;
-                              e.preventDefault();
-                              onDropTask(taskId, d.date, rail.id);
-                            }
-                          : undefined
-                      }
-                      className={clsx(
-                        // Snap, don't fade — see <th> above.
-                        'p-1 align-top',
-                        d.date === todayISO && 'bg-surface-2/40',
-                        railSoftHover && 'bg-cta-soft/15',
-                        isHover && 'bg-cta-soft/30 ring-1 ring-inset ring-cta/60',
-                      )}
+                      enabled={draggable}
+                      cellKey={cellKey}
+                      cycleId={cycleId}
+                      date={d.date}
+                      railId={rail.id}
+                      slotTaskIds={taskIds}
+                      railSoftHover={railIsDropTarget}
+                      isToday={d.date === todayISO}
                     >
-                      <CycleCell
-                        tasks={tasks}
-                        color={rail.color}
-                        date={d.date}
-                        railId={rail.id}
-                        railName={rail.name}
-                        isActiveDragTarget={isHover}
-                        {...(onClearSlot && { onClearTask: onClearSlot })}
-                        {...(onMarkTaskDone && { onMarkTaskDone })}
-                        {...(onUndoTaskDone && { onUndoTaskDone })}
-                        {...(onArchiveTask && { onArchiveTask })}
-                        {...(onUnarchiveTask && { onUnarchiveTask })}
-                        {...(onOpenTaskDetail && { onOpenTaskDetail })}
-                        {...(onOpenTaskProject && { onOpenTaskProject })}
-                        {...(onSetTaskPriority && { onSetTaskPriority })}
-                        {...(onToggleSubItem && { onToggleSubItem })}
-                        {...(onQuickCreate && { onQuickCreate })}
-                        {...(lineLookup && { lineLookup })}
-                        {...(onDropTaskAt && {
-                          onDropTaskAt: (
-                            taskId: string,
-                            orderedTaskIds: string[],
-                          ) =>
-                            onDropTaskAt(
-                              taskId,
-                              d.date,
-                              rail.id,
-                              orderedTaskIds,
-                            ),
-                        })}
-                      />
-                    </td>
+                      <SortableContext
+                        id={cellKey}
+                        items={taskIds}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        <CycleCell
+                          tasks={tasks}
+                          color={rail.color}
+                          date={d.date}
+                          cellKey={cellKey}
+                          cycleId={cycleId}
+                          railId={rail.id}
+                          railName={rail.name}
+                          slotTaskIds={taskIds}
+                          {...(onClearSlot && { onClearTask: onClearSlot })}
+                          {...(onMarkTaskDone && { onMarkTaskDone })}
+                          {...(onUndoTaskDone && { onUndoTaskDone })}
+                          {...(onArchiveTask && { onArchiveTask })}
+                          {...(onUnarchiveTask && { onUnarchiveTask })}
+                          {...(onOpenTaskDetail && { onOpenTaskDetail })}
+                          {...(onOpenTaskProject && { onOpenTaskProject })}
+                          {...(onSetTaskPriority && { onSetTaskPriority })}
+                          {...(onToggleSubItem && { onToggleSubItem })}
+                          {...(onQuickCreate && { onQuickCreate })}
+                          {...(lineLookup && { lineLookup })}
+                        />
+                      </SortableContext>
+                    </DroppableCellTd>
                   );
                 })}
               </tr>
@@ -311,7 +291,28 @@ export function CycleSection({
                   <OffRailRowLabel />
                 </th>
                 {days.map((d) => {
-                  const offRailTasks = sectionOffRail.get(d.date) ?? [];
+                  const offRailCellKey = `__offrail__|${d.date}`;
+                  const rawOffRailTasks = sectionOffRail.get(d.date) ?? [];
+                  // Off-rail rows participate in the same mirror so
+                  // pills dragged out of an off-rail cell visually
+                  // leave it just like real rails do.
+                  const override = mirror?.orders[offRailCellKey];
+                  const offRailTasks = override
+                    ? (() => {
+                        const bySlotId = new Map(
+                          rawOffRailTasks.map(
+                            (t) => [t.taskId, t] as const,
+                          ),
+                        );
+                        return override
+                          .map(
+                            (id) =>
+                              bySlotId.get(id) ?? mirror.taskData[id],
+                          )
+                          .filter((t): t is SlotTaskSummary => !!t);
+                      })()
+                    : rawOffRailTasks;
+                  const offRailTaskIds = offRailTasks.map((t) => t.taskId);
                   return (
                     <td
                       key={d.date}
@@ -320,23 +321,38 @@ export function CycleSection({
                         d.date === todayISO && 'bg-surface-2/40',
                       )}
                     >
-                      <CycleCell
-                        tasks={offRailTasks}
-                        color="slate"
-                        date={d.date}
-                        railId="__offrail__"
-                        railName="未归属"
-                        {...(onClearSlot && { onClearTask: onClearSlot })}
-                        {...(onMarkTaskDone && { onMarkTaskDone })}
-                        {...(onUndoTaskDone && { onUndoTaskDone })}
-                        {...(onArchiveTask && { onArchiveTask })}
-                        {...(onUnarchiveTask && { onUnarchiveTask })}
-                        {...(onOpenTaskDetail && { onOpenTaskDetail })}
-                        {...(onOpenTaskProject && { onOpenTaskProject })}
-                        {...(onSetTaskPriority && { onSetTaskPriority })}
-                        {...(onToggleSubItem && { onToggleSubItem })}
-                        {...(lineLookup && { lineLookup })}
-                      />
+                      {/* Off-rail pills are draggable BACK onto real
+                          rails (the source-side data is bogus, but
+                          handleDragEnd only reads the *over* data for
+                          destination — source railId can be __offrail__
+                          freely). No useDroppable on the td: off-rail
+                          isn't a drop target, only a source surface. */}
+                      <SortableContext
+                        id={offRailCellKey}
+                        items={offRailTaskIds}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        <CycleCell
+                          tasks={offRailTasks}
+                          color="slate"
+                          date={d.date}
+                          cellKey={offRailCellKey}
+                          cycleId={`cycle-${d.date}`}
+                          railId="__offrail__"
+                          railName="未归属"
+                          slotTaskIds={offRailTaskIds}
+                          {...(onClearSlot && { onClearTask: onClearSlot })}
+                          {...(onMarkTaskDone && { onMarkTaskDone })}
+                          {...(onUndoTaskDone && { onUndoTaskDone })}
+                          {...(onArchiveTask && { onArchiveTask })}
+                          {...(onUnarchiveTask && { onUnarchiveTask })}
+                          {...(onOpenTaskDetail && { onOpenTaskDetail })}
+                          {...(onOpenTaskProject && { onOpenTaskProject })}
+                          {...(onSetTaskPriority && { onSetTaskPriority })}
+                          {...(onToggleSubItem && { onToggleSubItem })}
+                          {...(lineLookup && { lineLookup })}
+                        />
+                      </SortableContext>
                     </td>
                   );
                 })}
@@ -349,8 +365,54 @@ export function CycleSection({
   );
 }
 
-function hasTaskPayload(e: React.DragEvent<HTMLTableCellElement>): boolean {
-  return Array.from(e.dataTransfer.types).includes(TASK_DRAG_MIME);
+// DroppableCellTd · `useDroppable` wrapper for a single (rail × date)
+// cell. When a task is being dragged and dnd-kit's collision detection
+// picks this cell as the `over`, isOver lights up the ring + tint.
+// railSoftHover is the section-derived "any cell of this rail is over"
+// state, used for the lower-saturation rail-row tint.
+function DroppableCellTd({
+  enabled,
+  cellKey,
+  cycleId,
+  date,
+  railId,
+  slotTaskIds,
+  railSoftHover,
+  isToday,
+  children,
+}: {
+  enabled: boolean;
+  cellKey: string;
+  cycleId: string;
+  date: string;
+  railId: string;
+  slotTaskIds: string[];
+  railSoftHover: boolean;
+  isToday: boolean;
+  children: ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: cellKey,
+    disabled: !enabled,
+    data: { type: 'cell', cellKey, cycleId, date, railId, slotTaskIds },
+  });
+  const showOver = enabled && isOver;
+  const showSoftRail = enabled && railSoftHover && !showOver;
+  return (
+    <td
+      ref={setNodeRef}
+      className={clsx(
+        // Snap, don't fade — 60Hz pointer events outpace any CSS
+        // transition; mid-fade trails look like stale highlights.
+        'p-1 align-top',
+        isToday && 'bg-surface-2/40',
+        showSoftRail && 'bg-cta-soft/15',
+        showOver && 'bg-cta-soft/30 ring-1 ring-inset ring-cta/60',
+      )}
+    >
+      {children}
+    </td>
+  );
 }
 
 function SectionMiniHeader({

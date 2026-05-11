@@ -14,6 +14,7 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useDraggable } from '@dnd-kit/core';
 import { INBOX_LINE_ID, useStore, type Line, type Task } from '@dayrail/core';
 import { selectBacklogTasks } from '@/pages/cycleFromStore';
 import { TaskDetailDrawer } from '@/pages/Tasks';
@@ -424,10 +425,9 @@ function GroupBySwitch({
   );
 }
 
-/** Mime type our drag uses to pass a task id between the Backlog
- *  drawer and Cycle-section drop targets. Keeping it exported here
- *  so the drop side can reference the same string. */
-export const TASK_DRAG_MIME = 'application/x-dayrail-task';
+// (Drag MIME removed in the dnd-kit migration — drag IDs now flow
+// through `active.id` + `data.type === 'task'` instead of HTML5
+// dataTransfer payloads.)
 
 function QuickCreateInput({
   linesMap,
@@ -563,19 +563,37 @@ function BacklogCard({
     ? RAIL_COLOR_HEX[projectColor as keyof typeof RAIL_COLOR_HEX]
     : undefined;
   const isDeferred = task.status === 'deferred';
-  // HTML5 drag suppresses the click that follows a drag gesture, so a
-  // plain onClick works correctly for "tap opens detail, drag to a
-  // Cycle cell to schedule" without extra disambiguation logic.
+  // dnd-kit drag source. Backlog pills are useDraggable (not useSortable):
+  // they don't reorder among themselves via drag, just get dragged to
+  // CycleView cells. App-level handleDragEnd (App.tsx) reads
+  // `data.current.type = 'task'` and dispatches scheduleTaskToRail
+  // against the target cell. PointerSensor's 4px activation constraint
+  // (set in App.tsx) means a plain click on the card to open detail
+  // doesn't accidentally start a drag.
+  // Build a SlotTaskSummary preview from the Task so the multi-
+  // container mirror (dragMirror.tsx) can render this pill inside a
+  // cycle cell during drag without reaching back into the store.
+  // Backlog tasks are pending by definition (filtered by status in
+  // selectBacklogTasks); other fields default to the empty shape.
+  const summary = {
+    taskId: task.id,
+    title: task.title,
+    state: 'pending' as const,
+    isAutoTask: false,
+    hasNote: false,
+    subItemsDone: 0,
+    subItemsTotal: 0,
+    ...(task.priority && { priority: task.priority }),
+  };
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: task.id,
+    data: { type: 'task', source: 'backlog', summary },
+  });
   return (
     <div
-      role={onOpen ? 'button' : undefined}
-      tabIndex={onOpen ? 0 : undefined}
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData(TASK_DRAG_MIME, task.id);
-        e.dataTransfer.setData('text/plain', task.title);
-        e.dataTransfer.effectAllowed = 'move';
-      }}
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
       onClick={onOpen}
       onKeyDown={
         onOpen
@@ -592,7 +610,10 @@ function BacklogCard({
           ? '之前标记为「以后再说」· 拖到格子即重新排期,点开查看详情'
           : '拖到格子即排期,点开查看详情'
       }
-      className="group flex cursor-grab items-start gap-2 rounded-md bg-surface-1 px-2 py-2 transition hover:bg-surface-2 active:cursor-grabbing"
+      className={clsx(
+        'group flex cursor-grab items-start gap-2 rounded-md bg-surface-1 px-2 py-2 transition hover:bg-surface-2 active:cursor-grabbing',
+        isDragging && 'opacity-60',
+      )}
     >
       {accent && (
         <span
