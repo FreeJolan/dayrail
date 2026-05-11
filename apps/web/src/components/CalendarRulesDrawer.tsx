@@ -1,6 +1,23 @@
-import { useCallback, useId, useMemo, useRef, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import { GripVertical, Pencil, Plus, X } from 'lucide-react';
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import {
   listHolidayRegions,
   getHolidayDatasetDisplayName,
@@ -992,167 +1009,83 @@ function PriorityOrderSection({
     null,
   );
 
-  // Drag state. The drag-and-drop handlers live on the container (not
-  // per-row), so the deadzones above the first row and below the last
-  // row no longer eat the gesture: the user can hover anywhere inside
-  // the container's padding — even far above or below the rows —
-  // and `computeDropIdx` snaps the indicator to the nearest gap.
-  //
-  // `dropIdx` is the index into the without-dragged list at which the
-  // dragged item will be reinserted. Range: 0 (top of list) ..
-  // ids.length (after the last row).
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dropIdx, setDropIdx] = useState<number | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
-
-  const computeDropIdx = useCallback(
-    (clientY: number): number => {
-      const ids = sortedIds.filter((id) => id !== draggingId);
-      for (let i = 0; i < ids.length; i++) {
-        const el = rowRefs.current.get(ids[i]!);
-        if (!el) continue;
-        const rect = el.getBoundingClientRect();
-        if (clientY < rect.top + rect.height / 2) return i;
-      }
-      return ids.length;
-    },
-    [sortedIds, draggingId],
+  // Drag-and-drop via dnd-kit (PR #43, v0.9.11 migration). Replaces
+  // the hand-rolled HTML5 implementation that had to manually deal
+  // with drop-index math, container deadzones, and WKWebView's
+  // unreliable `dragend` semantics. dnd-kit uses Pointer Events under
+  // the hood — works identically across Tauri webview / PWA, has
+  // built-in keyboard support (Space to pick up, arrows to move,
+  // Space to drop), and the SortableContext component computes the
+  // drop position itself based on `closestCenter` collision.
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      // Tiny activation distance so a click on the row's Edit / Remove
+      // buttons doesn't accidentally start a drag. 4px is enough to
+      // distinguish "user clicked" from "user dragged".
+      activationConstraint: { distance: 4 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
   );
 
-  const onDragStart = (id: string) => (e: React.DragEvent) => {
-    setDraggingId(id);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', id);
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIdx = sortedIds.indexOf(String(active.id));
+    const newIdx = sortedIds.indexOf(String(over.id));
+    if (oldIdx < 0 || newIdx < 0) return;
+    const next = arrayMove(sortedIds, oldIdx, newIdx);
+    void setCalendarRuleOrder(next);
   };
-  const onContainerDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!draggingId) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    const idx = computeDropIdx(e.clientY);
-    if (dropIdx !== idx) setDropIdx(idx);
-  };
-  const onContainerDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
-    // Only clear if the cursor truly left the container (not just
-    // moved between child rows). The relatedTarget is the element
-    // entered next; if it's a descendant of the container, we're
-    // still inside.
-    if (
-      containerRef.current &&
-      e.relatedTarget instanceof Node &&
-      containerRef.current.contains(e.relatedTarget)
-    ) {
-      return;
-    }
-    setDropIdx(null);
-  };
-  const onDragEnd = () => {
-    setDraggingId(null);
-    setDropIdx(null);
-  };
-  const onContainerDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!draggingId) {
-      onDragEnd();
-      return;
-    }
-    e.preventDefault();
-    // WYSIWYG: recompute the drop index from THIS drop event's
-    // clientY rather than reading `dropIdx` from React state, which
-    // is async. The visual indicator may briefly lag, but the
-    // committed drop always matches the cursor at the moment of
-    // release.
-    const idx = computeDropIdx(e.clientY);
-    const ids = sortedIds.filter((id) => id !== draggingId);
-    ids.splice(idx, 0, draggingId);
-    void setCalendarRuleOrder(ids);
-    onDragEnd();
-  };
-
-  // Without-dragged list is the basis for `dropIdx` math.
-  const idsWithoutDragged = useMemo(
-    () => sortedIds.filter((id) => id !== draggingId),
-    [sortedIds, draggingId],
-  );
 
   return (
     <SectionShell
       title="规则列表"
       subtitle="拖拽排序优先级 · 上面的优先 · 点 ✎ 编辑 · 点底部 + 添加新规则"
     >
-      {/* Container catches drag events anywhere inside its padded
-          area, not just on individual rows. py-2 gives a generous
-          drop-zone above the first row and below the last row, so
-          dragging "to position 0" or "to last" works even when the
-          cursor is slightly outside the row's own bounding box. */}
-      <div
-        ref={containerRef}
-        onDragOver={onContainerDragOver}
-        onDragLeave={onContainerDragLeave}
-        onDrop={onContainerDrop}
-        className="flex flex-col gap-1.5 py-2"
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
       >
-        {sortedIds.length === 0 && addingKind === null ? (
-          <EmptyHint text="暂无规则。点下方「+ 添加规则」开始。" />
-        ) : (
-          sortedIds.map((id) => {
-            const r = ruleById.get(id);
-            if (!r) return null;
-            if (editingId === id) {
-              return (
-                <RuleEditCard
-                  key={id}
-                  rule={r}
-                  templates={templates}
-                  effectiveFrom={effectiveFrom}
-                  onClose={() => setEditingId(null)}
-                />
-              );
-            }
-            const isDragged = id === draggingId;
-            const undragIdx = idsWithoutDragged.indexOf(id);
-            // Indicator on this row when dragging:
-            //   `above` if dropIdx points to this row's slot
-            //   `below` only on the last row when dropIdx === length
-            //           (the "drop after the last row" case)
-            const showAbove = !isDragged && dropIdx === undragIdx;
-            const showBelow =
-              !isDragged &&
-              undragIdx === idsWithoutDragged.length - 1 &&
-              dropIdx === idsWithoutDragged.length;
-            return (
-              <div
-                key={id}
-                ref={(el) => {
-                  rowRefs.current.set(id, el);
-                }}
-                draggable
-                onDragStart={onDragStart(id)}
-                onDragEnd={onDragEnd}
-                className={clsx(
-                  'flex items-center gap-2 rounded-md bg-surface-1 px-2 py-1.5 transition',
-                  isDragged && 'opacity-40',
-                  showAbove && 'shadow-[0_-2px_0_0_rgb(var(--ink-primary))]',
-                  showBelow && 'shadow-[0_2px_0_0_rgb(var(--ink-primary))]',
-                )}
-              >
-                <GripVertical
-                  className="h-3.5 w-3.5 shrink-0 cursor-grab text-ink-tertiary"
-                  strokeWidth={1.6}
-                />
-                <KindBadge kind={r.kind} />
-                <span
-                  className="min-w-0 flex-1 truncate text-xs text-ink-secondary"
-                  title={ruleSummary(r, templates)}
-                >
-                  {ruleSummary(r, templates)}
-                </span>
-                <EditButton onClick={() => setEditingId(id)} />
-                <RemoveButton id={id} effectiveFrom={effectiveFrom} />
-              </div>
-            );
-          })
-        )}
-      </div>
+        <SortableContext
+          items={sortedIds}
+          strategy={verticalListSortingStrategy}
+        >
+          <div className="flex flex-col gap-1.5 py-2">
+            {sortedIds.length === 0 && addingKind === null ? (
+              <EmptyHint text="暂无规则。点下方「+ 添加规则」开始。" />
+            ) : (
+              sortedIds.map((id) => {
+                const r = ruleById.get(id);
+                if (!r) return null;
+                if (editingId === id) {
+                  return (
+                    <RuleEditCard
+                      key={id}
+                      rule={r}
+                      templates={templates}
+                      effectiveFrom={effectiveFrom}
+                      onClose={() => setEditingId(null)}
+                    />
+                  );
+                }
+                return (
+                  <SortableRuleRow
+                    key={id}
+                    id={id}
+                    rule={r}
+                    templates={templates}
+                    effectiveFrom={effectiveFrom}
+                    onEdit={() => setEditingId(id)}
+                  />
+                );
+              })
+            )}
+          </div>
+        </SortableContext>
+      </DndContext>
 
       {/* Add-rule entry: kind picker → kind-specific form below. */}
       {addingKind === null ? (
@@ -1166,6 +1099,67 @@ function PriorityOrderSection({
         />
       )}
     </SectionShell>
+  );
+}
+
+function SortableRuleRow({
+  id,
+  rule,
+  templates,
+  effectiveFrom,
+  onEdit,
+}: {
+  id: string;
+  rule: CalendarRule;
+  templates: Template[];
+  effectiveFrom: string | undefined;
+  onEdit: () => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={clsx(
+        'flex items-center gap-2 rounded-md bg-surface-1 px-2 py-1.5',
+        isDragging && 'z-10 opacity-60 shadow-md',
+      )}
+    >
+      {/* Only the grip handle is the drag activator — clicking the
+          edit / remove buttons elsewhere on the row doesn't trigger
+          a drag. This is dnd-kit's `{...listeners} {...attributes}`
+          pattern: attach to the handle, leave the rest alone. The
+          item-level setNodeRef stays on the outer div above. */}
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        aria-label="拖动排序"
+        className="cursor-grab shrink-0 rounded-sm p-0.5 text-ink-tertiary hover:text-ink-secondary active:cursor-grabbing"
+      >
+        <GripVertical className="h-3.5 w-3.5" strokeWidth={1.6} />
+      </button>
+      <KindBadge kind={rule.kind} />
+      <span
+        className="min-w-0 flex-1 truncate text-xs text-ink-secondary"
+        title={ruleSummary(rule, templates)}
+      >
+        {ruleSummary(rule, templates)}
+      </span>
+      <EditButton onClick={onEdit} />
+      <RemoveButton id={id} effectiveFrom={effectiveFrom} />
+    </div>
   );
 }
 
