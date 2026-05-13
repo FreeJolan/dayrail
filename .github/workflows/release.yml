@@ -13,15 +13,15 @@
 #   GOOGLE_DESKTOP_CLIENT_SECRET        — matching client secret (per RFC 8252 not actually
 #                                         confidential, but Google's flow still requires it)
 #
-# Optional Secrets (macOS code signing + notarization, once Apple
-# Developer enrollment completes — currently the workflow ships
-# unsigned macOS .app, see ERD §15.5):
+# macOS Code-Signing + Notarization Secrets (live since 2026-05-13;
+# Apple Developer enrollment completed, GitHub Releases path stays —
+# Developer ID Application cert, NOT Mac App Store distribution):
 #
 #   APPLE_CERTIFICATE                   — base64 of .p12 export of Developer ID Application cert
 #   APPLE_CERTIFICATE_PASSWORD          — .p12 passphrase
 #   APPLE_SIGNING_IDENTITY              — "Developer ID Application: <name> (<team>)"
 #   APPLE_ID                            — Apple ID email
-#   APPLE_PASSWORD                      — app-specific password
+#   APPLE_PASSWORD                      — app-specific password (appleid.apple.com)
 #   APPLE_TEAM_ID                       — 10-char Apple Team ID
 
 name: Release
@@ -97,14 +97,19 @@ jobs:
           # so cargo / rustc / `option_env!` see them directly.
           GOOGLE_DESKTOP_CLIENT_ID: ${{ secrets.GOOGLE_DESKTOP_CLIENT_ID }}
           GOOGLE_DESKTOP_CLIENT_SECRET: ${{ secrets.GOOGLE_DESKTOP_CLIENT_SECRET }}
-          # NOTE · Apple code-signing env block intentionally absent
-          # until Developer Program enrollment completes. tauri-action
-          # treats an empty `APPLE_CERTIFICATE` env var as "cert
-          # provided, please import" and the keychain import fails;
-          # the only way to skip cleanly is to leave the var unset
-          # (not `${{ secrets.APPLE_CERTIFICATE }}` evaluating to "").
-          # Restore the full APPLE_* block (see header comment) once
-          # the secrets exist.
+          # macOS code-signing + notarization · live since 2026-05-13.
+          # tauri-action imports the cert into a temp keychain at
+          # build time, signs the .app with Hardened Runtime, then
+          # submits to Apple's notary service via notarytool. After
+          # notarization the signature is stapled onto the .dmg
+          # before upload to GitHub Releases. Other platforms (win /
+          # linux) ignore these env vars.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
