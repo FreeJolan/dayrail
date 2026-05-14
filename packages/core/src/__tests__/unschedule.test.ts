@@ -56,14 +56,18 @@ describe('detectUnschedule', () => {
     expect(r).toEqual({ shouldEmit: false });
   });
 
-  it('does NOT fire when prior date is today (not overdue)', () => {
+  it('fires when prior date is today (v0.10.x · today unschedules may be defers too)', () => {
+    // v0.4.1 originally treated today as "not overdue yet · silent".
+    // v0.10.x relaxed the gate: pulling today's task off the rail is
+    // just as likely a defer as a calendar adjustment, so let the
+    // user see the toast and decide whether to tag.
     const r = detectUnschedule({
       priorSlot: slot(TODAY),
       priorAdhoc: undefined,
       todayIso: TODAY,
       isAutoHabit: false,
     });
-    expect(r).toEqual({ shouldEmit: false });
+    expect(r).toEqual({ shouldEmit: true, priorDate: TODAY });
   });
 
   it('does NOT fire when prior date is in the future (planning, not slippage)', () => {

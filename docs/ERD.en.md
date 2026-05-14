@@ -924,16 +924,27 @@ isAutoHabit = task.source === 'auto-habit'
 Common gate (both types):
   !isAutoHabit
   priorDate != null
-  priorDate < todayIso      // genuinely overdue
+  priorDate <= todayIso     // today or already overdue
 ```
+
+> **v0.10.x (2026-05-14) gate relaxation**: v0.4.1's original gate
+> was `priorDate < todayIso`, so today's task was treated silently
+> ("not overdue yet · planning, not slippage"). Half a year of
+> dogfood made it clear that **today's reschedule / unschedule is
+> just as likely to be a same-day defer as a calendar adjustment**
+> ("I'm not getting to this today"). Treating today silently dropped
+> half the real defer signal. v0.10.x relaxed the gate to
+> `priorDate <= todayIso`; today's actions now surface the toast and
+> let the user pick the tag. Strictly-future dates (`priorDate >
+> todayIso`) stay silent — no slippage has occurred yet.
 
 - **`reschedule`** — emitted by `maybeEmitReschedule` inside `scheduleTaskToRail` / `scheduleTaskFreeTime` after the binding mutation commits. Extra condition: `nextDate != priorDate` (same-day swaps don't fire).
 - **`unschedule`** — emitted by `maybeEmitUnschedule` inside `unscheduleTask` after the slot / adhoc clear commits. No `next*` condition; the task is headed to nowhere.
 
 **Does NOT fire** (spelled out so implementation boundaries can't drift):
-- Acting on a future-dated task (`priorDate >= todayIso`) — planning, not slippage.
+- Acting on a **strictly-future**-dated task (`priorDate > todayIso`) — planning, not slippage. Pre-v0.10.x this also included today; v0.10.x now fires for today.
 - First-time scheduling (`priorDate == null`).
-- Within-day rail swap (reschedule only, `nextDate == priorDate`).
+- Within-day rail swap (reschedule only, `nextDate == priorDate`) — this branch covers today → today rail swaps just like it does past → past rail swaps.
 - Auto-habit tasks — their `slot` is read-only in the habit detail surface (ERD §5.5.0); neither path is opened in v0.4.1/v0.4.2.
 - `deleteTask` (soft delete has its own Trash vocabulary and a different review surface; see "out of scope" below).
 
