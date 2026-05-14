@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { clsx } from 'clsx';
 import { MoreHorizontal } from 'lucide-react';
 import {
   railAtDate,
@@ -43,6 +44,8 @@ import type { RailColor } from '@/data/sample';
 //   • single vertical timeline of Rail cards — each card shows its
 //     own per-task rows with independent actions (v0.4 multi-task)
 
+const ONLY_WITH_TASKS_STORAGE_KEY = 'dayrail.todayTrack.onlyWithTasks';
+
 export function TodayTrack() {
   const now = useLiveNow();
   const today = toIsoDate(now.asDate);
@@ -74,6 +77,21 @@ export function TodayTrack() {
   );
 
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
+  // "仅显示 Task" filter · default off · persisted to localStorage so
+  // the choice survives reloads. When on, rails with zero tasks today
+  // are hidden from the timeline. The check-in strip and PageHeader
+  // are unaffected — only the per-rail timeline cards filter.
+  const [onlyWithTasks, setOnlyWithTasks] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(ONLY_WITH_TASKS_STORAGE_KEY) === '1';
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      ONLY_WITH_TASKS_STORAGE_KEY,
+      onlyWithTasks ? '1' : '0',
+    );
+  }, [onlyWithTasks]);
 
   const { toast, fire, handleAddTag, handleUndo, handleClose } = useReasonToast(
     'check-in-strip',
@@ -241,6 +259,8 @@ export function TodayTrack() {
           <CheckInStrip queue={checkinQueue} onAction={handleCheckin} />
           <Timeline
             cards={timelineCards}
+            onlyWithTasks={onlyWithTasks}
+            onToggleOnlyWithTasks={() => setOnlyWithTasks((v) => !v)}
             onTaskAction={handleTaskAction}
             onTaskUndo={handleTaskUndo}
             onTaskOpenDetail={(taskId) => setDetailTaskId(taskId)}
@@ -473,23 +493,67 @@ interface TimelineCard {
 
 function Timeline({
   cards,
+  onlyWithTasks,
+  onToggleOnlyWithTasks,
   onTaskAction,
   onTaskUndo,
   onTaskOpenDetail,
 }: {
   cards: TimelineCard[];
+  onlyWithTasks: boolean;
+  onToggleOnlyWithTasks: () => void;
   onTaskAction: (taskId: string, action: CheckInAction) => void;
   onTaskUndo: (taskId: string) => void;
   onTaskOpenDetail: (taskId: string) => void;
 }) {
+  const visibleCards = onlyWithTasks
+    ? cards.filter((c) => c.tasks.length > 0)
+    : cards;
+  // Count label adapts when filtering: "M / N rails" makes it clear
+  // some rails are hidden, vs the flat "N rails" when filter is off.
+  const countLabel =
+    onlyWithTasks && visibleCards.length !== cards.length
+      ? `${visibleCards.length} / ${cards.length} rails`
+      : `${cards.length} rails`;
   return (
     <section className="flex flex-col gap-2.5">
-      <SectionLabel text="Today" right={`${cards.length} rails`} />
-      {cards.length === 0 ? (
-        <p className="text-sm text-ink-tertiary">今日没有需要显示的 Rail。</p>
+      <div className="flex items-baseline justify-between">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          Today
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onToggleOnlyWithTasks}
+            aria-pressed={onlyWithTasks}
+            title={
+              onlyWithTasks
+                ? '点击 · 显示所有 Rail（含没有 task 的）'
+                : '点击 · 仅显示带 task 的 Rail'
+            }
+            className={clsx(
+              'rounded-sm px-2 py-0.5 font-mono text-2xs uppercase tracking-widest transition',
+              onlyWithTasks
+                ? 'bg-cta text-cta-foreground'
+                : 'bg-surface-1 text-ink-tertiary hover:bg-surface-2 hover:text-ink-secondary',
+            )}
+          >
+            仅显示 Task
+          </button>
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            {countLabel}
+          </span>
+        </div>
+      </div>
+      {visibleCards.length === 0 ? (
+        <p className="text-sm text-ink-tertiary">
+          {onlyWithTasks && cards.length > 0
+            ? '今日没有带 task 的 Rail · 关掉「仅显示 Task」看全部。'
+            : '今日没有需要显示的 Rail。'}
+        </p>
       ) : (
         <ul className="flex flex-col gap-2.5">
-          {cards.map((c) => (
+          {visibleCards.map((c) => (
             <li key={c.rail.id}>
               <RailCard
                 rail={{
@@ -511,21 +575,6 @@ function Timeline({
         </ul>
       )}
     </section>
-  );
-}
-
-function SectionLabel({ text, right }: { text: string; right?: string }) {
-  return (
-    <div className="flex items-baseline justify-between">
-      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-        {text}
-      </span>
-      {right && (
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          {right}
-        </span>
-      )}
-    </div>
   );
 }
 
