@@ -69,11 +69,28 @@ describe('detectReschedule', () => {
     expect(r).toEqual({ shouldEmit: false });
   });
 
-  it('does NOT fire when prior date is today (not overdue)', () => {
+  it('fires when prior date is today (v0.10.x · today reschedules may be defers too)', () => {
+    // v0.4.1 originally treated today as "not overdue yet · silent".
+    // v0.10.x relaxed the gate: rescheduling today's task is just as
+    // likely a defer as a calendar adjustment, so let the user see
+    // the toast and decide whether to tag.
     const r = detectReschedule({
       priorSlot: slot(TODAY),
       priorAdhoc: undefined,
       nextDate: '2026-04-25',
+      todayIso: TODAY,
+      isAutoHabit: false,
+    });
+    expect(r).toEqual({ shouldEmit: true, priorDate: TODAY });
+  });
+
+  it('does NOT fire on same-day shuffle even when prior date is today', () => {
+    // Today → today rail swap still hits the `nextDate === priorDate`
+    // filter; the relaxed gate doesn't change this branch.
+    const r = detectReschedule({
+      priorSlot: slot(TODAY),
+      priorAdhoc: undefined,
+      nextDate: TODAY,
       todayIso: TODAY,
       isAutoHabit: false,
     });

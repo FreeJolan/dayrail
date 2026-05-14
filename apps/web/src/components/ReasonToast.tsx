@@ -180,6 +180,27 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
   // it back / rebind via the Schedule popover), not a toast button.
   const showUndo =
     cached.action !== 'reschedule' && cached.action !== 'unschedule';
+  // "Skip tag" affirmation · v0.10.x. Every chip-eligible action gets
+  // an explicit "no tag needed, dismiss this toast" button — clearer
+  // than the ambiguous X / Esc / timeout dismissals (did the user mean
+  // to skip tagging on purpose, or did they not see the toast?). The
+  // button is functionally equivalent to X (no tag added; mutation
+  // stays committed) but reads as a positive affirmation.
+  //
+  // Label varies by action:
+  //   - reschedule · 「正常改期」 (verb-specific reads naturally;
+  //     also carries the "calendar adjustment, not slippage"
+  //     semantic for the ERD §5.5.6 today-gate-relaxed path)
+  //   - everything else · 「正常取消」 (means "dismiss this prompt
+  //     without further action" — works for defer / archive /
+  //     unschedule)
+  //
+  // No tag is stored either way — "无 tag = 正常" is the default
+  // semantic; an explicit "正常" tag would clutter Review's
+  // ShiftTagBars without adding information.
+  const showSkipTagAffirm = showChips;
+  const skipTagLabel =
+    cached.action === 'reschedule' ? '正常改期' : '正常取消';
 
   return createPortal(
     <div className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-6">
@@ -274,6 +295,18 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
           <>
             <span className="h-4 w-px bg-hairline/40" aria-hidden />
             <span className="text-xs text-ink-tertiary">明天的仍会生成</span>
+          </>
+        )}
+        {showSkipTagAffirm && (
+          <>
+            <span className="h-4 w-px bg-hairline/40" aria-hidden />
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-xs font-medium text-ink-secondary underline-offset-2 hover:text-ink-primary hover:underline"
+            >
+              {skipTagLabel}
+            </button>
           </>
         )}
         <button

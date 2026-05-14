@@ -849,16 +849,25 @@ isAutoHabit = task.source === 'auto-habit'
 共享 gate（两种类型都要过）：
   !isAutoHabit
   priorDate != null
-  priorDate < todayIso     // 真的过期
+  priorDate <= todayIso    // 今天或过期都算
 ```
+
+> **v0.10.x（2026-05-14）gate 放宽**：v0.4.1 原始 gate 是
+> `priorDate < todayIso`，今天的 task 被沉默处理（视作"还没过期 ·
+> 是规划不是 slippage"）。半年使用回看，**今天的改期 / 取消排期既
+> 可能是日历调整，也可能就是当天的拖延**（"我今天搞不完"），沉默
+> 处理等于丢掉了一半的真实 defer 信号。v0.10.x 把 gate 放宽到
+> `priorDate <= todayIso`，今天的动作也弹 toast 让用户挑边。严格
+> 未来日期（`priorDate > todayIso`）仍然沉默 —— 还没到那天，自然
+> 谈不上 slippage。
 
 - **`reschedule`** —— 由 `maybeEmitReschedule` 在 `scheduleTaskToRail` / `scheduleTaskFreeTime` 的绑定 mutation 提交后发出。额外条件：`nextDate != priorDate`（同日切换 rail 不算）。
 - **`unschedule`** —— 由 `maybeEmitUnschedule` 在 `unscheduleTask` 清掉 slot / adhoc 后发出。没有 `next*`，task 去向是"没有"。
 
 **明确不触发**的场景（写出来避免实现时边界漂）：
-- 未来日期的 task 上做这两个动作（`priorDate >= todayIso`）—— 这是规划，不是 slippage。
+- **严格未来**日期的 task 上做这两个动作（`priorDate > todayIso`）—— 这是规划，不是 slippage。v0.10.x 前包括 today；现在 today 触发。
 - 首次排期（`priorDate == null`）。
-- 当天内切换 rail（仅 reschedule，`nextDate == priorDate`）。
+- 当天内切换 rail（仅 reschedule，`nextDate == priorDate`）—— 跟改期到今天哪条 rail 无关，今天 → 今天 swap 也走这条 filter。
 - auto-habit task —— `slot` 在 habit 详情页是 read-only（§5.5.0），两条路径都不打开。
 - `deleteTask`（软删有自己的 Trash 事件语义，Review 不走 heatmap；见下文"暂不做"）。
 
