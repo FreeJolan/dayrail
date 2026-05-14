@@ -24,8 +24,24 @@ export type SlotTaskState =
   | 'archived';
 
 export interface SlotTaskSummary {
+  /** Identifier used as the dnd-kit pill id and as the row key.
+   *  ERD §10.6 v0.11 — when this row represents a TaskOccurrence,
+   *  this is the occurrence id; the parent Task is captured on
+   *  `taskId`. For pre-adoption (legacy) Tasks both are the Task id. */
+  rowId: string;
   taskId: string;
+  /** ERD §10.6 v0.11 — set when this summary represents an occurrence
+   *  rather than the bare Task. Action callbacks dispatch on its
+   *  presence. */
+  occurrenceId?: string;
   title: string;
+  /** ERD §10.6 v0.11 — set on occurrence rows whose label differs from
+   *  the parent Task title. Surfaces as a small subtitle so the user
+   *  can tell which Task this occurrence belongs to (e.g., a "调查价格"
+   *  pill is ambiguous on its own; with parentTitle="组装电脑" the
+   *  context lands). Unset on legacy Task rows or on occurrence rows
+   *  whose label equals the parent title (no extra info to surface). */
+  parentTitle?: string;
   state: SlotTaskState;
   isAutoTask: boolean;
   /** Kept as a flag so the tooltip knows to render the note section.

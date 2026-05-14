@@ -225,8 +225,11 @@ export function CycleSection({
                   const override = mirror?.orders[cellKey];
                   const tasks = override
                     ? (() => {
+                        // ERD §10.6 v0.11 — index by `rowId` (occurrence
+                        // id when present, else task id) so the dnd
+                        // mirror's reorder works for occurrence pills too.
                         const bySlotId = new Map(
-                          rawTasks.map((t) => [t.taskId, t] as const),
+                          rawTasks.map((t) => [t.rowId, t] as const),
                         );
                         return override
                           .map(
@@ -236,7 +239,7 @@ export function CycleSection({
                           .filter((t): t is SlotTaskSummary => !!t);
                       })()
                     : rawTasks;
-                  const taskIds = tasks.map((t) => t.taskId);
+                  const taskIds = tasks.map((t) => t.rowId);
                   return (
                     <DroppableCellTd
                       key={d.date}
@@ -301,7 +304,7 @@ export function CycleSection({
                     ? (() => {
                         const bySlotId = new Map(
                           rawOffRailTasks.map(
-                            (t) => [t.taskId, t] as const,
+                            (t) => [t.rowId, t] as const,
                           ),
                         );
                         return override
@@ -312,7 +315,7 @@ export function CycleSection({
                           .filter((t): t is SlotTaskSummary => !!t);
                       })()
                     : rawOffRailTasks;
-                  const offRailTaskIds = offRailTasks.map((t) => t.taskId);
+                  const offRailTaskIds = offRailTasks.map((t) => t.rowId);
                   return (
                     <td
                       key={d.date}

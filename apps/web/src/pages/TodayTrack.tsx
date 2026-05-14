@@ -11,6 +11,7 @@ import {
   useStore,
   type ExternalEvent,
   type RailBoundTaskRow,
+  type SlotEntry,
   type Task,
   type TimelineRow,
 } from '@dayrail/core';
@@ -54,6 +55,7 @@ export function TodayTrack() {
   const railRevisions = useStore((s) => s.railRevisions);
   const railTombstones = useStore((s) => s.railTombstones);
   const tasks = useStore((s) => s.tasks);
+  const taskOccurrences = useStore((s) => s.taskOccurrences);
   const lines = useStore((s) => s.lines);
   const templates = useStore((s) => s.templates);
   const calendarRules = useStore((s) => s.calendarRules);
@@ -117,6 +119,7 @@ export function TodayTrack() {
           railRevisions,
           railTombstones,
           tasks,
+          taskOccurrences,
           templates,
           calendarRules,
           calendarRuleRevisions,
@@ -129,6 +132,7 @@ export function TodayTrack() {
       railRevisions,
       railTombstones,
       tasks,
+      taskOccurrences,
       templates,
       calendarRules,
       calendarRuleRevisions,
@@ -137,9 +141,11 @@ export function TodayTrack() {
     ],
   );
 
-  // Per-task UI state. Every task on every rail gets its own row — no
-  // "primary task" shortcut. `state` is derived from Task.status plus
-  // the rail's time window (past-ended pending → unmarked).
+  // Per-row UI state. Each entry on every rail gets its own row — for
+  // occurrence-managed Tasks one row per occurrence, for pre-adoption
+  // Tasks one row per Task. `state` is derived from the entry's
+  // effective status (occurrence.status when present, else task.status)
+  // plus the rail's time window (past-ended pending → unmarked).
   const timelineCards = useMemo(
     () =>
       timelineRows.map((row) => ({
@@ -151,16 +157,53 @@ export function TodayTrack() {
         ),
         start: row.plannedStart.slice(11, 16) || '00:00',
         end: row.plannedEnd.slice(11, 16) || '00:00',
-        tasks: row.tasks.map<TimelineTask>((t) =>
-          taskToTimelineTask(t, row, now.asDate, shifts),
+        tasks: row.entries.map<TimelineTask>((e) =>
+          entryToTimelineTask(e, row, now.asDate, shifts),
         ),
       })),
     [timelineRows, now.asDate, shifts],
   );
 
+  const completeTaskOccurrence = useStore((s) => s.completeTaskOccurrence);
+  const reopenTaskOccurrence = useStore((s) => s.reopenTaskOccurrence);
+  const archiveTaskOccurrence = useStore((s) => s.archiveTaskOccurrence);
+
+  // RailCard's row id is the occurrence id when the row represents an
+  // occurrence; otherwise it's the Task id. Resolve either way before
+  // dispatching, so the action lands on the correct entity.
   const handleTaskAction = useCallback(
-    (taskId: string, action: CheckInAction) => {
-      const task = tasks[taskId];
+    (rowId: string, action: CheckInAction) => {
+      const occ = taskOccurrences[rowId];
+      if (occ) {
+        const task = tasks[occ.taskId];
+        if (!task) return;
+        // Reason-toast contract still uses taskId for shift-attribution
+        // continuity; v0.11+ refines this further (see ERD §5.5.6
+        // amendment) — here we keep the toast keyed to taskId for now.
+        const railRev = occ.slot
+          ? railAtDate(
+              { railRevisions, railTombstones },
+              occ.slot.railId,
+              occ.slot.date,
+            )
+          : undefined;
+        if (action === 'done') {
+          void completeTaskOccurrence(occ.id);
+        } else if (action === 'archive') {
+          void archiveTaskOccurrence(occ.id);
+        }
+        // 'defer' on an occurrence is undefined in v0.11 — no
+        // occurrence-level deferred state. Fall through to a noop so
+        // the user's tag still surfaces via the toast.
+        fire({
+          taskId: task.id,
+          ...(railRev && { railId: railRev.railId }),
+          displayName: occ.label?.trim() || task.title || railRev?.name || '',
+          action,
+        });
+        return;
+      }
+      const task = tasks[rowId];
       if (!task) return;
       const railRev = task.slot
         ? railAtDate(
@@ -170,46 +213,61 @@ export function TodayTrack() {
           )
         : undefined;
       fire({
-        taskId,
+        taskId: rowId,
         ...(railRev && { railId: railRev.railId }),
         displayName: railRev?.name ?? task.title,
         action,
       });
     },
-    [tasks, railRevisions, railTombstones, fire],
+    [
+      tasks,
+      taskOccurrences,
+      railRevisions,
+      railTombstones,
+      fire,
+      completeTaskOccurrence,
+      archiveTaskOccurrence,
+    ],
   );
 
-  // Settled task → pending. No Reason toast — this is the "undo, I
-  // pressed the wrong thing" escape hatch.
+  // Settled row → pending. Routes to the right entity; for occurrences
+  // calls reopenTaskOccurrence, for legacy Tasks resets task.status.
   const handleTaskUndo = useCallback(
-    (taskId: string) => {
-      const task = tasks[taskId];
+    (rowId: string) => {
+      const occ = taskOccurrences[rowId];
+      if (occ) {
+        if (occ.status === 'done' || occ.status === 'archived') {
+          void reopenTaskOccurrence(occ.id);
+        }
+        return;
+      }
+      const task = tasks[rowId];
       if (!task) return;
       if (
         task.status !== 'done' &&
         task.status !== 'deferred' &&
         task.status !== 'archived' &&
-        task.status !== 'pending' // unmarked lives as pending + past time
+        task.status !== 'pending'
       ) {
         return;
       }
-      void updateTask(taskId, {
+      void updateTask(rowId, {
         status: 'pending',
         doneAt: undefined,
         deferredAt: undefined,
         archivedAt: undefined,
       });
     },
-    [tasks, updateTask],
+    [tasks, taskOccurrences, updateTask, reopenTaskOccurrence],
   );
 
   const checkinQueue = useMemo<CheckInEntry[]>(
     () =>
       selectCheckinQueue(
-        { tasks, railRevisions, railTombstones },
+        { tasks, taskOccurrences, railRevisions, railTombstones },
         now.asDate,
       ).map((row) => carriedRowToCheckInEntry(row)),
-    [tasks, railRevisions, railTombstones, now.asDate],
+    [tasks, taskOccurrences, railRevisions, railTombstones, now.asDate],
   );
 
   // Reset today: sweep every Task carrying a today-slot and push it
@@ -263,7 +321,13 @@ export function TodayTrack() {
             onToggleOnlyWithTasks={() => setOnlyWithTasks((v) => !v)}
             onTaskAction={handleTaskAction}
             onTaskUndo={handleTaskUndo}
-            onTaskOpenDetail={(taskId) => setDetailTaskId(taskId)}
+            onTaskOpenDetail={(rowId) => {
+              // If the row id is an occurrence id, open its parent
+              // Task detail drawer (occurrences live inside the Task
+              // drawer per ERD §10.6).
+              const occ = taskOccurrences[rowId];
+              setDetailTaskId(occ ? occ.taskId : rowId);
+            }}
           />
         </>
       )}
@@ -341,37 +405,77 @@ function isCurrentWindow(
   return startMs <= nowMs && nowMs <= endMs;
 }
 
-function taskToTimelineTask(
-  task: Task,
+/** ERD §10.6 v0.11 — derive a TimelineTask UI shape from a slot
+ *  entry. When the entry carries an occurrence, title falls back
+ *  through `occurrence.label ?? task.title`, status comes from the
+ *  occurrence, and `milestonePercent` reads `occurrence.percent`
+ *  (otherwise the legacy task-level fields apply). The row id is the
+ *  occurrence id when present so action callbacks can route to
+ *  occurrence-level APIs; the parent Task id is captured separately
+ *  on `occurrenceId`/`taskId` mapping by the caller. */
+function entryToTimelineTask(
+  entry: SlotEntry,
   row: TimelineRow,
   now: Date,
   shifts: ReturnType<typeof useStore.getState>['shifts'],
 ): TimelineTask {
+  const { task, occurrence } = entry;
   const subItems = task.subItems ?? [];
+  // Effective status: occurrence drives if present, else task.
+  const effectiveStatus: 'pending' | 'in-progress' | 'done' | 'deferred' | 'archived' =
+    occurrence
+      ? occurrence.status === 'done'
+        ? 'done'
+        : occurrence.status === 'archived'
+          ? 'archived'
+          : 'pending'
+      : task.status === 'done'
+        ? 'done'
+        : task.status === 'deferred'
+          ? 'deferred'
+          : task.status === 'archived'
+            ? 'archived'
+            : 'pending';
+
   let state: TimelineTask['state'];
-  if (task.status === 'done') state = 'done';
-  else if (task.status === 'deferred') state = 'deferred';
-  else if (task.status === 'archived') state = 'archived';
+  if (effectiveStatus === 'done') state = 'done';
+  else if (effectiveStatus === 'deferred') state = 'deferred';
+  else if (effectiveStatus === 'archived') state = 'archived';
   else {
-    // pending / in-progress. Past-ended → unmarked, else pending.
     const endMs = Date.parse(row.plannedEnd);
     if (!Number.isNaN(endMs) && endMs < now.getTime()) state = 'unmarked';
     else state = 'pending';
   }
+
   const tags = latestTagsForTask(task.id, shifts);
   const trimmedNote = task.note?.trim() ?? '';
+  const labelTrimmed = occurrence?.label?.trim() ?? '';
+  const hasDistinctLabel =
+    labelTrimmed.length > 0 && labelTrimmed !== task.title;
+  const title = hasDistinctLabel ? labelTrimmed : task.title;
+  // Surface parent Task title as a subtitle when the occurrence label
+  // is meaningfully different — keeps "调查价格" pills tied back to
+  // their "组装电脑" origin (ERD §10.6).
+  const parentTitle = hasDistinctLabel ? task.title : undefined;
+  const milestone = occurrence?.percent ?? task.milestonePercent;
+  // For occurrence rows the "subItems" badge would double-count what's
+  // already implied by the per-occurrence row layout; only show on
+  // pre-adoption Task rows where it still carries information.
+  const subItemsDone = occurrence ? 0 : subItems.filter((s) => s.done).length;
+  const subItemsTotal = occurrence ? 0 : subItems.length;
+
   return {
-    id: task.id,
-    title: task.title,
+    id: occurrence?.id ?? task.id,
+    title,
+    ...(parentTitle !== undefined && { parentTitle }),
     state,
     hasNote: trimmedNote.length > 0,
     ...(trimmedNote.length > 0 && { note: trimmedNote }),
-    subItemsDone: subItems.filter((s) => s.done).length,
-    subItemsTotal: subItems.length,
-    ...(task.milestonePercent != null && {
-      milestonePercent: task.milestonePercent,
-    }),
+    subItemsDone,
+    subItemsTotal,
+    ...(milestone != null && { milestonePercent: milestone }),
     isAutoTask: task.source === 'auto-habit',
+    ...(occurrence !== undefined && { occurrenceId: occurrence.id }),
     ...(tags.length > 0 && { tags }),
   };
 }

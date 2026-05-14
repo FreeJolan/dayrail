@@ -68,6 +68,10 @@ export function CycleView() {
   const railRevisions = useStore((s) => s.railRevisions);
   const railTombstones = useStore((s) => s.railTombstones);
   const tasks = useStore((s) => s.tasks);
+  // Hoisted up for `deriveCycleFromStore` (occurrence-aware slot
+  // summaries per ERD §10.6 v0.11). Other taskOccurrence-related
+  // store subscriptions live near the handlers further below.
+  const taskOccurrencesMap = useStore((s) => s.taskOccurrences);
   const lines = useStore((s) => s.lines);
   const calendarRules = useStore((s) => s.calendarRules);
   const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
@@ -140,6 +144,7 @@ export function CycleView() {
           railRevisions,
           railTombstones,
           tasks,
+          taskOccurrences: taskOccurrencesMap,
           lines,
           calendarRules,
           calendarRuleRevisions,
@@ -155,6 +160,7 @@ export function CycleView() {
       railRevisions,
       railTombstones,
       tasks,
+      taskOccurrencesMap,
       lines,
       calendarRules,
       calendarRuleRevisions,
@@ -267,11 +273,26 @@ export function CycleView() {
   // view's session ID so the resulting mutations join the same
   // Edit-Session undo chain as everything else in this view.
 
+  // ERD §10.6 v0.11 — CycleCell pills in occurrence-managed mode pass
+  // the occurrence id as `rowId`. Detect via the taskOccurrences map
+  // (subscribed at the top of this component) and route accordingly.
+  // The store actions below handle both branches; the legacy task
+  // path stays exactly as before.
+  const completeTaskOccurrence = useStore((s) => s.completeTaskOccurrence);
+  const reopenTaskOccurrence = useStore((s) => s.reopenTaskOccurrence);
+  const archiveTaskOccurrence = useStore((s) => s.archiveTaskOccurrence);
+  const scheduleTaskOccurrence = useStore((s) => s.scheduleTaskOccurrence);
+
   const handleClearSlot = useCallback(
-    (taskId: string) => {
-      void unscheduleTask(taskId, sessionId ?? undefined);
+    (rowId: string) => {
+      const occ = taskOccurrencesMap[rowId];
+      if (occ) {
+        void scheduleTaskOccurrence(occ.id, null, sessionId ?? undefined);
+        return;
+      }
+      void unscheduleTask(rowId, sessionId ?? undefined);
     },
-    [unscheduleTask, sessionId],
+    [taskOccurrencesMap, scheduleTaskOccurrence, unscheduleTask, sessionId],
   );
 
   const { toast, fire, handleAddTag, handleUndo, handleClose } = useReasonToast(
@@ -279,8 +300,32 @@ export function CycleView() {
   );
 
   const handleMarkTaskDone = useCallback(
-    (taskId: string) => {
-      const task = tasks[taskId];
+    (rowId: string) => {
+      const occ = taskOccurrencesMap[rowId];
+      if (occ) {
+        const task = tasks[occ.taskId];
+        const railRev = occ.slot
+          ? railAtDate(
+              { railRevisions, railTombstones },
+              occ.slot.railId,
+              occ.slot.date,
+            )
+          : undefined;
+        void completeTaskOccurrence(occ.id, sessionId ?? undefined);
+        fire({
+          taskId: occ.taskId,
+          ...(railRev && { railId: railRev.railId }),
+          displayName:
+            occ.label?.trim() ||
+            task?.title ||
+            railRev?.name ||
+            '',
+          ...(sessionId && { sessionId }),
+          action: 'done',
+        });
+        return;
+      }
+      const task = tasks[rowId];
       if (!task) return;
       const railRev = task.slot
         ? railAtDate(
@@ -290,14 +335,22 @@ export function CycleView() {
           )
         : undefined;
       fire({
-        taskId,
+        taskId: rowId,
         ...(railRev && { railId: railRev.railId }),
         displayName: railRev?.name ?? task.title,
         ...(sessionId && { sessionId }),
         action: 'done',
       });
     },
-    [tasks, railRevisions, railTombstones, fire, sessionId],
+    [
+      tasks,
+      taskOccurrencesMap,
+      railRevisions,
+      railTombstones,
+      fire,
+      sessionId,
+      completeTaskOccurrence,
+    ],
   );
 
   const handleSetTaskPriority = useCallback(
@@ -314,48 +367,51 @@ export function CycleView() {
   );
 
   const handleUndoTaskDone = useCallback(
-    (taskId: string) => {
-      // Going through updateTask (not a dedicated event) so the flip
-      // is tagged with the Cycle-View edit session — users can still
-      // wrap a misclick into the session undo. `doneAt: undefined`
-      // clears the completion stamp; status → pending is the only
-      // sane landing for "nope, not done".
+    (rowId: string) => {
+      const occ = taskOccurrencesMap[rowId];
+      if (occ) {
+        void reopenTaskOccurrence(occ.id, sessionId ?? undefined);
+        return;
+      }
       void updateTask(
-        taskId,
+        rowId,
         { status: 'pending', doneAt: undefined },
         sessionId ?? undefined,
       );
     },
-    [updateTask, sessionId],
+    [taskOccurrencesMap, reopenTaskOccurrence, updateTask, sessionId],
   );
 
   const handleArchiveTask = useCallback(
-    (taskId: string) => {
-      // Same reasoning as handleUndoTaskDone — updateTask keeps the
-      // mutation inside the session rather than the store's dedicated
-      // `archiveTask` action (which writes a `task.archived` event
-      // without sessionId).
+    (rowId: string) => {
+      const occ = taskOccurrencesMap[rowId];
+      if (occ) {
+        void archiveTaskOccurrence(occ.id, sessionId ?? undefined);
+        return;
+      }
       void updateTask(
-        taskId,
+        rowId,
         { status: 'archived', archivedAt: new Date().toISOString() },
         sessionId ?? undefined,
       );
     },
-    [updateTask, sessionId],
+    [taskOccurrencesMap, archiveTaskOccurrence, updateTask, sessionId],
   );
 
   const handleUnarchiveTask = useCallback(
-    (taskId: string) => {
-      // Restores an archived task back to pending. Clears archivedAt
-      // so the task re-enters the normal flow (Backlog / Cycle pill).
-      // Session-tagged for symmetry with archive.
+    (rowId: string) => {
+      const occ = taskOccurrencesMap[rowId];
+      if (occ) {
+        void reopenTaskOccurrence(occ.id, sessionId ?? undefined);
+        return;
+      }
       void updateTask(
-        taskId,
+        rowId,
         { status: 'pending', archivedAt: undefined },
         sessionId ?? undefined,
       );
     },
-    [updateTask, sessionId],
+    [taskOccurrencesMap, reopenTaskOccurrence, updateTask, sessionId],
   );
 
   const handleToggleSubItem = useCallback(
@@ -387,14 +443,16 @@ export function CycleView() {
   );
 
   const lineLookup = useCallback(
-    (taskId: string) => {
+    (rowId: string) => {
+      const occ = taskOccurrencesMap[rowId];
+      const taskId = occ ? occ.taskId : rowId;
       const task = tasks[taskId];
       if (!task) return undefined;
       const line = lines[task.lineId];
       if (!line) return undefined;
       return { name: line.name, color: line.color };
     },
-    [tasks, lines],
+    [tasks, taskOccurrencesMap, lines],
   );
 
   const handleQuickCreate = useCallback(
@@ -491,8 +549,15 @@ export function CycleView() {
                 onUndoTaskDone={handleUndoTaskDone}
                 onArchiveTask={handleArchiveTask}
                 onUnarchiveTask={handleUnarchiveTask}
-                onOpenTaskDetail={(taskId) => setDetailTaskId(taskId)}
-                onOpenTaskProject={handleOpenTaskProject}
+                onOpenTaskDetail={(rowId) => {
+                  // Translate occurrence row → parent Task drawer.
+                  const occ = taskOccurrencesMap[rowId];
+                  setDetailTaskId(occ ? occ.taskId : rowId);
+                }}
+                onOpenTaskProject={(rowId) => {
+                  const occ = taskOccurrencesMap[rowId];
+                  handleOpenTaskProject(occ ? occ.taskId : rowId);
+                }}
                 onSetTaskPriority={handleSetTaskPriority}
                 onToggleSubItem={handleToggleSubItem}
                 onQuickCreate={handleQuickCreate}

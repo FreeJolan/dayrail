@@ -55,6 +55,7 @@ export function Pending() {
   const railRevisions = useStore((s) => s.railRevisions);
   const railTombstones = useStore((s) => s.railTombstones);
   const tasks = useStore((s) => s.tasks);
+  const taskOccurrences = useStore((s) => s.taskOccurrences);
   const lines = useStore((s) => s.lines);
   const shifts = useStore((s) => s.shifts);
   const updateTask = useStore((s) => s.updateTask);
@@ -74,10 +75,10 @@ export function Pending() {
   const rows = useMemo<PendingRow[]>(() => {
     const now = new Date();
     return selectPendingQueue(
-      { tasks, railRevisions, railTombstones },
+      { tasks, taskOccurrences, railRevisions, railTombstones },
       now,
     ).map((r) => adaptRow(r, shifts, now));
-  }, [tasks, railRevisions, railTombstones, shifts]);
+  }, [tasks, taskOccurrences, railRevisions, railTombstones, shifts]);
 
   const summary = useMemo(
     () => ({

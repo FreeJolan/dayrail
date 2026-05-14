@@ -12,9 +12,14 @@
 // overlay for cell state. Check-in / Pending queues iterate Tasks
 // and join Rail for the planned window.
 
-import { type DayRailState, resolveTemplateForDate } from './store';
+import {
+  type DayRailState,
+  resolveTemplateForDate,
+  selectOccurrencesForTask,
+} from './store';
 import { railAtDate, railFromRevision, railsActiveOn } from './revisions';
-import type { Rail, Task } from './types';
+import { deriveTaskStatus, isOccurrenceManaged } from './types';
+import type { Rail, Task, TaskOccurrence } from './types';
 
 export function toIsoDate(d: Date = new Date()): string {
   const yr = d.getFullYear();
@@ -69,6 +74,11 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  *  three fields filled in. */
 export interface CarriedTaskRow {
   task: Task;
+  /** ERD §10.6 v0.11. When this row represents a TaskOccurrence
+   *  rather than the bare Task, the occurrence is set; UI surfaces
+   *  read `occurrence.label ?? task.title` and prefer `occurrence.percent`
+   *  for the milestone badge. Omitted for legacy (no-occurrence) Tasks. */
+  occurrence?: TaskOccurrence;
   rail?: Rail;
   plannedStart?: string; // ISO datetime
   plannedEnd?: string; // ISO datetime
@@ -101,25 +111,60 @@ export type RailBoundTaskRow = Required<CarriedTaskRow>;
  *  overdue task on Tuesday shows the time/name the rail had on
  *  Tuesday, not whatever the user set later. */
 export function selectCheckinQueue(
-  state: Pick<DayRailState, 'tasks' | 'railRevisions' | 'railTombstones'>,
+  state: Pick<
+    DayRailState,
+    'tasks' | 'taskOccurrences' | 'railRevisions' | 'railTombstones'
+  >,
   now: Date = new Date(),
 ): RailBoundTaskRow[] {
   const nowMs = now.getTime();
   const cutoff = nowMs - MS_PER_DAY;
   const rows: RailBoundTaskRow[] = [];
-  for (const task of Object.values(state.tasks)) {
-    if (task.status !== 'pending') continue;
-    if (!task.slot) continue;
-    const rev = railAtDate(state, task.slot.railId, task.slot.date);
-    if (!rev) continue;
-    if (!rev.showInCheckin) continue;
+  // Helper: per-slot row builder. Returns null when the slot doesn't
+  // surface in the check-in window.
+  const buildRow = (
+    task: Task,
+    occurrence: TaskOccurrence | undefined,
+    slot: { cycleId: string; date: string; railId: string },
+  ): RailBoundTaskRow | null => {
+    const rev = railAtDate(state, slot.railId, slot.date);
+    if (!rev) return null;
+    if (!rev.showInCheckin) return null;
     const rail = railFromRevision(rev);
-    const { start, end } = plannedWindow(rail, task.slot.date);
+    const { start, end } = plannedWindow(rail, slot.date);
     const endMs = Date.parse(end);
-    if (Number.isNaN(endMs)) continue;
-    if (endMs > nowMs) continue; // hasn't ended yet
-    if (endMs <= cutoff) continue; // > 24 h ago — §5.7 queue
-    rows.push({ task, rail, plannedStart: start, plannedEnd: end });
+    if (Number.isNaN(endMs)) return null;
+    if (endMs > nowMs) return null;
+    if (endMs <= cutoff) return null;
+    return {
+      task,
+      ...(occurrence !== undefined && { occurrence }),
+      rail,
+      plannedStart: start,
+      plannedEnd: end,
+    } as RailBoundTaskRow;
+  };
+  for (const task of Object.values(state.tasks)) {
+    const occs = selectOccurrencesForTask(state, task.id);
+    if (isOccurrenceManaged(occs)) {
+      // ERD §10.6 v0.11 — adoption-gated. Each pending slot-bearing
+      // occurrence surfaces independently. The host Task's legacy slot
+      // is ignored on this branch.
+      const derived = deriveTaskStatus(task, occs);
+      if (derived === 'archived' || derived === 'deleted') continue;
+      for (const occ of occs) {
+        if (occ.status !== 'pending') continue;
+        if (!occ.slot) continue;
+        const row = buildRow(task, occ, occ.slot);
+        if (row) rows.push(row);
+      }
+    } else {
+      // Legacy / pre-adoption path: Task.slot is the scheduling source.
+      if (task.status !== 'pending') continue;
+      if (!task.slot) continue;
+      const row = buildRow(task, undefined, task.slot);
+      if (row) rows.push(row);
+    }
   }
   return rows.sort(byPlannedStartRow);
 }
@@ -136,12 +181,45 @@ export function selectCheckinQueue(
  *  shows the rail's appearance on the slot's date, not the current
  *  one. */
 export function selectPendingQueue(
-  state: Pick<DayRailState, 'tasks' | 'railRevisions' | 'railTombstones'>,
+  state: Pick<
+    DayRailState,
+    'tasks' | 'taskOccurrences' | 'railRevisions' | 'railTombstones'
+  >,
   now: Date = new Date(),
 ): CarriedTaskRow[] {
   const nowMs = now.getTime();
   const rows: CarriedTaskRow[] = [];
   for (const task of Object.values(state.tasks)) {
+    if (task.status === 'deleted') continue;
+    const occs = selectOccurrencesForTask(state, task.id);
+    if (isOccurrenceManaged(occs)) {
+      // ERD §10.6 v0.11 — per-occurrence rows. Each pending occurrence
+      // with a slot whose planned window has ended surfaces; no
+      // 'deferred' status on occurrences (the host Task carries that
+      // semantics if at all).
+      const derived = deriveTaskStatus(task, occs);
+      if (derived === 'archived') continue;
+      for (const occ of occs) {
+        if (occ.status !== 'pending') continue;
+        if (!occ.slot) continue;
+        const rev = railAtDate(state, occ.slot.railId, occ.slot.date);
+        if (!rev) continue;
+        const rail = railFromRevision(rev);
+        const { start, end } = plannedWindow(rail, occ.slot.date);
+        const endMs = Date.parse(end);
+        if (Number.isNaN(endMs)) continue;
+        if (endMs > nowMs) continue;
+        rows.push({
+          task,
+          occurrence: occ,
+          rail,
+          plannedStart: start,
+          plannedEnd: end,
+        });
+      }
+      continue;
+    }
+    // Legacy path — Task.slot single, or slot-less deferred.
     if (task.status !== 'pending' && task.status !== 'deferred') continue;
     if (task.slot) {
       const rev = railAtDate(state, task.slot.railId, task.slot.date);
@@ -155,9 +233,6 @@ export function selectPendingQueue(
       }
       rows.push({ task, rail, plannedStart: start, plannedEnd: end });
     } else if (task.status === 'deferred') {
-      // Slot-less deferred task — e.g. an Inbox item the user pushed
-      // to "later" without scheduling. No planned window to check;
-      // include unconditionally so the user can still resolve it.
       rows.push({ task });
     }
   }
@@ -168,6 +243,14 @@ export function selectPendingQueue(
 // Today-timeline selector.
 // ------------------------------------------------------------------
 
+/** ERD §10.6 v0.11 · one renderable item inside a slot. When the host
+ *  Task has TaskOccurrences, each occurrence in this slot is one
+ *  entry; otherwise the bare Task is the single entry. */
+export interface SlotEntry {
+  task: Task;
+  occurrence?: TaskOccurrence;
+}
+
 export interface TimelineRow {
   /** Key: `${railId}|${date}` — guaranteed unique per day. */
   key: string;
@@ -175,9 +258,14 @@ export interface TimelineRow {
   date: string;
   plannedStart: string;
   plannedEnd: string;
-  /** All tasks scheduled to (date, railId). Empty = bare rail.
-   *  ERD §4.1 "Slot ↔ Task one-to-many" — a single rail on a single
-   *  date may carry multiple tasks. */
+  /** ERD §10.6 v0.11 — per-slot entries. The rendering source of truth.
+   *  Each `entry` is either `{ task }` (legacy / no occurrences) or
+   *  `{ task, occurrence }` (one row per occurrence on this slot). */
+  entries: SlotEntry[];
+  /** @deprecated v0.11+: read `entries` instead. Mirrors
+   *  `entries.map(e => e.task)`; preserved so existing UI surfaces
+   *  keep compiling while they migrate. Will be removed in a future
+   *  cleanup. */
   tasks: Task[];
 }
 
@@ -194,6 +282,7 @@ export function selectTodayTimeline(
     DayRailState,
     | 'rails'
     | 'tasks'
+    | 'taskOccurrences'
     | 'templates'
     | 'calendarRules'
     | 'calendarRuleRevisions'
@@ -205,19 +294,40 @@ export function selectTodayTimeline(
 ): TimelineRow[] {
   const activeTemplate = selectActiveTemplateKey(state, date);
 
-  // Index tasks by (date, railId) — used both for the task-carrying
-  // rail set (b) and for the per-row task lookup. v0.4 supports
-  // multiple tasks per (rail, date) so the value is an array.
-  const tasksByKey = new Map<string, Task[]>();
+  // ERD §10.6 v0.11 · indexing strategy. Two passes build a
+  // per-(railId|date) bucket of SlotEntry. (1) iterate tasks: tasks
+  // WITHOUT occurrences land directly via task.slot (legacy); tasks
+  // WITH occurrences contribute one entry per matching occurrence
+  // (task.slot is ignored when occurrences are non-empty per §10.6).
+  // (2) collect referenced railIds for the (b) rail-set fold-in.
+  const entriesByKey = new Map<string, SlotEntry[]>();
   const taskRailIds = new Set<string>();
+
   for (const t of Object.values(state.tasks)) {
-    if (!t.slot) continue;
     if (t.status === 'deleted') continue;
+    const occs = selectOccurrencesForTask(state, t.id);
+    if (isOccurrenceManaged(occs)) {
+      for (const occ of occs) {
+        if (!occ.slot) continue;
+        if (occ.slot.date !== date) continue;
+        if (occ.status === 'archived') continue;
+        const key = `${occ.slot.railId}|${date}`;
+        const bucket = entriesByKey.get(key);
+        const entry: SlotEntry = { task: t, occurrence: occ };
+        if (bucket) bucket.push(entry);
+        else entriesByKey.set(key, [entry]);
+        taskRailIds.add(occ.slot.railId);
+      }
+      continue;
+    }
+    // Legacy / pre-adoption path
+    if (!t.slot) continue;
     if (t.slot.date !== date) continue;
     const key = `${t.slot.railId}|${date}`;
-    const bucket = tasksByKey.get(key);
-    if (bucket) bucket.push(t);
-    else tasksByKey.set(key, [t]);
+    const bucket = entriesByKey.get(key);
+    const entry: SlotEntry = { task: t };
+    if (bucket) bucket.push(entry);
+    else entriesByKey.set(key, [entry]);
     taskRailIds.add(t.slot.railId);
   }
 
@@ -225,7 +335,7 @@ export function selectTodayTimeline(
   // timeline reflects each rail's appearance on `date` rather than
   // its current-state mirror. (a) takes the rails whose date-effective
   // templateKey matches today's template; (b) folds in any rail
-  // referenced by a task slot, even if its template differs (carries
+  // referenced by a slot entry, even if its template differs (carries
   // the user's explicit park-on-this-rail intent).
   const railsByDate = new Map<string, Rail>();
   for (const { railId, revision } of railsActiveOn(state, date)) {
@@ -242,11 +352,13 @@ export function selectTodayTimeline(
   const rows: TimelineRow[] = [];
   for (const [railId, rail] of railsByDate) {
     const { start, end } = plannedWindow(rail, date);
-    // Per-slot sort: pending first, then in-progress/done/deferred,
-    // archived last. Within a group, preserve insertion order.
-    const bucket = tasksByKey.get(`${railId}|${date}`) ?? [];
-    const tasks = [...bucket].sort(
-      (a, b) => taskStatusRank(a) - taskStatusRank(b),
+    // Per-slot sort: pending first, then done, then deferred, archived
+    // last. Within a group, preserve insertion order. Sort key uses
+    // the entry's effective status — for occurrence entries that's
+    // occurrence.status; for legacy task entries that's task.status.
+    const bucket = entriesByKey.get(`${railId}|${date}`) ?? [];
+    const entries = [...bucket].sort(
+      (a, b) => entryStatusRank(a) - entryStatusRank(b),
     );
     rows.push({
       key: `${railId}|${date}`,
@@ -254,7 +366,8 @@ export function selectTodayTimeline(
       date,
       plannedStart: start,
       plannedEnd: end,
-      tasks,
+      entries,
+      tasks: entries.map((e) => e.task),
     });
   }
   return rows.sort((a, b) => a.plannedStart.localeCompare(b.plannedStart));
@@ -274,4 +387,22 @@ function taskStatusRank(t: Task): number {
     default:
       return 4;
   }
+}
+
+/** ERD §10.6 v0.11 — sort rank for a slot entry. Occurrence entries
+ *  use occurrence.status; bare task entries fall back to task.status. */
+function entryStatusRank(entry: SlotEntry): number {
+  if (entry.occurrence) {
+    switch (entry.occurrence.status) {
+      case 'pending':
+        return 0;
+      case 'done':
+        return 1;
+      case 'archived':
+        return 3;
+      default:
+        return 4;
+    }
+  }
+  return taskStatusRank(entry.task);
 }

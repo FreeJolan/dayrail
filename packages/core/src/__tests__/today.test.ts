@@ -140,6 +140,7 @@ function withRevisions<
   railTombstones: Record<string, never>;
   calendarRuleRevisions: Record<string, CalendarRuleRevision[]>;
   calendarRuleTombstones: Record<string, never>;
+  taskOccurrences: Record<string, never>;
 } {
   return {
     ...state,
@@ -149,6 +150,10 @@ function withRevisions<
       Object.values(state.calendarRules ?? {}),
     ),
     calendarRuleTombstones: {},
+    // ERD §10.6 v0.11 — selectors now consume `taskOccurrences`. The
+    // legacy test suite exercises Task-only paths; default-empty
+    // satisfies the type and keeps behavior identical for those tests.
+    taskOccurrences: {},
   };
 }
 

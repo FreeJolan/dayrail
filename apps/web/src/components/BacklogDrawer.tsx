@@ -15,8 +15,20 @@ import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useDraggable } from '@dnd-kit/core';
-import { INBOX_LINE_ID, useStore, type Line, type Task } from '@dayrail/core';
-import { selectBacklogTasks } from '@/pages/cycleFromStore';
+import {
+  INBOX_LINE_ID,
+  useStore,
+  type Line,
+  type Task,
+  type TaskOccurrence,
+} from '@dayrail/core';
+import {
+  backlogItemId,
+  backlogItemTitle,
+  selectBacklogItems,
+  type BacklogItem,
+} from '@/pages/cycleFromStore';
+import { useDragMirror } from '@/lib/dragMirror';
 import { TaskDetailDrawer } from '@/pages/Tasks';
 import {
   Popover,
@@ -42,6 +54,7 @@ type BacklogGroupBy = 'none' | 'priority' | 'project';
 
 export function BacklogDrawer({ open, onToggle }: Props) {
   const tasksMap = useStore((s) => s.tasks);
+  const taskOccurrencesMap = useStore((s) => s.taskOccurrences);
   const linesMap = useStore((s) => s.lines);
   const adhocEventsMap = useStore((s) => s.adhocEvents);
   const createTask = useStore((s) => s.createTask);
@@ -81,34 +94,103 @@ export function BacklogDrawer({ open, onToggle }: Props) {
     setAdding(false);
   };
 
-  const tasks = useMemo(
-    () => selectBacklogTasks({ tasks: tasksMap, adhocEvents: adhocEventsMap }),
-    [tasksMap, adhocEventsMap],
+  // ERD §10.6 v0.11 — items are a discriminated union: either a bare
+  // legacy Task, or a single TaskOccurrence (with its parent Task).
+  // Title / note search and grouping operate on the parent Task's
+  // fields (priority, lineId), with the title fallback going through
+  // `backlogItemTitle` so occurrence labels surface correctly.
+  const allItems = useMemo(
+    () =>
+      selectBacklogItems({
+        tasks: tasksMap,
+        taskOccurrences: taskOccurrencesMap,
+        adhocEvents: adhocEventsMap,
+      }),
+    [tasksMap, taskOccurrencesMap, adhocEventsMap],
   );
+
+  // dnd-kit "multipleContainers" pattern — when a backlog row is being
+  // dragged AND its active has entered some cycle cell (mirror.activeCellKey
+  // is set), the destination cell is rendering a SortableTaskPillRow for
+  // the SAME id. Two registrations of one id in dnd-kit's manager → the
+  // newer one (cell) "captures" the active and the source registration
+  // is left orphaned; if the user then drops outside the cell the source
+  // can never re-arm. Fix: unmount the source row during cross-container
+  // drag so dnd-kit transfers the active cleanly to the cell. We DON'T
+  // filter when activeCellKey is null (drag just started, hasn't entered
+  // a cell yet) — keeping the source mounted ensures dnd-kit has the
+  // initial registration anchored.
+  const { mirror } = useDragMirror();
+  const items = useMemo(() => {
+    if (!mirror?.activeId || !mirror.activeCellKey) return allItems;
+    const activeId = mirror.activeId;
+    return allItems.filter((it) => backlogItemId(it) !== activeId);
+  }, [allItems, mirror?.activeId, mirror?.activeCellKey]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return tasks;
-    return tasks.filter(
-      (t) =>
-        t.title.toLowerCase().includes(q) ||
-        (t.note?.toLowerCase().includes(q) ?? false),
-    );
-  }, [tasks, query]);
+    if (!q) return items;
+    return items.filter((it) => {
+      if (backlogItemTitle(it).toLowerCase().includes(q)) return true;
+      if (it.task.note?.toLowerCase().includes(q)) return true;
+      return false;
+    });
+  }, [items, query]);
+
+  // ERD §10.6 v0.11 — group runs of consecutive same-task occurrence
+  // rows into a compound visual ("split-task" card with parent header
+  // + per-occurrence sub-rows). Single legacy task rows render as the
+  // existing simple card. The selectBacklogItems sort already keeps
+  // same-task occurrences adjacent (priority + task.order ties), and
+  // priority/project bucketing doesn't break that invariant since
+  // occurrences inherit their parent's priority/lineId.
+  type BacklogVisualGroup =
+    | { kind: 'single-task'; task: Task; item: Extract<BacklogItem, { kind: 'task' }> }
+    | {
+        kind: 'split-task';
+        task: Task;
+        occurrences: Array<Extract<BacklogItem, { kind: 'occurrence' }>>;
+      };
+  const visuallyGroup = (rows: BacklogItem[]): BacklogVisualGroup[] => {
+    const out: BacklogVisualGroup[] = [];
+    let i = 0;
+    while (i < rows.length) {
+      const first = rows[i]!;
+      if (first.kind === 'task') {
+        out.push({ kind: 'single-task', task: first.task, item: first });
+        i++;
+        continue;
+      }
+      const taskId = first.task.id;
+      const occs: Array<Extract<BacklogItem, { kind: 'occurrence' }>> = [];
+      while (
+        i < rows.length &&
+        rows[i]!.kind === 'occurrence' &&
+        rows[i]!.task.id === taskId
+      ) {
+        occs.push(rows[i] as Extract<BacklogItem, { kind: 'occurrence' }>);
+        i++;
+      }
+      out.push({ kind: 'split-task', task: first.task, occurrences: occs });
+    }
+    return out;
+  };
 
   // Backlog can be viewed flat or broken into sections. Group order
   // is deterministic so the drawer doesn't jitter across edits:
-  //   - priority: P0 → P1 → P2 → 未设置
+  //   - priority: P0 → P1 → P2 → 未设置 (priority lives on the parent Task)
   //   - project:  Inbox first (pinned), then Lines by name
-  const groups = useMemo<Array<{ key: string; label: string; items: Task[] }>>(() => {
+  const groups = useMemo<
+    Array<{ key: string; label: string; items: BacklogItem[] }>
+  >(() => {
     if (groupBy === 'none' || filtered.length === 0) return [];
     if (groupBy === 'priority') {
-      const buckets = new Map<string, Task[]>();
+      const buckets = new Map<string, BacklogItem[]>();
       const order = ['P0', 'P1', 'P2', '__none'];
       for (const k of order) buckets.set(k, []);
-      for (const t of filtered) {
-        const key = t.priority ?? '__none';
-        buckets.get(key)!.push(t);
+      for (const it of filtered) {
+        const key = it.task.priority ?? '__none';
+        buckets.get(key)!.push(it);
       }
       return order
         .filter((k) => (buckets.get(k) ?? []).length > 0)
@@ -119,11 +201,11 @@ export function BacklogDrawer({ open, onToggle }: Props) {
         }));
     }
     // groupBy === 'project'
-    const byLine = new Map<string, Task[]>();
-    for (const t of filtered) {
-      const arr = byLine.get(t.lineId) ?? [];
-      arr.push(t);
-      byLine.set(t.lineId, arr);
+    const byLine = new Map<string, BacklogItem[]>();
+    for (const it of filtered) {
+      const arr = byLine.get(it.task.lineId) ?? [];
+      arr.push(it);
+      byLine.set(it.task.lineId, arr);
     }
     const entries = [...byLine.entries()];
     entries.sort(([a], [b]) => {
@@ -174,7 +256,7 @@ export function BacklogDrawer({ open, onToggle }: Props) {
               Backlog
             </span>
             <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
-              {tasks.length}
+              {items.length}
             </span>
             <span className="ml-auto" />
             <button
@@ -267,14 +349,31 @@ export function BacklogDrawer({ open, onToggle }: Props) {
             </div>
           ) : groupBy === 'none' ? (
             <ul className="flex-1 overflow-y-auto px-2">
-              {filtered.map((task) => (
-                <li key={task.id} className="px-2 py-1">
-                  <BacklogCard
-                    task={task}
-                    projectName={linesMap[task.lineId]?.name}
-                    projectColor={linesMap[task.lineId]?.color}
-                    onOpen={() => setDetailTaskId(task.id)}
-                  />
+              {visuallyGroup(filtered).map((g) => (
+                <li
+                  key={
+                    g.kind === 'single-task'
+                      ? backlogItemId(g.item)
+                      : `split-${g.task.id}`
+                  }
+                  className="px-2 py-1"
+                >
+                  {g.kind === 'single-task' ? (
+                    <BacklogCard
+                      item={g.item}
+                      projectName={linesMap[g.task.lineId]?.name}
+                      projectColor={linesMap[g.task.lineId]?.color}
+                      onOpen={() => setDetailTaskId(g.task.id)}
+                    />
+                  ) : (
+                    <BacklogTaskGroupCard
+                      task={g.task}
+                      occurrences={g.occurrences}
+                      projectName={linesMap[g.task.lineId]?.name}
+                      projectColor={linesMap[g.task.lineId]?.color}
+                      onOpen={() => setDetailTaskId(g.task.id)}
+                    />
+                  )}
                 </li>
               ))}
             </ul>
@@ -319,14 +418,31 @@ export function BacklogDrawer({ open, onToggle }: Props) {
                     </button>
                     {!isCollapsed && (
                       <ul className="flex flex-col">
-                        {g.items.map((task) => (
-                          <li key={task.id} className="px-2 py-1">
-                            <BacklogCard
-                              task={task}
-                              projectName={linesMap[task.lineId]?.name}
-                              projectColor={linesMap[task.lineId]?.color}
-                              onOpen={() => setDetailTaskId(task.id)}
-                            />
+                        {visuallyGroup(g.items).map((vg) => (
+                          <li
+                            key={
+                              vg.kind === 'single-task'
+                                ? backlogItemId(vg.item)
+                                : `split-${vg.task.id}`
+                            }
+                            className="px-2 py-1"
+                          >
+                            {vg.kind === 'single-task' ? (
+                              <BacklogCard
+                                item={vg.item}
+                                projectName={linesMap[vg.task.lineId]?.name}
+                                projectColor={linesMap[vg.task.lineId]?.color}
+                                onOpen={() => setDetailTaskId(vg.task.id)}
+                              />
+                            ) : (
+                              <BacklogTaskGroupCard
+                                task={vg.task}
+                                occurrences={vg.occurrences}
+                                projectName={linesMap[vg.task.lineId]?.name}
+                                projectColor={linesMap[vg.task.lineId]?.color}
+                                onOpen={() => setDetailTaskId(vg.task.id)}
+                              />
+                            )}
                           </li>
                         ))}
                       </ul>
@@ -553,44 +669,68 @@ function QuickCreateInput({
 }
 
 function BacklogCard({
-  task,
+  item,
   projectName,
   projectColor,
   onOpen,
 }: {
-  task: Task;
+  item: BacklogItem;
   projectName: string | undefined;
   projectColor: string | undefined;
   onOpen?: () => void;
 }) {
+  const { task } = item;
   const accent = projectColor
     ? RAIL_COLOR_HEX[projectColor as keyof typeof RAIL_COLOR_HEX]
     : undefined;
-  const isDeferred = task.status === 'deferred';
+  // ERD §10.6 v0.11 — `deferred` is a Task-level state; occurrences
+  // can't be deferred. Only legacy task rows show the "以后" badge.
+  const isDeferred = item.kind === 'task' && task.status === 'deferred';
+  const title = backlogItemTitle(item);
+  // For occurrence rows, render the parent Task title as a small
+  // sub-line so the user sees the context — pure occurrence label
+  // alone ("写正文") would be ambiguous when many tasks are split.
+  const showParentTaskLine =
+    item.kind === 'occurrence' &&
+    item.occurrence.label?.trim() &&
+    item.occurrence.label.trim() !== task.title;
   // dnd-kit drag source. Backlog pills are useDraggable (not useSortable):
   // they don't reorder among themselves via drag, just get dragged to
   // CycleView cells. App-level handleDragEnd (App.tsx) reads
-  // `data.current.type = 'task'` and dispatches scheduleTaskToRail
-  // against the target cell. PointerSensor's 4px activation constraint
+  // `data.current.type = 'task'` and dispatches scheduleTaskToRail OR
+  // scheduleTaskOccurrence based on whether `active.id` matches an
+  // entry in taskOccurrences. PointerSensor's 4px activation constraint
   // (set in App.tsx) means a plain click on the card to open detail
   // doesn't accidentally start a drag.
-  // Build a SlotTaskSummary preview from the Task so the multi-
-  // container mirror (dragMirror.tsx) can render this pill inside a
-  // cycle cell during drag without reaching back into the store.
-  // Backlog tasks are pending by definition (filtered by status in
-  // selectBacklogTasks); other fields default to the empty shape.
+  // Build a SlotTaskSummary preview so the multi-container mirror
+  // (dragMirror.tsx) can render this pill inside a cycle cell during
+  // drag without reaching back into the store. Backlog rows are
+  // pending by definition.
+  const dndId = backlogItemId(item);
   const summary = {
+    rowId: dndId,
     taskId: task.id,
-    title: task.title,
+    ...(item.kind === 'occurrence' && {
+      occurrenceId: item.occurrence.id,
+    }),
+    title,
     state: 'pending' as const,
     isAutoTask: false,
     hasNote: false,
     subItemsDone: 0,
     subItemsTotal: 0,
+    ...(item.kind === 'occurrence' &&
+      item.occurrence.percent != null && {
+        milestonePercent: item.occurrence.percent,
+      }),
+    ...(item.kind === 'task' &&
+      task.milestonePercent != null && {
+        milestonePercent: task.milestonePercent,
+      }),
     ...(task.priority && { priority: task.priority }),
   };
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: task.id,
+    id: dndId,
     data: { type: 'task', source: 'backlog', summary },
   });
   return (
@@ -635,10 +775,13 @@ function BacklogCard({
               strokeWidth={1.8}
             />
           )}
-          <span className="text-sm leading-snug text-ink-primary">
+          <span className="text-sm leading-snug text-ink-primary">{title}</span>
+        </div>
+        {showParentTaskLine && (
+          <span className="truncate text-2xs text-ink-tertiary">
             {task.title}
           </span>
-        </div>
+        )}
         <div className="flex flex-wrap items-center gap-1.5">
           {task.priority && (
             <span
@@ -652,9 +795,19 @@ function BacklogCard({
               {task.priority}
             </span>
           )}
+          {item.kind === 'occurrence' && item.occurrence.percent != null && (
+            <span className="font-mono text-2xs tabular-nums text-ink-secondary">
+              {item.occurrence.percent}%
+            </span>
+          )}
           {projectName && (
             <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
               {projectName}
+            </span>
+          )}
+          {item.kind === 'occurrence' && (
+            <span className="rounded-sm bg-surface-2 px-1 py-0.5 font-mono text-[10px] uppercase tracking-widest text-ink-tertiary">
+              切分
             </span>
           )}
           {isDeferred && (
@@ -664,6 +817,148 @@ function BacklogCard({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ERD §10.6 v0.11 — compound card for an occurrence-managed Task with
+// one or more unscheduled occurrences in the Backlog. Header carries
+// the parent Task title + project + priority + 切分 count; sub-rows
+// are the individual draggable occurrences. Header itself is NOT a
+// drag source (the user drags individual occurrences onto slots);
+// clicking the header (or any sub-row) opens the parent Task detail
+// drawer.
+function BacklogTaskGroupCard({
+  task,
+  occurrences,
+  projectName,
+  projectColor,
+  onOpen,
+}: {
+  task: Task;
+  occurrences: Array<Extract<BacklogItem, { kind: 'occurrence' }>>;
+  projectName: string | undefined;
+  projectColor: string | undefined;
+  onOpen?: () => void;
+}) {
+  const accent = projectColor
+    ? RAIL_COLOR_HEX[projectColor as keyof typeof RAIL_COLOR_HEX]
+    : undefined;
+  return (
+    <div className="overflow-hidden rounded-md bg-surface-1">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="flex w-full items-start gap-2 px-2 py-2 text-left transition hover:bg-surface-2"
+        title="点击打开任务详情"
+      >
+        {accent && (
+          <span
+            aria-hidden
+            className="mt-0.5 h-3.5 w-[3px] shrink-0 rounded-sm"
+            style={{ background: accent }}
+          />
+        )}
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="truncate text-sm leading-snug text-ink-primary">
+            {task.title}
+          </span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {task.priority && (
+              <span
+                className={clsx(
+                  'inline-flex h-3.5 min-w-[1.25rem] items-center justify-center rounded-sm px-1 font-mono text-[9px] font-medium uppercase tracking-wider text-white',
+                  task.priority === 'P0' && 'bg-red-500/90',
+                  task.priority === 'P1' && 'bg-amber-500/90',
+                  task.priority === 'P2' && 'bg-slate-400/80',
+                )}
+              >
+                {task.priority}
+              </span>
+            )}
+            {projectName && (
+              <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                {projectName}
+              </span>
+            )}
+            <span className="rounded-sm bg-surface-2 px-1 py-0.5 font-mono text-[10px] uppercase tracking-widest text-ink-tertiary">
+              切分 · {occurrences.length}
+            </span>
+          </div>
+        </div>
+      </button>
+      <ul className="flex flex-col border-t border-hairline/40">
+        {occurrences.map((it) => (
+          <li key={it.occurrence.id}>
+            <BacklogOccurrenceSubRow
+              task={task}
+              occurrence={it.occurrence}
+            />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function BacklogOccurrenceSubRow({
+  task,
+  occurrence,
+}: {
+  task: Task;
+  occurrence: TaskOccurrence;
+}) {
+  const title =
+    (occurrence.label?.trim() && occurrence.label.trim().length > 0
+      ? occurrence.label.trim()
+      : task.title) || task.title;
+  const summary = {
+    rowId: occurrence.id,
+    taskId: task.id,
+    occurrenceId: occurrence.id,
+    title,
+    state: 'pending' as const,
+    isAutoTask: false,
+    hasNote: false,
+    subItemsDone: 0,
+    subItemsTotal: 0,
+    ...(occurrence.percent != null && { milestonePercent: occurrence.percent }),
+    ...(task.priority && { priority: task.priority }),
+  };
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: occurrence.id,
+    data: { type: 'task', source: 'backlog', summary },
+  });
+  // Sub-row is drag-only by design. Earlier we attached `onClick={onOpen}`
+  // here but a sub-pointerdown < 4px is treated as a click by dnd-kit's
+  // PointerSensor (activation distance) and would silently open
+  // TaskDetailDrawer — that drawer is right-docked + z-50 with a
+  // full-page backdrop, so it covers the Backlog and the user reads it
+  // as "drag stopped working". The header button above is the dedicated
+  // open-detail surface; sub-rows are pure drag handles.
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      title="拖到 cycle 格子即排期"
+      className={clsx(
+        'group flex cursor-grab items-center gap-2 px-3 py-1.5 transition hover:bg-surface-2 active:cursor-grabbing',
+        isDragging && 'opacity-60',
+      )}
+    >
+      <span
+        aria-hidden
+        className="ml-1 h-3 w-[2px] shrink-0 rounded-sm bg-hairline/70"
+      />
+      <span className="min-w-0 flex-1 truncate text-xs leading-snug text-ink-primary">
+        {title}
+      </span>
+      {occurrence.percent != null && (
+        <span className="shrink-0 font-mono text-2xs tabular-nums text-ink-tertiary">
+          {occurrence.percent}%
+        </span>
+      )}
     </div>
   );
 }

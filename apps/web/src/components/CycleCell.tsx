@@ -117,8 +117,11 @@ export function CycleCell({
   return (
     <div className="group/cell relative flex h-full min-h-[44px] flex-col gap-1 rounded-sm bg-surface-1 px-1 py-1 transition hover:bg-surface-2">
       {tasks.map((t, i) => (
+        // ERD §10.6 v0.11 — pill identity is `rowId` (occurrence id when
+        // present, else task id). All handler dispatches send `rowId`
+        // upstream so the consumer can route via `taskOccurrences` lookup.
         <SortableTaskPillRow
-          key={t.taskId}
+          key={t.rowId}
           task={t}
           color={color}
           cellKey={cellKey}
@@ -127,29 +130,29 @@ export function CycleCell({
           railId={railId}
           index={i}
           slotTaskIds={slotTaskIds}
-          line={lineLookup?.(t.taskId)}
-          {...(onClearTask && { onClear: () => onClearTask(t.taskId) })}
+          line={lineLookup?.(t.rowId)}
+          {...(onClearTask && { onClear: () => onClearTask(t.rowId) })}
           {...(onMarkTaskDone && {
-            onMarkDone: () => onMarkTaskDone(t.taskId),
+            onMarkDone: () => onMarkTaskDone(t.rowId),
           })}
           {...(onUndoTaskDone && {
-            onUndoDone: () => onUndoTaskDone(t.taskId),
+            onUndoDone: () => onUndoTaskDone(t.rowId),
           })}
           {...(onArchiveTask && {
-            onArchive: () => onArchiveTask(t.taskId),
+            onArchive: () => onArchiveTask(t.rowId),
           })}
           {...(onUnarchiveTask && {
-            onUnarchive: () => onUnarchiveTask(t.taskId),
+            onUnarchive: () => onUnarchiveTask(t.rowId),
           })}
           {...(onOpenTaskDetail && {
-            onOpenDetail: () => onOpenTaskDetail(t.taskId),
+            onOpenDetail: () => onOpenTaskDetail(t.rowId),
           })}
           {...(onOpenTaskProject && {
-            onOpenProject: () => onOpenTaskProject(t.taskId),
+            onOpenProject: () => onOpenTaskProject(t.rowId),
           })}
           {...(onToggleSubItem && {
             onToggleSubItem: (subItemId: string) =>
-              onToggleSubItem(t.taskId, subItemId),
+              onToggleSubItem(t.rowId, subItemId),
           })}
         />
       ))}
@@ -210,7 +213,11 @@ function SortableTaskPillRow({
     transition,
     isDragging,
   } = useSortable({
-    id: task.taskId,
+    // ERD §10.6 v0.11 — pill identity is `rowId`, which equals the
+    // occurrence id when this pill represents a TaskOccurrence and
+    // the Task id otherwise. The App-level drag-end handler resolves
+    // it via taskOccurrences lookup (App.tsx).
+    id: task.rowId,
     data: {
       type: 'task',
       source: 'cell',
@@ -436,12 +443,24 @@ const PillBody = forwardRef<HTMLDivElement, PillBodyProps>(function PillBody(
       )}
       <div className="flex items-start gap-1.5">
         <StateIcon state={task.state} />
-        <span
-          className={clsx('line-clamp-2 text-xs', style.titleClass)}
-          style={style.titleStyle}
-        >
-          {task.title || '未命名任务'}
-        </span>
+        <div className="min-w-0 flex-1">
+          {task.parentTitle && (
+            <span
+              className={clsx(
+                'block truncate text-[10px] leading-tight',
+                style.parentTone,
+              )}
+            >
+              {task.parentTitle}
+            </span>
+          )}
+          <span
+            className={clsx('line-clamp-2 text-xs', style.titleClass)}
+            style={style.titleStyle}
+          >
+            {task.title || '未命名任务'}
+          </span>
+        </div>
       </div>
       <PillBadges task={task} tone={style.badgeTone} />
       {onClear && <ClearButton onClear={onClear} tone={style.clearTone} />}
@@ -481,6 +500,10 @@ interface PillStyle {
   container: React.CSSProperties;
   titleClass: string;
   titleStyle?: React.CSSProperties;
+  /** ERD §10.6 v0.11 — class for the small parent-task subtitle on
+   *  occurrence pills. Mutes the parent line so the occurrence label
+   *  remains the primary read. */
+  parentTone: string;
   badgeTone: 'default' | 'on-solid';
   clearTone: 'default' | 'on-solid';
 }
@@ -498,6 +521,7 @@ function pillStyle(state: SlotTaskState, color: RailColor): PillStyle {
         opacity: 0.7,
       },
       titleClass: 'text-ink-tertiary line-through decoration-ink-tertiary/50',
+      parentTone: 'text-ink-tertiary',
       badgeTone: 'default',
       clearTone: 'default',
     };
@@ -506,6 +530,7 @@ function pillStyle(state: SlotTaskState, color: RailColor): PillStyle {
     return {
       container: { background: RAIL_COLOR_STEP_7[color] },
       titleClass: 'text-ink-primary',
+      parentTone: 'text-ink-tertiary',
       badgeTone: 'default',
       clearTone: 'default',
     };
@@ -521,6 +546,7 @@ function pillStyle(state: SlotTaskState, color: RailColor): PillStyle {
         opacity: 0.55,
       },
       titleClass: 'text-ink-tertiary line-through decoration-ink-tertiary/50',
+      parentTone: 'text-ink-tertiary',
       badgeTone: 'default',
       clearTone: 'default',
     };
@@ -529,6 +555,7 @@ function pillStyle(state: SlotTaskState, color: RailColor): PillStyle {
   return {
     container: { background: RAIL_COLOR_STEP_3[color] },
     titleClass: 'text-ink-primary',
+    parentTone: 'text-ink-tertiary',
     badgeTone: 'default',
     clearTone: 'default',
   };
@@ -644,6 +671,11 @@ function PillPopoverBody({
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex flex-col gap-1">
+        {task.parentTitle && (
+          <span className="text-2xs text-ink-tertiary">
+            {task.parentTitle}
+          </span>
+        )}
         <span
           className={clsx(
             'line-clamp-3 text-sm',
@@ -827,6 +859,11 @@ function PillTooltipBody({
   const hidden = items.length - visible.length;
   return (
     <div className="flex max-w-[280px] flex-col gap-1.5 normal-case tracking-normal">
+      {task.parentTitle && (
+        <span className="line-clamp-1 text-[10px] leading-snug text-surface-0/70">
+          {task.parentTitle}
+        </span>
+      )}
       <span className="line-clamp-3 text-2xs font-medium leading-snug text-surface-0">
         {task.title || '未命名任务'}
       </span>

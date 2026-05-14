@@ -139,6 +139,27 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 
 ---
 
+### ✓ v0.11 · Task occurrences · 把"调度原子"从 Task 拆出来（ERD §10.6）
+
+> 详细设计：ERD §10.6（含 §10.1 / §10.4 / §5.5.6 / §7.7 同步增补）。
+> 触发因素：dogfood 中"一个项目 task 需要拆成多次坐下来做"的高频
+> 痛点 —— 之前唯一出路是建 N 个兄弟 task，把 Project 列表撑爆 +
+> milestone 进度聚合失真。
+
+- ✅ **TaskOccurrence 顶层 store + 派生 helpers** —— `taskOccurrences` 加入 Y.Doc top-level Y.Map（与 `tasks` 同级 · per-element CRDT）；`deriveTaskStatus` / `deriveTaskProgress` / `isOccurrenceManaged` 三个纯函数把"采用门"语义集中（slot 或 percent 任一非空 → 进入 occurrence-managed 模式）。
+- ✅ **adoption-edge 自动转换** —— 当 Task.slot 已有但 occurrences 都还没 slot/percent 时，给某条 occurrence 加 slot/percent 的同一 transaction 里把 legacy slot folded 成一条无 label / 无 percent 的 sibling occurrence + 清空 Task.slot · 零数据丢失 · 无确认对话。
+- ✅ **subItems 一次性收编 + 孤儿 GC** —— hydrate 时 `runOccurrencesMigration` 把 `Task.subItems[i]` 派生 id (`occ-{taskId}-{subItemId}`) 映射为 occurrences（label = title, done = done, 无 slot / percent · 幂等）；同 transaction GC 掉 `taskId` 不存在的孤儿。
+- ✅ **UI 全套 occurrence 化** —— Tasks 详情抽屉「子任务」改「切分」（每条带 label/percent/slot picker · 复用 `useDraggable`）；Today Track / Cycle View / Pending 行级单位下沉到 occurrence；occurrence pill 显示 parent task 副标（"组装电脑 / 调查价格"）；Backlog 同 task 的多条 unscheduled occurrence 收进复合卡（parent header + 子行 dnd）。
+- ✅ **App-level dnd 路由** —— `handleDragEnd` 检测 active id 是 occurrence 还是 task，分发到 `scheduleTaskOccurrence` / `scheduleTaskToRail`。
+- ✅ **跨容器 drag transfer 修复** —— Backlog 拖入 cycle cell 时 source row 在源容器卸载，避免 dnd-kit 同 id 重复注册导致 source registration orphaned · 这是 cell→cell 路径就有的 multipleContainers 常见坑，新功能撞上后补上同款 filter（CycleSection 旧路径已经在做）。
+- ✅ **percent 与 status 完全解耦** —— dogfood 第一轮发现填 100% 自动完成 + 无法取消的 bug 后澄清：`percent` 是里程碑标记位（"完成时推进到 N%"），不是 done flag · `done = status === 'done'` 仅此一条。
+- ✅ **顺手关掉**「`Task.subItems` 重新拆 per-element Y.Array op」停车场条目（被 occurrence top-level store 直接绕过）。
+- ✅ **测试基线**：227 → 244 / 16 → 17 suites（`taskOccurrences.test.ts` +17 case 覆盖派生 / 采用门 / 迁移安全）。
+- ✅ **`.dryj` 容器版本不升** —— 纯加法 schema 演进 · 老版本看 occurrence-managed Task 为"无排期、无子项"普通 Task · 新版本启动 GC 孤儿 + 双路读 subItems 是跨版本协议的全部。
+- ✅ **v0.11.0 release** —— Tag v0.11.0 · 4 平台 desktop binary。
+
+---
+
 ### 🅿️ v0.9+ 停车场（触发条件明确，捡起来不用从头想）
 
 | 项 | 触发条件 | 设计草稿位置 |
@@ -147,7 +168,7 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 | HabitPhase 结构化目标（次数 / 强度 tag → match% 加权） | 真开始做分阶段训练计划 | ROADMAP 停车场 |
 | 键盘快捷键扩展（Pending `d` / `.` / `j-k`） | 键盘用得多嫌鼠标慢 | ROADMAP 停车场 |
 | Calendar 规则 inline 编辑（✎ 原地改） | 纯体验优化 | ROADMAP 停车场 |
-| `Task.subItems` 重新拆 per-element Y.Array op | action 层愿意改成 insert/delete/update on inner Y.Array | ERD §7.7 + ROADMAP |
+| ~~`Task.subItems` 重新拆 per-element Y.Array op~~ | ~~action 层愿意改成 insert/delete/update on inner Y.Array~~ —— **v0.11 关停**：被 ERD §10.6 TaskOccurrence 顶层 Y.Map<id, occ> 直接绕过，subItems 进入 legacy compat 模式，新写入路径全走 occurrence。 | ~~ERD §7.7 + ROADMAP~~ |
 | Single-tab guard（`BroadcastChannel`） | 撞到第二例多 tab 数据打架 | ROADMAP 数据安全段 |
 | IndexedDB 启动 sanity check + Error boundary | 撞到第一例 Y.Doc 反序列化失败 | ROADMAP 数据安全段 |
 | AI 全局记忆（"软件记得我"） | **结论未定** —— 看 v0.8.2 ship 后 2-3 周真实使用，AI 反思的实际命中率 / 价值频率，再决定是否做 / 怎么做。当前思路：每次反思 AI 输出末尾可选附"要不要把这个记下"，accept 后入 `aiMemories` 同步流；UI 在 Settings → AI 加「AI 记忆」面板供查 / 编辑 / 归档。设计还没定，包括：是否独立 store 还是 background 扩展、记忆条目的 TTL / 衰减、隐私边界（默认随同步还是仅本机） | 待写到 ERD §6.7 草稿 |
