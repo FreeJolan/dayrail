@@ -38,6 +38,7 @@ import {
   resolveEffectiveFromValue,
   type EffectiveFromValue,
 } from './EffectiveFromPicker';
+import { useIme } from '@/lib/ime';
 
 // ERD §5.4 Advanced Calendar Rules drawer (v0.3 live).
 // Four sections, each with list + create form + in-place edit + delete.
@@ -509,6 +510,7 @@ function DateRangeForm({
     initial?.templateKey ?? templates[0]?.key ?? '',
   );
   const [label, setLabel] = useState(initial?.label ?? '');
+  const ime = useIme();
   const submit = () => {
     if (!from || !to || !templateKey) return;
     if (from > to) return;
@@ -554,8 +556,10 @@ function DateRangeForm({
           value={label}
           onChange={(e) => setLabel(e.target.value)}
           placeholder="例：冲刺周"
+          onCompositionStart={ime.onCompositionStart}
+          onCompositionEnd={ime.onCompositionEnd}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+            if (e.key === 'Enter' && !ime.isComposing(e)) {
               e.preventDefault();
               submit();
             }

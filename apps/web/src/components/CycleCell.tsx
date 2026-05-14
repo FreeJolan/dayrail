@@ -33,6 +33,7 @@ import {
 } from './railColors';
 import type { RailColor } from '@/data/sample';
 import type { SlotTaskState, SlotTaskSummary } from '@/data/sampleCycle';
+import { useIme } from '@/lib/ime';
 
 // ERD §5.3 — cell = stack of per-task pills. Each pill owns its own
 // Radix popover (actions) and Radix tooltip (details on hover). The
@@ -1020,6 +1021,7 @@ function QuickCreatePopoverBody({
   onCancel: () => void;
 }) {
   const [value, setValue] = useState('');
+  const ime = useIme();
   const submit = () => {
     const t = value.trim();
     if (!t) return;
@@ -1036,8 +1038,10 @@ function QuickCreatePopoverBody({
         autoFocus
         placeholder="任务标题 · Enter 添加"
         onChange={(e) => setValue(e.target.value)}
+        onCompositionStart={ime.onCompositionStart}
+        onCompositionEnd={ime.onCompositionEnd}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+          if (e.key === 'Enter' && !ime.isComposing(e)) {
             e.preventDefault();
             submit();
           } else if (e.key === 'Escape') {

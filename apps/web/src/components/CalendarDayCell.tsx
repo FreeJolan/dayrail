@@ -8,6 +8,7 @@ import type { RailColor } from '@/data/sample';
 import type { ExternalEvent, UserDayNote } from '@dayrail/core';
 import { RAIL_COLOR_HEX, RAIL_COLOR_STEP_3 } from './railColors';
 import { ExternalEventChip } from './ExternalEventChip';
+import { useIme } from '@/lib/ime';
 
 // Individual day cell on the Calendar month grid (ERD §5.4 F4).
 //  · Background tinted with the applied Template.color at ~12% opacity
@@ -541,6 +542,7 @@ function AdhocForm({
   const [name, setName] = useState('');
   const [start, setStart] = useState('14:00');
   const [end, setEnd] = useState('15:00');
+  const ime = useIme();
   const submit = () => {
     const trimmed = name.trim();
     if (!trimmed) return;
@@ -562,8 +564,10 @@ function AdhocForm({
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder="事件名称"
+        onCompositionStart={ime.onCompositionStart}
+        onCompositionEnd={ime.onCompositionEnd}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+          if (e.key === 'Enter' && !ime.isComposing(e)) {
             e.preventDefault();
             submit();
           }
@@ -676,6 +680,7 @@ function UserDayNoteForm({
 }) {
   const [label, setLabel] = useState(initialLabel);
   const [color, setColor] = useState<RailColor | undefined>(initialColor);
+  const ime = useIme();
   const submit = () => {
     const trimmed = label.trim();
     if (!trimmed) return;
@@ -692,8 +697,10 @@ function UserDayNoteForm({
         value={label}
         onChange={(e) => setLabel(e.target.value)}
         placeholder="备注 (例如：妈妈生日)"
+        onCompositionStart={ime.onCompositionStart}
+        onCompositionEnd={ime.onCompositionEnd}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+          if (e.key === 'Enter' && !ime.isComposing(e)) {
             e.preventDefault();
             submit();
           }

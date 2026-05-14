@@ -36,6 +36,7 @@ import {
 import { clsx } from 'clsx';
 import type { CycleDay, CycleSlot } from '@/data/sampleCycle';
 import type { RailColor } from '@/data/sample';
+import { useIme } from '@/lib/ime';
 import {
   deriveCycleFromStore,
   startOfWeekMonday,
@@ -643,6 +644,7 @@ function CyclePickerTrigger({
   const [open, setOpen] = useState(false);
   const [labelEditOpen, setLabelEditOpen] = useState(false);
   const [labelDraft, setLabelDraft] = useState('');
+  const ime = useIme();
   const groups = useMemo(
     () => enumerateCycles(anchorDate, { cycles }),
     [anchorDate, cycles],
@@ -738,8 +740,10 @@ function CyclePickerTrigger({
               value={labelDraft}
               onChange={(e) => setLabelDraft(e.target.value)}
               placeholder="例：考研冲刺周"
+              onCompositionStart={ime.onCompositionStart}
+              onCompositionEnd={ime.onCompositionEnd}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                if (e.key === 'Enter' && !ime.isComposing(e)) {
                   e.preventDefault();
                   void submitLabel();
                 } else if (e.key === 'Escape') {

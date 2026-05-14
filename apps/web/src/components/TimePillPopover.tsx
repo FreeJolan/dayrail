@@ -7,6 +7,7 @@ import {
   PopoverTrigger,
 } from './primitives/Popover';
 import { fmtDurationShort, fmtHHMM } from '@/data/sampleTemplate';
+import { useIme } from '@/lib/ime';
 
 // ERD §5.4 E6: clicking the right-aligned time pill opens a popover
 // with two inputs (start / end). Conflict detection runs live while
@@ -31,6 +32,7 @@ export function TimePillPopover({
   const [open, setOpen] = useState(false);
   const [start, setStart] = useState(fmtHHMM(startMin));
   const [end, setEnd] = useState(fmtHHMM(endMin));
+  const ime = useIme();
 
   // recompute on external change (e.g. color popover committed a different
   // Rail's time while this popover was closed)
@@ -155,8 +157,12 @@ export function TimePillPopover({
               value={start}
               size={6}
               onChange={(e) => setStart(e.target.value)}
+              onCompositionStart={ime.onCompositionStart}
+              onCompositionEnd={ime.onCompositionEnd}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') {
+                // ime.isComposing handles both Chromium and WKWebView
+                // (where compositionend fires before keydown).
+                if (e.key === 'Enter' && !ime.isComposing(e)) {
                   commit();
                   return;
                 }
@@ -180,8 +186,12 @@ export function TimePillPopover({
               value={end}
               size={6}
               onChange={(e) => setEnd(e.target.value)}
+              onCompositionStart={ime.onCompositionStart}
+              onCompositionEnd={ime.onCompositionEnd}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') {
+                // ime.isComposing handles both Chromium and WKWebView
+                // (where compositionend fires before keydown).
+                if (e.key === 'Enter' && !ime.isComposing(e)) {
                   commit();
                   return;
                 }

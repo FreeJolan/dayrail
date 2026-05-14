@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { clsx } from 'clsx';
 import { Plus, X } from 'lucide-react';
+import { useIme } from '@/lib/ime';
 
 // §5.2 Reason toast — the lightweight replacement for the old Shift-tag
 // sheet. Slides in after a check-in action, offers 3 quick-reason tag
@@ -59,6 +60,7 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
   const [cached, setCached] = useState<ReasonToastState | null>(state);
   const [visible, setVisible] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ime = useIme();
 
   const armAutoClose = (): void => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -257,10 +259,13 @@ export function ReasonToast({ state, onAddTag, onUndo, onClose }: Props) {
                   value={customInput}
                   placeholder="原因…"
                   onChange={(e) => setCustomInput(e.target.value)}
+                  onCompositionStart={ime.onCompositionStart}
+                  onCompositionEnd={ime.onCompositionEnd}
                   onKeyDown={(e) => {
-                    // IME composition guard — Enter during pinyin
-                    // candidate selection shouldn't submit the tag.
-                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                    // ime.isComposing covers WKWebView's race where
+                    // compositionend fires before the confirming Enter
+                    // keydown — see @/lib/ime.
+                    if (e.key === 'Enter' && !ime.isComposing(e)) {
                       e.preventDefault();
                       submitCustom();
                     } else if (e.key === 'Escape') {

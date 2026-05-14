@@ -24,6 +24,7 @@ import {
   PopoverTrigger,
 } from './primitives/Popover';
 import { RAIL_COLOR_HEX } from './railColors';
+import { useIme } from '@/lib/ime';
 
 // ERD §5.3 D8 — split drawer docked on the right. Items are un-
 // scheduled Tasks waiting to be dragged onto a Cycle slot.
@@ -441,6 +442,7 @@ function QuickCreateInput({
   const [value, setValue] = useState('');
   const [lineId, setLineId] = useState<string>(INBOX_LINE_ID);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const ime = useIme();
   const targets = useMemo(
     () =>
       Object.values(linesMap)
@@ -469,10 +471,12 @@ function QuickCreateInput({
         autoFocus
         placeholder="新任务 · Enter 添加"
         onChange={(e) => setValue(e.target.value)}
+        onCompositionStart={ime.onCompositionStart}
+        onCompositionEnd={ime.onCompositionEnd}
         onKeyDown={(e) => {
-          // nativeEvent.isComposing = IME candidate window open; Enter
-          // there picks the pinyin, doesn't submit.
-          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+          // ime.isComposing covers both the Chromium fast path AND the
+          // WKWebView race where compositionend fires before keydown.
+          if (e.key === 'Enter' && !ime.isComposing(e)) {
             e.preventDefault();
             submit();
           } else if (e.key === 'Escape') {

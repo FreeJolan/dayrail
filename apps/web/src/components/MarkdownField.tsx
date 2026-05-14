@@ -11,6 +11,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
+import { useIme, type ImeHandlers } from '@/lib/ime';
 
 // ------------------------------------------------------------------
 // `MarkdownField` — shared display + edit surface for long-form
@@ -180,6 +181,7 @@ function InPlaceEditor({
   ariaLabel: string;
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
+  const ime = useIme();
 
   useEffect(() => {
     const el = ref.current;
@@ -192,11 +194,11 @@ function InPlaceEditor({
 
   const handleKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-      if (markdownKeyHandler(e)) return;
-      // `isComposing` catches active IME sessions (pinyin / kana / etc.)
-      // — the composition's own Enter confirms the candidate, we must
-      // not treat it as "save" or we'd eat the confirmation.
-      const composing = e.nativeEvent.isComposing;
+      if (markdownKeyHandler(e, ime)) return;
+      // Use ime.isComposing for the same reason as inside markdownKeyHandler
+      // — WKWebView's compositionend-before-keydown race makes the bare
+      // native flag unreliable.
+      const composing = ime.isComposing(e);
       if (!composing && e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         onCommit();
@@ -221,7 +223,7 @@ function InPlaceEditor({
         onOpenDialog();
       }
     },
-    [onCommit, onOpenDialog],
+    [ime, onCommit, onOpenDialog],
   );
   // `onChange` is still the plumbing for React to observe the textarea
   // value; the Markdown-aware keys route through execCommand now so
@@ -236,6 +238,8 @@ function InPlaceEditor({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onBlur={onCommit}
+        onCompositionStart={ime.onCompositionStart}
+        onCompositionEnd={ime.onCompositionEnd}
         onKeyDown={handleKeyDown}
         rows={6}
         className="resize-y rounded-md border border-hairline/60 bg-surface-0 px-3 py-2 pr-10 text-sm leading-relaxed text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
@@ -437,6 +441,7 @@ function FullscreenTextarea({
   ariaLabel: string;
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
+  const ime = useIme();
   useEffect(() => {
     const el = ref.current;
     if (el) {
@@ -451,9 +456,9 @@ function FullscreenTextarea({
   // textarea; destructive revert lives on the `↶ 放弃` button.
   const handleKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-      markdownKeyHandler(e);
+      markdownKeyHandler(e, ime);
     },
-    [],
+    [ime],
   );
 
   return (
@@ -462,6 +467,8 @@ function FullscreenTextarea({
       aria-label={ariaLabel}
       value={value}
       onChange={(e) => onChange(e.target.value)}
+      onCompositionStart={ime.onCompositionStart}
+      onCompositionEnd={ime.onCompositionEnd}
       onKeyDown={handleKeyDown}
       spellCheck={false}
       className="h-full flex-1 resize-none border-0 bg-surface-0 px-6 py-5 font-mono text-sm leading-[1.7] text-ink-primary outline-none"
@@ -598,12 +605,17 @@ const REMARK_PLUGINS = [remarkGfm];
 
 function markdownKeyHandler(
   e: ReactKeyboardEvent<HTMLTextAreaElement>,
+  ime?: ImeHandlers,
 ): boolean {
   const el = e.currentTarget;
   // IME composition: the candidate-confirm Enter must pass through.
   // Tab / Cmd+B / Cmd+I during composition are unusual but still
   // unsafe to intercept — the IME owns the input flow.
-  if (e.nativeEvent.isComposing) return false;
+  // Use the explicit ime ref when provided (WKWebView fires
+  // compositionend BEFORE the confirming keydown, so the native
+  // `isComposing` would have already flipped false). Fall back to
+  // the native flag for callers that don't pass an ime handle.
+  if (ime ? ime.isComposing(e) : e.nativeEvent.isComposing) return false;
 
   const value = el.value;
   const start = el.selectionStart;
