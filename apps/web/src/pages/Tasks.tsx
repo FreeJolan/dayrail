@@ -28,11 +28,14 @@ import {
   railAtDate,
   selectCurrentHabitPhase,
   selectHabitPhasesByLine,
+  selectOccurrencesForTask,
   useStore,
   type HabitPhase,
   type Line,
+  type Rail,
   type Shift,
   type Task,
+  type TaskOccurrence,
   type TaskPriority,
 } from '@dayrail/core';
 import type { RailColor } from '@/data/sample';
@@ -1529,7 +1532,7 @@ export function TaskDetailDrawer({
 
           <PrioritySection task={task} />
 
-          <SubItemsSection task={task} />
+          <OccurrencesSection task={task} />
 
           <div className="flex flex-col gap-1 pt-2">
             <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
@@ -1612,68 +1615,85 @@ function PrioritySection({ task }: { task: Task }) {
   );
 }
 
-// Sub-item checklist inside the task detail drawer. Each change
-// (toggle / add / rename / delete) commits one `task.updated` event
-// carrying a fresh `subItems` array — small enough that event-log
-// noise isn't a concern at v0.3 scale.
+// ERD §10.6 v0.11 — small badge surfaced in the task list row showing
+// "切分 N/M" when the task has occurrences. Subscribes to
+// `taskOccurrences` raw map; useMemo derives the count for this task
+// (per the Zustand selector rule against returning fresh arrays inline).
+function TaskOccurrenceCountBadge({ taskId }: { taskId: string }) {
+  const occurrencesMap = useStore((s) => s.taskOccurrences);
+  const counts = useMemo(() => {
+    let total = 0;
+    let done = 0;
+    for (const occ of Object.values(occurrencesMap)) {
+      if (occ.taskId !== taskId) continue;
+      if (occ.status === 'archived') continue;
+      total++;
+      if (occ.status === 'done') done++;
+    }
+    return { total, done };
+  }, [occurrencesMap, taskId]);
+  if (counts.total === 0) return null;
+  return (
+    <span className="font-mono text-2xs tabular-nums text-ink-secondary">
+      · 切分 {counts.done}/{counts.total}
+    </span>
+  );
+}
 
-function SubItemsSection({ task }: { task: Task }) {
-  const updateTask = useStore((s) => s.updateTask);
-  const items = task.subItems ?? [];
+// ERD §10.6 v0.11 — TaskOccurrences inside the task detail drawer.
+// Each row is one occurrence; checkbox toggles status, label / percent
+// edit in-place, slot chip opens an inline date+rail picker (or
+// "未排" when empty). Replaces the pre-v0.11 SubItemsSection.
+//
+// Migration story: legacy `Task.subItems` are mapped one-shot to
+// occurrences at hydrate (`runOccurrencesMigration`); they appear here
+// as label-only / unscheduled occurrences and behave identically to
+// what the user had before. The new affordance is the slot chip + the
+// percent input.
+
+function OccurrencesSection({ task }: { task: Task }) {
+  const occurrencesMap = useStore((s) => s.taskOccurrences);
+  const railsMap = useStore((s) => s.rails);
+  const addTaskOccurrence = useStore((s) => s.addTaskOccurrence);
+  const updateTaskOccurrence = useStore((s) => s.updateTaskOccurrence);
+  const completeTaskOccurrence = useStore((s) => s.completeTaskOccurrence);
+  const reopenTaskOccurrence = useStore((s) => s.reopenTaskOccurrence);
+  const removeTaskOccurrence = useStore((s) => s.removeTaskOccurrence);
+  const scheduleTaskOccurrence = useStore((s) => s.scheduleTaskOccurrence);
+
+  const items = useMemo(
+    () =>
+      selectOccurrencesForTask({ taskOccurrences: occurrencesMap }, task.id),
+    [occurrencesMap, task.id],
+  );
+
   const [draft, setDraft] = useState('');
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingTitle, setEditingTitle] = useState('');
   const ime = useIme();
 
-  const writeItems = (next: typeof items) => {
-    void updateTask(task.id, { subItems: next.length > 0 ? next : undefined });
-  };
-
-  const addItem = () => {
+  const addOccurrence = () => {
     const trimmed = draft.trim();
-    if (!trimmed) return;
-    writeItems([
-      ...items,
-      { id: freshId('sub'), title: trimmed, done: false },
-    ]);
+    void addTaskOccurrence(
+      task.id,
+      trimmed.length > 0 ? { label: trimmed } : undefined,
+    );
     setDraft('');
   };
 
-  const toggle = (id: string) => {
-    writeItems(
-      items.map((it) => (it.id === id ? { ...it, done: !it.done } : it)),
-    );
-  };
-
-  const remove = (id: string) => {
-    writeItems(items.filter((it) => it.id !== id));
-  };
-
-  const startEdit = (id: string, currentTitle: string) => {
-    setEditingId(id);
-    setEditingTitle(currentTitle);
-  };
-
-  const commitEdit = () => {
-    if (editingId == null) return;
-    const trimmed = editingTitle.trim();
-    if (trimmed) {
-      writeItems(
-        items.map((it) =>
-          it.id === editingId ? { ...it, title: trimmed } : it,
-        ),
-      );
+  const toggle = (occ: TaskOccurrence) => {
+    if (occ.status === 'done') {
+      void reopenTaskOccurrence(occ.id);
+    } else {
+      void completeTaskOccurrence(occ.id);
     }
-    setEditingId(null);
   };
 
-  const doneCount = items.filter((it) => it.done).length;
+  const doneCount = items.filter((it) => it.status === 'done').length;
 
   return (
     <div className="flex flex-col gap-2 pt-2">
       <div className="flex items-baseline justify-between">
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          子任务
+          切分
         </span>
         {items.length > 0 && (
           <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
@@ -1682,67 +1702,19 @@ function SubItemsSection({ task }: { task: Task }) {
         )}
       </div>
       {items.length > 0 && (
-        <ul className="flex flex-col gap-0.5">
-          {items.map((it) => (
-            <li
-              key={it.id}
-              className="group flex items-center gap-2 rounded-md px-1.5 py-1 transition hover:bg-surface-1"
-            >
-              <button
-                type="button"
-                onClick={() => toggle(it.id)}
-                aria-label={it.done ? 'Mark sub-item open' : 'Mark sub-item done'}
-                className="shrink-0 text-ink-tertiary transition hover:text-ink-primary"
-              >
-                {it.done ? (
-                  <Check className="h-3.5 w-3.5" strokeWidth={2.2} />
-                ) : (
-                  <Circle className="h-3.5 w-3.5" strokeWidth={1.6} />
-                )}
-              </button>
-              {editingId === it.id ? (
-                <input
-                  type="text"
-                  autoFocus
-                  value={editingTitle}
-                  onChange={(e) => setEditingTitle(e.target.value)}
-                  onBlur={commitEdit}
-                  onCompositionStart={ime.onCompositionStart}
-                  onCompositionEnd={ime.onCompositionEnd}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !ime.isComposing(e)) {
-                      e.preventDefault();
-                      (e.target as HTMLInputElement).blur();
-                    } else if (e.key === 'Escape') {
-                      e.preventDefault();
-                      setEditingId(null);
-                    }
-                  }}
-                  className="h-6 flex-1 rounded-sm border border-hairline/60 bg-surface-0 px-1.5 text-xs text-ink-primary outline-none focus:border-ink-secondary"
-                />
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => startEdit(it.id, it.title)}
-                  className={clsx(
-                    'flex-1 truncate text-left text-sm',
-                    it.done
-                      ? 'text-ink-tertiary line-through decoration-ink-tertiary/40'
-                      : 'text-ink-primary',
-                  )}
-                >
-                  {it.title}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => remove(it.id)}
-                aria-label="Delete sub-item"
-                className="rounded-sm p-0.5 text-ink-tertiary opacity-0 transition hover:bg-surface-2 hover:text-ink-primary group-hover:opacity-100"
-              >
-                <X className="h-3 w-3" strokeWidth={1.8} />
-              </button>
-            </li>
+        <ul className="flex flex-col gap-1">
+          {items.map((occ) => (
+            <OccurrenceRow
+              key={occ.id}
+              task={task}
+              occurrence={occ}
+              railsMap={railsMap}
+              onToggle={() => toggle(occ)}
+              onUpdate={(patch) => void updateTaskOccurrence(occ.id, patch)}
+              onSchedule={(slot) => void scheduleTaskOccurrence(occ.id, slot)}
+              onRemove={() => void removeTaskOccurrence(occ.id)}
+              ime={ime}
+            />
           ))}
         </ul>
       )}
@@ -1753,14 +1725,16 @@ function SubItemsSection({ task }: { task: Task }) {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder={
-            items.length === 0 ? '+ 子任务 · Enter' : '继续加一个 · Enter'
+            items.length === 0
+              ? '+ 切分 · 输入步骤名后回车 (留空也行)'
+              : '继续加一个 · Enter'
           }
           onCompositionStart={ime.onCompositionStart}
           onCompositionEnd={ime.onCompositionEnd}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !ime.isComposing(e)) {
               e.preventDefault();
-              addItem();
+              addOccurrence();
             }
           }}
           className="h-6 flex-1 bg-transparent text-xs text-ink-primary outline-none placeholder:text-ink-tertiary"
@@ -1768,6 +1742,267 @@ function SubItemsSection({ task }: { task: Task }) {
       </div>
     </div>
   );
+}
+
+function OccurrenceRow({
+  task,
+  occurrence,
+  railsMap,
+  onToggle,
+  onUpdate,
+  onSchedule,
+  onRemove,
+  ime,
+}: {
+  task: Task;
+  occurrence: TaskOccurrence;
+  railsMap: Record<string, Rail>;
+  onToggle: () => void;
+  onUpdate: (patch: Partial<Omit<TaskOccurrence, 'id' | 'taskId'>>) => void;
+  onSchedule: (
+    slot: { cycleId: string; date: string; railId: string } | null,
+  ) => void;
+  onRemove: () => void;
+  ime: ReturnType<typeof useIme>;
+}) {
+  const [editingLabel, setEditingLabel] = useState(occurrence.label ?? '');
+  const [editingPercent, setEditingPercent] = useState(
+    occurrence.percent != null ? String(occurrence.percent) : '',
+  );
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  // Sync controlled inputs when the upstream occurrence changes (e.g.
+  // CRDT pull from another device). Only resync when the value
+  // genuinely differs to avoid clobbering the user's mid-edit text.
+  useEffect(() => {
+    setEditingLabel(occurrence.label ?? '');
+  }, [occurrence.label]);
+  useEffect(() => {
+    setEditingPercent(occurrence.percent != null ? String(occurrence.percent) : '');
+  }, [occurrence.percent]);
+
+  // ERD §10.6 — percent is a milestone marker, NOT a done flag.
+  // The checkbox reflects status only; setting percent=100 does
+  // not auto-complete the occurrence.
+  const isDone = occurrence.status === 'done';
+
+  const commitLabel = () => {
+    const trimmed = editingLabel.trim();
+    const next = trimmed.length > 0 ? trimmed : undefined;
+    if (next === occurrence.label) return;
+    onUpdate({ label: next });
+  };
+
+  const commitPercent = () => {
+    const trimmed = editingPercent.trim();
+    if (trimmed === '') {
+      if (occurrence.percent != null) onUpdate({ percent: undefined });
+      return;
+    }
+    const n = Number.parseInt(trimmed, 10);
+    if (Number.isNaN(n)) return;
+    const clamped = Math.max(0, Math.min(100, n));
+    if (clamped === occurrence.percent) return;
+    onUpdate({ percent: clamped });
+  };
+
+  const slotChip = (() => {
+    if (!occurrence.slot) {
+      return (
+        <button
+          type="button"
+          onClick={() => setPickerOpen((v) => !v)}
+          className="rounded-md px-1.5 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          未排
+        </button>
+      );
+    }
+    const rail = railsMap[occurrence.slot.railId];
+    const railLabel = rail?.name ?? occurrence.slot.railId;
+    return (
+      <button
+        type="button"
+        onClick={() => setPickerOpen((v) => !v)}
+        className="inline-flex items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 text-2xs tabular-nums text-ink-secondary transition hover:bg-surface-3 hover:text-ink-primary"
+      >
+        <CalendarIcon className="h-2.5 w-2.5" strokeWidth={1.6} />
+        <span>{occurrence.slot.date}</span>
+        <span className="text-ink-tertiary">·</span>
+        <span className="truncate max-w-[80px]">{railLabel}</span>
+      </button>
+    );
+  })();
+
+  return (
+    <li className="group flex flex-col gap-1 rounded-md px-1.5 py-1 transition hover:bg-surface-1">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label={isDone ? 'Reopen occurrence' : 'Mark occurrence done'}
+          className="shrink-0 text-ink-tertiary transition hover:text-ink-primary"
+        >
+          {isDone ? (
+            <Check className="h-3.5 w-3.5" strokeWidth={2.2} />
+          ) : (
+            <Circle className="h-3.5 w-3.5" strokeWidth={1.6} />
+          )}
+        </button>
+        <input
+          type="text"
+          value={editingLabel}
+          onChange={(e) => setEditingLabel(e.target.value)}
+          onBlur={commitLabel}
+          onCompositionStart={ime.onCompositionStart}
+          onCompositionEnd={ime.onCompositionEnd}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !ime.isComposing(e)) {
+              e.preventDefault();
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+          placeholder={task.title || '步骤'}
+          className={clsx(
+            'h-6 min-w-0 flex-1 rounded-sm bg-transparent px-1 text-sm outline-none transition focus:bg-surface-0',
+            isDone
+              ? 'text-ink-tertiary line-through decoration-ink-tertiary/40'
+              : 'text-ink-primary',
+          )}
+        />
+        <input
+          type="number"
+          min={0}
+          max={100}
+          value={editingPercent}
+          onChange={(e) => setEditingPercent(e.target.value)}
+          onBlur={commitPercent}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+          placeholder="%"
+          className="h-6 w-12 rounded-sm bg-transparent px-1 text-right font-mono text-2xs tabular-nums text-ink-secondary outline-none transition focus:bg-surface-0 placeholder:text-ink-tertiary"
+        />
+        {slotChip}
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label="Delete occurrence"
+          className="rounded-sm p-0.5 text-ink-tertiary opacity-0 transition hover:bg-surface-2 hover:text-ink-primary group-hover:opacity-100"
+        >
+          <X className="h-3 w-3" strokeWidth={1.8} />
+        </button>
+      </div>
+      {pickerOpen && (
+        <OccurrenceSlotPicker
+          occurrence={occurrence}
+          railsMap={railsMap}
+          onApply={(slot) => {
+            onSchedule(slot);
+            setPickerOpen(false);
+          }}
+          onCancel={() => setPickerOpen(false)}
+        />
+      )}
+    </li>
+  );
+}
+
+/** Inline slot picker. Date input + rail dropdown + clear / cancel /
+ *  apply. Stripped-down vs SchedulePopover (no Mode B / free-time —
+ *  occurrences in v0.11 use rail slots only). */
+function OccurrenceSlotPicker({
+  occurrence,
+  railsMap,
+  onApply,
+  onCancel,
+}: {
+  occurrence: TaskOccurrence;
+  railsMap: Record<string, Rail>;
+  onApply: (
+    slot: { cycleId: string; date: string; railId: string } | null,
+  ) => void;
+  onCancel: () => void;
+}) {
+  const [date, setDate] = useState(
+    occurrence.slot?.date ?? new Date().toISOString().slice(0, 10),
+  );
+  const [railId, setRailId] = useState(occurrence.slot?.railId ?? '');
+  const allRails = useMemo(
+    () =>
+      Object.values(railsMap).sort(
+        (a, b) => a.startMinutes - b.startMinutes,
+      ),
+    [railsMap],
+  );
+
+  const canApply = Boolean(date) && Boolean(railId);
+
+  return (
+    <div className="ml-6 flex flex-wrap items-center gap-2 rounded-md border border-hairline/60 bg-surface-0 px-2 py-1.5">
+      <input
+        type="date"
+        value={date}
+        onChange={(e) => setDate(e.target.value)}
+        className="h-6 rounded-sm border border-hairline/60 bg-surface-0 px-1.5 text-2xs text-ink-primary outline-none focus:border-ink-secondary"
+      />
+      <select
+        value={railId}
+        onChange={(e) => setRailId(e.target.value)}
+        className="h-6 max-w-[160px] truncate rounded-sm border border-hairline/60 bg-surface-0 px-1.5 text-2xs text-ink-primary outline-none focus:border-ink-secondary"
+      >
+        <option value="">— 选 Rail —</option>
+        {allRails.map((r) => (
+          <option key={r.id} value={r.id}>
+            {minutesToHHMM(r.startMinutes)} · {r.name}
+          </option>
+        ))}
+      </select>
+      <div className="ml-auto flex items-center gap-1">
+        {occurrence.slot && (
+          <button
+            type="button"
+            onClick={() => onApply(null)}
+            className="rounded-sm px-1.5 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            清除
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-sm px-1.5 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          disabled={!canApply}
+          onClick={() => {
+            if (!canApply) return;
+            onApply({ cycleId: `cycle-${date}`, date, railId });
+          }}
+          className={clsx(
+            'rounded-sm px-1.5 py-0.5 text-2xs transition',
+            canApply
+              ? 'bg-ink-primary text-surface-0 hover:bg-ink-secondary'
+              : 'cursor-not-allowed bg-surface-2 text-ink-tertiary',
+          )}
+        >
+          应用
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function minutesToHHMM(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
 function HabitPhasePanel({ lineId }: { lineId: string }) {
@@ -2340,12 +2575,10 @@ function TaskRow({
               · milestone {task.milestonePercent}%
             </span>
           )}
-          {task.subItems && task.subItems.length > 0 && (
-            <span className="font-mono text-2xs tabular-nums text-ink-secondary">
-              · 子任务 {task.subItems.filter((s) => s.done).length}/
-              {task.subItems.length}
-            </span>
-          )}
+          <TaskOccurrenceCountBadge taskId={task.id} />
+          {/* Legacy `task.subItems` count removed — occurrences are the
+              v0.11+ source of truth. The migration auto-maps subItems
+              into occurrences at hydrate, so historical data is reflected. */}
           {tags.length > 0 && (isDone || isArchived || task.status === 'deferred') && (
             <span className="flex items-center gap-1">
               {tags.map((tag) => (
@@ -2485,11 +2718,7 @@ function ScheduleInfo({ task }: { task: Task }) {
   return <span className="text-ink-tertiary/80">— 未排期</span>;
 }
 
-function minutesToHHMM(min: number): string {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
+// minutesToHHMM is defined earlier next to OccurrenceSlotPicker.
 
 function ProjectPill({ line }: { line: Line }) {
   return (

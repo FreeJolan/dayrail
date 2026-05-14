@@ -101,13 +101,34 @@ export default function App() {
 // in sync with title edits / state changes during a drag (rare but
 // cheap). Subscribe to the raw `tasks` map and pick the one we need
 // via useMemo — per the project's Zustand selector rule.
-function TaskDragPreview({ taskId }: { taskId: string }) {
+// Drag overlay preview. ERD §10.6 v0.11 — `id` may be either a Task
+// id (legacy backlog row, cycle pill of a non-managed task) OR a
+// TaskOccurrence id (occurrence-managed cycle pill, occurrence
+// sub-row in Backlog). Resolve in that order so the dragged ghost is
+// always visible regardless of source.
+function TaskDragPreview({ taskId: id }: { taskId: string }) {
   const tasksMap = useStore((s) => s.tasks);
-  const task = useMemo(() => tasksMap[taskId], [tasksMap, taskId]);
-  if (!task) return null;
+  const occurrencesMap = useStore((s) => s.taskOccurrences);
+  const { label, title } = useMemo(() => {
+    const occ = occurrencesMap[id];
+    if (occ) {
+      const parent = tasksMap[occ.taskId];
+      return {
+        label: occ.label?.trim() || parent?.title || '未命名任务',
+        title: parent?.title ?? '',
+      };
+    }
+    const task = tasksMap[id];
+    if (task) return { label: task.title || '未命名任务', title: '' };
+    return { label: null as string | null, title: '' };
+  }, [tasksMap, occurrencesMap, id]);
+  if (label == null) return null;
   return (
     <div className="pointer-events-none max-w-[240px] rounded-sm bg-surface-1 px-2 py-1.5 text-xs leading-snug text-ink-primary shadow-lg ring-1 ring-black/10">
-      {task.title || '未命名任务'}
+      <div>{label}</div>
+      {title && title !== label && (
+        <div className="truncate text-2xs text-ink-tertiary">{title}</div>
+      )}
     </div>
   );
 }
@@ -355,6 +376,27 @@ function Shell() {
 
       const store = useStore.getState();
       const sessionId = currentCycleEditSessionRef.current ?? undefined;
+
+      // ERD §10.6 v0.11 — when the dragged pill represents a
+      // TaskOccurrence (id matches an entry in taskOccurrences), route
+      // to scheduleTaskOccurrence instead of scheduleTaskToRail. Per-
+      // slot reorder via setSlotTaskOrder doesn't apply to occurrences
+      // in v0.11 (occurrence.order is task-relative, not slot-relative)
+      // and is skipped on this branch — visual ordering follows the
+      // occurrence.order set in the Task detail drawer.
+      const occ = store.taskOccurrences[taskId];
+      if (occ) {
+        const existingOccSlot = occ.slot;
+        const sameOccSlot =
+          !!existingOccSlot &&
+          existingOccSlot.date === finalMeta.date &&
+          existingOccSlot.railId === finalMeta.railId;
+        if (!sameOccSlot) {
+          void store.scheduleTaskOccurrence(occ.id, finalMeta, sessionId);
+        }
+        return;
+      }
+
       const existing = store.tasks[taskId]?.slot;
       const sameSlot =
         !!existing &&

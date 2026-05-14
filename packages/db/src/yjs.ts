@@ -43,6 +43,11 @@ export const TOP_LEVEL_MAPS = [
   'rails',
   'lines',
   'tasks',
+  // ERD §10.6 (v0.11): scheduling atom under a Task. Top-level Y.Map
+  // keyed by occurrence id (per-element CRDT). Sibling of `tasks`
+  // by foreign key `taskId`. Pure additive schema — `.dryj` container
+  // version unchanged; older clients ignore this map silently.
+  'taskOccurrences',
   'signals',
   'shifts',
   'adhocEvents',
@@ -195,6 +200,7 @@ export interface FlatState {
   rails: Record<string, unknown>;
   lines: Record<string, unknown>;
   tasks: Record<string, unknown>;
+  taskOccurrences: Record<string, unknown>;
   signals: Record<string, unknown>;
   shifts: Record<string, unknown>;
   adhocEvents: Record<string, unknown>;
@@ -295,6 +301,7 @@ export function readFlatStateFromDoc(doc: Y.Doc): FlatState {
     rails: {},
     lines: {},
     tasks: {},
+    taskOccurrences: {},
     signals: {},
     shifts: {},
     adhocEvents: {},

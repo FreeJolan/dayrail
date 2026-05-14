@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@dayrail/db": "workspace:*"
+    "@dayrail/db": "workspace:*",
+    "yjs": "^13.6.0"
   },
   "devDependencies": {
     "@types/node": "20.16.14",

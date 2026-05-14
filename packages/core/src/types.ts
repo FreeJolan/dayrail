@@ -528,12 +528,26 @@ export interface Task {
     | 'deferred'
     | 'archived'
     | 'deleted';
+  /** v0.11+ ERD §10.6: when this Task has TaskOccurrences, this field
+   *  collapses to "the whole-Task milestone label when occurrences=empty".
+   *  When occurrences are present, the user-visible Task progress is
+   *  derived as `max(occurrence.percent for done occurrences)` instead. */
   milestonePercent?: number;
+  /** v0.11+ ERD §10.6: legacy checklist. On v0.11 upgrade these are
+   *  one-shot migrated to TaskOccurrence with `id = occ-{taskId}-{subItemId}`
+   *  for idempotency. Field stays readable so older clients can still
+   *  write it; the new client dual-reads (subItems items render as
+   *  virtual occurrences) and never writes back to this field. */
   subItems?: Array<{ id: string; title: string; done: boolean }>;
   /** §5.5.2 scheduling — two mutually exclusive modes:
    *    Mode A, bind to Rail ▸ slot = { cycleId, date, railId }
    *    Mode B, free time    ▸ slot = undefined; AdhocEvent.taskId points back
-   *    Unscheduled          ▸ slot = undefined AND no AdhocEvent refers to it. */
+   *    Unscheduled          ▸ slot = undefined AND no AdhocEvent refers to it.
+   *
+   *  v0.11+ ERD §10.6: when this Task has TaskOccurrences, this field is
+   *  ignored. Going from 0 to first occurrence atomically converts an
+   *  existing Task.slot into a label-less / percent-less first occurrence
+   *  in the same transaction (zero data loss, no confirmation dialog). */
   slot?: { cycleId: string; date: string; railId: string };
   /** §4.1 v0.4.4 · per-slot user-defined ordering. When set on any
    *  task in a slot, the whole slot sorts by `slotOrder` asc (tasks
@@ -555,6 +569,113 @@ export interface Task {
    *  field only — not used by reducers, but surfaced in the Task
    *  event payload for audit trails. */
   source?: 'auto-habit';
+}
+
+/** ERD §10.6 (v0.11). Scheduling atom under a Task. A Task may carry
+ *  0..N occurrences; when non-empty, the Task's "scheduling / progress
+ *  / completion" semantics all sink into them. Storage: top-level
+ *  `Y.Map<id, TaskOccurrence>` (sibling of `tasks`), per-element CRDT.
+ *
+ *  Two usage shapes (composable):
+ *    - Quantitative milestone: `percent` set, `label` optional.
+ *    - Discrete steps:        `label` + `order` set, `percent` optional.
+ *  Pure placeholder: neither set (just "advance this task today").
+ *
+ *  `percent` semantics strictly mirror `Task.milestonePercent`: it is
+ *  the parent Task's milestone position this occurrence achieves on
+ *  completion. NOT a weighted share. NOT this occurrence's own progress
+ *  meter. Parent Task progress = max(percent of done occurrences). */
+export interface TaskOccurrence {
+  /** ULID, OR derived `occ-{taskId}-{subItemId}` for the v0.11 subItems
+   *  one-shot migration (keeps the migration idempotent across re-runs). */
+  id: string;
+  /** Owning Task. Orphan occurrences (taskId no longer exists in
+   *  `state.tasks`) are GCed by the new client at hydrate. */
+  taskId: string;
+  /** Same shape as Task.slot. Empty = unscheduled (visible in the Task
+   *  detail's checklist block). */
+  slot?: { cycleId: string; date: string; railId: string };
+  /** Discrete-step mode: "outline" / "draft" / "proofread". Render
+   *  fallback elsewhere: `occurrence.label ?? task.title`. */
+  label?: string;
+  /** 0–100 milestone position on the parent Task. >= 100 counts as
+   *  done-peak in derivation. */
+  percent?: number;
+  status: 'pending' | 'done' | 'archived';
+  /** Sort key in discrete-step mode (Task detail / Pending row order).
+   *  Unused in pure-percent mode. Migration from subItems uses array
+   *  index. */
+  order?: number;
+  doneAt?: string;
+  archivedAt?: string;
+}
+
+/** Derived Task status when occurrences are non-empty (ERD §10.1
+ *  v0.11 exception clause). Pure function so selectors / UI components
+ *  can call it without a store dependency.
+ *
+ *  Adoption-gate semantics: "occurrence-managed" mode kicks in only
+ *  when at least one occurrence carries a `slot` OR `percent`. This
+ *  preserves backward compatibility for the v0.11 migration: legacy
+ *  `Task.subItems` are mapped to label-only / unscheduled occurrences
+ *  that function as a checklist; the host Task's status / slot stay
+ *  authoritative. The user opts into the new model implicitly by
+ *  scheduling an occurrence or assigning it a percent. */
+export type DerivedTaskStatus = 'pending' | 'in-progress' | 'done' | 'archived';
+
+/** True when the Task's scheduling/progress is driven by its
+ *  occurrences (per the adoption gate above). False when the
+ *  occurrences are purely checklist-shaped (or empty), in which case
+ *  the legacy Task.slot / Task.status / Task.milestonePercent stay
+ *  authoritative. */
+export function isOccurrenceManaged(occurrences: TaskOccurrence[]): boolean {
+  for (const o of occurrences) {
+    if (o.slot != null) return true;
+    if (o.percent != null) return true;
+  }
+  return false;
+}
+
+export function deriveTaskStatus(
+  task: Task,
+  occurrences: TaskOccurrence[],
+): Task['status'] {
+  if (!isOccurrenceManaged(occurrences)) return task.status;
+  // Terminal user-driven states on the Task itself short-circuit derivation —
+  // a `deleted` Task stays deleted regardless of occurrence rollup.
+  if (task.status === 'deleted') return 'deleted';
+  // ERD §10.6 — percent and status are decoupled. `percent` is a
+  // milestone marker ("completing this reaches N%"); it does NOT
+  // auto-complete the occurrence. Done-ness is driven exclusively
+  // by `status === 'done'` (set when the user toggles the checkbox).
+  let hasDone = false;
+  let hasPending = false;
+  for (const occ of occurrences) {
+    if (occ.status === 'archived') continue;
+    if (occ.status === 'done') hasDone = true;
+    else hasPending = true;
+  }
+  if (!hasDone && !hasPending) return 'archived';
+  if (hasDone && !hasPending) return 'done';
+  if (hasDone && hasPending) return 'in-progress';
+  return 'pending';
+}
+
+export function deriveTaskProgress(
+  task: Task,
+  occurrences: TaskOccurrence[],
+): number | undefined {
+  if (!isOccurrenceManaged(occurrences)) return task.milestonePercent;
+  // ERD §10.6 — only `done` occurrences contribute to progress; a
+  // pending occurrence with percent=100 is a "100% milestone marker
+  // not yet achieved", so it MUST NOT advance the high-water mark.
+  let max: number | undefined;
+  for (const occ of occurrences) {
+    if (occ.status !== 'done') continue;
+    if (occ.percent == null) continue;
+    if (max == null || occ.percent > max) max = occ.percent;
+  }
+  return max ?? task.milestonePercent;
 }
 
 // ============ v0.8 · External Event Sources (ERD §14) ============

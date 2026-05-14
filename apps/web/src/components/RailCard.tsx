@@ -35,6 +35,10 @@ export type TimelineTaskState =
 export interface TimelineTask {
   id: string;
   title: string;
+  /** ERD §10.6 v0.11 — set on occurrence rows whose label differs from
+   *  the parent Task title; rendered as a small subtitle so the user
+   *  knows which Task the occurrence belongs to. */
+  parentTitle?: string;
   state: TimelineTaskState;
   hasNote: boolean;
   /** Full Markdown source — used by the `· 备注` badge's hover popover
@@ -45,6 +49,11 @@ export interface TimelineTask {
   subItemsTotal: number;
   milestonePercent?: number;
   isAutoTask: boolean;
+  /** ERD §10.6 v0.11 — present when this row represents a single
+   *  TaskOccurrence rather than the bare Task. The action callbacks
+   *  receive the row's `id`; the caller routes to occurrence APIs
+   *  iff `occurrenceId` is set, else to legacy task APIs. */
+  occurrenceId?: string;
   /** Latest Shift tags attached to this task. Rendered on settled rows
    *  (done / deferred / archived) so the user sees *why* at a glance. */
   tags?: string[];
@@ -236,19 +245,26 @@ function TaskRow({
 
       <div className="relative flex items-center gap-2">
         <StateGlyph state={task.state} color={railColor} />
-        <span
-          className={clsx(
-            'min-w-0 flex-1 truncate text-sm',
-            isDone &&
-              'text-ink-tertiary line-through decoration-ink-tertiary/40',
-            isArchived &&
-              'text-ink-tertiary line-through decoration-ink-tertiary/40',
-            (isDeferred || isUnmarked) && 'text-ink-tertiary',
-            (isPending || (isPending && isCurrent)) && 'text-ink-primary',
+        <div className="min-w-0 flex-1">
+          {task.parentTitle && (
+            <span className="block truncate text-[10px] leading-tight text-ink-tertiary">
+              {task.parentTitle}
+            </span>
           )}
-        >
-          {task.title}
-        </span>
+          <span
+            className={clsx(
+              'block truncate text-sm',
+              isDone &&
+                'text-ink-tertiary line-through decoration-ink-tertiary/40',
+              isArchived &&
+                'text-ink-tertiary line-through decoration-ink-tertiary/40',
+              (isDeferred || isUnmarked) && 'text-ink-tertiary',
+              (isPending || (isPending && isCurrent)) && 'text-ink-primary',
+            )}
+          >
+            {task.title}
+          </span>
+        </div>
         <RowStateLabel state={task.state} />
       </div>
 

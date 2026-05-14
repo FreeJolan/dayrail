@@ -114,6 +114,7 @@ import type {
   Signal,
   SignalResponse,
   Task,
+  TaskOccurrence,
   Template,
   TemplateKey,
   TemplateRevision,
@@ -121,7 +122,12 @@ import type {
   UserDayNote,
   UserProfile,
 } from './types';
-import { USER_PROFILE_ID } from './types';
+import {
+  USER_PROFILE_ID,
+  deriveTaskStatus,
+  deriveTaskProgress,
+  isOccurrenceManaged,
+} from './types';
 import { selectExternalEventsOn } from './externalEvents';
 import { detectReschedule } from './reschedule';
 import { detectUnschedule } from './unschedule';
@@ -153,6 +159,9 @@ export interface DayRailState {
   shifts: Record<string, Shift>;
   lines: Record<string, Line>;
   tasks: Record<string, Task>;
+  /** ERD §10.6 (v0.11). Top-level Y.Map<id, TaskOccurrence>. Empty for
+   *  Tasks with no splits. Selectors filter by `taskId`. */
+  taskOccurrences: Record<string, TaskOccurrence>;
   adhocEvents: Record<string, AdhocEvent>;
   calendarRules: Record<string, CalendarRule>;
   cycles: Record<string, Cycle>;
@@ -371,6 +380,48 @@ export interface DayRailActions {
     effectiveFrom?: string,
   ) => Promise<void>;
   upsertAutoTask: (task: Task) => Promise<void>;
+  // ============ ERD §10.6 v0.11 · Task occurrences ============
+  /** Add a TaskOccurrence under a Task. If `Task.slot` was set and this
+   *  is the first occurrence, atomically converts the legacy slot into
+   *  a label-less / percent-less occurrence in the same transaction
+   *  (the new occurrence is appended after that conversion). Returns
+   *  the new occurrence id. */
+  addTaskOccurrence: (
+    taskId: string,
+    partial?: Partial<Omit<TaskOccurrence, 'id' | 'taskId'>>,
+    sessionId?: string,
+  ) => Promise<string>;
+  updateTaskOccurrence: (
+    occurrenceId: string,
+    patch: Partial<Omit<TaskOccurrence, 'id' | 'taskId'>>,
+    sessionId?: string,
+  ) => Promise<void>;
+  /** Set occurrence status to 'done' + stamp doneAt. */
+  completeTaskOccurrence: (
+    occurrenceId: string,
+    sessionId?: string,
+  ) => Promise<void>;
+  /** Reopen a previously-done occurrence (status → pending, clears doneAt). */
+  reopenTaskOccurrence: (
+    occurrenceId: string,
+    sessionId?: string,
+  ) => Promise<void>;
+  archiveTaskOccurrence: (
+    occurrenceId: string,
+    sessionId?: string,
+  ) => Promise<void>;
+  /** Hard-remove an occurrence (used by the "delete this split" affordance). */
+  removeTaskOccurrence: (
+    occurrenceId: string,
+    sessionId?: string,
+  ) => Promise<void>;
+  /** Move an occurrence to a different (cycleId, date, railId) slot, or
+   *  clear its slot when `slot === null`. */
+  scheduleTaskOccurrence: (
+    occurrenceId: string,
+    slot: { cycleId: string; date: string; railId: string } | null,
+    sessionId?: string,
+  ) => Promise<void>;
   createAdhocEvent: (opts: {
     date: string;
     name: string;
@@ -481,6 +532,7 @@ function stateFromFlat(flat: FlatState): Omit<DayRailState, 'ready' | 'error' | 
     shifts: flat.shifts as Record<string, Shift>,
     lines: flat.lines as Record<string, Line>,
     tasks: flat.tasks as Record<string, Task>,
+    taskOccurrences: flat.taskOccurrences as Record<string, TaskOccurrence>,
     adhocEvents: flat.adhocEvents as Record<string, AdhocEvent>,
     calendarRules: flat.calendarRules as Record<string, CalendarRule>,
     cycles: flat.cycles as Record<string, Cycle>,
@@ -582,7 +634,14 @@ async function hydrateImpl(): Promise<void> {
   //    flat state and trigger debounced persistence. Idempotent.
   attachObservers(doc);
 
-  // 3. Derive flat state and seed zustand.
+  // 3. ERD §10.6 v0.11 — one-shot subItems → TaskOccurrence migration +
+  //    orphan GC. Both are idempotent (see runOccurrencesMigration);
+  //    safe to run on every hydrate. Wrapped in a single transact tagged
+  //    with the OPFS_ORIGIN so syncController doesn't push an echo for
+  //    pure migration writes.
+  runOccurrencesMigration(doc);
+
+  // 4. Derive flat state and seed zustand.
   const flat = readFlatStateFromDoc(doc);
   useStore.setState((prev) => ({
     ...prev,
@@ -590,6 +649,90 @@ async function hydrateImpl(): Promise<void> {
     ready: true,
     v05MigrationApplied: true, // No-op in v0.7; see file header.
   }));
+}
+
+/** ERD §10.6 v0.11 cross-version migration. Runs at every hydrate.
+ *  Two passes inside one transact:
+ *
+ *    1. **subItems → TaskOccurrence**. For each Task with non-empty
+ *       `subItems`, create one occurrence per subItem if absent. The
+ *       occurrence id is derived `occ-{taskId}-{subItemId}` so re-runs
+ *       (or runs after an older client appended new subItems) idempotently
+ *       fill in only what's missing. We do NOT delete `Task.subItems`
+ *       — older clients may still write to that field, and the new
+ *       client dual-reads (subItems + occurrences) so writes from older
+ *       peers stay visible.
+ *
+ *    2. **Orphan GC**. Drop any occurrence whose `taskId` no longer
+ *       exists in `state.tasks`. The original Task may have been hard-
+ *       deleted by an older client (which doesn't know about
+ *       `taskOccurrences`); leftover occurrences would render as
+ *       phantom rows otherwise.
+ *
+ *  Tagged origin `'occMigration'` so the dirty-tracking subscriber in
+ *  syncController can be configured to skip echo pushes for pure-
+ *  migration writes if needed. Currently it falls through to the
+ *  normal user-authored path (debounced 8s push), which is acceptable —
+ *  migrating once per device push isn't user-visible noise. */
+function runOccurrencesMigration(doc: YDoc): void {
+  doc.transact(() => {
+    const tasksMap = getEntityMap(doc, 'tasks');
+    const occMap = getEntityMap(doc, 'taskOccurrences');
+
+    // Build a set of existing taskIds for orphan GC.
+    const taskIds = new Set<string>();
+    tasksMap.forEach((_value, id) => {
+      taskIds.add(id);
+    });
+
+    // Pass 1 — subItems migration. Iterate every Task; for each
+    // subItem that doesn't already have a corresponding occurrence id,
+    // create one.
+    tasksMap.forEach((value, taskId) => {
+      if (!(value instanceof Y.Map)) return;
+      const taskYMap = value as YMap<unknown>;
+      const subItems = taskYMap.get('subItems');
+      if (!Array.isArray(subItems)) return;
+      for (let i = 0; i < subItems.length; i++) {
+        const sub = subItems[i] as
+          | { id?: unknown; title?: unknown; done?: unknown }
+          | null
+          | undefined;
+        if (!sub || typeof sub !== 'object') continue;
+        const subId = typeof sub.id === 'string' ? sub.id : null;
+        const subTitle = typeof sub.title === 'string' ? sub.title : '';
+        const subDone = sub.done === true;
+        if (subId === null) continue;
+        const occId = `occ-${taskId}-${subId}`;
+        if (occMap.has(occId)) continue;
+        const occ: TaskOccurrence = {
+          id: occId,
+          taskId,
+          label: subTitle,
+          status: subDone ? 'done' : 'pending',
+          order: i,
+        };
+        occMap.set(
+          occId,
+          entityToYMap(occ as unknown as Record<string, unknown>),
+        );
+      }
+    });
+
+    // Pass 2 — orphan GC.
+    const orphanIds: string[] = [];
+    occMap.forEach((value, occId) => {
+      if (!(value instanceof Y.Map)) {
+        orphanIds.push(occId);
+        return;
+      }
+      const tId = (value as YMap<unknown>).get('taskId');
+      if (typeof tId !== 'string' || !taskIds.has(tId)) {
+        orphanIds.push(occId);
+      }
+    });
+    for (const id of orphanIds) occMap.delete(id);
+  }, 'occMigration');
 }
 
 // ============ Y.Doc write helpers ============
@@ -676,6 +819,71 @@ function todayIso(): string {
 
 function ulidLite(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** ERD §10.6 v0.11 adoption-edge helper. Called from
+ *  `addTaskOccurrence` / `updateTaskOccurrence` / `scheduleTaskOccurrence`
+ *  whenever an occurrence is about to gain a slot or percent (= Task
+ *  is about to enter occurrence-managed mode for the first time).
+ *  When the host Task currently has a legacy `Task.slot` AND none of
+ *  its sibling occurrences carry slot/percent yet, fold that slot
+ *  into a fresh sibling occurrence and clear `Task.slot`. Result:
+ *  the Today/Cycle scheduling visible before the user's edit is
+ *  preserved as a label-less / percent-less occurrence, no surprise
+ *  data loss when the rendering surface flips. Idempotent — re-runs
+ *  short-circuit because subsequent calls find a slot-bearing
+ *  occurrence already present.
+ *
+ *  Caller must already be inside a doc.transact. The `triggeringOcc`
+ *  parameter is the occurrence Y.Map driving the adoption (excluded
+ *  from the "any sibling already managed?" scan). */
+function maybeConvertLegacyTaskSlot(
+  doc: YDoc,
+  triggeringOcc: YMap<unknown>,
+): void {
+  const taskId = triggeringOcc.get('taskId');
+  if (typeof taskId !== 'string') return;
+  const tasksMap = getEntityMap(doc, 'tasks');
+  const taskYMap = tasksMap.get(taskId);
+  if (!(taskYMap instanceof Y.Map)) return;
+  const legacySlot = (taskYMap as YMap<unknown>).get('slot');
+  if (legacySlot == null || typeof legacySlot !== 'object') return;
+  // Already in occurrence-managed mode? Some sibling carries slot or
+  // percent — leave the legacy slot alone (it's already being ignored
+  // by selectors via isOccurrenceManaged).
+  const occMap = getEntityMap(doc, 'taskOccurrences');
+  let alreadyManaged = false;
+  occMap.forEach((value, occId) => {
+    if (alreadyManaged) return;
+    if (!(value instanceof Y.Map)) return;
+    if ((value as YMap<unknown>).get('taskId') !== taskId) return;
+    if (occId === triggeringOcc.get('id')) return;
+    const slotVal = (value as YMap<unknown>).get('slot');
+    const pctVal = (value as YMap<unknown>).get('percent');
+    if (slotVal != null || pctVal != null) alreadyManaged = true;
+  });
+  if (alreadyManaged) return;
+  // Fold legacy slot into a fresh occurrence at a high `order` so it
+  // sits after the existing checklist items.
+  let maxOrder = -1;
+  occMap.forEach((value) => {
+    if (!(value instanceof Y.Map)) return;
+    if ((value as YMap<unknown>).get('taskId') !== taskId) return;
+    const o = (value as YMap<unknown>).get('order');
+    if (typeof o === 'number' && o > maxOrder) maxOrder = o;
+  });
+  const conv: TaskOccurrence = {
+    id: ulidLite('occ'),
+    taskId,
+    slot: legacySlot as TaskOccurrence['slot'],
+    status: 'pending',
+    order: maxOrder + 1,
+  };
+  occMap.set(
+    conv.id,
+    entityToYMap(conv as unknown as Record<string, unknown>),
+  );
+  (taskYMap as YMap<unknown>).delete('slot');
 }
 
 // ============ Revision builders ============
@@ -888,6 +1096,7 @@ const initialState: DayRailState = {
   shifts: {},
   lines: {},
   tasks: {},
+  taskOccurrences: {},
   adhocEvents: {},
   calendarRules: {},
   cycles: {},
@@ -1380,16 +1589,50 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
     }, sessionId ?? 'updateTask');
   },
 
-  // Legacy: store.ts:2041
+  // Legacy: store.ts:2041 · v0.11+ ERD §10.6 D7: when occurrences exist,
+  // cascade archive to all pending / in-progress occurrences (NOT
+  // 'done', preserving "I never actually did them" truth on the ones
+  // the user already finished).
   archiveTask: async (id) => {
     const doc = getYDoc();
+    const archivedAtIso = new Date().toISOString();
     doc.transact(() => {
       const map = getEntityMap(doc, 'tasks');
       const existing = map.get(id);
       if (!(existing instanceof Y.Map)) return;
       patchEntityYMap(existing as YMap<unknown>, {
         status: 'archived',
-        archivedAt: new Date().toISOString(),
+        archivedAt: archivedAtIso,
+      });
+      // ERD §10.6 v0.11 D7 cascade — only fires in occurrence-managed
+      // mode. For pure-checklist (pre-adoption) tasks, archiving the
+      // Task simply hides the task per the legacy semantics; the
+      // checklist occurrences ride along (no separate scheduling state
+      // to clean up). For occurrence-managed tasks, archive any
+      // pending sibling occurrence so it stops surfacing in
+      // Today/Cycle/Pending.
+      const occMap = getEntityMap(doc, 'taskOccurrences');
+      let manageMode = false;
+      occMap.forEach((value) => {
+        if (manageMode) return;
+        if (!(value instanceof Y.Map)) return;
+        if ((value as YMap<unknown>).get('taskId') !== id) return;
+        const slotVal = (value as YMap<unknown>).get('slot');
+        const pctVal = (value as YMap<unknown>).get('percent');
+        if (slotVal != null || pctVal != null) manageMode = true;
+      });
+      if (!manageMode) return;
+      occMap.forEach((value) => {
+        if (!(value instanceof Y.Map)) return;
+        const occ = value as YMap<unknown>;
+        if (occ.get('taskId') !== id) return;
+        if (occ.get('status') === 'archived' || occ.get('status') === 'done') {
+          return;
+        }
+        patchEntityYMap(occ, {
+          status: 'archived',
+          archivedAt: archivedAtIso,
+        });
       });
     }, 'archiveTask');
   },
@@ -1439,6 +1682,170 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
     doc.transact(() => {
       upsertEntity(doc, 'tasks', task.id, { ...task });
     }, 'upsertAutoTask');
+  },
+
+  // ============ ERD §10.6 v0.11 · Task occurrences ============
+
+  addTaskOccurrence: async (taskId, partial, sessionId) => {
+    const doc = getYDoc();
+    const occId = ulidLite('occ');
+    doc.transact(() => {
+      const tasksMap = getEntityMap(doc, 'tasks');
+      const taskYMap = tasksMap.get(taskId);
+      if (!(taskYMap instanceof Y.Map)) return;
+
+      const occMap = getEntityMap(doc, 'taskOccurrences');
+      // Count this task's existing occurrences and detect whether any
+      // of them carry a slot/percent (i.e., the Task is already in
+      // occurrence-managed mode per §10.6 adoption gate).
+      let existingCount = 0;
+      let alreadyManaged = false;
+      occMap.forEach((value) => {
+        if (!(value instanceof Y.Map)) return;
+        if ((value as YMap<unknown>).get('taskId') !== taskId) return;
+        existingCount++;
+        const slotVal = (value as YMap<unknown>).get('slot');
+        const pctVal = (value as YMap<unknown>).get('percent');
+        if (slotVal != null || pctVal != null) alreadyManaged = true;
+      });
+
+      let baseOrder = existingCount;
+
+      // Adoption-edge conversion (§10.6 Q1 boundary): if this newly-
+      // created occurrence will itself be slot/percent-bearing AND the
+      // Task is not yet in occurrence-managed mode AND Task.slot is
+      // currently set, convert that legacy slot into a label-less /
+      // percent-less occurrence in the same transaction. Without this,
+      // the user's existing scheduling on the Task would silently
+      // disappear from Today/Cycle the moment they add their first
+      // slot-bearing occurrence.
+      const willAdopt =
+        partial?.slot != null || partial?.percent != null;
+      const legacySlot = (taskYMap as YMap<unknown>).get('slot');
+      if (
+        willAdopt &&
+        !alreadyManaged &&
+        legacySlot != null &&
+        typeof legacySlot === 'object'
+      ) {
+        const conv: TaskOccurrence = {
+          id: ulidLite('occ'),
+          taskId,
+          slot: legacySlot as TaskOccurrence['slot'],
+          status: 'pending',
+          order: baseOrder,
+        };
+        occMap.set(
+          conv.id,
+          entityToYMap(conv as unknown as Record<string, unknown>),
+        );
+        (taskYMap as YMap<unknown>).delete('slot');
+        baseOrder += 1;
+      }
+
+      const occ: TaskOccurrence = {
+        id: occId,
+        taskId,
+        status: 'pending',
+        ...(partial?.label !== undefined && { label: partial.label }),
+        ...(partial?.percent !== undefined && { percent: partial.percent }),
+        ...(partial?.slot !== undefined && { slot: partial.slot }),
+        order: partial?.order ?? baseOrder,
+        ...(partial?.status !== undefined && { status: partial.status }),
+        ...(partial?.doneAt !== undefined && { doneAt: partial.doneAt }),
+      };
+      occMap.set(
+        occId,
+        entityToYMap(occ as unknown as Record<string, unknown>),
+      );
+    }, sessionId ?? 'addTaskOccurrence');
+    return occId;
+  },
+
+  updateTaskOccurrence: async (occurrenceId, patch, sessionId) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const occMap = getEntityMap(doc, 'taskOccurrences');
+      const existing = occMap.get(occurrenceId);
+      if (!(existing instanceof Y.Map)) return;
+      // Adoption-edge conversion: if this update is the first time
+      // *any* of this Task's occurrences gain a slot or percent (i.e.,
+      // the Task is transitioning out of pure-checklist mode), and
+      // Task.slot is set, fold that legacy slot into a fresh slot-
+      // bearing occurrence so the Today/Cycle scheduling visible
+      // before the update isn't silently dropped.
+      const willAdopt =
+        (patch.slot !== undefined && patch.slot !== null) ||
+        (patch.percent !== undefined && patch.percent !== null);
+      if (willAdopt) {
+        maybeConvertLegacyTaskSlot(doc, existing as YMap<unknown>);
+      }
+      patchEntityYMap(existing as YMap<unknown>, { ...patch });
+    }, sessionId ?? 'updateTaskOccurrence');
+  },
+
+  completeTaskOccurrence: async (occurrenceId, sessionId) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const occMap = getEntityMap(doc, 'taskOccurrences');
+      const existing = occMap.get(occurrenceId);
+      if (!(existing instanceof Y.Map)) return;
+      patchEntityYMap(existing as YMap<unknown>, {
+        status: 'done',
+        doneAt: new Date().toISOString(),
+      });
+    }, sessionId ?? 'completeTaskOccurrence');
+  },
+
+  reopenTaskOccurrence: async (occurrenceId, sessionId) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const occMap = getEntityMap(doc, 'taskOccurrences');
+      const existing = occMap.get(occurrenceId);
+      if (!(existing instanceof Y.Map)) return;
+      patchEntityYMap(existing as YMap<unknown>, {
+        status: 'pending',
+        doneAt: undefined,
+      });
+    }, sessionId ?? 'reopenTaskOccurrence');
+  },
+
+  archiveTaskOccurrence: async (occurrenceId, sessionId) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const occMap = getEntityMap(doc, 'taskOccurrences');
+      const existing = occMap.get(occurrenceId);
+      if (!(existing instanceof Y.Map)) return;
+      patchEntityYMap(existing as YMap<unknown>, {
+        status: 'archived',
+        archivedAt: new Date().toISOString(),
+      });
+    }, sessionId ?? 'archiveTaskOccurrence');
+  },
+
+  removeTaskOccurrence: async (occurrenceId, sessionId) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      deleteEntity(doc, 'taskOccurrences', occurrenceId);
+    }, sessionId ?? 'removeTaskOccurrence');
+  },
+
+  scheduleTaskOccurrence: async (occurrenceId, slot, sessionId) => {
+    const doc = getYDoc();
+    doc.transact(() => {
+      const occMap = getEntityMap(doc, 'taskOccurrences');
+      const existing = occMap.get(occurrenceId);
+      if (!(existing instanceof Y.Map)) return;
+      if (slot == null) {
+        (existing as YMap<unknown>).delete('slot');
+      } else {
+        // Adoption-edge: scheduling an occurrence may flip the Task
+        // into occurrence-managed mode for the first time; fold legacy
+        // Task.slot into a sibling occurrence beforehand so it survives.
+        maybeConvertLegacyTaskSlot(doc, existing as YMap<unknown>);
+        patchEntityYMap(existing as YMap<unknown>, { slot });
+      }
+    }, sessionId ?? 'scheduleTaskOccurrence');
   },
 
   // ============ Ad-hoc events ============
@@ -2464,6 +2871,10 @@ export function hasMilestone(state: DayRailState, lineId: string): boolean {
     if (t.lineId !== lineId) continue;
     if (t.status === 'deleted') continue;
     if (t.milestonePercent != null) return true;
+    // ERD §10.6 v0.11 — a Task with at least one occurrence carrying
+    // `percent` also counts as a milestone-bearing task.
+    const occs = selectOccurrencesForTask(state, t.id);
+    if (occs.some((o) => o.percent != null)) return true;
   }
   return false;
 }
@@ -2472,10 +2883,16 @@ export function selectProjectProgress(state: DayRailState, lineId: string): numb
   let max = 0;
   for (const t of Object.values(state.tasks)) {
     if (t.lineId !== lineId) continue;
-    if (t.status !== 'done') continue;
-    if (t.milestonePercent != null && t.milestonePercent > max) {
-      max = t.milestonePercent;
-    }
+    // ERD §10.6 v0.11 — fold in occurrence-driven progress. For a
+    // Task with no occurrences the existing "done + milestonePercent"
+    // path applies; with occurrences `deriveTaskProgress` returns the
+    // max-of-done occurrence percent (also counts the legacy
+    // milestonePercent as a fallback when no occurrence has percent).
+    const occs = selectOccurrencesForTask(state, t.id);
+    const derivedStatus = deriveTaskStatus(t, occs);
+    if (derivedStatus !== 'done') continue;
+    const progress = deriveTaskProgress(t, occs);
+    if (progress != null && progress > max) max = progress;
   }
   return max;
 }
@@ -2489,10 +2906,76 @@ export function countTasks(
   for (const t of Object.values(state.tasks)) {
     if (t.lineId !== lineId) continue;
     if (t.status === 'deleted' || t.status === 'archived') continue;
-    if (t.status === 'done') done++;
+    // ERD §10.6 v0.11 — derived status when in occurrence-managed mode;
+    // legacy / pre-adoption Tasks count by their explicit task.status.
+    const occs = selectOccurrencesForTask(state, t.id);
+    const derived = deriveTaskStatus(t, occs);
+    if (derived === 'archived' || derived === 'deleted') continue;
+    if (derived === 'done') done++;
     else open++;
   }
   return { done, open, total: done + open };
 }
 
-export { INBOX_LINE_ID } from './types';
+// ============ ERD §10.6 v0.11 · occurrence selectors ============
+
+/** All TaskOccurrences belonging to a given Task, sorted by `order`
+ *  (asc, undefined → end), then by id for stability. Excludes the
+ *  Task itself — caller queries `state.tasks[taskId]` separately for
+ *  the title / lineId / etc. */
+export function selectOccurrencesForTask(
+  state: Pick<DayRailState, 'taskOccurrences'>,
+  taskId: string,
+): TaskOccurrence[] {
+  const out: TaskOccurrence[] = [];
+  for (const occ of Object.values(state.taskOccurrences)) {
+    if (occ.taskId === taskId) out.push(occ);
+  }
+  return out.sort((a, b) => {
+    const ao = a.order ?? Number.POSITIVE_INFINITY;
+    const bo = b.order ?? Number.POSITIVE_INFINITY;
+    if (ao !== bo) return ao - bo;
+    return a.id.localeCompare(b.id);
+  });
+}
+
+/** Look up a single occurrence by id. */
+export function selectOccurrenceById(
+  state: Pick<DayRailState, 'taskOccurrences'>,
+  occurrenceId: string,
+): TaskOccurrence | undefined {
+  return state.taskOccurrences[occurrenceId];
+}
+
+/** Occurrences placed on a specific (cycleId, date, railId) slot.
+ *  Used by Today Track + Cycle View rendering to surface multi-day
+ *  splits as individual rows on each day's slot. */
+export function selectOccurrencesForSlot(
+  state: Pick<DayRailState, 'taskOccurrences'>,
+  slot: { cycleId: string; date: string; railId: string },
+): TaskOccurrence[] {
+  const out: TaskOccurrence[] = [];
+  for (const occ of Object.values(state.taskOccurrences)) {
+    if (!occ.slot) continue;
+    if (
+      occ.slot.cycleId === slot.cycleId &&
+      occ.slot.date === slot.date &&
+      occ.slot.railId === slot.railId
+    ) {
+      out.push(occ);
+    }
+  }
+  return out.sort((a, b) => {
+    const ao = a.order ?? Number.POSITIVE_INFINITY;
+    const bo = b.order ?? Number.POSITIVE_INFINITY;
+    if (ao !== bo) return ao - bo;
+    return a.id.localeCompare(b.id);
+  });
+}
+
+export {
+  INBOX_LINE_ID,
+  deriveTaskStatus,
+  deriveTaskProgress,
+  isOccurrenceManaged,
+} from './types';

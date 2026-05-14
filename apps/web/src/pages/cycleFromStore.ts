@@ -10,10 +10,13 @@ import type {
   DayRailState,
   RailRevision,
   Task,
+  TaskOccurrence,
 } from '@dayrail/core';
 import {
+  isOccurrenceManaged,
   railsActiveOn,
   resolveTemplateForDate,
+  selectOccurrencesForTask,
   singleDateRuleId,
 } from '@dayrail/core';
 import type {
@@ -115,6 +118,7 @@ export function deriveCycleFromStore(
     | 'templates'
     | 'rails'
     | 'tasks'
+    | 'taskOccurrences'
     | 'lines'
     | 'calendarRules'
     | 'calendarRuleRevisions'
@@ -188,26 +192,44 @@ export function deriveCycleFromStore(
   // `offRailMap` instead — never silently dropped.
   const slotsByKey = new Map<string, CycleSlot>();
   const offRailMap = new Map<string, SlotTaskSummary[]>();
-  for (const task of Object.values(state.tasks)) {
-    if (task.status === 'deleted') continue;
-    if (!task.slot) continue;
-    const { date, railId } = task.slot;
-    if (date < startIso || date > endIso) continue;
-    const summary = buildSlotTaskSummary(task);
+  const placeSummary = (
+    date: string,
+    railId: string,
+    summary: SlotTaskSummary,
+  ) => {
+    if (date < startIso || date > endIso) return;
     const railOnDay = railIdsByDate.get(date)?.has(railId) ?? false;
     if (!railOnDay) {
       const arr = offRailMap.get(date) ?? [];
       arr.push(summary);
       offRailMap.set(date, arr);
-      continue;
+      return;
     }
     const key = `${railId}|${date}`;
     const existing = slotsByKey.get(key);
-    if (existing) {
-      existing.tasks.push(summary);
-    } else {
-      slotsByKey.set(key, { railId, date, tasks: [summary] });
+    if (existing) existing.tasks.push(summary);
+    else slotsByKey.set(key, { railId, date, tasks: [summary] });
+  };
+
+  for (const task of Object.values(state.tasks)) {
+    if (task.status === 'deleted') continue;
+    const occs = selectOccurrencesForTask(state, task.id);
+    if (isOccurrenceManaged(occs)) {
+      // ERD §10.6 v0.11 — occurrence-managed Task. One pill per
+      // slot-bearing occurrence; the legacy `task.slot` is ignored on
+      // this branch.
+      for (const occ of occs) {
+        if (!occ.slot) continue;
+        if (occ.status === 'archived') continue;
+        const summary = buildOccurrenceSummary(task, occ);
+        placeSummary(occ.slot.date, occ.slot.railId, summary);
+      }
+      continue;
     }
+    // Legacy / pre-adoption path — single pill at task.slot.
+    if (!task.slot) continue;
+    const summary = buildSlotTaskSummary(task);
+    placeSummary(task.slot.date, task.slot.railId, summary);
   }
   // Sort each slot's tasks by (state rank → priority rank → stable
   // insertion). State rank keeps pending items at the top where the
@@ -276,8 +298,6 @@ export function deriveCycleFromStore(
 
 function buildSlotTaskSummary(task: Task): SlotTaskSummary {
   const subItems = task.subItems ?? [];
-  // Task.status ∈ pending / in-progress / done / deferred / archived / deleted.
-  // Map anything pre-terminal into `pending` for slot-pill rendering.
   let state: SlotTaskState;
   if (task.status === 'done') state = 'done';
   else if (task.status === 'deferred') state = 'deferred';
@@ -285,6 +305,7 @@ function buildSlotTaskSummary(task: Task): SlotTaskSummary {
   else state = 'pending';
   const trimmedNote = task.note?.trim() ?? '';
   return {
+    rowId: task.id,
     taskId: task.id,
     title: task.title,
     state,
@@ -303,6 +324,58 @@ function buildSlotTaskSummary(task: Task): SlotTaskSummary {
     }),
     ...(task.priority != null && { priority: task.priority }),
     ...(task.slotOrder != null && { slotOrder: task.slotOrder }),
+  };
+}
+
+/** ERD §10.6 v0.11 — slot-pill summary for a TaskOccurrence. Title
+ *  fallback chain: `occurrence.label` → `task.title`. Percent reads
+ *  the occurrence's milestone marker (falls back to the task-level
+ *  milestonePercent). State maps from occurrence.status (no `deferred`
+ *  state on occurrences; the host Task carries that semantics). */
+function buildOccurrenceSummary(
+  task: Task,
+  occ: TaskOccurrence,
+): SlotTaskSummary {
+  // ERD §10.6 — status drives the pill state; percent is a marker
+  // only. A pending occurrence with percent=100 is "the 100% milestone
+  // marker, not yet checked off"; it MUST render as pending.
+  let state: SlotTaskState;
+  if (occ.status === 'done') state = 'done';
+  else if (occ.status === 'archived') state = 'archived';
+  else state = 'pending';
+  const trimmedNote = task.note?.trim() ?? '';
+  const labelTrimmed = occ.label?.trim() ?? '';
+  const hasDistinctLabel =
+    labelTrimmed.length > 0 && labelTrimmed !== task.title;
+  const title = hasDistinctLabel ? labelTrimmed : task.title;
+  // parentTitle only when the occurrence label is meaningfully different
+  // from the parent Task title — otherwise a redundant subtitle just
+  // duplicates the main line and adds noise.
+  const parentTitle = hasDistinctLabel ? task.title : undefined;
+  const milestone = occ.percent ?? task.milestonePercent;
+  return {
+    rowId: occ.id,
+    taskId: task.id,
+    occurrenceId: occ.id,
+    title,
+    ...(parentTitle !== undefined && { parentTitle }),
+    state,
+    isAutoTask: task.source === 'auto-habit',
+    hasNote: trimmedNote.length > 0,
+    ...(trimmedNote.length > 0 && {
+      note: trimmedNote,
+      noteSnippet:
+        trimmedNote.length > 120 ? `${trimmedNote.slice(0, 120)}…` : trimmedNote,
+    }),
+    // Occurrence pills don't carry the legacy "subItems N/M" badge —
+    // the occurrence IS the unit being shown; aggregate counts belong
+    // to the Task detail drawer.
+    subItemsDone: 0,
+    subItemsTotal: 0,
+    ...(milestone != null && { milestonePercent: milestone }),
+    ...(task.priority != null && { priority: task.priority }),
+    // Occurrences use task-relative `order`; cycle-slot ordering for
+    // occurrence pills follows that order rather than `slotOrder`.
   };
 }
 
@@ -361,10 +434,41 @@ function computeTopLines(
  *
  *  Terminal states (done / archived / deleted) are excluded. Pending
  *  tasks already bound to a slot are also excluded — they're visible
- *  in the Cycle grid itself, including them here would duplicate. */
-export function selectBacklogTasks(
-  state: Pick<DayRailState, 'tasks' | 'adhocEvents'>,
-): Task[] {
+ *  in the Cycle grid itself, including them here would duplicate.
+ *
+ *  ERD §10.6 v0.11 — for occurrence-managed Tasks the row unit is the
+ *  occurrence: the Backlog shows ONE row per pending unscheduled
+ *  occurrence, never the parent Task itself (the task is "split into
+ *  pieces" and the only items left to drag onto a slot are the
+ *  unscheduled pieces). Pure-checklist (pre-adoption) tasks behave
+ *  exactly like before — one row per Task. See `selectBacklogItems`. */
+
+/** ERD §10.6 v0.11 — discriminated union surfaced by the Backlog. */
+export type BacklogItem =
+  | { kind: 'task'; task: Task }
+  | { kind: 'occurrence'; task: Task; occurrence: TaskOccurrence };
+
+/** Stable identity for a backlog row — used as React key, dnd id, and
+ *  the rowId the App-level drag handler sees. Matches the same
+ *  `rowId` convention as cycle-pill rows (occurrence id when present,
+ *  else task id), so App.tsx's existing taskOccurrences-lookup branch
+ *  routes the drop correctly without further wiring. */
+export function backlogItemId(item: BacklogItem): string {
+  return item.kind === 'occurrence' ? item.occurrence.id : item.task.id;
+}
+
+/** Title fallback chain for a backlog row. */
+export function backlogItemTitle(item: BacklogItem): string {
+  if (item.kind === 'occurrence') {
+    const lbl = item.occurrence.label?.trim();
+    if (lbl && lbl.length > 0) return lbl;
+  }
+  return item.task.title;
+}
+
+export function selectBacklogItems(
+  state: Pick<DayRailState, 'tasks' | 'taskOccurrences' | 'adhocEvents'>,
+): BacklogItem[] {
   const adhocTaskIds = new Set<string>();
   for (const a of Object.values(state.adhocEvents)) {
     if (a.status === 'active' && a.taskId) adhocTaskIds.add(a.taskId);
@@ -375,20 +479,55 @@ export function selectBacklogTasks(
     if (p === 'P2') return 2;
     return 3;
   };
-  return Object.values(state.tasks)
-    .filter((t) => {
-      if (t.status === 'deferred') return true;
-      if (t.status !== 'pending' && t.status !== 'in-progress') return false;
-      return !t.slot && !adhocTaskIds.has(t.id);
-    })
-    .sort((a, b) => {
-      // Deferred first (they've been waiting longer for a decision),
-      // then priority rank (P0 → unset), then user-set order.
-      const aDef = a.status === 'deferred' ? 0 : 1;
-      const bDef = b.status === 'deferred' ? 0 : 1;
-      if (aDef !== bDef) return aDef - bDef;
-      const pr = priorityRank(a.priority) - priorityRank(b.priority);
-      if (pr !== 0) return pr;
-      return a.order - b.order;
-    });
+  const items: BacklogItem[] = [];
+  for (const t of Object.values(state.tasks)) {
+    if (t.status === 'deleted' || t.status === 'archived' || t.status === 'done') {
+      continue;
+    }
+    const occs = selectOccurrencesForTask(state, t.id);
+    if (isOccurrenceManaged(occs)) {
+      // Occurrence-managed: one row per pending unscheduled occurrence.
+      // Parent Task itself never surfaces (it's "fully split"); even if
+      // task.status === 'deferred' the user has migrated to occurrence
+      // mode, so we don't double-up with a parent row.
+      for (const occ of occs) {
+        if (occ.status !== 'pending') continue;
+        if (occ.slot) continue;
+        items.push({ kind: 'occurrence', task: t, occurrence: occ });
+      }
+      continue;
+    }
+    // Pre-adoption / legacy path — single row per Task.
+    if (t.status === 'deferred') {
+      items.push({ kind: 'task', task: t });
+      continue;
+    }
+    if (t.status !== 'pending' && t.status !== 'in-progress') continue;
+    if (t.slot) continue;
+    if (adhocTaskIds.has(t.id)) continue;
+    items.push({ kind: 'task', task: t });
+  }
+  items.sort((a, b) => {
+    // Deferred first (they've been waiting longer for a decision),
+    // then priority rank (P0 → unset), then user-set order.
+    const aDef = a.kind === 'task' && a.task.status === 'deferred' ? 0 : 1;
+    const bDef = b.kind === 'task' && b.task.status === 'deferred' ? 0 : 1;
+    if (aDef !== bDef) return aDef - bDef;
+    const pr = priorityRank(a.task.priority) - priorityRank(b.task.priority);
+    if (pr !== 0) return pr;
+    // Within same task, occurrence rows sort by occurrence.order then
+    // by id for stability; cross-task ties break on task.order.
+    if (
+      a.kind === 'occurrence' &&
+      b.kind === 'occurrence' &&
+      a.task.id === b.task.id
+    ) {
+      const ao = a.occurrence.order ?? Number.POSITIVE_INFINITY;
+      const bo = b.occurrence.order ?? Number.POSITIVE_INFINITY;
+      if (ao !== bo) return ao - bo;
+      return a.occurrence.id.localeCompare(b.occurrence.id);
+    }
+    return a.task.order - b.task.order;
+  });
+  return items;
 }
