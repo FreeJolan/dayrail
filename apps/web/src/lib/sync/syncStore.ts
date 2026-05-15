@@ -11,6 +11,8 @@ import {
   getDeviceLabel,
   getDirtyCount,
   getLastSyncInfo,
+  hasSessionRoundTrip,
+  markSessionRoundTrip,
   type LastSyncInfo,
 } from './identity';
 import { isDriveConnected } from './driveAuth';
@@ -55,6 +57,11 @@ export interface SyncSnapshot {
   /** Set when classify returns 'true-conflict'; null otherwise. The
    *  SyncConflictPanel mounts iff this is non-null. */
   pendingConflict: PendingConflict | null;
+  /** True once a successful push or pull has completed in the
+   *  current browser session (ERD §7.9 decision 5). The "已同步"
+   *  label only displays when this is true — `lastSync` alone can
+   *  reflect a stale value that survived a wipe. */
+  sessionRoundTripDone: boolean;
 }
 
 let snapshot: SyncSnapshot = readSnapshot();
@@ -68,6 +75,7 @@ function readSnapshot(): SyncSnapshot {
     lastSync: getLastSyncInfo(),
     deviceLabel: getDeviceLabel(),
     pendingConflict: null,
+    sessionRoundTripDone: hasSessionRoundTrip(),
   };
 }
 
@@ -95,7 +103,14 @@ export const syncStore = {
     update({ dirtyCount: n });
   },
   setLastSync(info: LastSyncInfo | null): void {
-    update({ lastSync: info });
+    // A non-null update marks the session as having had a successful
+    // round-trip — drives the SideNav "已同步" gate (ERD §7.9 #5).
+    if (info !== null) {
+      markSessionRoundTrip();
+      update({ lastSync: info, sessionRoundTripDone: true });
+    } else {
+      update({ lastSync: info });
+    }
   },
   setConnected(v: boolean): void {
     update({ connected: v });

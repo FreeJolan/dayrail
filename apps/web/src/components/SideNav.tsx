@@ -249,8 +249,15 @@ function describeSyncStatus(status: ReturnType<typeof useSyncStatus>): {
       tone: 'warn',
     };
   }
-  if (status.lastSync) {
+  // ERD §7.9 #5: only claim "已同步" once the current session has
+  // had a successful round-trip. `lastSync` alone can carry a stale
+  // value across a wipe — showing "已同步" on top of an empty UI was
+  // exactly the v0.10.x false-OK symptom this rewrites away.
+  if (status.sessionRoundTripDone) {
     return { dot: 'bg-ink-secondary/70', label: '已同步', tone: 'ok' };
+  }
+  if (status.lastSync) {
+    return { dot: 'bg-ink-tertiary/40', label: '未确认', tone: 'idle' };
   }
   return { dot: 'bg-ink-tertiary/40', label: '已连接', tone: 'idle' };
 }

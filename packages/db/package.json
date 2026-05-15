@@ -9,12 +9,15 @@
     ".": "./src/index.ts",
     "./dryj": "./src/dryj.ts",
     "./yjs": "./src/yjs.ts",
-    "./yjsPersistence": "./src/yjsPersistence.ts"
+    "./yjsPersistence": "./src/yjsPersistence.ts",
+    "./yDocStore": "./src/yDocStore.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-fs": "^2.4.2",
     "yjs": "^13.6.0"
   },
   "peerDependencies": {

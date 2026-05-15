@@ -24,7 +24,7 @@ import { saveYDocBytes } from '@dayrail/db/yjsPersistence';
 // PR adding next year's events to the relevant region's file.
 import HOLIDAYS_ZH_CN from './data/holidays/zh-CN.json';
 import { popPendingImport } from './lib/importData';
-import { setAutoDetectedDeviceLabel } from './lib/sync/identity';
+import { loadSyncMetaCache, setAutoDetectedDeviceLabel } from './lib/sync/identity';
 import { isTauriRuntime } from './lib/versionUpdateContext';
 
 export async function boot(): Promise<void> {
@@ -54,12 +54,22 @@ export async function boot(): Promise<void> {
   //      isolated dev container.
   void labelDevBuild();
 
+  // 0.45. Hydrate the in-memory sync-metadata cache from the active
+  //       YDocStore (ERD §7.9). MUST run before identity.ts getters
+  //       fire — boot probe (BootGate), the syncController background
+  //       loop, and any UI that reads lastSync info all depend on the
+  //       cache being warm. On first boot of v0.11, this also runs
+  //       the one-time localStorage → store migration (legacy keys
+  //       are read once, written through the store, then deleted;
+  //       migration code planned to be removed v0.14).
+  await loadSyncMetaCache();
+
   // 0.5. Pending import from the previous page (user clicked "Import
   //      from snapshot" in Settings, or finished a sync pull that
   //      wanted a clean reload). The pending bytes are the `.dryj`
   //      container the user supplied / the sync layer produced; we
-  //      write them straight to OPFS so hydrate's loadYDocBytes path
-  //      picks them up like any other persisted state.
+  //      write them straight to the store so hydrate's loadYDocBytes
+  //      path picks them up like any other persisted state.
   const pending = popPendingImport();
   if (pending) {
     await saveYDocBytes(pending);
