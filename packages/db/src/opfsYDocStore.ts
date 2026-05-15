@@ -2,15 +2,25 @@
 // last-pulled snapshot, and sync-meta JSON in the same OPFS root —
 // see ERD §7.9 for the lifecycle co-residency argument.
 
-import type { SyncMeta, YDocStore } from './yDocStore';
+import type { SyncMeta, YDocStore, YDocStoreOptions } from './yDocStore';
 import { DEFAULT_SYNC_META } from './yDocStore';
 
-const STATE_FILE = 'dayrail-state.dryj';
-const STATE_TMP = 'dayrail-state.dryj.tmp';
-const LAST_PULLED_FILE = 'dayrail-last-pulled.dryj';
-const LAST_PULLED_TMP = 'dayrail-last-pulled.dryj.tmp';
-const SYNC_META_FILE = 'dayrail-sync-meta.json';
-const SYNC_META_TMP = 'dayrail-sync-meta.json.tmp';
+// File name set (prod vs dev). For OPFS, browser origin already
+// separates PWA dev (`localhost:5173`) from PWA prod, so the suffix
+// is defense-in-depth more than functional — but keeps the two
+// backends symmetrical and shields against any future surface that
+// shares an origin between dev and prod.
+function fileNames(devMode: boolean) {
+  const suffix = devMode ? '-dev' : '';
+  return {
+    state: `dayrail-state${suffix}.dryj`,
+    stateTmp: `dayrail-state${suffix}.dryj.tmp`,
+    lastPulled: `dayrail-last-pulled${suffix}.dryj`,
+    lastPulledTmp: `dayrail-last-pulled${suffix}.dryj.tmp`,
+    syncMeta: `dayrail-sync-meta${suffix}.json`,
+    syncMetaTmp: `dayrail-sync-meta${suffix}.json.tmp`,
+  };
+}
 
 async function getRoot(): Promise<FileSystemDirectoryHandle> {
   if (
@@ -136,39 +146,46 @@ export class OpfsYDocStore implements YDocStore {
   private stateQueue = makeSerialQueue();
   private lastPulledQueue = makeSerialQueue();
   private syncMetaQueue = makeSerialQueue();
+  private names: ReturnType<typeof fileNames>;
+
+  constructor(options: YDocStoreOptions = {}) {
+    this.names = fileNames(options.devMode === true);
+  }
 
   loadYDoc(): Promise<Uint8Array | null> {
-    return loadBinaryFile(STATE_FILE);
+    return loadBinaryFile(this.names.state);
   }
 
   saveYDoc(bytes: Uint8Array): Promise<void> {
-    return this.stateQueue(() => atomicWriteBinary(STATE_FILE, STATE_TMP, bytes));
+    return this.stateQueue(() =>
+      atomicWriteBinary(this.names.state, this.names.stateTmp, bytes),
+    );
   }
 
   async deleteYDoc(): Promise<void> {
     const root = await getRoot();
-    await removeIfExists(root, STATE_FILE);
-    await removeIfExists(root, STATE_TMP);
+    await removeIfExists(root, this.names.state);
+    await removeIfExists(root, this.names.stateTmp);
   }
 
   loadLastPulled(): Promise<Uint8Array | null> {
-    return loadBinaryFile(LAST_PULLED_FILE);
+    return loadBinaryFile(this.names.lastPulled);
   }
 
   saveLastPulled(bytes: Uint8Array): Promise<void> {
     return this.lastPulledQueue(() =>
-      atomicWriteBinary(LAST_PULLED_FILE, LAST_PULLED_TMP, bytes),
+      atomicWriteBinary(this.names.lastPulled, this.names.lastPulledTmp, bytes),
     );
   }
 
   async deleteLastPulled(): Promise<void> {
     const root = await getRoot();
-    await removeIfExists(root, LAST_PULLED_FILE);
-    await removeIfExists(root, LAST_PULLED_TMP);
+    await removeIfExists(root, this.names.lastPulled);
+    await removeIfExists(root, this.names.lastPulledTmp);
   }
 
   async loadSyncMeta(): Promise<SyncMeta | null> {
-    const text = await loadTextFile(SYNC_META_FILE);
+    const text = await loadTextFile(this.names.syncMeta);
     if (text === null) return null;
     try {
       const parsed = JSON.parse(text) as Partial<SyncMeta>;
@@ -182,19 +199,19 @@ export class OpfsYDocStore implements YDocStore {
 
   saveSyncMeta(meta: SyncMeta): Promise<void> {
     return this.syncMetaQueue(() =>
-      atomicWriteText(SYNC_META_FILE, SYNC_META_TMP, JSON.stringify(meta)),
+      atomicWriteText(this.names.syncMeta, this.names.syncMetaTmp, JSON.stringify(meta)),
     );
   }
 
   async reset(): Promise<void> {
     const root = await getRoot();
     await Promise.all([
-      removeIfExists(root, STATE_FILE),
-      removeIfExists(root, STATE_TMP),
-      removeIfExists(root, LAST_PULLED_FILE),
-      removeIfExists(root, LAST_PULLED_TMP),
-      removeIfExists(root, SYNC_META_FILE),
-      removeIfExists(root, SYNC_META_TMP),
+      removeIfExists(root, this.names.state),
+      removeIfExists(root, this.names.stateTmp),
+      removeIfExists(root, this.names.lastPulled),
+      removeIfExists(root, this.names.lastPulledTmp),
+      removeIfExists(root, this.names.syncMeta),
+      removeIfExists(root, this.names.syncMetaTmp),
     ]);
   }
 }
