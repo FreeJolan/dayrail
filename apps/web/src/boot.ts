@@ -19,6 +19,7 @@ import {
   type Line,
 } from '@dayrail/core';
 import { saveYDocBytes } from '@dayrail/db/yjsPersistence';
+import { setYDocStoreDevMode } from '@dayrail/db/yDocStore';
 // ERD §14.2 — bundled holiday data sets. Each new region drops in a
 // JSON file here and gets registered. Updating: every December open a
 // PR adding next year's events to the relevant region's file.
@@ -30,6 +31,13 @@ import { isTauriRuntime } from './lib/versionUpdateContext';
 export async function boot(): Promise<void> {
   // 0. Pre-flight capability probe.
   await preflight();
+
+  // 0.05. Hand the dev/prod flag to the YDocStore before any caller
+  //       resolves the singleton. Tauri's `app_data_dir()` is
+  //       identifier-based (not NSBundle-based), so without this
+  //       split `pnpm desktop:dev` would read/write the same files
+  //       as the installed prod app. v0.11.2 fix — see ERD §7.9.
+  setYDocStoreDevMode(import.meta.env.DEV);
 
   // 0.1. Register bundled holiday datasets (synchronous, in-memory).
   //      Done before hydrate so any first-render cycle that reads

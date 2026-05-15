@@ -91,6 +91,28 @@ function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+/** Options passed into store constructors. */
+export interface YDocStoreOptions {
+  /** When true, the store namespaces all its paths with a `-dev`
+   *  suffix so a dev build (`pnpm desktop:dev`) doesn't share data
+   *  with the installed prod app. Critical for Tauri: dev and prod
+   *  both resolve `app_data_dir()` to the same path (via
+   *  `tauri.conf.json` identifier), so without this split they would
+   *  read and write the same Y.Doc / metadata files. */
+  devMode?: boolean;
+}
+
+let _devMode = false;
+
+/** App boot calls this once before the first `getYDocStore()` to
+ *  inform the store whether we're in dev mode. Vite's
+ *  `import.meta.env.DEV` is the canonical source; we can't read it
+ *  directly from packages/db because that workspace doesn't ship
+ *  Vite ambient types, so the app passes the flag in. */
+export function setYDocStoreDevMode(dev: boolean): void {
+  _devMode = dev;
+}
+
 let _store: YDocStore | null = null;
 
 /** Lazy singleton factory. The first caller selects the backend
@@ -99,12 +121,13 @@ let _store: YDocStore | null = null;
  *  doesn't pull in `@tauri-apps/plugin-fs` if Tauri isn't present. */
 export async function getYDocStore(): Promise<YDocStore> {
   if (_store) return _store;
+  const options: YDocStoreOptions = { devMode: _devMode };
   if (isTauriRuntime()) {
     const { TauriFsYDocStore } = await import('./tauriFsYDocStore');
-    _store = new TauriFsYDocStore();
+    _store = new TauriFsYDocStore(options);
   } else {
     const { OpfsYDocStore } = await import('./opfsYDocStore');
-    _store = new OpfsYDocStore();
+    _store = new OpfsYDocStore(options);
   }
   return _store;
 }
