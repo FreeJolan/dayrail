@@ -496,14 +496,25 @@ const PillBody = forwardRef<HTMLDivElement, PillBodyProps>(function PillBody(
         <StateIcon state={task.state} />
         <div className="min-w-0 flex-1">
           {task.parentTitle && (
-            <span
-              className={clsx(
-                'block truncate text-[10px] leading-tight',
-                style.parentTone,
-              )}
-            >
-              {task.parentTitle}
-            </span>
+            // Occurrence pill: parent task title on top, progress
+            // indicators (sub-items / milestone %) right-aligned on
+            // the same row. These metrics live on the Task, not the
+            // Occurrence, so visually grouping them with the parent
+            // title keeps "this number belongs to that task" obvious
+            // — placing them below the occurrence subject (where
+            // PillBadges used to render them) made it look like the
+            // % was the occurrence's own progress.
+            <div className="flex items-baseline justify-between gap-1.5">
+              <span
+                className={clsx(
+                  'block truncate text-[10px] leading-tight',
+                  style.parentTone,
+                )}
+              >
+                {task.parentTitle}
+              </span>
+              <ParentRowProgress task={task} tone={style.badgeTone} />
+            </div>
           )}
           <span
             className={clsx('line-clamp-2 text-xs', style.titleClass)}
@@ -513,7 +524,11 @@ const PillBody = forwardRef<HTMLDivElement, PillBodyProps>(function PillBody(
           </span>
         </div>
       </div>
-      <PillBadges task={task} tone={style.badgeTone} />
+      <PillBadges
+        task={task}
+        tone={style.badgeTone}
+        hideProgress={task.parentTitle != null}
+      />
       {onClear && <ClearButton onClear={onClear} tone={style.clearTone} />}
     </div>
   );
@@ -615,15 +630,22 @@ function pillStyle(state: SlotTaskState, color: RailColor): PillStyle {
 function PillBadges({
   task,
   tone,
+  hideProgress,
 }: {
   task: SlotTaskSummary;
   tone: 'default' | 'on-solid';
+  /** Occurrence pills render sub-items / milestone-% on the parent
+   *  title row via ParentRowProgress (so the metric visually belongs
+   *  to the task, not the occurrence). When true, this row drops
+   *  those two and only carries priority + habit chips. */
+  hideProgress?: boolean;
 }) {
+  const showProgress = !hideProgress;
   const anything =
     task.priority != null ||
     task.isAutoTask ||
-    task.subItemsTotal > 0 ||
-    task.milestonePercent != null;
+    (showProgress && task.subItemsTotal > 0) ||
+    (showProgress && task.milestonePercent != null);
   if (!anything) return null;
   return (
     <div
@@ -635,13 +657,48 @@ function PillBadges({
     >
       {task.priority && <PriorityChip priority={task.priority} />}
       {task.isAutoTask && <span>habit</span>}
-      {task.subItemsTotal > 0 && (
+      {showProgress && task.subItemsTotal > 0 && (
         <span>
           {task.subItemsDone}/{task.subItemsTotal}
         </span>
       )}
-      {task.milestonePercent != null && <span>{task.milestonePercent}%</span>}
+      {showProgress && task.milestonePercent != null && (
+        <span>{task.milestonePercent}%</span>
+      )}
     </div>
+  );
+}
+
+/** Right-aligned progress chip rendered on the same row as the parent
+ *  task title in occurrence pills. Mirrors PillBadges' typography (mono,
+ *  text-2xs, tabular-nums) but only carries the two task-level progress
+ *  signals: sub-items completion and milestone %. */
+function ParentRowProgress({
+  task,
+  tone,
+}: {
+  task: SlotTaskSummary;
+  tone: 'default' | 'on-solid';
+}) {
+  const hasSub = task.subItemsTotal > 0;
+  const hasPct = task.milestonePercent != null;
+  if (!hasSub && !hasPct) return null;
+  return (
+    <span
+      className={clsx(
+        'shrink-0 font-mono text-2xs tabular-nums leading-tight',
+        tone === 'on-solid' ? '' : 'text-ink-tertiary',
+      )}
+      style={tone === 'on-solid' ? { opacity: 0.75 } : undefined}
+    >
+      {hasSub && (
+        <>
+          {task.subItemsDone}/{task.subItemsTotal}
+        </>
+      )}
+      {hasSub && hasPct && ' · '}
+      {hasPct && <>{task.milestonePercent}%</>}
+    </span>
   );
 }
 
