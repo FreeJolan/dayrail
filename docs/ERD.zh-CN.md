@@ -1750,6 +1750,134 @@ Y.Doc 序列化字节仍是 sync 传输格式（`Y.encodeStateAsUpdate(doc)`）�
 - §7.3 Google Drive 之外的后端（同 v0.6 / v0.7 立场）
 - 多用户协作（方向 C 附带 · 至少要先重审 §7.1 才能开始讨论）
 
+### 7.9 v0.11.x 实施说明 — 持久化层重构 · 元数据生命周期对齐
+
+> 状态：2026-05-15 决策已锁定（doc-only PR · 实施单 PR · 计划 v0.11.x milestone 内完成）。本节延续 §7.8 的修复路径，**取代** §7.8 P1 / P3 中"`lastPulled` 等同步元数据存 localStorage"的隐含假设；其余 §7.8 决策（push firewall / smart diff / Drive history UI）继续生效。
+
+**触发因素**
+
+§7.8 P1-P5 上线后，dogfood 中观察到一个新症状（一台桌面安装在升级到 v0.10.x 后）：UI 显示空 + 顶栏显示"已同步" + Drive 远端数据完好。Push firewall 守住了 push 方向（远端没被覆盖），但 pull 方向有漏洞 —— `runBootProbe` 比较本地 `lastPulled` 与远端 `snapshotId`，发现相等就跳过 pull · 导致空 UI 自我封闭。
+
+跟踪根因：
+
+- Y.Doc 数据存 OPFS（macOS：`~/Library/WebKit/<bundle-id>/.../FileSystem/dayrail-state.dryj`）
+- `lastPulled` snapshot id 存 localStorage（同 WebKit 容器下另一个 SQLite 文件）
+- 两者**理论上同 WebKit 容器同生命周期**，但 `apps/web/src/lib/sync/identity.ts:2-4` 注释明说"故意分开 · 让 `resetLocalData()` 抹 OPFS 时元数据不会被一起抹"
+- 触发情境：unsigned → signed macOS 二进制升级（2026-05-13 加签上线导致 bundle 身份跳变） → WKWebView 把新版当成"另一个 app" → 新沙箱路径重开 store · OPFS 看起来"被抹"，但 localStorage 残留。已在桌面端实测复现一次。
+
+**这是 §7.8 P1 firewall 没覆盖的方向**：firewall 守 push（"看不见远端时不写"），pull-side 没有"local 实质为空但 lastPulled 非空"的 sanity 闸门。
+
+**根因 · 与 v0.9.0→v0.9.1 同家族**
+
+跟 sample seed 事故同源 —— **out-of-band metadata 与它守护的数据生命周期不一致**。当时是 `samplesOnly` flag（localStorage） vs seeded data（OPFS）漂移，错把真数据当 sample 重新 push 覆盖远端；这次是 `lastPulled`（localStorage）vs Y.Doc（OPFS）漂移，错判"已同步"导致空 UI 自我封闭。无论修哪一个症状，都不能只在漂移结果上加 gate · 必须从源头消除漂移可能性。
+
+**决策**
+
+1. **抽象 `YDocStore` 接口 + 后端二选一**
+
+   抽出 store 接口，把 Y.Doc 主体 + last-pulled snapshot + 所有"跟数据共生死"的元数据放进**同一个 store**：
+
+   ```typescript
+   interface YDocStore {
+     loadYDoc(): Promise<Uint8Array | null>;
+     saveYDoc(bytes: Uint8Array): Promise<void>;
+     deleteYDoc(): Promise<void>;
+     loadLastPulled(): Promise<Uint8Array | null>;
+     saveLastPulled(bytes: Uint8Array): Promise<void>;
+     deleteLastPulled(): Promise<void>;
+     loadSyncMeta(): Promise<SyncMeta | null>;
+     saveSyncMeta(meta: SyncMeta): Promise<void>;
+     reset(): Promise<void>;
+   }
+   ```
+
+   两个实现：
+
+   | Backend | 触发条件 | 文件位置 |
+   |---|---|---|
+   | `OpfsYDocStore` | `!isTauri()` —— 浏览器 / 调试 | OPFS · `dayrail-state.dryj` / `dayrail-last-pulled.dryj` / `dayrail-sync-meta.json` |
+   | `TauriFsYDocStore` | `isTauri()` —— 桌面 | `app_data_dir()/ydoc/{state.dryj, last-pulled.dryj, sync-meta.json}` |
+
+   关键：**两个实现都把 metadata 跟 Y.Doc 放在同一个介质**。OPFS 被 evict 时两者一起没；Tauri FS 被外力清除时两者也一起没。**结构上消除漂移可能。**
+
+2. **元数据生命周期切分**
+
+   不是所有 localStorage 键都搬。按"是否绑数据 lineage"二分：
+
+   | 键 | 切分 | 理由 |
+   |---|---|---|
+   | `lastPulledSnapshotId` / `lastSyncAt` / `lastSyncLabel` / `samplesOnly` / `dirtyCount` / `lastPushedCounts` / `bootSyncChoice` | → co-resident store | 数据 lineage 游标 |
+   | `deviceId` / `deviceLabel` / `deviceAutoLabel` | 留 localStorage | 设备身份 · 不绑数据 · reset 后保留"还是同一设备"是合理语义 |
+   | `driveConnected` / `cachedAccessToken` | 留 localStorage | OAuth 状态缓存 |
+   | `bootProbeSuppressed` | 留 sessionStorage | 会话级 |
+
+3. **In-memory cache · 保 sync API 不变**
+
+   `identity.ts` 对外 API 全部保持现签名（同步 getter/setter），底层从直接读 localStorage 换成读 in-memory cache。Cache 在 boot 时一次性 `await store.loadSyncMeta()`，setter 同步更新 cache + fire-and-forget 异步落盘（写入串行化，沿用 Y.Doc 的 `inFlightSave` 模式）。Tauri blur / pagehide / pre-push 触发器之前 flush。
+
+   后果：`syncController.ts` 那 20+ 个 getter/setter 调用点全部不变。
+
+4. **Sanity check · pull-side firewall**
+
+   `runBootProbe` 加守卫：
+
+   ```
+   if (remote.snapshotId === lastPulled) {
+     if (lastPulled !== null && localLooksEmpty()) {
+       return { kind: 'lost-local' };  // 强制 pull
+     }
+     return { kind: 'equal' };
+   }
+   ```
+
+   架构修复后这条几乎不会触发（lastPulled 跟 Y.Doc 一起没 → 不进相等分支 → 直接 `linear-lead` 走 pull），保留作 belt-and-suspenders（用户主动 reset 数据 / 极端 OS-level eviction 等场景）。
+
+5. **"已同步" UI 改语义**
+
+   `SideNav.describeSyncStatus` 增加 in-memory "本会话有过 round-trip" 标志位，冷启动后第一次显示中性"未确认"直到本会话内有 push/pull 成功。`lastSync` 时间仍显示作参考信息但不再作"已同步"判定 —— 避免用户面对空 UI 还看到"已同步"误信号。
+
+6. **localStorage 一次性迁移**
+
+   新版第一次启动 · 若 store 中 sync-meta 不存在 · 从 localStorage 读取被搬迁的键 · 写入 store · 删除 localStorage 中已搬键。`deviceId` 等不搬的键不动。**迁移代码寿命**：v0.11 引入 · v0.14 删除（设备数 = 2 · 用户保证及时升级）。
+
+7. **`resetLocalData()` 改抹 store · 元数据不再特殊豁免**
+
+   `identity.ts:2-4` 那条"故意 localStorage 让元数据 survive OPFS reset"注释删除。`resetLocalData()` 改为调 `store.reset()`，抹掉所有 co-resident 数据 + 元数据；device/auth localStorage 不动。
+
+**为什么不只做防御网（决策 4 + 5）**
+
+只做 sanity check + UI 改语义能修当下症状（另一台机器下次启动会自动恢复），但留下了**家族 bug 第二次复发的可能**：未来任何路径再次让元数据跟数据漂移（比如新加一个 sync cursor 不小心放了 localStorage）就会再开新症状。`out-of-band metadata` 这个模式本身不消除，下一个 bug 只是时间问题。
+
+跟 v0.9.0→v0.9.1 砍 sample seed 一样的取舍：架构修复 + 防御网捆 PR · 不接受"只做防御网"。
+
+**为什么不为浏览器版做单独的 fallback**
+
+浏览器端是同步代码 —— `OpfsYDocStore` 是同一接口的另一实现，跟桌面对称。OPFS 被 evict 时，由于元数据跟 Y.Doc 都在 OPFS · 两者一起没 → boot probe 自然走 first-connect → 从 Drive 拉。**浏览器版本身就被这个修复覆盖** · 不需要额外 fallback。
+
+**为什么不做 OPFS → Tauri FS 数据迁移代码**
+
+设备数 = 2 · 用户已经明确接受"以 Drive 为准"的覆盖。当前桌面安装升级后 store 里没 Y.Doc · boot 走 first-connect 路径 · 从 Drive 拉。另一台机器本来就处于"空"状态，行为一致。**写迁移代码会增加 ~150 行短寿命代码且没收益**。
+
+**不在范围内**
+
+- ❌ Dual-write / OPFS 与 Tauri FS 镜像（避免 source of truth 二义性）
+- ❌ Y.Doc 写入策略改造（保留现 debounce 8s + 整 doc rewrite · 性能不在本节范围）
+- ❌ §7.5 加密层（继续停车）
+- ❌ Drive 端协议改动（snapshot 上传不变 · 与 §7.8 一致）
+
+**实施 · 单 PR · 内部分阶段（review-friendly）**
+
+| 阶段 | 内容 | 主要文件 |
+|---|---|---|
+| A | `YDocStore` 接口 + `OpfsYDocStore`（重构现有 OPFS 代码 + 元数据搬入 store） | `packages/db/src/yDocStore.ts` · `packages/db/src/opfsYDocStore.ts` |
+| B | `TauriFsYDocStore` + Rust commands | `packages/db/src/tauriFsYDocStore.ts` · `apps/desktop/src-tauri/src/ydoc.rs` |
+| C | `identity.ts` 重写：API 不变 · 底层走 in-memory cache + store flush | `apps/web/src/lib/sync/identity.ts` |
+| D | `boot.ts` / `lastPulledDoc.ts` / `resetLocalData.ts` 改走 store factory | 多文件 |
+| E | localStorage → store 一次性迁移（v0.11 引入 · v0.14 删） | `boot.ts` 早期 |
+| F | Sanity check + UI 改语义 | `BootGate.tsx` · `syncController.ts` · `SideNav.tsx` |
+
+预估 ~400 行 source · 一节 ERD · 跑现有 203 测试 + 加针对 store 的单测 + 双端 dogfood（桌面 + 浏览器各一轮）。
+
 ***
 
 ## 8. 设计原则（工程层）
