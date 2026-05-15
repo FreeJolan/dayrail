@@ -257,13 +257,20 @@ function SortableTaskPillRow({
   // destination cell at all. dnd-kit still tracks this row as a
   // sortable item, but at ~2px tall — neighbors' transforms shrink to
   // match, so the cell's height barely changes.
+  //
+  // Transform STAYS APPLIED even for the phantom line. dnd-kit's
+  // SortableContext strategy uses transform to translate the active
+  // (the line) to the cursor's `over` index, and to shift siblings
+  // out of the way. Without it the line would freeze at the first
+  // insertion index `handleDragOver` picked when active entered the
+  // cell (typically the end, since cell padding gives index=null) —
+  // intentionally suppressed earlier and that froze the indicator,
+  // which is the bug this comment exists to prevent regressing.
   const renderAsIndicator = isDragging && isPhantom;
-  const style: React.CSSProperties = renderAsIndicator
-    ? // Skip the sortable transform: with the row collapsed to a thin
-      // line, sibling displacement is already negligible. Holding the
-      // transform here would just produce a sliding 2px line.
-      {}
-    : { transform: CSS.Transform.toString(transform), transition };
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
   return (
     <div
       ref={setNodeRef}
