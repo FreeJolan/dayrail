@@ -1829,6 +1829,134 @@ Each phase ships as an independent PR · each PR runs the existing 203 tests + n
 - §7.3 backends beyond Google Drive (same stance as v0.6 / v0.7)
 - Multi-user collaboration (an artifact of Direction C · re-litigating §7.1 must come first)
 
+### 7.9 v0.11.x implementation note — persistence layer refactor · metadata lifecycle co-residency
+
+> Status: locked 2026-05-15 (doc-only PR · single implementation PR · planned for the v0.11.x milestone). This section continues §7.8's repair path and **supersedes** the implicit assumption in §7.8 P1 / P3 that "`lastPulled` and other sync metadata live in localStorage"; the rest of §7.8 (push firewall / smart diff / Drive history UI) remains in effect.
+
+**Trigger**
+
+After §7.8 P1-P5 shipped, dogfood revealed a new symptom on one desktop install upgraded to v0.10.x: empty UI + a sidebar status of "已同步" (in sync) + Drive remote data fully intact. The push firewall correctly held the push direction (remote was not overwritten), but the pull side had a gap — `runBootProbe` compared the local `lastPulled` against the remote `snapshotId`, found them equal, and skipped the pull, locking the empty UI in place.
+
+Root cause trace:
+
+- Y.Doc bytes live in OPFS (macOS: `~/Library/WebKit/<bundle-id>/.../FileSystem/dayrail-state.dryj`)
+- `lastPulled` snapshot id lives in localStorage (a SQLite file inside the same WebKit container)
+- The two **should share lifecycle** at the WebKit-container level, but `apps/web/src/lib/sync/identity.ts:2-4` explicitly comments that they were **deliberately decoupled** — "so that `resetLocalData()`'s OPFS wipe leaves metadata intact"
+- Trigger setup: the unsigned → signed macOS binary upgrade (signing went live 2026-05-13) caused a bundle-identity jump → WKWebView treated the new build as "another app" → opened a fresh sandbox → OPFS appeared "wiped" while localStorage survived. Reproduced once on the desktop install.
+
+**This is the direction §7.8 P1 firewall does not cover**: the firewall guards push ("don't write when remote is invisible"); the pull side has no "local is effectively empty but lastPulled is non-null" sanity gate.
+
+**Root cause · same family as v0.9.0→v0.9.1**
+
+Same shape as the sample-seed incident — **out-of-band metadata drifts away from the data it guards because the two storage media have different lifecycles**. Last time it was `samplesOnly` flag (localStorage) vs seeded data (OPFS) → real data mistaken for sample → re-pushed and overwrote remote. This time it's `lastPulled` (localStorage) vs Y.Doc (OPFS) → empty Y.Doc misjudged as "in sync" → empty UI locks in. In both cases, gating the drift's downstream effects is insufficient — the drift potential itself must be removed at the source.
+
+**Decision**
+
+1. **`YDocStore` abstraction + two backends**
+
+   Extract a store interface that holds the Y.Doc bytes + last-pulled snapshot + every metadata key whose lifecycle is bound to the data, **all in one place**:
+
+   ```typescript
+   interface YDocStore {
+     loadYDoc(): Promise<Uint8Array | null>;
+     saveYDoc(bytes: Uint8Array): Promise<void>;
+     deleteYDoc(): Promise<void>;
+     loadLastPulled(): Promise<Uint8Array | null>;
+     saveLastPulled(bytes: Uint8Array): Promise<void>;
+     deleteLastPulled(): Promise<void>;
+     loadSyncMeta(): Promise<SyncMeta | null>;
+     saveSyncMeta(meta: SyncMeta): Promise<void>;
+     reset(): Promise<void>;
+   }
+   ```
+
+   Two implementations:
+
+   | Backend | When | File location |
+   |---|---|---|
+   | `OpfsYDocStore` | `!isTauri()` — browser / debug | OPFS · `dayrail-state.dryj` / `dayrail-last-pulled.dryj` / `dayrail-sync-meta.json` |
+   | `TauriFsYDocStore` | `isTauri()` — desktop | `app_data_dir()/ydoc/{state.dryj, last-pulled.dryj, sync-meta.json}` |
+
+   Critical property: **both implementations co-locate metadata with the Y.Doc on the same medium**. When OPFS is evicted, both vanish together; when the Tauri FS dir is wiped externally, both vanish together. **Drift is structurally impossible.**
+
+2. **Metadata lifecycle split**
+
+   Not every localStorage key migrates. The split is "data-lineage cursor" vs "device preference":
+
+   | Key | Where | Why |
+   |---|---|---|
+   | `lastPulledSnapshotId` / `lastSyncAt` / `lastSyncLabel` / `samplesOnly` / `dirtyCount` / `lastPushedCounts` / `bootSyncChoice` | → co-resident store | data-lineage cursors |
+   | `deviceId` / `deviceLabel` / `deviceAutoLabel` | stays in localStorage | device identity · not bound to data · "still the same device after a reset" is the right semantic |
+   | `driveConnected` / `cachedAccessToken` | stays in localStorage | OAuth state cache |
+   | `bootProbeSuppressed` | stays in sessionStorage | session-scoped |
+
+3. **In-memory cache · sync API stays unchanged**
+
+   `identity.ts` keeps every public signature (synchronous getters/setters); the underlying `safeGet` / `safeSet` switches from localStorage to an in-memory cache. The cache is hydrated once at boot via `await store.loadSyncMeta()`; setters update the cache synchronously and enqueue a fire-and-forget async write (writes serialized via the same `inFlightSave` pattern as the Y.Doc). Tauri blur / pagehide / pre-push triggers flush pending writes.
+
+   Result: the 20+ getter/setter call sites in `syncController.ts` need zero changes.
+
+4. **Sanity check · pull-side firewall**
+
+   `runBootProbe` adds a guard:
+
+   ```
+   if (remote.snapshotId === lastPulled) {
+     if (lastPulled !== null && localLooksEmpty()) {
+       return { kind: 'lost-local' };  // force pull
+     }
+     return { kind: 'equal' };
+   }
+   ```
+
+   After the architectural fix this branch almost never fires (lastPulled disappears with the Y.Doc → branch goes straight to `linear-lead` and pulls). It stays in as belt-and-suspenders for user-initiated resets and extreme OS-level eviction edge cases.
+
+5. **"In-sync" UI semantic fix**
+
+   `SideNav.describeSyncStatus` adds an in-memory "this session has had a successful round-trip" flag. After cold boot, the status reads "未确认" (unconfirmed) until a push/pull completes this session. The `lastSync` timestamp continues to display as informational ("Last synced: X minutes ago") but no longer drives the "in-sync" judgment — preventing the empty-UI + "in-sync" misleading combination.
+
+6. **One-time localStorage migration**
+
+   On the new version's first boot · if no `sync-meta` exists in the store · read the migrated keys from localStorage · write them to the store · delete the migrated keys from localStorage. Non-migrated keys (`deviceId` etc.) are left alone. **Migration code lifespan**: introduced in v0.11 · removed in v0.14 (device count = 2 · user commits to upgrading both promptly).
+
+7. **`resetLocalData()` wipes via the store · no metadata exemption**
+
+   The `identity.ts:2-4` comment about "intentionally putting metadata in localStorage so it survives an OPFS reset" is removed. `resetLocalData()` becomes `store.reset()` — wipes all co-resident data + metadata; device/auth localStorage is untouched.
+
+**Why not the defense-only path (decisions 4 + 5 alone)**
+
+The sanity check + UI fix alone would heal the current symptom (the other machine would auto-recover on next boot), but it would leave the **family bug exposed for re-emergence**: any future path that re-introduces metadata-data drift (e.g. a new sync cursor accidentally placed in localStorage) reopens the failure mode. The `out-of-band metadata` pattern itself is not eliminated — the next bug is just a question of when.
+
+Same trade-off as cutting the sample seed in v0.9.0→v0.9.1: architectural fix + defense net bundled in one PR · "defense only" is rejected as the sole fix.
+
+**Why no separate fallback for the browser build**
+
+The browser path uses the same store interface — `OpfsYDocStore` is a sibling implementation of the desktop one. When OPFS is evicted, both metadata and Y.Doc are gone together → boot probe hits null → first-connect path → pull from Drive. **The browser build is covered by this fix automatically** · no extra fallback needed.
+
+**Why no OPFS → Tauri FS data migration code**
+
+Device count = 2 · user has explicitly accepted the "Drive overwrites local" semantic. After the upgrade, the desktop install's store has no Y.Doc → boot goes through the first-connect path → pulls from Drive. The other machine is already empty; same behavior. **Writing migration code would add ~150 lines of short-lived code with no payoff.**
+
+**Out of scope**
+
+- ❌ Dual-write / OPFS-and-Tauri-FS mirroring (re-introduces source-of-truth ambiguity)
+- ❌ Y.Doc write strategy changes (current 8s debounce + full doc rewrite stays · perf is out of scope here)
+- ❌ §7.5 encryption layer (still parked)
+- ❌ Drive-side protocol changes (snapshot upload unchanged · consistent with §7.8)
+
+**Implementation · single PR · internal phases (review-friendly)**
+
+| Phase | Content | Key files |
+|---|---|---|
+| A | `YDocStore` interface + `OpfsYDocStore` (refactor existing OPFS code + pull metadata into the store) | `packages/db/src/yDocStore.ts` · `packages/db/src/opfsYDocStore.ts` |
+| B | `TauriFsYDocStore` + Rust commands | `packages/db/src/tauriFsYDocStore.ts` · `apps/desktop/src-tauri/src/ydoc.rs` |
+| C | `identity.ts` rewrite: API unchanged · backend switches to in-memory cache + store flush | `apps/web/src/lib/sync/identity.ts` |
+| D | `boot.ts` / `lastPulledDoc.ts` / `resetLocalData.ts` route through the store factory | multiple |
+| E | One-time localStorage → store migration (introduced v0.11 · removed v0.14) | `boot.ts` early phase |
+| F | Sanity check + UI semantic fix | `BootGate.tsx` · `syncController.ts` · `SideNav.tsx` |
+
+Estimated ~400 lines of source change · one ERD section · existing 203 tests + new store unit tests + two-backend dogfood (desktop + browser pass each).
+
 ---
 
 ## 8. Engineering Principles
