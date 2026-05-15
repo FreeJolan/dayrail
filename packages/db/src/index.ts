@@ -9,3 +9,4 @@
 export * from './dryj';
 export * from './yjs';
 export * from './yjsPersistence';
+export * from './yDocStore';

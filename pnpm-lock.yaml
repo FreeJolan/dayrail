@@ -111,9 +111,13 @@ importers:
 
   packages/db:
     specifiers:
+      '@tauri-apps/api': ^2.11.0
+      '@tauri-apps/plugin-fs': ^2.4.2
       typescript: 5.6.3
       yjs: ^13.6.0
     dependencies:
+      '@tauri-apps/api': 2.11.0
+      '@tauri-apps/plugin-fs': 2.5.1
       yjs: 13.6.30
     devDependencies:
       typescript: 5.6.3

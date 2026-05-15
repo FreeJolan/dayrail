@@ -103,6 +103,20 @@ function computeLocalCounts(): {
   };
 }
 
+/** "Local Y.Doc has nothing the user authored." Used by the boot
+ *  probe sanity check (ERD §7.9) — the auto-created Inbox line is
+ *  ignored so a fresh hydrate isn't mistaken for a wipe. */
+function localLooksEmpty(): boolean {
+  const c = computeLocalCounts();
+  if (c.tasks > 0) return false;
+  if (c.templates > 0) return false;
+  if (c.reflections > 0) return false;
+  // ensureInbox creates 1 default line at boot; >1 means the user
+  // (or a prior pull) added something.
+  if (c.lines > 1) return false;
+  return true;
+}
+
 function buildSanityWarning(
   prev: ReturnType<typeof computeLocalCounts>,
   curr: ReturnType<typeof computeLocalCounts>,
@@ -954,6 +968,22 @@ export async function runBootProbe(
       if (!remote) return { kind: 'no-remote' };
       const lastPulled = getLastPulledSnapshotId();
       if (remote.snapshotId === lastPulled) {
+        // ERD §7.9 sanity check (defense net): the lineage cursor
+        // says we're in sync, but if local has nothing while
+        // lastPulled is non-null, something wiped local out from
+        // under us (legacy localStorage drift before the §7.9
+        // migration ran, OS-level OPFS eviction, manual wipe via
+        // DevTools). Force a pull instead of trusting the cursor.
+        // After the §7.9 architectural fix this branch is rarely
+        // hit because lastPulled lives in the same store as the
+        // Y.Doc — both vanish together — but it stays as
+        // belt-and-suspenders.
+        if (lastPulled !== null && localLooksEmpty()) {
+          console.warn(
+            '[sync] boot probe: lastPulled matches remote but local is empty — forcing pull (ERD §7.9 sanity)',
+          );
+          return { kind: 'linear-lead', remote };
+        }
         return { kind: 'equal', remote };
       }
       return { kind: 'linear-lead', remote };
