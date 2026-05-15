@@ -223,7 +223,14 @@ export function CycleSection({
                   // this cell. Foreign tasks (active dragged in from
                   // elsewhere) get their summary from mirror.taskData.
                   const override = mirror?.orders[cellKey];
-                  const tasks = override
+                  // ERD §7.9 drag UX — track "foreign" rowIds (rows
+                  // routed into this cell by dragMirror, native to
+                  // some other cell or the backlog). These render as
+                  // a thin indicator line during drag instead of a
+                  // full pill, so the cell barely grows as the active
+                  // crosses cells. Native pills (including the
+                  // dimmed source) render normally.
+                  const { tasks, foreignRowIds } = override
                     ? (() => {
                         // ERD §10.6 v0.11 — index by `rowId` (occurrence
                         // id when present, else task id) so the dnd
@@ -231,14 +238,19 @@ export function CycleSection({
                         const bySlotId = new Map(
                           rawTasks.map((t) => [t.rowId, t] as const),
                         );
-                        return override
-                          .map(
-                            (id) =>
-                              bySlotId.get(id) ?? mirror.taskData[id],
-                          )
+                        const foreign = new Set<string>();
+                        const list = override
+                          .map((id) => {
+                            const native = bySlotId.get(id);
+                            if (native) return native;
+                            const phantom = mirror.taskData[id];
+                            if (phantom) foreign.add(id);
+                            return phantom;
+                          })
                           .filter((t): t is SlotTaskSummary => !!t);
+                        return { tasks: list, foreignRowIds: foreign };
                       })()
-                    : rawTasks;
+                    : { tasks: rawTasks, foreignRowIds: undefined };
                   const taskIds = tasks.map((t) => t.rowId);
                   return (
                     <DroppableCellTd
@@ -259,6 +271,7 @@ export function CycleSection({
                       >
                         <CycleCell
                           tasks={tasks}
+                          {...(foreignRowIds && { foreignRowIds })}
                           color={rail.color}
                           date={d.date}
                           cellKey={cellKey}

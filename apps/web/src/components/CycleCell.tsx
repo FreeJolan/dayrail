@@ -44,6 +44,14 @@ import { useIme } from '@/lib/ime';
 
 interface Props {
   tasks: SlotTaskSummary[];
+  /** Set of rowIds that are "foreign" to this cell — pills the
+   *  dragMirror routed in from another cell or the backlog. These
+   *  render as a thin indicator line during drag instead of a full
+   *  pill, so the cell's height doesn't jump as the active moves
+   *  between cells (Notion-style insertion-line UX). Native tasks
+   *  that originated in this cell render as the normal dimmed pill
+   *  during drag so the user can see the original position. */
+  foreignRowIds?: ReadonlySet<string>;
   color: RailColor;
   date: string;
   /** Cell identity for dnd-kit. Pills inside use these to populate
@@ -86,6 +94,7 @@ interface Props {
 
 export function CycleCell({
   tasks,
+  foreignRowIds,
   color,
   date,
   cellKey,
@@ -130,6 +139,7 @@ export function CycleCell({
           railId={railId}
           index={i}
           slotTaskIds={slotTaskIds}
+          isPhantom={foreignRowIds?.has(t.rowId) ?? false}
           line={lineLookup?.(t.rowId)}
           {...(onClearTask && { onClear: () => onClearTask(t.rowId) })}
           {...(onMarkTaskDone && {
@@ -188,6 +198,7 @@ function SortableTaskPillRow({
   railId,
   index,
   slotTaskIds,
+  isPhantom,
   line,
   onClear,
   onMarkDone,
@@ -204,6 +215,12 @@ function SortableTaskPillRow({
   railId: string;
   index: number;
   slotTaskIds: string[];
+  /** True when this pill is the dragMirror's projection of a task
+   *  routed into this cell from another cell or the backlog. In that
+   *  case the row renders as a 2px indicator line so the cell barely
+   *  grows — preventing the height-jump that made the target position
+   *  "run away" as the cursor crossed cells. */
+  isPhantom: boolean;
 }) {
   const {
     attributes,
@@ -235,10 +252,18 @@ function SortableTaskPillRow({
       summary: task,
     },
   });
-  const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
+  // Foreign-phantom rendering takes precedence over the regular
+  // dimmed-pill drag state: we don't want a full-height ghost in the
+  // destination cell at all. dnd-kit still tracks this row as a
+  // sortable item, but at ~2px tall — neighbors' transforms shrink to
+  // match, so the cell's height barely changes.
+  const renderAsIndicator = isDragging && isPhantom;
+  const style: React.CSSProperties = renderAsIndicator
+    ? // Skip the sortable transform: with the row collapsed to a thin
+      // line, sibling displacement is already negligible. Holding the
+      // transform here would just produce a sliding 2px line.
+      {}
+    : { transform: CSS.Transform.toString(transform), transition };
   return (
     <div
       ref={setNodeRef}
@@ -246,24 +271,43 @@ function SortableTaskPillRow({
       {...attributes}
       {...listeners}
       className={clsx(
-        'cursor-grab active:cursor-grabbing',
-        isDragging && 'opacity-50',
+        !renderAsIndicator && 'cursor-grab active:cursor-grabbing',
+        isDragging && !renderAsIndicator && 'opacity-50',
       )}
     >
-      <TaskPill
-        task={task}
-        color={color}
-        {...(line && { line })}
-        {...(onClear && { onClear })}
-        {...(onMarkDone && { onMarkDone })}
-        {...(onUndoDone && { onUndoDone })}
-        {...(onArchive && { onArchive })}
-        {...(onUnarchive && { onUnarchive })}
-        {...(onOpenDetail && { onOpenDetail })}
-        {...(onOpenProject && { onOpenProject })}
-        {...(onToggleSubItem && { onToggleSubItem })}
-      />
+      {renderAsIndicator ? (
+        <DropIndicatorLine color={color} />
+      ) : (
+        <TaskPill
+          task={task}
+          color={color}
+          {...(line && { line })}
+          {...(onClear && { onClear })}
+          {...(onMarkDone && { onMarkDone })}
+          {...(onUndoDone && { onUndoDone })}
+          {...(onArchive && { onArchive })}
+          {...(onUnarchive && { onUnarchive })}
+          {...(onOpenDetail && { onOpenDetail })}
+          {...(onOpenProject && { onOpenProject })}
+          {...(onToggleSubItem && { onToggleSubItem })}
+        />
+      )}
     </div>
+  );
+}
+
+/** Thin colored bar that replaces a phantom pill during cross-cell
+ *  drag. Total height ~6px including margins keeps the destination
+ *  cell stable — siblings only move enough to make a narrow gap, not
+ *  a full pill's worth, so the user's target position doesn't run
+ *  away as the cursor crosses cells. */
+function DropIndicatorLine({ color }: { color: RailColor }) {
+  return (
+    <div
+      className="my-0.5 h-0.5 w-full rounded-full"
+      style={{ backgroundColor: RAIL_COLOR_HEX[color] }}
+      aria-hidden="true"
+    />
   );
 }
 
