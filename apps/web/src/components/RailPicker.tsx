@@ -73,17 +73,33 @@ export function RailPicker({
   );
 
   const groups = useMemo(() => groupRails(rails), [rails]);
-  const sortedGroups = useMemo(
+  // ERD §5.5.2 — split into "active template" group (always
+  // expanded at top) and "other templates" groups (collapsed
+  // behind a single "其它模板的 Rail" toggle). When there's no
+  // activeTemplateKey the picker has no concept of "the day's
+  // template" so everything renders expanded, no fallback toggle.
+  const activeGroup = useMemo(
     () =>
-      [...groups.entries()].sort(([a], [b]) => {
-        if (activeTemplateKey) {
-          if (a === activeTemplateKey) return -1;
-          if (b === activeTemplateKey) return 1;
-        }
-        return a.localeCompare(b);
-      }),
+      activeTemplateKey && groups.has(activeTemplateKey)
+        ? { templateKey: activeTemplateKey, list: groups.get(activeTemplateKey)! }
+        : null,
     [groups, activeTemplateKey],
   );
+  const otherGroups = useMemo(
+    () =>
+      [...groups.entries()]
+        .filter(([k]) => k !== activeTemplateKey)
+        .sort(([a], [b]) => a.localeCompare(b)),
+    [groups, activeTemplateKey],
+  );
+  const otherCount = useMemo(
+    () => otherGroups.reduce((acc, [, list]) => acc + list.length, 0),
+    [otherGroups],
+  );
+  // Auto-expand fallback when there's no active group (so the picker
+  // is never empty just because the day has no template).
+  const [othersExpanded, setOthersExpanded] = useState(false);
+  const effectiveOthersExpanded = activeGroup === null ? true : othersExpanded;
 
   const selected = rails.find((r) => r.id === value);
 
@@ -129,68 +145,134 @@ export function RailPicker({
             还没有 Rail。去 Template Editor 建一条。
           </p>
         )}
-        {sortedGroups.map(([templateKey, list]) => {
-          const tpl = templates[templateKey];
-          const isActive = templateKey === activeTemplateKey;
-          return (
-            <div key={templateKey} className="flex flex-col">
-              <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-2">
-                <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary/80">
-                  {tpl?.name ?? templateKey}
-                </span>
-                {isActive && (
-                  <span className="font-mono text-2xs uppercase tracking-widest text-ink-primary">
-                    · 当天模板
-                  </span>
-                )}
-              </div>
-              {list.map((r) => {
-                const active = r.id === value;
-                const usage = usageByRail.get(r.id);
-                return (
-                  <button
-                    key={r.id}
-                    type="button"
-                    onClick={() => {
-                      onChange(r.id);
-                      setOpen(false);
-                    }}
-                    className={clsx(
-                      'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition',
-                      active ? 'bg-surface-2' : 'hover:bg-surface-2',
-                    )}
-                  >
-                    <span
-                      aria-hidden
-                      className="h-3 w-[3px] shrink-0 rounded-sm"
-                      style={{
-                        background:
-                          RAIL_COLOR_HEX[
-                            r.color as keyof typeof RAIL_COLOR_HEX
-                          ] ?? RAIL_COLOR_HEX.slate,
-                      }}
-                    />
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate text-ink-primary">{r.name}</span>
-                      <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
-                        {formatRailTime(r)}
-                      </span>
-                    </span>
-                    {usage && <UsageChips usage={usage} />}
-                    {active && (
-                      <Check
-                        className="h-3.5 w-3.5 shrink-0 text-ink-tertiary"
-                        strokeWidth={2}
-                      />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          );
-        })}
+        {activeGroup && (
+          <RailGroup
+            templateKey={activeGroup.templateKey}
+            list={activeGroup.list}
+            templates={templates}
+            value={value}
+            isActive
+            usageByRail={usageByRail}
+            onPick={(id) => {
+              onChange(id);
+              setOpen(false);
+            }}
+          />
+        )}
+        {activeGroup === null && otherGroups.length > 0 && (
+          // No template resolved for the picked date — hint at top so
+          // the user understands why no "active" group is shown.
+          <p className="px-3 pb-1 pt-2 text-xs text-ink-tertiary">
+            当天没有解析出模板,可从下方任意模板挑一条 Rail。
+          </p>
+        )}
+        {otherGroups.length > 0 && activeGroup !== null && (
+          <button
+            type="button"
+            onClick={() => setOthersExpanded((v) => !v)}
+            className="mt-1 flex w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-2xs uppercase tracking-widest text-ink-tertiary/80 transition hover:bg-surface-2 hover:text-ink-secondary"
+          >
+            <ChevronDown
+              aria-hidden
+              className={clsx(
+                'h-3 w-3 shrink-0 transition-transform',
+                effectiveOthersExpanded ? 'rotate-0' : '-rotate-90',
+              )}
+              strokeWidth={1.8}
+            />
+            <span className="font-mono">其它模板的 Rail · {otherCount}</span>
+          </button>
+        )}
+        {effectiveOthersExpanded &&
+          otherGroups.map(([templateKey, list]) => (
+            <RailGroup
+              key={templateKey}
+              templateKey={templateKey}
+              list={list}
+              templates={templates}
+              value={value}
+              isActive={false}
+              usageByRail={usageByRail}
+              onPick={(id) => {
+                onChange(id);
+                setOpen(false);
+              }}
+            />
+          ))}
       </PopoverContent>
     </Popover>
+  );
+}
+
+function RailGroup({
+  templateKey,
+  list,
+  templates,
+  value,
+  isActive,
+  usageByRail,
+  onPick,
+}: {
+  templateKey: string;
+  list: Rail[];
+  templates: Record<string, Template>;
+  value: string;
+  isActive: boolean;
+  usageByRail: Map<string, RailUsage>;
+  onPick: (railId: string) => void;
+}) {
+  const tpl = templates[templateKey];
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-2">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary/80">
+          {tpl?.name ?? templateKey}
+        </span>
+        {isActive && (
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-primary">
+            · 当天模板
+          </span>
+        )}
+      </div>
+      {list.map((r) => {
+        const active = r.id === value;
+        const usage = usageByRail.get(r.id);
+        return (
+          <button
+            key={r.id}
+            type="button"
+            onClick={() => onPick(r.id)}
+            className={clsx(
+              'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition',
+              active ? 'bg-surface-2' : 'hover:bg-surface-2',
+            )}
+          >
+            <span
+              aria-hidden
+              className="h-3 w-[3px] shrink-0 rounded-sm"
+              style={{
+                background:
+                  RAIL_COLOR_HEX[r.color as keyof typeof RAIL_COLOR_HEX] ??
+                  RAIL_COLOR_HEX.slate,
+              }}
+            />
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate text-ink-primary">{r.name}</span>
+              <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+                {formatRailTime(r)}
+              </span>
+            </span>
+            {usage && <UsageChips usage={usage} />}
+            {active && (
+              <Check
+                className="h-3.5 w-3.5 shrink-0 text-ink-tertiary"
+                strokeWidth={2}
+              />
+            )}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
