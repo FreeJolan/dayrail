@@ -3449,6 +3449,45 @@ occurrence` migrations) doesn't hold on the real data — actual user
 count = 1, subItems count = 1 test-data task — so the gate was
 over-engineering.
 
+#### v0.11.5 correction · OccurrenceSlotPicker absorbs RailPicker + post-split task-level schedule entry is disabled
+
+v0.11.4 fixed the narrow + fallback behavior in `RailPicker` (§5.5.2
+option B), but the **occurrence scheduling UI rides a separate code
+path** that wasn't touched:
+
+- `OccurrenceSlotPicker` (`apps/web/src/pages/Tasks.tsx`) was hand-
+  rolled with a native `<select>` over `Object.values(railsMap)` in
+  the name of "v0.11 occurrence schedule simplification" — every
+  template's Rails listed flat, completely disconnected from the
+  §5.5.2 narrow + fallback spec.
+- After a Task becomes occurrence-managed, the task-level "Schedule…"
+  entry in the Task detail drawer **still rendered**, with no
+  `isOccurrenceManaged` guard. Clicking it wrote `task.slot`, but
+  this section explicitly says `Task.slot` is ignored when
+  occurrences are non-empty — the user's action had no visible
+  effect (**silent dead-end**). The store's `scheduleTaskToRail` did
+  no check either, so any other surface bypassing the UI guard would
+  hit the same dead-end.
+
+v0.11.5 fixes both together:
+
+1. **OccurrenceSlotPicker switches to `RailPicker`**, with
+   `pickTemplateForDate(state, date)` passed as `activeTemplateKey`
+   — occurrence scheduling gets the same narrow + fallback group as
+   SchedulePopover.
+2. **Post-split task-level schedule entry hides**: the Task detail
+   drawer / Tasks list row's "Schedule…" button skips rendering when
+   `isOccurrenceManaged(occs)` is true; a neutral hint replaces it
+   ("Split · schedule each occurrence below instead"). Store layer
+   `scheduleTaskToRail` adds a defensive guard: throws if the Task
+   already has occurrences (catches future surfaces that forget the
+   UI check).
+
+Both bugs share the v0.11.4 pattern — "an implementation surface
+drifted from its own section's spec" — and the section's core
+invariant ("`Task.slot` is ignored when occurrences are non-empty")
+is now enforced both at the UI and at the data layer.
+
 ---
 
 ## 11. Open Questions

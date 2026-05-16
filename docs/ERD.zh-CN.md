@@ -3077,6 +3077,20 @@ v0.11 实装时在 `isOccurrenceManaged` 里加了一道**本节没有定义的�
 
 v0.11.4 把 `isOccurrenceManaged` 简化为 `occurrences.length > 0`，恢复本节原意。当时引入门的兼容性顾虑（保护 v0.11 hydrate-time 的 `subItems → occurrence` 迁移用户）在实测数据上不成立（实际用户 = 1 + subItems 数 = 1 测试数据），是过度设计。
 
+#### v0.11.5 修正纪要 · OccurrenceSlotPicker 收编 + 切分后 task-level 排期入口禁用
+
+v0.11.4 修了 `RailPicker` 的 narrow + fallback 行为（§5.5.2 B 方案），但 **occurrence 的排期 UI 走的是另一条独立代码路径**，没被覆盖到：
+
+- **OccurrenceSlotPicker**（`apps/web/src/pages/Tasks.tsx` 内）当时为了"简化 v0.11 occurrence 排期"自己写了个原生 `<select>`，列出 `Object.values(railsMap)` —— 所有模板的 Rail 一股脑显示，跟 §5.5.2 narrow + fallback 设计完全不挂钩。
+- 切分（occurrence-managed）之后，task 详情抽屉里 task-level 的"排期…"入口**仍然显示**，没有 `isOccurrenceManaged` 守卫。点了会写入 `task.slot`，但本节明确"occurrences 非空时被忽略"——用户操作后看不到任何效果，**静默死路**。store 的 `scheduleTaskToRail` 也不做这个判断，任何其它入口绕过 UI 检查也会触发同样的死路。
+
+v0.11.5 两件并修：
+
+1. **OccurrenceSlotPicker 改用 `RailPicker`**，传入 `pickTemplateForDate(state, date)` 作为 `activeTemplateKey` —— occurrence 排期下拉也享受 narrow + fallback 折叠组，跟 SchedulePopover 行为对齐。
+2. **切分后 task-level 排期入口隐藏**：task 详情抽屉 / Tasks 列表行的"排期…"按钮在 `isOccurrenceManaged(occs)` 为真时不渲染，替换成中性提示「已切分 · 请在下方 occurrence 列表逐条排期」。store 层 `scheduleTaskToRail` 加防御守卫：若 task 已有 occurrences 直接 throw（防止后续新增的入口忘加 UI 守卫又重蹈静默死路）。
+
+这两件的共同模式 —— "实装 surface 偏离同一节的 spec" —— 跟 v0.11.4 修的两件同源。本节的核心不变量「occurrences 非空时 Task.slot 被忽略」终于在 UI 层 + 数据层都强制起来。
+
 ***
 
 ## 11. 开放问题（待讨论）
