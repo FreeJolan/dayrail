@@ -31,17 +31,19 @@ function occ(partial: Partial<TaskOccurrence> & { id: string }): TaskOccurrence 
 }
 
 describe('isOccurrenceManaged', () => {
+  // v0.11.4: simplified to "any occurrence present" to match ERD §10.6.
+  // The earlier `slot OR percent` gate was an undocumented deviation.
   it('false for empty occurrence list', () => {
     expect(isOccurrenceManaged([])).toBe(false);
   });
 
-  it('false for label-only / pure checklist occurrences', () => {
+  it('true as soon as any occurrence exists (label-only included)', () => {
     expect(
       isOccurrenceManaged([
         occ({ id: 'o1', label: 'outline' }),
         occ({ id: 'o2', label: 'draft' }),
       ]),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('true when any occurrence carries a slot', () => {
@@ -64,13 +66,9 @@ describe('isOccurrenceManaged', () => {
 });
 
 describe('deriveTaskStatus', () => {
-  it('returns task.status verbatim when not occurrence-managed', () => {
+  it('returns task.status verbatim when there are no occurrences', () => {
     expect(deriveTaskStatus({ ...TASK, status: 'done' }, [])).toBe('done');
-    expect(
-      deriveTaskStatus({ ...TASK, status: 'archived' }, [
-        occ({ id: 'o', label: 'pure checklist' }),
-      ]),
-    ).toBe('archived');
+    expect(deriveTaskStatus({ ...TASK, status: 'pending' }, [])).toBe('pending');
   });
 
   it('derives done when every managed occurrence is done', () => {
@@ -175,22 +173,21 @@ describe('deriveTaskProgress', () => {
 });
 
 describe('migration safety', () => {
-  it('label-only occurrences leave Task.status authoritative (subItems migration shape)', () => {
-    // Simulates the v0.11 hydrate-time migration: pre-existing
-    // subItems mapped one-shot to label-only / unscheduled occurrences.
-    // The user's prior `Task.status` MUST stay authoritative — flipping
-    // it to derived would create surprise regressions.
+  // v0.11.4 — the earlier "subItems migration leaves Task.status
+  // authoritative" guarantee was dropped (see ERD §10.6 v0.11.4
+  // 修正纪要). Actual user data has 1 subItems-bearing task and
+  // that's test data; the adoption gate was over-engineering. Now
+  // any occurrence presence flips managed mode on.
+  it('label-only occurrences flip into managed mode (status derives from rollup)', () => {
     const migrated: TaskOccurrence[] = [
       occ({ id: 'occ-task-x-s1', label: '步骤 1', status: 'done', order: 0 }),
       occ({ id: 'occ-task-x-s2', label: '步骤 2', status: 'pending', order: 1 }),
     ];
-    expect(isOccurrenceManaged(migrated)).toBe(false);
+    expect(isOccurrenceManaged(migrated)).toBe(true);
+    // Mixed done + pending → in-progress, regardless of Task.status.
     expect(
       deriveTaskStatus({ ...TASK, status: 'pending' }, migrated),
-    ).toBe('pending');
-    expect(
-      deriveTaskStatus({ ...TASK, status: 'done' }, migrated),
-    ).toBe('done');
+    ).toBe('in-progress');
   });
 
   it('adopting one occurrence (gives it a slot) flips into managed mode', () => {
@@ -203,8 +200,6 @@ describe('migration safety', () => {
       }),
     ];
     expect(isOccurrenceManaged(occs)).toBe(true);
-    // a is pending (no slot, no done), b is pending (slot set, status pending)
-    // → all pending, archived path doesn't apply → derived = pending.
     expect(deriveTaskStatus(TASK, occs)).toBe('pending');
   });
 });
