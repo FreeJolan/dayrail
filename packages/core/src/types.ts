@@ -612,28 +612,19 @@ export interface TaskOccurrence {
 
 /** Derived Task status when occurrences are non-empty (ERD §10.1
  *  v0.11 exception clause). Pure function so selectors / UI components
- *  can call it without a store dependency.
- *
- *  Adoption-gate semantics: "occurrence-managed" mode kicks in only
- *  when at least one occurrence carries a `slot` OR `percent`. This
- *  preserves backward compatibility for the v0.11 migration: legacy
- *  `Task.subItems` are mapped to label-only / unscheduled occurrences
- *  that function as a checklist; the host Task's status / slot stay
- *  authoritative. The user opts into the new model implicitly by
- *  scheduling an occurrence or assigning it a percent. */
+ *  can call it without a store dependency. */
 export type DerivedTaskStatus = 'pending' | 'in-progress' | 'done' | 'archived';
 
 /** True when the Task's scheduling/progress is driven by its
- *  occurrences (per the adoption gate above). False when the
- *  occurrences are purely checklist-shaped (or empty), in which case
- *  the legacy Task.slot / Task.status / Task.milestonePercent stay
- *  authoritative. */
+ *  occurrences. v0.11.4: matches ERD §10.6 spec exactly — "any
+ *  occurrence present". The v0.11 implementation added a hidden
+ *  adoption gate (required `slot` OR `percent`) that wasn't in
+ *  the ERD; that gate made splitting a Task feel like it "did
+ *  nothing" because the Backlog kept showing the parent row until
+ *  the user happened to schedule one of the occurrences or assign
+ *  it a percent. See §10.6 「v0.11.4 修正纪要」for the full reason. */
 export function isOccurrenceManaged(occurrences: TaskOccurrence[]): boolean {
-  for (const o of occurrences) {
-    if (o.slot != null) return true;
-    if (o.percent != null) return true;
-  }
-  return false;
+  return occurrences.length > 0;
 }
 
 export function deriveTaskStatus(
