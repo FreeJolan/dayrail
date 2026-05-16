@@ -612,28 +612,24 @@ export interface TaskOccurrence {
 
 /** Derived Task status when occurrences are non-empty (ERD §10.1
  *  v0.11 exception clause). Pure function so selectors / UI components
- *  can call it without a store dependency.
- *
- *  Adoption-gate semantics: "occurrence-managed" mode kicks in only
- *  when at least one occurrence carries a `slot` OR `percent`. This
- *  preserves backward compatibility for the v0.11 migration: legacy
- *  `Task.subItems` are mapped to label-only / unscheduled occurrences
- *  that function as a checklist; the host Task's status / slot stay
- *  authoritative. The user opts into the new model implicitly by
- *  scheduling an occurrence or assigning it a percent. */
+ *  can call it without a store dependency. */
 export type DerivedTaskStatus = 'pending' | 'in-progress' | 'done' | 'archived';
 
 /** True when the Task's scheduling/progress is driven by its
- *  occurrences (per the adoption gate above). False when the
- *  occurrences are purely checklist-shaped (or empty), in which case
- *  the legacy Task.slot / Task.status / Task.milestonePercent stay
- *  authoritative. */
+ *  occurrences. v0.11.4: simplified to "any occurrences present" —
+ *  the earlier `slot OR percent` adoption gate was meant to protect
+ *  legacy `Task.subItems` migrations from auto-promoting into
+ *  separate backlog rows, but for the actual user base (one user,
+ *  two devices, minimal subItems history) that protection was over-
+ *  engineering. The previous behavior also violated user intent:
+ *  splitting a Task into occurrences and then seeing the backlog
+ *  still render it as one un-split row felt like the split "did
+ *  nothing", because the adoption gate was invisible. Now any
+ *  occurrence count > 0 immediately means the Task is managed by
+ *  its occurrences — backlog shows per-occurrence rows, status /
+ *  progress derive from the occurrence rollup. */
 export function isOccurrenceManaged(occurrences: TaskOccurrence[]): boolean {
-  for (const o of occurrences) {
-    if (o.slot != null) return true;
-    if (o.percent != null) return true;
-  }
-  return false;
+  return occurrences.length > 0;
 }
 
 export function deriveTaskStatus(
