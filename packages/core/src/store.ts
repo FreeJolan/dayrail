@@ -2282,6 +2282,17 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
     const doc = getYDoc();
     const priorState = useStore.getState();
     const priorTask = priorState.tasks[taskId];
+    // ERD §10.6 v0.11.5 — `Task.slot` is ignored when the Task has
+    // occurrences (occurrence-managed mode). Writing it here would be
+    // a silent dead-end: the field gets persisted but every read path
+    // skips it. Throw so any caller forgetting the UI guard surfaces
+    // the bug immediately instead of confusing the user.
+    const occs = selectOccurrencesForTask(priorState, taskId);
+    if (isOccurrenceManaged(occs)) {
+      throw new Error(
+        `scheduleTaskToRail: Task ${taskId} is occurrence-managed; schedule its occurrences via scheduleTaskOccurrence instead.`,
+      );
+    }
     const priorSlot = priorTask?.slot;
     const priorAdhoc = Object.values(priorState.adhocEvents).find(
       (a) => a.taskId === taskId && a.status === 'active',
