@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import {
   INBOX_LINE_ID,
+  isOccurrenceManaged,
   railAtDate,
   selectCurrentHabitPhase,
   selectHabitPhasesByLine,
@@ -49,7 +50,9 @@ import {
   DropdownMenuTrigger,
 } from '@/components/primitives/DropdownMenu';
 import { MarkdownField } from '@/components/MarkdownField';
+import { RailPicker } from '@/components/RailPicker';
 import { SchedulePopover } from '@/components/SchedulePopover';
+import { pickTemplateForDate } from '@/pages/cycleFromStore';
 import { HabitDetail } from './HabitDetail';
 import { ReasonToast } from '@/components/ReasonToast';
 import {
@@ -1321,6 +1324,18 @@ export function TaskDetailDrawer({
 }) {
   const updateTask = useStore((s) => s.updateTask);
   const linesMap = useStore((s) => s.lines);
+  // ERD §10.6 v0.11.5 — when a Task has occurrences, `Task.slot` is
+  // ignored. Hide the task-level Schedule entry so the user doesn't
+  // hit the silent dead-end where the click writes a field that the
+  // rest of the app skips.
+  const taskOccurrencesMap = useStore((s) => s.taskOccurrences);
+  const taskIsManaged = useMemo(
+    () =>
+      isOccurrenceManaged(
+        selectOccurrencesForTask({ taskOccurrences: taskOccurrencesMap }, task.id),
+      ),
+    [taskOccurrencesMap, task.id],
+  );
   // IME guard for the title input + sub-item inputs below. Shared
   // ref-tracked composition state across all text inputs in this
   // drawer (one user-facing input editing flow at a time).
@@ -1543,6 +1558,10 @@ export function TaskDetailDrawer({
               {isAutoTask ? (
                 <span className="text-2xs text-ink-tertiary">
                   Habit 绑定决定,去 habit 详情页改节奏
+                </span>
+              ) : taskIsManaged ? (
+                <span className="text-2xs text-ink-tertiary">
+                  已切分 · 请在上方「切分」区按 occurrence 排期
                 </span>
               ) : (
                 <SchedulePopover task={task}>
@@ -1911,9 +1930,14 @@ function OccurrenceRow({
   );
 }
 
-/** Inline slot picker. Date input + rail dropdown + clear / cancel /
- *  apply. Stripped-down vs SchedulePopover (no Mode B / free-time —
- *  occurrences in v0.11 use rail slots only). */
+/** Inline slot picker for a task occurrence. Date input + RailPicker
+ *  (narrow + fallback group per ERD §5.5.2) + clear / cancel / apply.
+ *
+ *  v0.11.5 — swapped the previous native `<select>` for RailPicker so
+ *  occurrence scheduling inherits the same narrow-to-resolved-template
+ *  + collapsed-fallback behavior as SchedulePopover (ERD §10.6 v0.11.5
+ *  修正纪要). Stripped-down vs SchedulePopover: no Mode B / free-time —
+ *  occurrences in v0.11 use rail slots only. */
 function OccurrenceSlotPicker({
   occurrence,
   railsMap,
@@ -1931,6 +1955,38 @@ function OccurrenceSlotPicker({
     occurrence.slot?.date ?? new Date().toISOString().slice(0, 10),
   );
   const [railId, setRailId] = useState(occurrence.slot?.railId ?? '');
+
+  const templatesMap = useStore((s) => s.templates);
+  const calendarRules = useStore((s) => s.calendarRules);
+  const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
+  const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
+  const userDayNotes = useStore((s) => s.userDayNotes);
+  const userProfile = useStore((s) => s.userProfile);
+
+  const resolvedTemplateKey = useMemo(
+    () =>
+      pickTemplateForDate(
+        {
+          templates: templatesMap,
+          calendarRules,
+          calendarRuleRevisions,
+          calendarRuleTombstones,
+          userDayNotes,
+          userProfile,
+        },
+        date,
+      ),
+    [
+      templatesMap,
+      calendarRules,
+      calendarRuleRevisions,
+      calendarRuleTombstones,
+      userDayNotes,
+      userProfile,
+      date,
+    ],
+  );
+
   const allRails = useMemo(
     () =>
       Object.values(railsMap).sort(
@@ -1949,18 +2005,17 @@ function OccurrenceSlotPicker({
         onChange={(e) => setDate(e.target.value)}
         className="h-6 rounded-sm border border-hairline/60 bg-surface-0 px-1.5 text-2xs text-ink-primary outline-none focus:border-ink-secondary"
       />
-      <select
+      <RailPicker
+        rails={allRails}
+        templates={templatesMap}
         value={railId}
-        onChange={(e) => setRailId(e.target.value)}
-        className="h-6 max-w-[160px] truncate rounded-sm border border-hairline/60 bg-surface-0 px-1.5 text-2xs text-ink-primary outline-none focus:border-ink-secondary"
-      >
-        <option value="">— 选 Rail —</option>
-        {allRails.map((r) => (
-          <option key={r.id} value={r.id}>
-            {minutesToHHMM(r.startMinutes)} · {r.name}
-          </option>
-        ))}
-      </select>
+        onChange={setRailId}
+        {...(resolvedTemplateKey && {
+          activeTemplateKey: resolvedTemplateKey,
+        })}
+        usageDate={date}
+        className="h-6 max-w-[200px] py-0 text-2xs"
+      />
       <div className="ml-auto flex items-center gap-1">
         {occurrence.slot && (
           <button
@@ -2523,6 +2578,18 @@ function TaskRow({
   isArchived: boolean;
 }) {
   const isDone = task.status === 'done';
+  // ERD §10.6 v0.11.5 — hide the row's task-level Schedule shortcut
+  // when the Task is occurrence-managed (Task.slot is ignored in that
+  // mode). The user reaches per-occurrence scheduling via the detail
+  // drawer's 切分 section.
+  const taskOccurrencesMap = useStore((s) => s.taskOccurrences);
+  const taskIsManaged = useMemo(
+    () =>
+      isOccurrenceManaged(
+        selectOccurrencesForTask({ taskOccurrences: taskOccurrencesMap }, task.id),
+      ),
+    [taskOccurrencesMap, task.id],
+  );
   // §5.5.3 archived / trash rows drop the leftmost circle entirely —
   // the circle reads as a checkbox-like affordance ("click to check /
   // multi-select"), which is wrong here: the view context already
@@ -2620,14 +2687,16 @@ function TaskRow({
           />
         ) : (
           <>
-            <SchedulePopover task={task}>
-              <IconActionButton
-                label="排期"
-                icon={
-                  <CalendarIcon className="h-3.5 w-3.5" strokeWidth={1.8} />
-                }
-              />
-            </SchedulePopover>
+            {!taskIsManaged && (
+              <SchedulePopover task={task}>
+                <IconActionButton
+                  label="排期"
+                  icon={
+                    <CalendarIcon className="h-3.5 w-3.5" strokeWidth={1.8} />
+                  }
+                />
+              </SchedulePopover>
+            )}
             <IconAction
               onClick={onArchive}
               label="归档"
