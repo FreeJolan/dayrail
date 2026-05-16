@@ -708,9 +708,11 @@ habit 被绑在具体 Rail 上、进而"每建一个新模板都要重新安排�
 ```
 
 **模式 A · 绑定 Rail**（默认）：
-- 下拉列出所选日期对应 Template 下的全部 Rail
-- 确认 → 写 / 更新 Slot（`cycleId, date, railId`），把 task 的 `slot` 指向它；多 task 可共用同一 Slot（`taskIds` 是数组）
-- 若当天没模板（或模板无 Rail）→ 选项 disabled，提示"这天没有模板 Rail，请用自由时间或先去 Cycle View 设模板"
+- 下拉**默认只展开**所选日期对应 Template 下的 Rail（按 CalendarRule + weekday heuristic 解析）。
+- 列表底部有一个**折叠组「其它模板的 Rail」**（默认收起），点击展开后能看到其它模板下的 Rail —— 跨模板钉一条 Rail 的逃生口（避免用户为了排一次跨模板就先去 Calendar 改 CalendarRule）。
+- 确认 → 写 / 更新 Slot（`cycleId, date, railId`），把 task 的 `slot` 指向它；多 task 可共用同一 Slot（`taskIds` 是数组）。
+- 若当天没模板（或模板无 Rail）→ 当天分组为空 + 折叠组直接展开 + 提示"这天没有模板 Rail，请用自由时间或先去 Cycle View 设模板"。
+- v0.11.4 修正：v0.11 实装时 RailPicker 把所有模板的 Rail 一股脑显示、只把当天模板组打高亮，跟本节描述的「narrow + fallback」不一致。本次修正恢复 ERD 原意。
 
 **模式 B · 自由时间**：
 - 用户直接指定起止时间
@@ -3066,6 +3068,14 @@ Task.subItems[i] → TaskOccurrence{
 - Task 的 status 派生**仅受同 Task 下 occurrences 的影响**——不会因为别的 Task 联动变化。
 - occurrence 的 doneAt 永远晚于其 slot.date 是**用户行为预期**而非 schema 约束（用户可以"补打"过去日期的 occurrence）。
 - occurrence 的 percent 与 status 完全解耦：填了 100 不自动完成，pending 时不计入 Task 进度高水位（`max(occurrence.percent for done occurrences)`）。
+
+#### v0.11.4 修正纪要 · 取消隐性「采用门」
+
+v0.11 实装时在 `isOccurrenceManaged` 里加了一道**本节没有定义的隐性门**：要求 occurrence 数组里至少一个有 `slot` 或 `percent` 才进入 managed 模式，否则 task 继续走 legacy 路径（backlog 显示 parent task、occurrence 退化成不可见 checklist）。
+
+这条门偏离本节明文的「`occurrences` 非空时完全派生」语义，引起两个用户可见的 bug：(1) 在新版本切分 task 之后 backlog 看不到拆分结果 —— 用户视角"拆了个寂寞"；(2) adoption gate 在 UI 上零反馈，用户不知道还需要给 occurrence 设个 percent 或排期才能"激活"派生模式。
+
+v0.11.4 把 `isOccurrenceManaged` 简化为 `occurrences.length > 0`，恢复本节原意。当时引入门的兼容性顾虑（保护 v0.11 hydrate-time 的 `subItems → occurrence` 迁移用户）在实测数据上不成立（实际用户 = 1 + subItems 数 = 1 测试数据），是过度设计。
 
 ***
 

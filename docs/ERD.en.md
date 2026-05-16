@@ -783,9 +783,11 @@ Clicking "Schedule…" on any task row opens the popover:
 ```
 
 **Mode A · Bind to Rail** (default):
-- The dropdown lists every Rail on that day's Template.
+- The dropdown **expands only the Rails of the resolved Template** for the picked date (CalendarRule + weekday heuristic).
+- A **collapsed "Rails from other templates" group** sits at the bottom (default closed). Expanding it surfaces Rails from any other template — the escape hatch for pinning across templates without first editing the CalendarRule.
 - Confirm → write / update a Slot (`cycleId, date, railId`) and point the task's `slot` at it. Multiple tasks can share one Slot (`taskIds` is an array).
-- If the day has no Template (or the Template has no Rails) → the option is disabled with a hint: "No Rails on this day's template — use free time, or set the template in Cycle View first."
+- If the day has no Template (or the Template has no Rails) → the active group is empty and the fallback group auto-expands, with a hint: "No Rails on this day's template — use free time, or set the template in Cycle View first."
+- v0.11.4 correction: the v0.11 RailPicker implementation lumped every template's Rails together and only highlighted the active group — inconsistent with the "narrow + fallback" spec above. v0.11.4 restores the spec.
 
 **Mode B · Free time**:
 - The user picks start + end directly.
@@ -3423,6 +3425,29 @@ one", which the upgrade prompt addresses directly.
   in 100 does NOT auto-complete; while pending, it does NOT contribute
   to the parent's progress high-water mark (`max(occurrence.percent
   for done occurrences)`).
+
+#### v0.11.4 correction · removing the hidden "adoption gate"
+
+The v0.11 implementation added an undocumented gate inside
+`isOccurrenceManaged`: the function required at least one occurrence
+to carry a `slot` or `percent` before the Task entered managed mode;
+otherwise the Task stayed on the legacy path (the parent Task showed
+in the Backlog and occurrences degraded into an invisible checklist).
+
+This gate violated the explicit "fully derived when `occurrences` is
+non-empty" semantics defined above, producing two user-visible bugs:
+(1) after splitting a Task into occurrences on the new build the user
+still saw the parent row in the Backlog — felt like the split "did
+nothing"; (2) the adoption gate had zero UI feedback, so users had
+no way to know they still needed to set a `percent` or schedule one
+occurrence to "activate" derivation.
+
+v0.11.4 simplifies `isOccurrenceManaged` to `occurrences.length > 0`,
+restoring the section's original intent. The compatibility concern
+that motivated the gate (protecting v0.11 hydrate-time `subItems →
+occurrence` migrations) doesn't hold on the real data — actual user
+count = 1, subItems count = 1 test-data task — so the gate was
+over-engineering.
 
 ---
 
