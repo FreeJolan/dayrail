@@ -6,7 +6,7 @@
 // status (idle / syncing / error reason) lives only here.
 
 import { useSyncExternalStore } from 'react';
-import type { FieldConflict } from '@dayrail/core';
+import type { FieldConflict, ReconcileResult } from '@dayrail/core';
 import {
   getDeviceLabel,
   getDirtyCount,
@@ -91,6 +91,11 @@ export interface SyncSnapshot {
    *  sync} but runtime is local. ModeRegressionModal mounts iff
    *  this is non-null. */
   pendingModeRegression: PendingModeRegression | null;
+  /** Result of the boot-time heartbeat reconcile (ERD §7.10.4 ·
+   *  v0.12 P4). null = not yet attempted this session · `no-peers`
+   *  = single-device path (banner suppressed) · other variants
+   *  feed the ReconcileBanner. */
+  bootReconcile: ReconcileResult | null;
   /** True once a successful push or pull has completed in the
    *  current browser session (ERD §7.9 decision 5). The "已同步"
    *  label only displays when this is true — `lastSync` alone can
@@ -111,6 +116,7 @@ function readSnapshot(): SyncSnapshot {
     pendingConflict: null,
     pendingIdentityMismatch: null,
     pendingModeRegression: null,
+    bootReconcile: null,
     sessionRoundTripDone: hasSessionRoundTrip(),
   };
 }
@@ -162,6 +168,9 @@ export const syncStore = {
   },
   setPendingModeRegression(m: PendingModeRegression | null): void {
     update({ pendingModeRegression: m });
+  },
+  setBootReconcile(r: ReconcileResult | null): void {
+    update({ bootReconcile: r });
   },
 };
 

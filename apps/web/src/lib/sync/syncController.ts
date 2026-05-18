@@ -44,10 +44,12 @@ import {
   getDeviceLabel,
   getDirtyCount,
   getIdentityPin,
+  getLastActivityAt,
   getLastPulledSnapshotId,
   getLastPushedCounts,
   isLocalSamplesOnly,
   isSyncProbeSuppressed,
+  markLastActivityNow,
   setDismissPendingPileUntil,
   setLastPulledSnapshotId,
   setLastPushedCounts,
@@ -56,13 +58,17 @@ import {
 } from './identity';
 import { checkAccountIdentity, recordFirstConnect } from './identityPin';
 import {
+  classifyReconcile,
   detectModeRegression,
   runtimeModeFromConnection,
 } from '@dayrail/core';
 import {
   downloadDryjById,
   getRemoteMeta,
+  listHeartbeats,
   uploadDryj,
+  writeHeartbeat,
+  type DeviceHeartbeat,
   type RemoteMeta,
 } from './driveBackend';
 import { isDriveConnected } from './driveAuth';
@@ -78,6 +84,30 @@ import { isTauriRuntime } from '../versionUpdateContext';
 // typing bursts. Desktop OAuth makes Drive API calls cheap; free-
 // tier quota is well within reach at this cadence.
 const PUSH_DEBOUNCE_MS = 8 * 1000;
+
+/** Best-effort heartbeat upload after a successful push (ERD §7.10.4
+ *  · v0.12 P4). Failures are swallowed + logged · a heartbeat hiccup
+ *  shouldn't break the push that just succeeded. */
+async function writeHeartbeatBestEffort(snapshotId: string): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const hb: DeviceHeartbeat = {
+    deviceId: getDeviceId(),
+    deviceName: getDeviceLabel(),
+    // If the user has never edited (e.g. fresh install pushing seed
+    // data), fall back to now so peers see lastActivityAt <=
+    // lastPushedAt = healthy.
+    lastActivityAt: getLastActivityAt() ?? nowIso,
+    lastPushedAt: nowIso,
+    lastPushedSnapshotId: snapshotId,
+    pendingCount: 0,
+    schemaVersion: 1,
+  };
+  try {
+    await writeHeartbeat(hb);
+  } catch (err) {
+    console.warn('[sync] heartbeat write failed (non-fatal):', err);
+  }
+}
 
 /** Map an error to a coarse code for the failure-history log
  *  (ERD §7.10.5 · v0.12 P2). The full message is preserved in
@@ -271,6 +301,9 @@ export function startSyncBackgroundLoop(): void {
     if (samplesOnly) return;
     const next = bumpDirtyCount();
     syncStore.setDirtyCount(next);
+    // ERD §7.10.4 · v0.12 P4 · stamp the moment of user activity so
+    // the next heartbeat write can carry an accurate lastActivityAt.
+    markLastActivityNow();
     schedulePush();
   };
   doc.on('afterTransaction', onTransaction);
@@ -392,6 +425,41 @@ export type ManualSyncOutcome =
   | { kind: 'noop' }
   | { kind: 'pulled' }
   | { kind: 'offline'; reason: string };
+
+/** Pull peer heartbeats and classify them into the ReconcileBanner
+ *  three-state (ERD §7.10.4 · v0.12 P4). Fire-and-forget from App
+ *  mount · result lands in syncStore.bootReconcile.
+ *
+ *  No-op for never-connected devices (banner stays null · single-
+ *  device path returns `no-peers` so the banner suppresses itself
+ *  for backup users). */
+export async function runReconcileAtBoot(): Promise<void> {
+  if (!isDriveConnected()) {
+    syncStore.setBootReconcile(null);
+    return;
+  }
+  try {
+    const heartbeats = await listHeartbeats();
+    const selfId = getDeviceId();
+    const peers = heartbeats
+      .filter((hb) => hb.deviceId !== selfId)
+      .map((hb) => ({
+        deviceId: hb.deviceId,
+        deviceName: hb.deviceName,
+        lastActivityAt: hb.lastActivityAt,
+        lastPushedAt: hb.lastPushedAt,
+      }));
+    const result = classifyReconcile({
+      nowMs: Date.now(),
+      peerHeartbeats: peers,
+      driveReachable: true,
+    });
+    syncStore.setBootReconcile(result);
+  } catch (err) {
+    console.warn('[sync] reconcile listHeartbeats failed:', err);
+    syncStore.setBootReconcile({ kind: 'offline' });
+  }
+}
 
 /** Check for mode regression at boot (ERD §7.10.6 · v0.12 P3).
  *  Reads the persisted `IdentityPin.lastKnownMode` and compares to
@@ -594,6 +662,8 @@ export async function runForcePush(): Promise<void> {
         result: 'ok',
       });
       setDismissPendingPileUntil(null);
+      // ERD §7.10.4 · v0.12 P4 · drop a heartbeat.
+      void writeHeartbeatBestEffort(snapshotId);
       syncStore.setPhase({ kind: 'idle' });
     } catch (err) {
       console.warn('[sync] force-push failed:', err);
@@ -1041,6 +1111,9 @@ async function runPush(opts: RunPushOpts): Promise<void> {
         // drop the dismiss so the banner can fire again if the pile
         // grows back.
         setDismissPendingPileUntil(null);
+        // ERD §7.10.4 · v0.12 P4 · drop a heartbeat so peers can see
+        // this device pushed. Best-effort; failures don't break push.
+        void writeHeartbeatBestEffort(snapshotId);
       }
       syncStore.setPhase({ kind: 'idle' });
       if (retryTimer) {

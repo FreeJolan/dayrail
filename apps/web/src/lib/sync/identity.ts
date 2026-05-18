@@ -203,6 +203,8 @@ function readLegacySyncMeta(): SyncMeta | null {
     recentAttempts: [],
     lastSuccessAt: { push: null, pull: null },
     dismissPendingPileUntil: null,
+    // v0.12 P4 · last user edit time · null until first activity.
+    lastActivityAt: null,
   };
 }
 
@@ -486,6 +488,21 @@ export function getDismissPendingPileUntil(): string | null {
 
 export function setDismissPendingPileUntil(iso: string | null): void {
   _cache.dismissPendingPileUntil = iso;
+  scheduleFlush();
+}
+
+// ============ user-activity timestamp (ERD §7.10.4 · v0.12 P4) ============
+
+export function getLastActivityAt(): string | null {
+  return _cache.lastActivityAt;
+}
+
+/** Bump on every user-initiated Y.Doc transaction (the doc observer
+ *  in syncController already filters REMOTE_ORIGIN / OPFS_ORIGIN out
+ *  · the same site that calls bumpDirtyCount). Heartbeats read this
+ *  on push success to populate `lastActivityAt`. */
+export function markLastActivityNow(): void {
+  _cache.lastActivityAt = new Date().toISOString();
   scheduleFlush();
 }
 

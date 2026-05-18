@@ -20,6 +20,7 @@ const APP_DATA_PARENT = 'appDataFolder';
 const CANONICAL_FILENAME = 'dayrail-snapshot.dryj';
 const HISTORY_PREFIX = 'dayrail-snapshot-';
 const HISTORY_RETENTION = 14;
+const HEARTBEAT_PREFIX = 'device-heartbeat-';
 
 export interface RemoteMeta {
   fileId: string;
@@ -338,4 +339,107 @@ function parseDeviceLabelFromFilename(name: string): string {
 
 export async function deleteHistoryEntry(fileId: string): Promise<void> {
   await deleteFile(fileId);
+}
+
+// ============ device heartbeats (ERD §7.10.4 · v0.12 P4) ============
+//
+// Sidecar JSON files in appdata · one per device · written after
+// every successful push. NOT part of the Y.Doc; bypasses smart-diff
+// and conflict surfaces entirely. The boot reconcile reads all
+// heartbeats (excluding self) to decide the ✓/⚠/✕ banner.
+
+export interface DeviceHeartbeat {
+  deviceId: string;
+  deviceName: string;
+  lastActivityAt: string;
+  lastPushedAt: string;
+  lastPushedSnapshotId: string;
+  pendingCount: number;
+  schemaVersion: 1;
+}
+
+function heartbeatFilename(deviceId: string): string {
+  return `${HEARTBEAT_PREFIX}${safeFilenameFragment(deviceId)}.json`;
+}
+
+/** Write (or overwrite) this device's heartbeat to Drive. Failures
+ *  are surfaced as throws — callers in syncController swallow + log
+ *  so a heartbeat hiccup doesn't break the push that just succeeded. */
+export async function writeHeartbeat(hb: DeviceHeartbeat): Promise<void> {
+  const filename = heartbeatFilename(hb.deviceId);
+  const all = await listAll();
+  const existing = all.find((f) => f.name === filename) ?? null;
+  const bytes = new TextEncoder().encode(JSON.stringify(hb));
+  const boundary = `dayrailhb${Math.random().toString(36).slice(2)}`;
+  const appProperties: Record<string, string> = {
+    deviceId: hb.deviceId,
+    schemaVersion: '1',
+  };
+  const meta = existing
+    ? { name: filename, appProperties }
+    : {
+        name: filename,
+        parents: [APP_DATA_PARENT],
+        mimeType: 'application/json',
+        appProperties,
+      };
+  const enc = new TextEncoder();
+  const metaPart = enc.encode(
+    `--${boundary}\r\n` +
+      'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+      JSON.stringify(meta) +
+      '\r\n' +
+      `--${boundary}\r\n` +
+      'Content-Type: application/json; charset=UTF-8\r\n\r\n',
+  );
+  const tail = enc.encode(`\r\n--${boundary}--`);
+  const body = new Blob([
+    metaPart as BlobPart,
+    bytes as BlobPart,
+    tail as BlobPart,
+  ]);
+  const url = existing
+    ? `${DRIVE_UPLOAD}/files/${existing.id}?uploadType=multipart`
+    : `${DRIVE_UPLOAD}/files?uploadType=multipart`;
+  const res = await authedFetch(url, {
+    method: existing ? 'PATCH' : 'POST',
+    headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+    body,
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(
+      `Drive heartbeat upload ${res.status}${txt ? ' · ' + txt.slice(0, 200) : ''}`,
+    );
+  }
+}
+
+/** List every device heartbeat in appdata. Caller filters out its
+ *  own deviceId. Robust against partial corruption — a file that
+ *  doesn't parse as a valid heartbeat is skipped, not thrown. */
+export async function listHeartbeats(): Promise<DeviceHeartbeat[]> {
+  const all = await listAll();
+  const candidates = all.filter((f) => f.name.startsWith(HEARTBEAT_PREFIX));
+  const out: DeviceHeartbeat[] = [];
+  for (const f of candidates) {
+    try {
+      const res = await authedFetch(`${DRIVE_API}/files/${f.id}?alt=media`);
+      if (!res.ok) continue;
+      const json = (await res.json()) as Partial<DeviceHeartbeat>;
+      if (
+        typeof json.deviceId === 'string' &&
+        typeof json.deviceName === 'string' &&
+        typeof json.lastActivityAt === 'string' &&
+        typeof json.lastPushedAt === 'string' &&
+        typeof json.lastPushedSnapshotId === 'string' &&
+        typeof json.pendingCount === 'number' &&
+        json.schemaVersion === 1
+      ) {
+        out.push(json as DeviceHeartbeat);
+      }
+    } catch {
+      // single-file fetch failed · skip and continue with the rest
+    }
+  }
+  return out;
 }
