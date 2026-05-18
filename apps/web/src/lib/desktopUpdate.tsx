@@ -15,8 +15,8 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { check, type Update } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
 import {
   VersionUpdateContext,
   type CheckStatus,
@@ -139,8 +139,17 @@ function useDesktopVersionUpdateImpl(): VersionUpdateState {
       // completes; we then trigger a relaunch to land on the new
       // version. The user perceives this as: click → brief "applying
       // update…" → app restarts.
+      //
+      // v0.11.6 (ERD §15.8): route through the Rust-side
+      // `relaunch_for_update` command instead of the plain
+      // `relaunch()` from tauri-plugin-process. The Rust command
+      // sets the `DAYRAIL_RESTART_REASON=update` env var before
+      // `app.restart()` so the new process's setup hook can force-
+      // foreground the window (macOS does not auto-promote relaunched
+      // processes to foreground; without this step the new version
+      // boots behind whatever window the user was looking at).
       await pendingUpdate.downloadAndInstall();
-      await relaunch();
+      await invoke('relaunch_for_update');
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[updater] install failed', err);

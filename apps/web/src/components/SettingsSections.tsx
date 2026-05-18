@@ -256,6 +256,19 @@ export function SyncSection() {
       {!status.connected && <ConnectDrivePanel />}
       {status.connected && <ConnectedSyncControls />}
 
+      {/* ERD §15.8 — desktop-only auto-start at login. Rendered
+          unconditionally (regardless of Drive connection) because
+          "start the app in the background at boot" is independent
+          from "sync with Drive". Hidden in the PWA. */}
+      {isTauriRuntime() && (
+        <div className="hairline-t mt-6 flex flex-col pt-4">
+          <span className="pb-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            桌面端
+          </span>
+          <AutostartRow />
+        </div>
+      )}
+
       {/* Local snapshot import/export is fundamentally a local
           operation — Y.Doc encoded to a `.dryj` byte buffer, no Drive
           API touched. It used to live inside ConnectedSyncControls
@@ -1157,6 +1170,71 @@ function DeviceLabelRow() {
           value={override}
           onChange={persist}
           placeholder={getDeviceLabel()}
+        />
+      }
+    />
+  );
+}
+
+/** ERD §15.8 — autostart at login toggle. Tauri only; PWA hides the
+ *  wrapper section. The state lives in the OS-side autostart entry,
+ *  not in Y.Doc / localStorage: it's per-device and per-OS-user. */
+function AutostartRow() {
+  const [enabled, setEnabled] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Hydrate from the OS-side autostart registration on mount.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const mod = await import('@tauri-apps/plugin-autostart');
+        const isOn = await mod.isEnabled();
+        if (!cancelled) setEnabled(isOn);
+      } catch (err) {
+        if (!cancelled) setError((err as Error).message);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  // Plugin enable/disable are idempotent at the OS layer, so a stray
+  // double-click during the in-flight window is harmless — no
+  // disabled flag needed on the toggle.
+  const persist = async (next: boolean) => {
+    setError(null);
+    try {
+      const mod = await import('@tauri-apps/plugin-autostart');
+      if (next) await mod.enable();
+      else await mod.disable();
+      setEnabled(next);
+    } catch (err) {
+      setError((err as Error).message);
+      // Re-sync the toggle UI to the true OS state on failure.
+      try {
+        const mod = await import('@tauri-apps/plugin-autostart');
+        setEnabled(await mod.isEnabled());
+      } catch {
+        /* best-effort */
+      }
+    }
+  };
+  return (
+    <Row
+      label="开机自启动"
+      description={
+        <>
+          登录系统时自动启动 DayRail，<strong>在后台启动</strong>（dock
+          / menubar 显示图标，主窗口不弹）。点击 dock 图标才显示窗口。
+          {error && (
+            <span className="block text-warn"> · 操作失败: {error}</span>
+          )}
+        </>
+      }
+      control={
+        <Toggle
+          checked={enabled}
+          onChange={(next) => void persist(next)}
         />
       }
     />
