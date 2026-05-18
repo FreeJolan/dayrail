@@ -107,6 +107,10 @@ export interface SyncSnapshot {
   /** Show the mode-upgrade toast (backup → sync transition). UI
    *  flag · dismiss clears it · 24h cooldown lives in SyncMeta. */
   showModeUpgradeToast: boolean;
+  /** Show the departure gate modal (Settings → 同步 → 安全退出 ·
+   *  ERD §7.10.3 · v0.12 P6). UI-only flag · modal closes via the
+   *  same setter. */
+  showDepartureGate: boolean;
   /** True once a successful push or pull has completed in the
    *  current browser session (ERD §7.9 decision 5). The "已同步"
    *  label only displays when this is true — `lastSync` alone can
@@ -130,6 +134,7 @@ function readSnapshot(): SyncSnapshot {
     bootReconcile: null,
     syncMode: 'local',
     showModeUpgradeToast: false,
+    showDepartureGate: false,
     sessionRoundTripDone: hasSessionRoundTrip(),
   };
 }
@@ -190,6 +195,9 @@ export const syncStore = {
   },
   setShowModeUpgradeToast(v: boolean): void {
     update({ showModeUpgradeToast: v });
+  },
+  setShowDepartureGate(v: boolean): void {
+    update({ showDepartureGate: v });
   },
 };
 

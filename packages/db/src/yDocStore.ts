@@ -122,6 +122,12 @@ export interface SyncMeta {
    *  flickering in and out of the heartbeat list doesn't spam the
    *  user. null = never shown. */
   lastModeUpgradeToastAt: string | null;
+  /** Marker that this device left last session with local changes
+   *  unsynced (v0.12 P6 · ERD §7.10.3). The next launch's
+   *  ReconcileBanner reads this to surface "上次离开时还有 N 个
+   *  改动没传上去" before the user does any more editing. Cleared
+   *  by any successful push. null = clean departure. */
+  pendingDeparture: { count: number; at: string } | null;
 }
 
 export const DEFAULT_SYNC_META: SyncMeta = {
@@ -138,6 +144,7 @@ export const DEFAULT_SYNC_META: SyncMeta = {
   dismissPendingPileUntil: null,
   lastActivityAt: null,
   lastModeUpgradeToastAt: null,
+  pendingDeparture: null,
 };
 
 export interface YDocStore {

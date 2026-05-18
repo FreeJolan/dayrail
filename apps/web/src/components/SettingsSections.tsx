@@ -798,9 +798,40 @@ function ConnectedSyncControls() {
       <DeviceLabelRow />
       <BootSyncChoiceRow />
       <SyncNowRow />
+      <SafeQuitRow />
       <DisconnectRow />
       <BackupHistoryRow />
     </div>
+  );
+}
+
+// Settings → 同步 → 安全退出 (ERD §7.10.3 · v0.12 P6).
+// Opens the DepartureGateModal so the user can verify their recent
+// edits are on Drive before closing the window. The modal handles
+// the push + retry + "leave anyway" branches.
+function SafeQuitRow() {
+  const status = useSyncStatus();
+  const onSafeQuit = () => {
+    syncStore.setShowDepartureGate(true);
+  };
+  return (
+    <Row
+      label="安全退出"
+      description={
+        status.dirtyCount > 0
+          ? `点一下确认你最近的 ${status.dirtyCount} 个改动都已经传到 Drive · 之后再关窗口`
+          : '点一下确认你最近的改动都已经传到 Drive · 之后再关窗口'
+      }
+      control={
+        <button
+          type="button"
+          onClick={onSafeQuit}
+          className="rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          检查再退出
+        </button>
+      }
+    />
   );
 }
 
