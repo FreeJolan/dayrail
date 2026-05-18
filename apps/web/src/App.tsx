@@ -37,6 +37,7 @@ import { ImportSuccessToast } from './components/ImportSuccessToast';
 import { ReasonToast } from './components/ReasonToast';
 import { SyncConflictPanel } from './components/SyncConflictPanel';
 import { IdentityMismatchModal } from './components/IdentityMismatchModal';
+import { SyncStatusBanner } from './components/SyncStatusBanner';
 import { SideNav } from './components/SideNav';
 import { ShortcutCheatsheet } from './components/ShortcutCheatsheet';
 import { UpdateBanner } from './components/UpdateBanner';
@@ -428,6 +429,7 @@ function Shell() {
       <UpdateBanner />
       <SideNav />
       <main className="min-w-0 flex-1">
+        <SyncStatusBanner />
         <Routes>
           <Route path="/" element={<TodayTrack />} />
           <Route path="/cycle" element={<CycleView />} />

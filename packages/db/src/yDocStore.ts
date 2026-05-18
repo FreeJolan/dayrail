@@ -27,6 +27,23 @@ export interface LastPushedCounts {
   at: string;
 }
 
+/** One sync attempt record (ERD §7.10.5 · v0.12 P2). `recentAttempts`
+ *  is a ring buffer of these; the UI surfaces "已经 N 天没传上去"
+ *  by walking back from `lastSuccessAt`. */
+export interface SyncAttempt {
+  /** ISO timestamp of when the attempt fired. */
+  at: string;
+  direction: 'push' | 'pull';
+  result: 'ok' | 'fail';
+  /** Coarse error category for fail attempts · null for ok. Used by
+   *  the SideNav tooltip's "看看具体怎么了 ⌄" detail. Free-form so
+   *  the recording site can pass whatever info is most useful. */
+  errorCode?: string;
+  /** First 500 chars of the response body on fail · null for ok.
+   *  Surfaced in Settings → 同步 → 故障历史 for diagnostic. */
+  errorBody?: string;
+}
+
 /** Identity pin (ERD §7.10.2 · v0.12 P1). Captured at first connect,
  *  compared on every subsequent reconnect / push HEAD check. A
  *  mismatch fires the IdentityMismatchModal — never silent. The
@@ -77,6 +94,24 @@ export interface SyncMeta {
    *  account from this device · the next successful connect captures
    *  the pin. */
   identityPin: IdentityPin | null;
+  /** Recent sync attempt log (v0.12 §7.10.5). Ring buffer · oldest
+   *  truncated when length exceeds 100. The "warn dot lit for 3 min
+   *  vs 3 days looks the same" blind spot is fixed by walking back
+   *  from `lastSuccessAt` rather than this buffer; the buffer is for
+   *  the diagnostic detail view. */
+  recentAttempts: SyncAttempt[];
+  /** ISO timestamp of the last successful push / pull. Never evicted
+   *  (i.e. distinct from `lastSyncAt` which is mutable for the
+   *  legacy UI · `lastSuccessAt` is the duration-aware canonical).
+   *  null = never succeeded on this device. */
+  lastSuccessAt: {
+    push: string | null;
+    pull: string | null;
+  };
+  /** ISO timestamp until which the pending-pile alert is suppressed
+   *  ("先关掉" button). Cleared automatically when push succeeds.
+   *  null = no active suppression. */
+  dismissPendingPileUntil: string | null;
 }
 
 export const DEFAULT_SYNC_META: SyncMeta = {
@@ -88,6 +123,9 @@ export const DEFAULT_SYNC_META: SyncMeta = {
   lastPushedCounts: null,
   bootSyncChoice: 'auto-pull',
   identityPin: null,
+  recentAttempts: [],
+  lastSuccessAt: { push: null, pull: null },
+  dismissPendingPileUntil: null,
 };
 
 export interface YDocStore {
