@@ -50,6 +50,7 @@ import {
   setLastPushedCounts,
   setLastSyncInfo,
 } from './identity';
+import { checkAccountIdentity, recordFirstConnect } from './identityPin';
 import {
   downloadDryjById,
   getRemoteMeta,
@@ -369,6 +370,40 @@ export type ManualSyncOutcome =
   | { kind: 'pulled' }
   | { kind: 'offline'; reason: string };
 
+/** Verify the connected account's identity against the stored pin
+ *  (ERD §7.10.2 · v0.12 P1). Called by BootGate + Settings → 同步 →
+ *  连接 Drive after a successful `connectDrive()`.
+ *
+ *  Outcomes:
+ *    - 'first-connect' / 'match': pin written or already aligned ·
+ *      no UI · sync proceeds normally.
+ *    - 'mismatch': sets `pendingIdentityMismatch` on syncStore so the
+ *      IdentityMismatchModal mounts · caller can return / suppress
+ *      follow-up sync triggers.
+ *    - 'failed': /about call errored · transient · caller continues ·
+ *      next push will retry via the inline check inside runPush.
+ *
+ *  This function does not throw; failure modes are reflected in
+ *  syncStore state. */
+export async function verifyIdentityAfterConnect(): Promise<void> {
+  const result = await checkAccountIdentity();
+  if (result.kind === 'mismatch') {
+    syncStore.setPendingIdentityMismatch({
+      stored: result.stored,
+      current: result.current,
+      detectedAt: Date.now(),
+      source: 'connect',
+    });
+    return;
+  }
+  if (result.kind === 'first-connect') {
+    recordFirstConnect(result.currentEmail, null);
+    return;
+  }
+  // 'match' → nothing to do.
+  // 'failed' → fail-open · next push's inline check will retry.
+}
+
 /** Manual entry — wired to Settings → 同步 → 立即同步. */
 export async function runManualSync(): Promise<ManualSyncOutcome> {
   if (!isDriveConnected()) {
@@ -655,6 +690,39 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       // can't await metadata, and the next active push from this
       // device will repair lineage via the firewall path.
       if (!opts.keepalive) {
+        // IDENTITY PIN CHECK (ERD §7.10.2 · v0.12 P1).
+        //
+        // Block push if a mismatch is already pending — the modal is
+        // surfaced, user hasn't resolved yet, don't paper over by
+        // pushing on top of unresolved identity state.
+        if (syncStore.getSnapshot().pendingIdentityMismatch !== null) {
+          syncStore.setPhase(phaseBefore);
+          return;
+        }
+        // Defense-in-depth re-verify before each push. The primary
+        // hook fires at connect / reconnect time; this catches paths
+        // where a long-lived session sees its OAuth identity change
+        // underneath (rare but real — e.g. user revoked DayRail on
+        // another tab, re-authed, picked a different account). Soft
+        // 'failed' (network / /about flake) is fail-open: a flaky
+        // diagnostics call shouldn't block push availability.
+        const identityResult = await checkAccountIdentity();
+        if (identityResult.kind === 'mismatch') {
+          syncStore.setPendingIdentityMismatch({
+            stored: identityResult.stored,
+            current: identityResult.current,
+            detectedAt: Date.now(),
+            source: 'push',
+          });
+          syncStore.setPhase(phaseBefore);
+          return;
+        }
+        if (identityResult.kind === 'first-connect') {
+          // Race: push fired before connect's pin-write hook landed.
+          // Capture the pin now so the next push has the match path.
+          recordFirstConnect(identityResult.currentEmail, null);
+        }
+
         let remoteBefore: RemoteMeta | null;
         try {
           remoteBefore = await getRemoteMeta();

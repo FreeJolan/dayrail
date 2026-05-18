@@ -41,6 +41,7 @@ import {
   replaceLocalFromRemote,
   runForcePush,
   runManualSync,
+  verifyIdentityAfterConnect,
 } from '@/lib/sync/syncController';
 import {
   deleteHistoryEntry,
@@ -540,6 +541,10 @@ function ConnectDrivePanel() {
     try {
       await connectDrive();
       syncStore.setConnected(true);
+      // Identity pin check (ERD §7.10.2). Fire-and-forget — a
+      // mismatch sets `pendingIdentityMismatch` on the store which
+      // mounts the modal in parallel with the probe below.
+      void verifyIdentityAfterConnect();
       setPhase({ kind: 'probing' });
       const remote = await getRemoteMeta();
       if (!remote) {

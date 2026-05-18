@@ -27,6 +27,25 @@ export interface LastPushedCounts {
   at: string;
 }
 
+/** Identity pin (ERD §7.10.2 · v0.12 P1). Captured at first connect,
+ *  compared on every subsequent reconnect / push HEAD check. A
+ *  mismatch fires the IdentityMismatchModal — never silent. The
+ *  `lastKnownMode` field is written by §7.10.1 mode inference and
+ *  read by §7.10.6 mode regression guard (P3). */
+export interface IdentityPin {
+  /** Drive account email recorded at first connect.  */
+  accountEmail: string;
+  /** .dryj canonical file id from the first pull (if a remote
+   *  snapshot was found). Informational; not used for comparison. */
+  appdataFileId: string | null;
+  /** Most recently confirmed runtime mode. Updated by mode inference.
+   *  P3's regression guard refuses to silently downgrade below this. */
+  lastKnownMode: 'backup' | 'sync';
+  /** ISO timestamp of when this pin was first written / last
+   *  overwritten by an explicit "switch to this account" action. */
+  pinnedAt: string;
+}
+
 /** Sync-lineage metadata. Kept in one JSON blob so all keys share
  *  the Y.Doc's lifecycle. Device identity, OAuth cache, and session
  *  flags stay in localStorage / sessionStorage — see ERD §7.9 split
@@ -54,6 +73,10 @@ export interface SyncMeta {
   /** User preference for boot-time sync UX: 'auto-pull' silently
    *  pulls if remote is ahead, 'ask' surfaces a dialog. */
   bootSyncChoice: 'auto-pull' | 'ask';
+  /** Identity pin (v0.12 §7.10.2). Null = never connected to a Drive
+   *  account from this device · the next successful connect captures
+   *  the pin. */
+  identityPin: IdentityPin | null;
 }
 
 export const DEFAULT_SYNC_META: SyncMeta = {
@@ -64,6 +87,7 @@ export const DEFAULT_SYNC_META: SyncMeta = {
   dirtyCount: 0,
   lastPushedCounts: null,
   bootSyncChoice: 'auto-pull',
+  identityPin: null,
 };
 
 export interface YDocStore {

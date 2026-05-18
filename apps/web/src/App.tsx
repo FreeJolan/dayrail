@@ -36,6 +36,7 @@ import { DevModeIndicator } from './components/DevModeIndicator';
 import { ImportSuccessToast } from './components/ImportSuccessToast';
 import { ReasonToast } from './components/ReasonToast';
 import { SyncConflictPanel } from './components/SyncConflictPanel';
+import { IdentityMismatchModal } from './components/IdentityMismatchModal';
 import { SideNav } from './components/SideNav';
 import { ShortcutCheatsheet } from './components/ShortcutCheatsheet';
 import { UpdateBanner } from './components/UpdateBanner';
@@ -457,6 +458,7 @@ function Shell() {
       />
       <ImportSuccessToast />
       <SyncConflictPanel />
+      <IdentityMismatchModal />
     </div>
     <DragOverlay dropAnimation={null}>
       {activeTaskId ? <TaskDragPreview taskId={activeTaskId} /> : null}

@@ -89,6 +89,28 @@ async function listAll(): Promise<DriveFile[]> {
   return acc;
 }
 
+interface DriveAbout {
+  user?: { emailAddress?: string };
+}
+
+/** Fetch the authenticated user's email via Drive's /about endpoint.
+ *  Works under the existing drive.appdata scope · no extra OAuth
+ *  consent. Used by identity pinning (ERD §7.10.2) to detect
+ *  reconnects to the wrong account. */
+export async function getCurrentAccountEmail(): Promise<string | null> {
+  const url = `${DRIVE_API}/about?fields=user(emailAddress)`;
+  const res = await authedFetch(url);
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(
+      `Drive /about ${res.status} ${res.statusText}${txt ? ' · ' + txt.slice(0, 200) : ''}`,
+    );
+  }
+  const json = (await res.json()) as DriveAbout;
+  const email = json.user?.emailAddress;
+  return typeof email === 'string' && email.length > 0 ? email : null;
+}
+
 /** Read canonical lineage metadata (no body download). Returns null
  *  when the remote has never been written. */
 export async function getRemoteMeta(): Promise<RemoteMeta | null> {

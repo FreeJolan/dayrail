@@ -24,13 +24,14 @@
 import {
   DEFAULT_SYNC_META,
   getYDocStore,
+  type IdentityPin,
   type LastPushedCounts,
   type SyncMeta,
 } from '@dayrail/db/yDocStore';
 
 // Re-export for syncController / SettingsSections consumers that
 // previously imported the type from here.
-export type { LastPushedCounts };
+export type { IdentityPin, LastPushedCounts };
 
 // ============ device identity / OAuth cache (localStorage) ============
 
@@ -188,6 +189,10 @@ function readLegacySyncMeta(): SyncMeta | null {
     dirtyCount: Number.isFinite(parsedDirty) && parsedDirty > 0 ? parsedDirty : 0,
     lastPushedCounts: parsedCounts,
     bootSyncChoice: bootChoice === 'ask' ? 'ask' : 'auto-pull',
+    // v0.11.x migration path predates identityPin — initialize as
+    // null. The next successful connect/reconnect will populate it
+    // via the §7.10.2 verify path.
+    identityPin: null,
   };
 }
 
@@ -395,6 +400,43 @@ export function clearLocalIsSamplesOnly(): void {
 
 export function isLocalSamplesOnly(): boolean {
   return _cache.samplesOnly;
+}
+
+// ============ identity pin (ERD §7.10.2 · v0.12 P1) ============
+//
+// Stored inside SyncMeta — co-resident with the Y.Doc bytes so it
+// shares lifecycle with the data it identifies. Wiped together when
+// resetLocalData() runs (which is correct: a wiped store is logically
+// a "first connect" again).
+
+export function getIdentityPin(): IdentityPin | null {
+  return _cache.identityPin;
+}
+
+/** Write a fresh pin. Called from the connect / reconnect path when
+ *  verifyAccountIdentity returns 'first-connect', and from the
+ *  IdentityMismatchModal's "switch to this account" branch (which
+ *  also resets other sync cursors — caller handles that). */
+export function setIdentityPin(pin: IdentityPin): void {
+  _cache.identityPin = pin;
+  scheduleFlush();
+}
+
+export function clearIdentityPin(): void {
+  _cache.identityPin = null;
+  scheduleFlush();
+}
+
+/** Update the `lastKnownMode` field on the existing pin. Idempotent —
+ *  no-op when value is unchanged so we don't churn the store on
+ *  every push. Used by §7.10.1 mode inference; read by §7.10.6
+ *  regression guard (which lands in P3). */
+export function setLastKnownMode(mode: 'backup' | 'sync'): void {
+  const pin = _cache.identityPin;
+  if (pin === null) return;
+  if (pin.lastKnownMode === mode) return;
+  _cache.identityPin = { ...pin, lastKnownMode: mode };
+  scheduleFlush();
 }
 
 // ============ session-scoped sync probe suppression (sessionStorage) ============

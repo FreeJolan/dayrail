@@ -35,6 +35,7 @@ import {
   PROBE_TIMEOUTS,
   replaceLocalFromRemote,
   runBootProbe,
+  verifyIdentityAfterConnect,
   type BootProbeOutcome,
 } from './syncController';
 import type { RemoteMeta } from './driveBackend';
@@ -302,6 +303,12 @@ function OfflinePanel({
     try {
       await connectDrive();
       syncStore.setConnected(true);
+      // Identity pin check (ERD §7.10.2). Fire-and-forget — a
+      // mismatch sets `pendingIdentityMismatch` on the store, which
+      // mounts the modal · the probing phase below still runs in
+      // parallel because the modal is the user's decision point and
+      // shouldn't block the rest of boot.
+      void verifyIdentityAfterConnect();
       setPhase({ kind: 'probing', slow: false });
     } catch (e) {
       setReconnectErr((e as Error).message);
