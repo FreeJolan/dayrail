@@ -19,3 +19,4 @@ export * from './identityPin';
 export * from './syncStatus';
 export * from './modeRegression';
 export * from './heartbeatStatus';
+export * from './syncMode';

@@ -45,12 +45,15 @@ import {
   getDirtyCount,
   getIdentityPin,
   getLastActivityAt,
+  getLastModeUpgradeToastAt,
   getLastPulledSnapshotId,
   getLastPushedCounts,
   isLocalSamplesOnly,
   isSyncProbeSuppressed,
   markLastActivityNow,
   setDismissPendingPileUntil,
+  setLastKnownMode,
+  setLastModeUpgradeToastAt,
   setLastPulledSnapshotId,
   setLastPushedCounts,
   setLastSuccessAt,
@@ -60,7 +63,10 @@ import { checkAccountIdentity, recordFirstConnect } from './identityPin';
 import {
   classifyReconcile,
   detectModeRegression,
+  inferModeFromHeartbeats,
   runtimeModeFromConnection,
+  type ReconcileResult,
+  type SyncMode,
 } from '@dayrail/core';
 import {
   downloadDryjById,
@@ -426,16 +432,32 @@ export type ManualSyncOutcome =
   | { kind: 'pulled' }
   | { kind: 'offline'; reason: string };
 
-/** Pull peer heartbeats and classify them into the ReconcileBanner
- *  three-state (ERD §7.10.4 · v0.12 P4). Fire-and-forget from App
- *  mount · result lands in syncStore.bootReconcile.
+/** Count live (non-archived) peers reflected in a reconcile result.
+ *  Used by P5 mode inference to decide backup vs sync. */
+function livePeerCountFromReconcile(r: ReconcileResult): number {
+  if (r.kind === 'healthy') return r.peers.length;
+  if (r.kind === 'peer-stale')
+    return r.stalePeers.length + r.healthyPeers.length;
+  return 0;
+}
+
+const MODE_UPGRADE_TOAST_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+/** Pull peer heartbeats, classify into the ReconcileBanner three-
+ *  state (ERD §7.10.4 P4), and infer the sync mode (P5).
  *
- *  No-op for never-connected devices (banner stays null · single-
- *  device path returns `no-peers` so the banner suppresses itself
- *  for backup users). */
+ *  P5 additions: writes `IdentityPin.lastKnownMode` whenever the
+ *  inferred mode changes · fires the mode-upgrade toast (24h
+ *  cooldown) on backup → sync transitions.
+ *
+ *  No-op for never-connected devices (banner stays null · mode
+ *  drops to 'local' but pin is untouched · §7.10.6 regression
+ *  guard owns the "pin says we were syncing but now we're local"
+ *  surface). */
 export async function runReconcileAtBoot(): Promise<void> {
   if (!isDriveConnected()) {
     syncStore.setBootReconcile(null);
+    syncStore.setSyncMode('local');
     return;
   }
   try {
@@ -455,6 +477,36 @@ export async function runReconcileAtBoot(): Promise<void> {
       driveReachable: true,
     });
     syncStore.setBootReconcile(result);
+
+    // ERD §7.10.1 · v0.12 P5 · infer mode from heartbeat count.
+    const livePeerCount = livePeerCountFromReconcile(result);
+    const mode: SyncMode = inferModeFromHeartbeats({
+      isConnected: true,
+      livePeerCount,
+    });
+    syncStore.setSyncMode(mode);
+
+    // Persist mode into the pin (P3's regression guard reads this).
+    // Only update for backup/sync — 'local' is a runtime state, not
+    // a pin assertion (the pin always represents the "last known
+    // connected" mode).
+    const pin = getIdentityPin();
+    if (pin !== null && mode !== 'local') {
+      const previousPinned = pin.lastKnownMode;
+      setLastKnownMode(mode);
+      // Backup → sync transition · 24h cooldown on the toast so a
+      // peer flickering in/out doesn't spam the user.
+      if (previousPinned === 'backup' && mode === 'sync') {
+        const lastShown = getLastModeUpgradeToastAt();
+        const expired =
+          lastShown === null ||
+          Date.now() - Date.parse(lastShown) > MODE_UPGRADE_TOAST_COOLDOWN_MS;
+        if (expired) {
+          syncStore.setShowModeUpgradeToast(true);
+          setLastModeUpgradeToastAt(new Date().toISOString());
+        }
+      }
+    }
   } catch (err) {
     console.warn('[sync] reconcile listHeartbeats failed:', err);
     syncStore.setBootReconcile({ kind: 'offline' });

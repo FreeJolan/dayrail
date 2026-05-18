@@ -205,6 +205,8 @@ function readLegacySyncMeta(): SyncMeta | null {
     dismissPendingPileUntil: null,
     // v0.12 P4 · last user edit time · null until first activity.
     lastActivityAt: null,
+    // v0.12 P5 · mode-upgrade toast cooldown.
+    lastModeUpgradeToastAt: null,
   };
 }
 
@@ -503,6 +505,17 @@ export function getLastActivityAt(): string | null {
  *  on push success to populate `lastActivityAt`. */
 export function markLastActivityNow(): void {
   _cache.lastActivityAt = new Date().toISOString();
+  scheduleFlush();
+}
+
+// ============ mode-upgrade toast cooldown (ERD §7.10.1 · v0.12 P5) ============
+
+export function getLastModeUpgradeToastAt(): string | null {
+  return _cache.lastModeUpgradeToastAt;
+}
+
+export function setLastModeUpgradeToastAt(iso: string | null): void {
+  _cache.lastModeUpgradeToastAt = iso;
   scheduleFlush();
 }
 

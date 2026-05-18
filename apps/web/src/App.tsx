@@ -38,6 +38,7 @@ import { ReasonToast } from './components/ReasonToast';
 import { SyncConflictPanel } from './components/SyncConflictPanel';
 import { IdentityMismatchModal } from './components/IdentityMismatchModal';
 import { ModeRegressionModal } from './components/ModeRegressionModal';
+import { ModeUpgradeToast } from './components/ModeUpgradeToast';
 import { ReconcileBanner } from './components/ReconcileBanner';
 import { SyncStatusBanner } from './components/SyncStatusBanner';
 import {
@@ -445,6 +446,7 @@ function Shell() {
       <UpdateBanner />
       <SideNav />
       <main className="min-w-0 flex-1">
+        <ModeUpgradeToast />
         <ReconcileBanner />
         <SyncStatusBanner />
         <Routes>

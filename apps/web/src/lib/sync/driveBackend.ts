@@ -414,6 +414,19 @@ export async function writeHeartbeat(hb: DeviceHeartbeat): Promise<void> {
   }
 }
 
+/** Delete a peer's heartbeat file. Called from Settings → 同步 →
+ *  设备列表 → "移除这台". The peer's local IndexedDB / Y.Doc is
+ *  untouched · the user is just saying "don't count this device
+ *  toward sync mode anymore". If the peer comes back and pushes,
+ *  it'll write a fresh heartbeat and re-enter the device list. */
+export async function deleteHeartbeat(deviceId: string): Promise<void> {
+  const filename = heartbeatFilename(deviceId);
+  const all = await listAll();
+  const target = all.find((f) => f.name === filename);
+  if (!target) return; // already gone — idempotent
+  await deleteFile(target.id);
+}
+
 /** List every device heartbeat in appdata. Caller filters out its
  *  own deviceId. Robust against partial corruption — a file that
  *  doesn't parse as a valid heartbeat is skipped, not thrown. */

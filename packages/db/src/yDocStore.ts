@@ -117,6 +117,11 @@ export interface SyncMeta {
    *  so peers can detect "device was active but didn't push" cases.
    *  null = no edits yet on this device. */
   lastActivityAt: string | null;
+  /** ISO timestamp of the last time the mode-upgrade toast was shown
+   *  (v0.12 P5 · ERD §7.10.1). Drives the 24h cooldown so a peer
+   *  flickering in and out of the heartbeat list doesn't spam the
+   *  user. null = never shown. */
+  lastModeUpgradeToastAt: string | null;
 }
 
 export const DEFAULT_SYNC_META: SyncMeta = {
@@ -132,6 +137,7 @@ export const DEFAULT_SYNC_META: SyncMeta = {
   lastSuccessAt: { push: null, pull: null },
   dismissPendingPileUntil: null,
   lastActivityAt: null,
+  lastModeUpgradeToastAt: null,
 };
 
 export interface YDocStore {
