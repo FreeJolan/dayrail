@@ -15,6 +15,13 @@ import {
 import { clsx } from 'clsx';
 import { selectPendingQueue, useStore } from '@dayrail/core';
 import { useSyncStatus } from '@/lib/sync/syncStore';
+import { useSyncClassification } from '@/lib/sync/useSyncClassification';
+import {
+  formatDurationAgo,
+  formatDurationLong,
+  type SyncStatusClassification,
+} from '@dayrail/core';
+import { getLastSuccessAt } from '@/lib/sync/identity';
 
 // Left sticky rail nav. Default expanded (labels visible) to teach
 // first-time users what each icon means; collapsible to icon-only for
@@ -197,12 +204,16 @@ export function SideNav(_props: SideNavProps) {
 function SyncIndicator({ collapsed }: { collapsed: boolean }) {
   const navigate = useNavigate();
   const status = useSyncStatus();
-  const { dot, label, tone } = describeSyncStatus(status);
+  const classification = useSyncClassification();
+  const { dot, label, tone, hoverTitle } = describeSyncStatus(
+    status,
+    classification,
+  );
   return (
     <button
       type="button"
       onClick={() => navigate('/settings/sync')}
-      title={collapsed ? label : undefined}
+      title={hoverTitle ?? (collapsed ? label : undefined)}
       className={clsx(
         'group relative flex h-7 items-center rounded-md text-ink-tertiary transition hover:bg-surface-1 hover:text-ink-secondary',
         collapsed ? 'mx-3 justify-center' : 'mx-3 gap-2 px-2',
@@ -225,10 +236,17 @@ function SyncIndicator({ collapsed }: { collapsed: boolean }) {
   );
 }
 
-function describeSyncStatus(status: ReturnType<typeof useSyncStatus>): {
+function describeSyncStatus(
+  status: ReturnType<typeof useSyncStatus>,
+  classification: SyncStatusClassification,
+): {
   dot: string;
   label: string;
   tone: 'idle' | 'syncing' | 'warn' | 'ok';
+  /** Native browser tooltip text · plain language explanation that
+   *  goes deeper than the short uppercase label. ERD §7.10.5 says
+   *  duration belongs in the hover, not the main label. */
+  hoverTitle?: string;
 } {
   if (!status.connected) {
     return { dot: 'bg-ink-tertiary/40', label: 'Local only', tone: 'idle' };
@@ -236,11 +254,35 @@ function describeSyncStatus(status: ReturnType<typeof useSyncStatus>): {
   if (status.phase.kind === 'syncing') {
     return { dot: 'bg-ink-secondary', label: '同步中', tone: 'syncing' };
   }
-  if (status.phase.kind === 'error') {
-    return { dot: 'bg-warn', label: '同步失败', tone: 'warn' };
-  }
   if (status.phase.kind === 'offline') {
     return { dot: 'bg-warn/70', label: '离线', tone: 'warn' };
+  }
+  // Duration-aware warn (v0.12 §7.10.5). Long-failure ladder + pending pile
+  // override the legacy "未同步" / "同步失败" labels with copy that
+  // carries the duration.
+  if (classification.kind === 'long-failure') {
+    return {
+      dot: 'bg-warn',
+      label:
+        classification.severity === 'heavy'
+          ? '同步断开 · 已 > 3 天'
+          : classification.severity === 'distinct'
+            ? '同步断开 · 多天'
+            : '同步断开',
+      tone: 'warn',
+      hoverTitle: `${formatDurationLong(classification.durationMs)} · 点击进入同步设置`,
+    };
+  }
+  if (classification.kind === 'pending-pile') {
+    return {
+      dot: 'bg-warn/70',
+      label: `${classification.count} 个改动还没传`,
+      tone: 'warn',
+      hoverTitle: `${classification.count} 个改动还在本机 · ${formatDurationLong(classification.durationMs)}`,
+    };
+  }
+  if (status.phase.kind === 'error') {
+    return { dot: 'bg-warn', label: '同步失败', tone: 'warn' };
   }
   if (status.dirtyCount > 0) {
     return {
@@ -254,7 +296,16 @@ function describeSyncStatus(status: ReturnType<typeof useSyncStatus>): {
   // value across a wipe — showing "已同步" on top of an empty UI was
   // exactly the v0.10.x false-OK symptom this rewrites away.
   if (status.sessionRoundTripDone) {
-    return { dot: 'bg-ink-secondary/70', label: '已同步', tone: 'ok' };
+    const lastPush = getLastSuccessAt('push');
+    const detail = lastPush
+      ? `刚同步过 · ${formatDurationAgo(lastPush, Date.now())}`
+      : undefined;
+    return {
+      dot: 'bg-ink-secondary/70',
+      label: '已同步',
+      tone: 'ok',
+      hoverTitle: detail,
+    };
   }
   if (status.lastSync) {
     return { dot: 'bg-ink-tertiary/40', label: '未确认', tone: 'idle' };

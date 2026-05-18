@@ -36,6 +36,7 @@ import {
 } from '@dayrail/core';
 import { decodeDryj, encodeDryj, type DryjMeta } from '@dayrail/db/dryj';
 import {
+  appendSyncAttempt,
   bumpDirtyCount,
   clearDirtyCount,
   clearLocalIsSamplesOnly,
@@ -46,8 +47,10 @@ import {
   getLastPushedCounts,
   isLocalSamplesOnly,
   isSyncProbeSuppressed,
+  setDismissPendingPileUntil,
   setLastPulledSnapshotId,
   setLastPushedCounts,
+  setLastSuccessAt,
   setLastSyncInfo,
 } from './identity';
 import { checkAccountIdentity, recordFirstConnect } from './identityPin';
@@ -70,6 +73,21 @@ import { isTauriRuntime } from '../versionUpdateContext';
 // typing bursts. Desktop OAuth makes Drive API calls cheap; free-
 // tier quota is well within reach at this cadence.
 const PUSH_DEBOUNCE_MS = 8 * 1000;
+
+/** Map an error to a coarse code for the failure-history log
+ *  (ERD §7.10.5 · v0.12 P2). The full message is preserved in
+ *  `errorBody`; this code drives the SideNav tooltip's one-line
+ *  summary ("最后一次错误: 401 / network / ..."). */
+function classifySyncError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/NEEDS_RECONNECT/i.test(msg)) return 'auth';
+  if (/\b401\b|unauthor/i.test(msg)) return '401';
+  if (/\b403\b|forbidden/i.test(msg)) return '403';
+  if (/\b5\d\d\b|server error/i.test(msg)) return '5xx';
+  if (/network|fetch|offline|Failed to fetch/i.test(msg)) return 'network';
+  if (/timeout/i.test(msg)) return 'timeout';
+  return 'unknown';
+}
 
 /** Decode dryj-wrapped bytes into a fresh Y.Doc (no aliasing with
  *  the live local Y.Doc). Used by smart-diff classify to compare
@@ -537,9 +555,27 @@ export async function runForcePush(): Promise<void> {
       const info = { at: Date.now(), label: getDeviceLabel() };
       setLastSyncInfo(info);
       syncStore.setLastSync(info);
+      // ERD §7.10.5 · v0.12 P2 · record force-push success same as
+      // regular push (it's still a successful upload).
+      const nowIso = new Date().toISOString();
+      setLastSuccessAt('push', nowIso);
+      appendSyncAttempt({
+        at: nowIso,
+        direction: 'push',
+        result: 'ok',
+      });
+      setDismissPendingPileUntil(null);
       syncStore.setPhase({ kind: 'idle' });
     } catch (err) {
       console.warn('[sync] force-push failed:', err);
+      // ERD §7.10.5 · v0.12 P2 · record fail.
+      appendSyncAttempt({
+        at: new Date().toISOString(),
+        direction: 'push',
+        result: 'fail',
+        errorCode: classifySyncError(err),
+        errorBody: ((err as Error).message ?? String(err)).slice(0, 500),
+      });
       syncStore.setPhase({
         kind: 'error',
         message: (err as Error).message ?? '强制推送失败',
@@ -606,6 +642,14 @@ async function runPullFromRemote(remote: RemoteMeta): Promise<void> {
       const info = { at: Date.now(), label: getDeviceLabel() };
       setLastSyncInfo(info);
       syncStore.setLastSync(info);
+      // ERD §7.10.5 · v0.12 P2 · record successful pull.
+      const nowIso = new Date().toISOString();
+      setLastSuccessAt('pull', nowIso);
+      appendSyncAttempt({
+        at: nowIso,
+        direction: 'pull',
+        result: 'ok',
+      });
       syncStore.setPhase({ kind: 'idle' });
       // If there's local-only work the pull just merged with, nudge
       // a push so it propagates to Drive without waiting for the next
@@ -615,6 +659,15 @@ async function runPullFromRemote(remote: RemoteMeta): Promise<void> {
       }
     } catch (err) {
       console.warn('[sync] pull failed:', err);
+      // ERD §7.10.5 · v0.12 P2 · record fail attempt for the
+      // duration-aware surface.
+      appendSyncAttempt({
+        at: new Date().toISOString(),
+        direction: 'pull',
+        result: 'fail',
+        errorCode: classifySyncError(err),
+        errorBody: ((err as Error).message ?? String(err)).slice(0, 500),
+      });
       syncStore.setPhase({
         kind: 'error',
         message: (err as Error).message ?? '拉取失败',
@@ -943,6 +996,23 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       const info = { at: Date.now(), label: getDeviceLabel() };
       setLastSyncInfo(info);
       syncStore.setLastSync(info);
+      // ERD §7.10.5 · v0.12 P2 · record successful push for the
+      // duration-aware surface. Skip keepalive: it's fire-and-forget
+      // (we don't actually know if Drive received it) so recording
+      // it could lie about success.
+      if (!opts.keepalive) {
+        const nowIso = new Date().toISOString();
+        setLastSuccessAt('push', nowIso);
+        appendSyncAttempt({
+          at: nowIso,
+          direction: 'push',
+          result: 'ok',
+        });
+        // A successful push by definition clears the pending pile;
+        // drop the dismiss so the banner can fire again if the pile
+        // grows back.
+        setDismissPendingPileUntil(null);
+      }
       syncStore.setPhase({ kind: 'idle' });
       if (retryTimer) {
         clearTimeout(retryTimer);
@@ -951,6 +1021,18 @@ async function runPush(opts: RunPushOpts): Promise<void> {
     } catch (err) {
       const msg = (err as Error).message ?? String(err);
       console.warn('[sync] push failed:', err);
+      // ERD §7.10.5 · v0.12 P2 · record fail attempt for the
+      // failure-history log + tooltip summary. Same keepalive skip
+      // rationale as on success.
+      if (!opts.keepalive) {
+        appendSyncAttempt({
+          at: new Date().toISOString(),
+          direction: 'push',
+          result: 'fail',
+          errorCode: classifySyncError(err),
+          errorBody: msg.slice(0, 500),
+        });
+      }
       syncStore.setPhase({ kind: 'error', message: msg });
       if (opts.trigger !== 'manual' && phaseBefore.kind === 'idle') {
         setTimeout(() => {

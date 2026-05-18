@@ -26,12 +26,18 @@ import {
   getYDocStore,
   type IdentityPin,
   type LastPushedCounts,
+  type SyncAttempt,
   type SyncMeta,
 } from '@dayrail/db/yDocStore';
 
 // Re-export for syncController / SettingsSections consumers that
 // previously imported the type from here.
-export type { IdentityPin, LastPushedCounts };
+export type { IdentityPin, LastPushedCounts, SyncAttempt };
+
+/** Ring-buffer cap for `recentAttempts`. Older entries drop off the
+ *  back as new ones append. The full diagnostic view in Settings →
+ *  同步 → 故障历史 walks this list. */
+const RECENT_ATTEMPTS_MAX = 100;
 
 // ============ device identity / OAuth cache (localStorage) ============
 
@@ -193,6 +199,10 @@ function readLegacySyncMeta(): SyncMeta | null {
     // null. The next successful connect/reconnect will populate it
     // via the §7.10.2 verify path.
     identityPin: null,
+    // v0.12 P2 additions — start empty; recording begins on next push/pull.
+    recentAttempts: [],
+    lastSuccessAt: { push: null, pull: null },
+    dismissPendingPileUntil: null,
   };
 }
 
@@ -436,6 +446,46 @@ export function setLastKnownMode(mode: 'backup' | 'sync'): void {
   if (pin === null) return;
   if (pin.lastKnownMode === mode) return;
   _cache.identityPin = { ...pin, lastKnownMode: mode };
+  scheduleFlush();
+}
+
+// ============ failure history (ERD §7.10.5 · v0.12 P2) ============
+
+export function getRecentAttempts(): SyncAttempt[] {
+  return _cache.recentAttempts;
+}
+
+/** Append a sync attempt record · ring buffer cap. Newest at end ·
+ *  oldest dropped first. */
+export function appendSyncAttempt(attempt: SyncAttempt): void {
+  const next = _cache.recentAttempts.concat(attempt);
+  _cache.recentAttempts =
+    next.length > RECENT_ATTEMPTS_MAX
+      ? next.slice(next.length - RECENT_ATTEMPTS_MAX)
+      : next;
+  scheduleFlush();
+}
+
+export function getLastSuccessAt(
+  direction: 'push' | 'pull',
+): string | null {
+  return _cache.lastSuccessAt[direction];
+}
+
+export function setLastSuccessAt(
+  direction: 'push' | 'pull',
+  iso: string,
+): void {
+  _cache.lastSuccessAt = { ..._cache.lastSuccessAt, [direction]: iso };
+  scheduleFlush();
+}
+
+export function getDismissPendingPileUntil(): string | null {
+  return _cache.dismissPendingPileUntil;
+}
+
+export function setDismissPendingPileUntil(iso: string | null): void {
+  _cache.dismissPendingPileUntil = iso;
   scheduleFlush();
 }
 
