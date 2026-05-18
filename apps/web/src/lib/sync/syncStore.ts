@@ -6,7 +6,11 @@
 // status (idle / syncing / error reason) lives only here.
 
 import { useSyncExternalStore } from 'react';
-import type { FieldConflict, ReconcileResult } from '@dayrail/core';
+import type {
+  FieldConflict,
+  ReconcileResult,
+  SyncMode,
+} from '@dayrail/core';
 import {
   getDeviceLabel,
   getDirtyCount,
@@ -96,6 +100,13 @@ export interface SyncSnapshot {
    *  = single-device path (banner suppressed) · other variants
    *  feed the ReconcileBanner. */
   bootReconcile: ReconcileResult | null;
+  /** Inferred sync mode (ERD §7.10.1 · v0.12 P5). Cached here so
+   *  UI components can read without recomputing from heartbeats.
+   *  Default 'local' until the first reconcile updates it. */
+  syncMode: SyncMode;
+  /** Show the mode-upgrade toast (backup → sync transition). UI
+   *  flag · dismiss clears it · 24h cooldown lives in SyncMeta. */
+  showModeUpgradeToast: boolean;
   /** True once a successful push or pull has completed in the
    *  current browser session (ERD §7.9 decision 5). The "已同步"
    *  label only displays when this is true — `lastSync` alone can
@@ -117,6 +128,8 @@ function readSnapshot(): SyncSnapshot {
     pendingIdentityMismatch: null,
     pendingModeRegression: null,
     bootReconcile: null,
+    syncMode: 'local',
+    showModeUpgradeToast: false,
     sessionRoundTripDone: hasSessionRoundTrip(),
   };
 }
@@ -171,6 +184,12 @@ export const syncStore = {
   },
   setBootReconcile(r: ReconcileResult | null): void {
     update({ bootReconcile: r });
+  },
+  setSyncMode(m: SyncMode): void {
+    update({ syncMode: m });
+  },
+  setShowModeUpgradeToast(v: boolean): void {
+    update({ showModeUpgradeToast: v });
   },
 };
 

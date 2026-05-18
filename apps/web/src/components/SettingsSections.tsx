@@ -41,14 +41,18 @@ import {
   replaceLocalFromRemote,
   runForcePush,
   runManualSync,
+  runReconcileAtBoot,
   verifyIdentityAfterConnect,
 } from '@/lib/sync/syncController';
 import {
   deleteHistoryEntry,
+  deleteHeartbeat,
   downloadDryjById,
   getRemoteMeta,
   getRemoteSummary,
+  listHeartbeats,
   listHistory,
+  type DeviceHeartbeat,
   type HistoryEntry,
   type RemoteMeta,
 } from '@/lib/sync/driveBackend';
@@ -790,11 +794,136 @@ function ConnectedSyncControls() {
   return (
     <div className="flex flex-col pt-4">
       <RemoteStatePanel />
+      <ConnectedDevicesPanel />
       <DeviceLabelRow />
       <BootSyncChoiceRow />
       <SyncNowRow />
       <DisconnectRow />
       <BackupHistoryRow />
+    </div>
+  );
+}
+
+// Settings → 同步 → 已连接设备 (ERD §7.10.1 + §7.10.4 · v0.12 P5).
+// Lists every device that has written a heartbeat to Drive · self
+// + peers. Each peer row carries a "移除这台" affordance that
+// deletes the heartbeat file from Drive (the peer's local data is
+// untouched; if the peer reopens DayRail later it'll write a fresh
+// heartbeat and reappear here).
+function ConnectedDevicesPanel() {
+  const [heartbeats, setHeartbeats] = useState<DeviceHeartbeat[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const selfId = getDeviceId();
+  const selfLabel = getDeviceLabel();
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const hbs = await listHeartbeats();
+      setHeartbeats(hbs);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const onRemove = async (deviceId: string) => {
+    if (
+      typeof window !== 'undefined' &&
+      !window.confirm(
+        '把这台设备从同步列表里移除？\n它本地的数据不会动 · 如果之后它再打开 DayRail，会自己重新出现。',
+      )
+    ) {
+      return;
+    }
+    setRemovingId(deviceId);
+    try {
+      await deleteHeartbeat(deviceId);
+      await refresh();
+      // Re-run boot reconcile so mode + banner update immediately ·
+      // P5 mode inference reads the fresh peer count.
+      await runReconcileAtBoot();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setRemovingId(null);
+    }
+  };
+
+  const peers = heartbeats.filter((hb) => hb.deviceId !== selfId);
+  const selfHb = heartbeats.find((hb) => hb.deviceId === selfId);
+
+  return (
+    <div className="flex flex-col gap-3 border-b border-surface-2 px-1 pb-5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-col">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            已连接设备
+          </span>
+          <span className="text-2xs text-ink-tertiary">
+            {peers.length === 0
+              ? '只有这台设备在同步'
+              : `这台 + 另 ${peers.length} 台设备`}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => void refresh()}
+          disabled={loading}
+          className="rounded-md bg-surface-1 px-2.5 py-1 text-2xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary disabled:opacity-50"
+        >
+          {loading ? '查询中…' : '刷新'}
+        </button>
+      </div>
+      {err ? <p className="text-xs text-warn">{err}</p> : null}
+      <ul className="flex flex-col gap-2">
+        <li className="flex items-baseline justify-between gap-3 rounded-md bg-surface-1 px-3 py-2">
+          <div className="flex min-w-0 flex-col">
+            <span className="text-sm text-ink-primary">
+              {selfLabel}{' '}
+              <span className="text-2xs text-ink-tertiary">· 这台</span>
+            </span>
+            {selfHb ? (
+              <span className="text-2xs text-ink-tertiary">
+                上次活动 {selfHb.lastActivityAt} · 上次传 {selfHb.lastPushedAt}
+              </span>
+            ) : (
+              <span className="text-2xs text-ink-tertiary">
+                还没传过 · 第一次成功 push 后这里会显示
+              </span>
+            )}
+          </div>
+        </li>
+        {peers.map((hb) => (
+          <li
+            key={hb.deviceId}
+            className="flex items-baseline justify-between gap-3 rounded-md bg-surface-1 px-3 py-2"
+          >
+            <div className="flex min-w-0 flex-col">
+              <span className="text-sm text-ink-primary">{hb.deviceName}</span>
+              <span className="text-2xs text-ink-tertiary">
+                上次活动 {hb.lastActivityAt} · 上次传 {hb.lastPushedAt}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void onRemove(hb.deviceId)}
+              disabled={removingId === hb.deviceId}
+              className="shrink-0 rounded-md px-2.5 py-1 text-2xs text-ink-tertiary transition hover:text-warn disabled:opacity-50"
+            >
+              {removingId === hb.deviceId ? '正在移除…' : '移除这台'}
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
