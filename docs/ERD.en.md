@@ -1109,6 +1109,8 @@ Pending is the *complete* set of "awaiting a decision"; §5.6's check-in strip i
    - Actions: `Connect / Disconnect / Switch device / Re-enter passphrase / View conflict log`.
    - Detailed sync model (event log + snapshot / compaction) lives in §9.x / §12 roadmap.
 
+   **Auto-start at login** (desktop only, added v0.11.6): toggle, default off. When on, `tauri-plugin-autostart` writes the OS-side autostart entry (macOS Launch Agents / Windows Registry Run / Linux .desktop). **Launch behavior**: the app starts in the background (dock / menubar icon visible but window hidden); the user clicks the icon to surface the window — avoiding focus-theft contention with Slack / Mail / browser at login. Same rule family as §15.8 "post-update relaunch foreground": only foreground when the user explicitly triggers or context unambiguously expects it (update done). Tauri only — PWA hides this toggle.
+
 3. **AI Assistance**
    - Top master switch: **off by default** (consistent with §6.4). When off, the remaining controls are hidden.
    - `OpenRouter API Key`: user-supplied; paste and verify.
@@ -3996,8 +3998,9 @@ Both paths **share the Y.Doc sync stream** (same Drive `appdata` `.dryj` snapsho
 - **Tauri 2** — Rust backend process + system webview (macOS WKWebView / Windows WebView2 / Linux WebKitGTK).
 - **Reuses Vite output** — `apps/web/` stays untouched; Tauri config sets `frontendDist = "../web/dist"`. Same React / Zustand / Y.Doc.
 - **Tauri plugins** + direct crates:
-  - `tauri-plugin-updater` + `tauri-plugin-process` — auto-update + relaunch (see §15.4)
+  - `tauri-plugin-updater` + `tauri-plugin-process` — auto-update + relaunch (see §15.4 / §15.8)
   - `tauri-plugin-shell` — opens browser for OAuth consent
+  - `tauri-plugin-autostart` (added v0.11.6) — cross-platform autostart-at-login entry (macOS Launch Agents / Windows Registry / Linux .desktop); see §15.8
   - `keyring` crate (no plugin wrapper) — OS keychain (macOS Keychain / Windows Credential Manager / Linux Secret Service via libsecret) for refresh-token storage. Lighter than `tauri-plugin-stronghold`; no master-password ceremony. Refresh tokens are server-revocable capabilities, not long-lived password material — the stronghold vault model is overkill here.
   - `oauth2` + `reqwest` crates — authorization-code flow + token exchange + refresh, run inside the Rust process (not the webview), so `tauri-plugin-http` isn't needed for CORS purposes.
   - `tauri-plugin-notification` — system notifications (v0.9.x optional)
@@ -4096,7 +4099,40 @@ v0.9 ship path:
 - Native mobile shells (iOS / Android) — mobile responsive remains ❌; native mobile is a v1.0+ consideration.
 - DayRail-hosted account system — §7.1 stance unchanged.
 - A separate desktop-only data format — desktop shares Y.Doc + `.dryj` with web.
-- Auto-start / background daemon — desktop is a passively-launched app, not a service.
+- ~~Auto-start / background daemon — desktop is a passively-launched app, not a service.~~ **Reversed in v0.11.6**: auto-start at login is added (see §15.8). The "no daemon" stance still holds — autostart launches the regular desktop app, not a menubar-resident service.
+
+### 15.8 Startup / relaunch behavior (v0.11.6)
+
+Two independent but semantically-aligned desktop UX rules: **the app foregrounds only when the user explicitly triggered the launch, or context unambiguously expects foreground**. Otherwise it stays in the background and does not steal focus.
+
+**Auto-start at login**
+
+- Controlled by Settings → Sync → "Auto-start at login" toggle (default off). Tauri only — PWA hides it.
+- When on, `tauri-plugin-autostart` writes the OS entry:
+  - macOS: `~/Library/LaunchAgents/app.dayrail.desktop.plist`
+  - Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+  - Linux: `~/.config/autostart/app.dayrail.desktop.desktop`
+- **Launch behavior = hidden**: when autostart fires, the app process starts but **the main window does not show** — only the dock / menubar / taskbar icon appears. The user clicks the icon to surface the window.
+  - macOS impl: plist sets `RunAtLoad = true` plus an `EnvironmentVariables` entry that injects `DAYRAIL_AUTOSTART=1`. Rust `setup()` detects the env var → skips the default `window.show()`.
+  - Windows / Linux: same pattern, env var injected via the respective autostart entry's launch args.
+- **Rationale**: at login the user is opening Slack / Mail / browser; having DayRail steal focus is an anti-pattern. Autostart's value is "background process ready → instantly available when the user wants it + sync already running", not "force-visible at boot".
+
+**Post-update relaunch foregrounding**
+
+- `tauri-plugin-updater.downloadAndInstall()` completes → `tauri-plugin-process.relaunch()` spawns the new process. macOS does NOT auto-promote relaunched processes to foreground (deliberate anti-focus-theft behavior).
+- Pre-v0.11.6 UX: user clicks "Install now" → app exits → new version starts but stays behind other windows → user alt-tabs to find it.
+- Fix: set env var `DAYRAIL_RESTART_REASON=update` before `relaunch()`. The new process detects this env var at boot → Rust calls macOS `NSRunningApplication.current.activate(options: .activateIgnoringOtherApps)` + `window.set_focus()` → forces a one-time foreground.
+- Doesn't conflict with autostart's hidden behavior: autostart has no `DAYRAIL_RESTART_REASON` env var, so it falls through to the hidden path; the update relaunch path has the env var and foregrounds.
+
+**Full rule table**
+
+| Launch source | env var | Behavior |
+|---|---|---|
+| User clicks dock / Finder / Spotlight | (none) | macOS default foreground ✓ |
+| `pnpm desktop:dev` | (none) | Dev behavior unchanged ✓ |
+| Auto-start at login | `DAYRAIL_AUTOSTART=1` | Hidden (dock icon only) |
+| Post-update relaunch | `DAYRAIL_RESTART_REASON=update` | Force foreground |
+| Autostart + update relaunch (hypothetical overlap) | both set | Foreground wins (explicit update intent) |
 
 ---
 

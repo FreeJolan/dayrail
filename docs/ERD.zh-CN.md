@@ -1029,6 +1029,8 @@ Pending 是"等待决定"的**全集**；§5.6 check-in 条是它"近 24h 这一
    - 操作：`连接 / 断开 / 更换设备 / 重新输入密码短语 / 查看冲突日志`。
    - 本节详细的同步模型（事件日志 + 快照 / 压缩）见 §9.x / §12 roadmap。
 
+   **开机自启动**（桌面端，v0.11.6 加）：toggle 默认关。开启时通过 `tauri-plugin-autostart` 写入 OS 自启动入口（macOS Launch Agents / Windows Registry Run / Linux .desktop）。**自启动行为**：app 在后台启动（dock / menubar 显示图标但不弹窗），用户主动点击图标才显示窗口 —— 避免开机时跟 Slack / Mail / 浏览器抢焦点。跟 §15 「升级 relaunch 走前台」的规则同源：只在用户主动触发或上下文明确期望前台时（升级完成）才 foreground，其它情况一律后台。Tauri only,PWA 不显示此 toggle。
+
 3. **AI 辅助**
    - 顶部主开关：**默认关闭**（与 §6.4 一致）。关闭状态下隐藏其余控件。
    - `OpenRouter API Key`：用户自备，粘贴入框即验证。
@@ -3600,8 +3602,9 @@ v0.7 ship 后 1 个月真实 dogfood 累积出一个结构性 UX 缺陷：
 - **Tauri 2** —— Rust 后端进程 + 系统 webview（macOS WKWebView / Windows WebView2 / Linux WebKitGTK）。
 - **前端复用 Vite 产出** —— `apps/web/` 不动，Tauri 配置 `frontendDist = "../web/dist"`。React / Zustand / Y.Doc 同代码。
 - **Tauri plugins** + 直接 crate：
-  - `tauri-plugin-updater` + `tauri-plugin-process` —— auto-update + relaunch（详见 §15.4）
+  - `tauri-plugin-updater` + `tauri-plugin-process` —— auto-update + relaunch（详见 §15.4 / §15.8）
   - `tauri-plugin-shell` —— 打开浏览器走 OAuth consent
+  - `tauri-plugin-autostart`（v0.11.6 加）—— 跨平台开机自启动入口（macOS Launch Agents / Windows Registry / Linux .desktop），详见 §15.8
   - `keyring` crate（不走 plugin）—— OS keychain（macOS Keychain / Windows Credential Manager / Linux Secret Service via libsecret）存 refresh token。比 `tauri-plugin-stronghold` 轻量，不需要 master-password ceremony；refresh token 是 Google 端可随时撤销的 capability，不是用户长期密码材料，与 stronghold 的 vault 模型不匹配。
   - `oauth2` + `reqwest` crate —— Rust 进程内跑 authorization-code flow + token exchange + refresh，不走 webview，所以不需要 `tauri-plugin-http` 绕 CORS。
   - `tauri-plugin-notification` —— 系统通知（v0.9.x 可选）
@@ -3699,7 +3702,40 @@ v0.9 ship 路径：
 - 移动端原生壳（iOS / Android）—— 移动端响应式仍 ❌；原生 mobile 是 v1.0+ 才考虑的事
 - DayRail 自建账号系统 —— §7.1 立场不变
 - 桌面端独立的本地数据格式 —— 与 web 共用 Y.Doc + `.dryj`
-- 自动启动 / 后台 daemon —— 桌面端是被动启动的 app，不是 daemon
+- ~~自动启动 / 后台 daemon —— 桌面端是被动启动的 app，不是 daemon~~ **v0.11.6 反转**：开机自启动加入,详见 §15.8。"daemon" 立场仍不变(autostart 启动的还是普通桌面 app · 不在 menubar 跑常驻服务)。
+
+### 15.8 启动 / relaunch 行为（v0.11.6）
+
+两条独立但语义同源的桌面端 UX 规则:**只在用户主动触发或上下文明确期望前台时**才把 app foreground,其它情况一律后台 / 不抢焦点。
+
+**开机自启动（autostart at login）**
+
+- Settings → 同步 → 「开机自启动」toggle 控制(默认关)。Tauri only · PWA 不显示。
+- 开启时 `tauri-plugin-autostart` 写入 OS 入口:
+  - macOS: `~/Library/LaunchAgents/app.dayrail.desktop.plist`
+  - Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+  - Linux: `~/.config/autostart/app.dayrail.desktop.desktop`
+- **启动行为 = hidden**:autostart 触发时 app 进程启动,但**主窗口不显示**,只在 dock / menubar / 任务栏出现图标。用户主动点击图标才把窗口拉出来。
+  - macOS 实现:plist 写 `RunAtLoad = true` + 启动后 Rust 端 `setup()` 检测 autostart 上下文(env var `DAYRAIL_AUTOSTART=1`,由 plist 通过 `EnvironmentVariables` 字段注入)→ 跳过默认 `window.show()`。
+  - Windows / Linux 同模式 · 各自启动参数注入 env var。
+- **理由**:开机时用户在打开 Slack / Mail / 浏览器,DayRail 抢焦点是 anti-pattern。autostart 的价值是"后台进程就绪 → 用户想看时一点即开 + sync 已经在背后跑了",不是"开机就强制看到"。
+
+**升级 relaunch foreground**
+
+- `tauri-plugin-updater.downloadAndInstall()` 完成 → `tauri-plugin-process.relaunch()` 启动新进程。macOS 不会自动把 relaunch 出来的进程 promote 到 foreground(macOS 反"app 偷焦点"机制)。
+- v0.11.6 之前用户体感:点"立即更新" → app 退出 → 新版进程跑起来但隐藏在其它窗口后面 → 用户 alt-tab 找半天。
+- 修法:`relaunch()` 前设 env var `DAYRAIL_RESTART_REASON=update` → 新进程 boot 时 Rust 端检测该 env var → 调 macOS `NSRunningApplication.current.activate(options: .activateIgnoringOtherApps)` + `window.set_focus()` → 强制 foreground 一次。
+- 跟 autostart 的 hidden 行为不冲突:autostart 没有这个 env var,正常走 hidden 路径;update relaunch 有 env var,走 foreground 路径。
+
+**总规则表**
+
+| 启动来源 | env var | 行为 |
+|---|---|---|
+| 用户点 dock / Finder / Spotlight | (none) | macOS 默认 foreground ✓ |
+| `pnpm desktop:dev` | (none) | dev 行为不变 ✓ |
+| autostart at login | `DAYRAIL_AUTOSTART=1` | hidden(只在 dock 显示) |
+| post-update relaunch | `DAYRAIL_RESTART_REASON=update` | 强制 foreground |
+| autostart + update relaunch(理论交叉) | 两个都有 | foreground 胜出(update 明确意图) |
 
 ***
 
