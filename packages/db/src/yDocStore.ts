@@ -112,6 +112,11 @@ export interface SyncMeta {
    *  ("先关掉" button). Cleared automatically when push succeeds.
    *  null = no active suppression. */
   dismissPendingPileUntil: string | null;
+  /** ISO timestamp of the last user-initiated Y.Doc edit (v0.12 P4 ·
+   *  ERD §7.10.4). Written into each heartbeat under `lastActivityAt`
+   *  so peers can detect "device was active but didn't push" cases.
+   *  null = no edits yet on this device. */
+  lastActivityAt: string | null;
 }
 
 export const DEFAULT_SYNC_META: SyncMeta = {
@@ -126,6 +131,7 @@ export const DEFAULT_SYNC_META: SyncMeta = {
   recentAttempts: [],
   lastSuccessAt: { push: null, pull: null },
   dismissPendingPileUntil: null,
+  lastActivityAt: null,
 };
 
 export interface YDocStore {

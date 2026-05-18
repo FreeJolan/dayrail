@@ -38,8 +38,12 @@ import { ReasonToast } from './components/ReasonToast';
 import { SyncConflictPanel } from './components/SyncConflictPanel';
 import { IdentityMismatchModal } from './components/IdentityMismatchModal';
 import { ModeRegressionModal } from './components/ModeRegressionModal';
+import { ReconcileBanner } from './components/ReconcileBanner';
 import { SyncStatusBanner } from './components/SyncStatusBanner';
-import { checkModeRegressionAtBoot } from './lib/sync/syncController';
+import {
+  checkModeRegressionAtBoot,
+  runReconcileAtBoot,
+} from './lib/sync/syncController';
 import { SideNav } from './components/SideNav';
 import { ShortcutCheatsheet } from './components/ShortcutCheatsheet';
 import { UpdateBanner } from './components/UpdateBanner';
@@ -151,6 +155,9 @@ function Shell() {
   // because boot.ts awaits loadSyncMetaCache before rendering App.
   useEffect(() => {
     checkModeRegressionAtBoot();
+    // ERD §7.10.4 · v0.12 P4 · also kick off the heartbeat reconcile.
+    // Fire-and-forget; the ReconcileBanner reads syncStore.bootReconcile.
+    void runReconcileAtBoot();
   }, []);
   // Global overdue-shift Reason toast (§5.5.6). Mounted at the shell
   // level so every schedule surface (CycleCell drag, SchedulePopover,
@@ -438,6 +445,7 @@ function Shell() {
       <UpdateBanner />
       <SideNav />
       <main className="min-w-0 flex-1">
+        <ReconcileBanner />
         <SyncStatusBanner />
         <Routes>
           <Route path="/" element={<TodayTrack />} />
