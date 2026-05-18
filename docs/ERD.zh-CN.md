@@ -1,6 +1,6 @@
 # DayRail 产品设计文档（ERD）
 
-> **状态**：活文档 —— 这里的任何决策都可以被推翻。最近更新 2026-05-14（v0.11 设计锁定 · Task occurrences · 把"调度原子"从 Task 上拆出来）。本轮锁定一件事：原 `Task` 同时背着身份单元 / 完成态真源（§10.1）/ 调度原子三件事，"一件事多次坐下来做"被迫拆成 N 个兄弟 Task。新增 §10.6 引入 `TaskOccurrence`：一个 Task 下挂 0..N 条可独立排 slot / 完成 / reschedule 的 occurrence。**关键决策**：(1) `occurrence.percent` 沿用现有 `Task.milestonePercent` 语义（**主 Task 的里程碑标记位**，max-of-done 聚合），不是分摊权重也不是自身进度条；(2) Task 关联 occurrences 时 `Task.status` 完全派生（§10.1 例外段），manage 单位下沉；(3) `Task.slot` 单数字段保留为 0-occurrence 时的简易路径，加第一条 occurrence 时同 transaction 自动转换、零数据丢失；(4) 旧 `Task.subItems` 一次性迁移成 occurrence（label = title、done = done、id 派生 `occ-{taskId}-{subItemId}` 保证幂等），字段保留可读供老版本继续写、新版本双路读不写回；(5) 顶层 `Y.Map<id, TaskOccurrence>` 新 store，per-element CRDT 自动并 —— **顺手关掉** ROADMAP 停车场原本的「`Task.subItems` 重新拆 per-element Y.Array op」条目；(6) `.dryj` 容器版本不升 · 跨版本只需新版本启动 GC 孤儿 + subItems 兼容读两件事 · 不需要顶部冲突卡片 / readonly mode / 转换确认对话；(7) habit auto-task 管线本次明确不动（保持 `task-auto-{habitId}-{date}`）。**真数据验证**：跑 `tools/migrate/dump-tasks.ts` 在用户 5/11 / 5/13 / 5/14 三份本机 `.dryj` backup 上，128 task 中只有 1 条带 subItems（标题"（看子任务）"暴露是测试数据），`milestonePercent` user 数 = 0，所有 edge case bucket 全 = 0 —— 跨版本焦虑实测无对应数据形态。讨论纪要：D1 抽象、D2 字段集、D3 percent = 里程碑、D4 label = 步骤名、D5 status 派生、D6 slot↔occurrence 转换、D7 archive 级联、D8 subItems 收编 (a)、D9 CRDT per-element、D10 跨版本纯加法、D11 habit 不动、D12 §10.5 不参与，全部 12 条决策与 ERD 对齐。详见 §10.6（含 §10.1 / §10.4 / §5.5.6 / §7.7 同步增补）。最近更新 2026-05-08（v0.9.0 桌面端首版 ship 后 · 9 个 PR + 3 次 tag 重打的实装纪要）。本轮主要记录的是从设计锁定（同日先 ship 的 PR #12）到 v0.9.0 published GitHub Release 之间的实装偏离 + 教训：(1) **§15.2 stack 三处偏离**。原计划写的是 `tauri-plugin-stronghold` 存 refresh token + `tauri-plugin-http` 调 Drive API + deep link 接 OAuth callback。实装全部换了：`keyring` crate 替 stronghold（refresh token 是 server-revocable capability，stronghold 的 vault + master-password 模型对这种短命凭证 overkill；`keyring` 一个 `Entry::set_password` 直接落 OS keychain）；`oauth2` + `reqwest` crate 直接在 Rust 进程跑 authorization-code flow（不需要 webview，所以"绕 webview CORS"这个 `tauri-plugin-http` 的存在论据不成立 —— 本来就不在 webview 里跑）；`tokio::TcpListener::bind("127.0.0.1:0")` 让 OS 选随机端口替 deep link（deep link 要逐 OS 注册 LaunchServices / Windows registry / `.desktop` 文件，loopback 是 RFC 8252 推荐的 native-app pattern · 零注册成本 · Google OAuth 直接支持）。§15.2 / §15.3 已同步更新。(2) **图标三轮迭代 + macOS HIG 学习**。第一轮：原 PWA 沿用的 `icon-512.svg` 数学算错 —— 内层 `<g>` 上挂 `transform="scale(11.43)"` 但 `stroke-width="20"` 在外层定义，被缩放后实际成 ~228px 描边，三条铁轨弧线粗到糊成一坨黑色血滴形（用户在 dock 截图里看到了，叫"黑屁股"）。重写消除嵌套 transform 后铁轨设计可识别。第二轮：图标顶满 dock cell，看起来比邻居每个 app 都大 ~1.2x。**macOS 应用图标的 SVG 画布≠图标本体** —— Apple HIG 模板规定 1024 画布里图标本体只占 824（每边留 100px = 9.77% 透明 margin），让 OS 给所有 app 一个统一的 squircle "落点"。我们的 rounded rect 直接铺满整个画布等于自己绕开了系统统一感。第三轮：按 Apple 模板内缩到 `x=50 y=50 w=412 h=412 rx=93`（512 viewBox 下的等比映射），加暖底 `#FBF4EA` 让品牌温度落在视觉里，铁轨本体从 62% 涨到 75% body 占比让 dock 里有"claim"感。教训：调外观时**rsvg-convert 渲 PNG 看 256/64/32 三尺寸**比改 SVG 然后等 cargo 重 build 快一个量级，整个 iteration loop 缩短到秒级。(3) **Release 三次 tag 重打**。第一次 push `v0.9.0` 后 4 个 platform 的 `pnpm install --frozen-lockfile` 全炸 `ERR_PNPM_LOCKFILE_BREAKING_CHANGE` —— `release.yml` 把 `pnpm/action-setup` 钉在了 v10 但 `pnpm-lock.yaml` 是 `lockfileVersion: 5.4`（pnpm 7 时代格式）+ `package.json#engines` 钉的是 `pnpm >= 7`，CI 是 outlier。修：CI pnpm pin 7（PR #19）。第二次：Linux + Windows 通过，macOS 两个 target 都挂在 `failed to import keychain certificate`。原因是 `release.yml` 的 env 块把 `${{ secrets.APPLE_CERTIFICATE }}` 这种没设 secret 的 reference 渲染成**空字符串**而不是 unset env var，tauri-action 把空 `APPLE_CERTIFICATE` 当成"用户提供了 cert，请 base64 解码 + 导入 keychain" → 导入空载荷失败。**`${{ ... || '' }}` 这种 default 也救不了**因为它仍然 emit set-but-empty。唯一干净的 skip 是从 yaml 里**整个删掉**那 6 个 `APPLE_*` env 行（PR #20）。第三次：4/4 全绿 → 草稿 release 自动生成 → 13 件 platform binary + 7 件 `.sig` + `latest.json` 全到位 → `gh release edit v0.9.0 --draft=false --latest` published。这三次 fail 都是 CI hygiene 问题 —— 代码层 / 设计层 0 改动，但暴露了发布流程很多平台间的 cohabitation 假设。(4) **Apple 签名 deferred 的具体回归入口**。`release.yml` 头部的 doc-comment 块保留了 6 个 secret 名（`APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID`），enrollment 通过后只需把这 6 行 env 一次性粘回去 + 在 GitHub Secrets 设值，下个 v0.9.x tag 自动签 + notarize。**unsigned → signed 切换那次更新的 quarantine 行为没真实测过** —— 但 v0.9.0 当下用户只有我自己，不强测，等 v0.9.1 实际遇到再说。(5) **测试基线不动**：203 个 vitest case 全绿；Tauri 端 Rust 测试**没加**（`drive_auth.rs` 4 个 command 当前没有 unit test，loopback OAuth flow 涉及 OS 浏览器 + Google API + keychain 副作用，单测构造代价高于价值）—— 这是已知 debt，扩 beta 用户前要不要补再说。下方 "v0.9 桌面端方向锁定" 条目保留作为最初设计意图档案；本 ship-notes 段是这之后的真实实装路径。最近更新 2026-05-07（v0.9 桌面端方向锁定 · 反转 v0.7「Tauri 不做」决策）。本轮锁定一件事：(1) **桌面端 Tauri 壳从「❌ 明确不做」反转为 v0.9 主线**，理由：v0.7 ship 后 1 个月真实 dogfood 暴露出 PWA + Google Drive + 无后端三件事联立产生一个**结构性 UX 缺陷** —— Google OAuth implicit flow（PWA 唯一能用的）不发 refresh token，access token 1 小时过期，每个 ~1 小时窗口必须走 GIS 续 token 流程。即使配 `use_fedcm_for_prompt: true` 把 popup 降到 FedCM 底部小条，对日常用户也是不可接受的打扰节奏。日常用户预期"首次授权后零打扰"，这个体验在 PWA 架构里不可达 —— 是协议天花板，不是任何 prompt / 缓存策略能解决的事。Tauri shell 把 sync 走 desktop OAuth pattern（authorization code flow + PKCE → 拿 refresh token → 存 OS keychain via `tauri-plugin-stronghold`）+ access token 后台续期 = 物理上消除该 UI。同时是其它一些 PWA 限制（系统通知 / 文件选择器 / 全局快捷键 / 后台 sync）的总解。**auto-update 必须就位**（用户硬约束）—— 用 `tauri-plugin-updater` + 静态 manifest JSON 托管在 GitHub Pages / Vercel（无 DayRail 后端，与 §7.1 立场一致）。详细架构见新增 §15 桌面端章节。**WebDAV 等替代后端继续停车**（v0.7 时代列入 §7.3 "进阶选项"，现在已无明确用户诉求 —— 桌面端 + Drive refresh token 解决了原本 WebDAV 想解决的"零打扰"问题）。**`KEY_CONNECTED` localStorage 在 SW 升级后被清的 PWA bug 暂搁** —— 桌面端 ship 后 PWA 不再是日用主路径，影响降级；v0.9 实装中如果路过 SW 升级路径顺手修也行。**对齐失误反思**：之前 ROADMAP「❌ 明确不做」段把"Tauri 桌面壳"和"移动端响应式 / E2E 测试框架"列在一行，论据是 v0.7 时期"自用 + 小范围 beta scope 内 PWA 已够用"。1 个月真实 dogfood 后这个论据失效。教训：长期不做的决策应该周期性 challenge，不该长期挂着。最近更新 2026-05-07（v0.8.2 ship 后 · AI MVP 实装纪要）。本轮设计锁定（同日先 ship 的 PR #9）后，代码 PR #10 在 dogfood 中经历了多次反转，最终 ship 形态与原设计有几处实质性偏离。按时间顺序：(1) **JSON schema → free Markdown 整体反转**。设计锁定时定的 `{ headline, observations: [{ claim, from_data }], questions_to_sit_with }` 在第一次 dogfood 就被 code-tuned model（`claude-opus-4-7` via `claude-bridge`）持续 schema drift（返回 `finding / severity` 等 lint-style 字段）打穿。补的 alias map + lenient validator + 反 schema-drift 的 few-shot example 越加越多，复杂度跑过价值。整体反转：删 `validateObservationJson`（~150 行）+ alias map + 17 个测试 + `extractJsonFromResponse` 主用路径，改为自由 Markdown 散文 + 内联 「verbatim 引用」 中文方括号约定 —— 用户扫一眼引用就能判断 AI 是否 fabricated。`AiObservation` 类型从 `{ json: AiObservationJson }` 改为 `{ markdown: string }`。(2) **Vercel AI SDK（`ai` + `@ai-sdk/openai-compatible`）替代手卷 SSE**。原本手卷的 `consumeSse` + `parseSseBuffer` + `extractContentDelta` + 错误分类（~120 行 + ~30 个测试）被 AI SDK 的 `streamText({ model: provider(modelId), messages })` 替代。错误分类映射到 SDK 的 `APICallError` 类型，保留 `bodyExcerpt` 字段。SDK 通过**动态 import lazy load** —— 不开启 AI 的用户冷启动 bundle 不变（主 chunk 973KB / 291KB gzipped 不动；AI SDK 占用 ~380KB / ~100KB gzipped 的独立 async chunk，第一次 AI 调用时下载，session 内复用浏览器缓存）。(3) **System prompt 经过 5 轮 dogfood 迭代到 scene-staged「微信里给朋友回消息」persona**。每一轮都因为 model 总是输出"季度复盘"风格的 KPI 报告。Round 1：禁词（黑洞/拖低/必须/下周期建议）—— 模型用「严重欠账」绕。Round 2：禁 markdown bold label（`**主线**` / `**观察**`）—— 模型用独立短句 label 绕（「主线 / 我看到的」）。Round 3：加 anti-example 演示反面写法 —— 用户反馈这是反向投毒（"don't think about a pink elephant"），删掉。Round 4：persona-driven（"warm friend / counselor / kind elder"）+ 显式承载 DayRail「**允许错过**」哲学 —— substance 大幅改善但结构仍偏 dashboard。Round 5：scene-staging —— 从"你是谁"升级为"你身处哪个具体场景"：「几分钟前你朋友在微信里给你发了消息，你正在打字回 ta」+ ABOUT THE MEDIUM 显式段对比 chat reply vs report。medium 的社交常识压住了 dashboard 形态先验。最终 system prompt 显式承载「不评判 / 不下周建议 / 不 KPI 分析 / 提议 2-3 个温和小调整 + 把选择权交回」的形态指令。(4) **三个 Review scope 都接 AI 入口**。原 spec 锁定 Day + Cycle 双场景，dogfood 中发现 Review 还有 Month scope 没接 AI 是 UX 不一致 —— 加了 `MonthReflectionAi`，复用 Cycle 数据切片 + 缓存合成 cycle id `month-${YYYY-MM}`（v0.8.2 顺手实现 ERD §10 `Cycle.endDate` "v0.4 custom-length cycles" 的 reservation —— `upsertCycle` 接受可选 `id` + `endDate` 参数）。Day 反思空时不再 `return null`，改成显示斜体 hint「✨ 写完反思后，可以让 AI 帮你看看」 —— 之前 return null 的写法对用户完全没有 discoverability。(5) **Settings UI 加「刷新可选模型」+ 错误展示加 body excerpt 抽屉**。dogfood 中用户撞到 503 时 `[provider-error] Provider returned 503.` 太 opaque（看不到 bridge 真实回的 body）—— 加 `<details>` 抽屉显示 `bodyExcerpt`（前 500 字）。Model 字段加「刷新可选模型」按钮 + `<datalist>` autocomplete（走 OpenAI-compat `/v1/models` · `parseModelList` 容忍 `{data:[]}` / `{models:[]}` / 裸数组 / 裸字符串数组等多种 envelope）。Confirm panel 「发送」按钮原本写的 `bg-bronze-9` 是不存在的 Tailwind class（项目用语义 token `bg-cta`），导致按钮看起来像被禁用 —— 也在这一轮修了。(6) **model-tone 兼容性观察**。`claude-opus-4-7 via claude-bridge` 即使经过 5 轮 prompt iteration 仍偏向 structured 输出（独立短句 label 始终绕不掉）。这是 RLHF 训练的天花板，不是 prompt 能继续解决的。换 OpenRouter 的 `claude-3-5-sonnet` / `gpt-4o` 通常 prose 更流畅。当前样本只有 1 用户，扩 beta 用户后再决定是否把"推荐 model 默认值"文档化进 ERD §6.6。(7) **AI 全局记忆（"软件记得我"）未纳入 v0.8.2，停车 v0.9 candidate · 结论未定**。dogfood 中冒出"AI 应该有跨调用的记忆，能记得用户身体不好 / 在备考 / 最近压力大等长期事实"的产品想法。当前结论：先用 v0.8.2 跑 2-3 周真实使用，等有具体的"我希望 AI 记住 X 而不忘 Y"用例再设计；当前思路是 `aiMemories` 同步流 + 反思后可选「记下这个」accept/reject UI，但数据模型（独立 store 还是 background 扩展）/ TTL 衰减 / 隐私边界（默认随同步还是仅本机）都未定。详见 `docs/ROADMAP.md` v0.9+ 停车场表。(8) **测试基线**：147 → 203 / 13 → 15 suites（+56 case · +2 suite）。新增主要在 `aiClient.test.ts`（14 case · `parseModelList` 各种 envelope + `listModels` 错误分类）+ `aiPrompts.test.ts`（42 case · scene-staging / 「允许错过」哲学 / 「微信里」medium framing / persona / 引用约定 / 数据切片字段）。`aiValidate.test.ts`（17 case）随 JSON schema 反转一起删掉。下方"v0.8.2 设计锁定 · AI MVP"条目保留作为最初设计意图档案；本 ship-notes 段是这之后的真实实装路径。最近更新 2026-05-07（v0.8.2 设计锁定 · AI MVP）。本轮锁定四件事：(1) **首发场景从『Day 还是 Cycle 实施时再选』收敛为 Day + Cycle 双场景同时上**。两个场景共享 §6.6.1 用户背景注入路径 + §6.2 内置英文 system prompt + JSON 结构化输出 schema；差异只在 scenario-specific framing block + 数据切片 selector + UI 入口位置 + 缓存字段挂哪个实体。Day 入口接 §4.1 DailyReflection 块底部 + Review · Day；Cycle 入口接 Review · Cycle 视图 picker chip 旁。Decompose / Observe 继续停车 v0.8.3+。staged ship（先 Day 后 Cycle）讨论中拒掉 —— 客户端 + system prompt + 输出 schema + UI 卡片渲染全共用，分两轮反而要写两遍 ERD + 两个 PR + 两轮回归 checklist。(2) **API key 存储位置反转**：v0.8 设计锁定时 §6.6 表格写『浏览器内存 + Y.Doc `userProfile.aiApiKey` 持久化（同步流的一部分）』，本轮改为 **仅本机 localStorage（key: `dayrail.aiApiKey`），不入同步流** —— 与 §7.1 凭证心智一致，与 Drive OAuth token / WebDAV 密码同档。Base URL / Model name / Background / aiEnabled 四个『通道里的设置』继续走 Y.Doc 同步流（与主题色 / `enabledHolidayRegions` / `calendarRuleOrder` 同档）。新增 §6.6『userProfile 字段分流原则』段把这条二分写明，二分判别：『这台设备上没了等价于失去对外服务访问权 → 凭证 → 仅本机；丢了只是设置回到默认 → 设置 → 同步流』。`userProfile` Y.Map 因此**只放可同步设置**，AI key 不进 Y.Doc。(3) **AI 输出持久化策略**：选 ephemeral + 单字段 LWW 缓存最近一次。Day 复盘缓存 → `DailyReflection.lastAiObservation: { generatedAt, model, json } | undefined`；Cycle 复盘缓存 → `Cycle.lastAiObservation` 同形态。再点一次直接覆盖；不留历史 array（与 §6.1『AI 输出只是初稿、不保留 AI 原版』心智一致，避免单日反复点 N 次塞 N 条进同步流）。用户想留就『复制 markdown 贴回 reflection』显式动作。挂在 reflection / cycle 实体而不是单独 store 的理由：reflection 已经是『该日的 user 自由文本』实体，AI observation 与之同步增删（reflection 删了 AI observation 跟着没意义）；cycle 同理。(4) **§6.4 首次启动『可关闭 AI 引导卡』UI 停车**到 v0.8.3+（§6.4『默认关闭』toggle 策略本身保留）。理由：v0.8.2 已塞三件事；用户从 SideNav → Settings → AI 自然找得到；引导卡先做容易让用户觉得『必须配 AI 才完整』，与『工具应该安静』价值冲突。触发条件：v0.8.2 ship 后两周看 AI 启用率，如果普遍未启用再设计 surface。本轮测试基线预期：147 → ~160（新增 ~13 case：客户端 SSE / JSON 解析 / error 分类 + prompt builder 三背景 × locale + Settings 字段 round-trip）。设计实装路径详见 §6.6 / §6.6.2 重写。最近更新 2026-05-06（v0.8.1 ship 后 · §5.4 实装纪要）。v0.8.1 ship 后实测 + 多轮迭代捕获到的 deltas（设计层面的而不是单纯实施细节）：(1) **CalendarRulesDrawer 收敛成单一规则列表 + 条件组属性表单**。原计划是「顶部新加优先级 section + 保留 4 个 kind-specific section」的渐进路线，实测用户希望排序 / 新增 / 编辑全在同一处；遂把 4 个 kind-specific section 删掉（function 仍留在 file 内做 reference），所有 CRUD 收到顶部「规则列表」内 inline 完成。属性匹配的子表单也从「4 kind 平铺 toggle + region/note filter 飘在外面」重构为「条件组卡片，narrowing 选项 nest 在所属 kind 卡内」—— 节假日卡（含 假日/非假日 子选）/ 调休 / 我的备注（含 contains/exact toggle + datalist autocomplete 拉用户已写的 label）。schema 不动，UI 只是 derive。(2) **「观察日」UI 文案改「节庆」**。`ExternalEvent.kind = 'observance'` 不动，UI 层把"母亲节 / 七夕 / 教师节 / 圣诞"等归类为「节庆」更贴近中文使用习惯；表单 picker 把「节假日 (holiday)」+「节庆 (observance)」合并成单一「节假日」 toggle，激活后展开 假日 / 非假日 二级 multi-select。schema 仍是两元素 kinds，UI 层 derive。(3) **`CalendarRuleExternalEvent.noteLabelFilter`**：`{ mode: 'contains' | 'exact', query }`，仅对 user-note kind 生效；空 query 降级"匹配任意备注"；exact 模式接 `<datalist>` 拉所有 distinct 用户备注 label 做 autocomplete（O(N) 一次扫描，typical N 几十条可忽略）。(4) **drag handler 抬到 container 级别**：原 per-row dragOver/drop 在第一行上方 / 末行下方有 deadzone 触发不到；改成 container-only 后用光标 Y vs 各 row midpoint 算 dropIdx（0..N），死区为 0；drop 时不读 React state（async 可能滞后），从 drop 事件 `clientY` + `currentTarget.getBoundingClientRect()` 重新算落点 — WYSIWYG 双保险（视觉指示器与最终落点永远对得上光标当时位置）。(5) **resolver caller 漏传 `userProfile`** 的 bug 修复：`pickTemplateForDate` 的 state Pick 之前不含 `userDayNotes` / `userProfile`，导致 resolver 拿不到 `calendarRuleOrder`，"拖了不生效"——widen 类型签名后 typecheck 自动揪出 6 个 caller（Calendar / CycleView / Review / SchedulePopover / cycleFromStore / reviewFromStore）。这是 `Pick<DayRailState, ...>` 类型契约的反面教训：依赖项漏在签名里只能被 typecheck 暴露，运行时 silent。(6) **Calendar 单元格视觉减负**：cell tint step-4 → step-3，删左 5px strip + 删顶 2px border + 实色 step-9 模板 badge 改 dot + ink-secondary 文字。原本三层颜色叠（tint + strip + border + 实色 pill）reinforcing 同一信息，看起来像 90s 电子表格热力图；现在只剩淡 tint + 一颗小色点 + 文字，扫读保留但 saturation 大幅下降。(7) **off-rail row label 列宽溢出修复**：原本「未归属 / off-rail · 拖回任意 rail 即可恢复」是 2 行 stack + dashed border 框，宽度超过 220px 列把日期格全部挤偏移；副标题降级到 `title=` tooltip，仅保留主标题"未归属"，加 `max-w-full overflow-hidden` 防将来再溢出。本轮 ship 测试数 147 / 13 suites（v0.8.0 是 129 / 12，v0.8.1 +18 case）。下方 v0.8.1 design-lock 条目（"§5.4 CalendarRule 重构"）保留作为最初设计意图；本 ship-notes 段是这之后的真实实装路径。最近更新 2026-05-06（v0.8.1 · §5.4 CalendarRule 重构）。本轮锁定两件事：(1) §5.4 优先级模型从硬编码（`single-date 100 > date-range 50 > cycle 30 > weekday 10`）改为**用户控制的全局排序**：`UserProfile.calendarRuleOrder: string[]` 持久化用户拖拽出的优先级链；resolver 先按 order list 走，order list 里没有的 rule 退回到 legacy 数字 priority + createdAt 兜底。`CalendarRule.priority` / `CalendarRuleRevision.priority` 从必填改为可选，新写不再设；老 rule 直到用户碰一下规则抽屉才被纳入 order list（隐式迁移）。(2) §5.4 新增 **`external-event` 第五种 rule kind**：按 §14 ExternalEvent 属性匹配（`match.kinds: ('holiday' | 'observance' | 'makeup-workday' | 'user-note')[]` + 可选 `match.regions: string[]`），命中即应用 `templateKey`。例如「所有节假日 → restday」一条规则，无需逐日列举；将来 ICS 订阅（§14.4）一旦 ship，自动也能被这条规则匹配，不用重做 resolver。新 action `upsertExternalEventRule` / `setCalendarRuleOrder` · 既有 5 个 upsert action 都接入 order list 维护（新 rule prepend 到顶部）· 既有 remove action filter 出 order list。CalendarRulesDrawer 顶部新增「整体优先级」section（drag-to-reorder 全 kind 的 rule），底部新增「属性匹配」section（external-event 编辑器）。最近更新 2026-05-06（v0.8.0 加 §14.3 用户标注）。本轮单点扩展：v0.8.0 在节假日数据集之外再加一类**用户标注**（user-defined day notes），共享 §14.1 `ExternalEvent` 渲染层。新增 §14.3「v0.8.0 实施 — 用户标注」（`UserDayNote { id, date, label, color?, createdAt, updatedAt }`，Y.Doc top-level `userDayNotes` Y.Map keyed by id；UX 三个 surface：Calendar 月视图编辑入口 / Cycle View 日期单元格 chip 叠加 / Today Track 顶栏 metadata 行 · Review Day 顺手挂）。`ExternalEvent.kind` 加一档 `'user-note'`（描线 + 用户色，与节假日 chip 形态一致但视觉区分）。§14.0 动机段重写：把"外部"重新定义为"外部于 task pipeline"（不进物化 / purge / revision），而非"外部于用户"——两类 source（外源节假日 + 内源用户标注）都满足这个意义上的"外部"，共享渲染路径。原 §14.3 ICS 订阅停车场草稿顺序后挪到 §14.4。最近更新 2026-05-06（v0.8 设计锁定 · 外部事件源 + AI 复盘）。当前状态快照 + 后续待办见 `docs/ROADMAP.md`。本轮锁定四件事：(1) 新增 §14 **外部事件源**：抽象 `ExternalEvent` 接口，v0.8.0 ship 内置节假日数据集（bundle 仓库内 JSON · region multi-select），ICS 订阅留 §14.3 v0.9+ 停车场草稿。(2) §6 AI 辅助从「明确不做」解封：新增 §6.6 **v0.8 实施说明**，§6.3 的 OpenRouter-only 接入扩为 **OpenAI-compatible 通用客户端**（Settings 三字段：base URL / API key / model name），覆盖 OpenRouter / Groq / Anthropic-via-proxy / Ollama / LM Studio / `claude-code-router` / `claude-bridge` 等所有兼容端点；显式承认用户已有 Claude Code / Cursor 套餐 + CLI 桥接的存量生态。(3) 新增 §6.6.1 **用户背景 `userProfile.background`**：单 Markdown blob，Y.Doc 同步流，AI 调用前 prepend 到 system prompt；心智对标 Claude Code 的 `CLAUDE.md`。「AI 优化我的背景」按钮停车，等 v0.8.0 ship 后看真实背景文本质量再决定。(4) §6.6.2 v0.8.0 复盘场景 v1 选 Day 还是 Cycle 留实施时拍板；Decompose / Observe 继续停车。§9.3 AI 选型表对齐：网关从 "OpenRouter" 改为 "OpenAI-compatible 协议（默认接入 OpenRouter，可改任意端点）"；fallback chain UI / 远端免费模型清单 / 多 provider 适配层全部明确不做。下方 History 节保留历史决策链。最近更新 2026-04-19（v0.4 实装推进一轮 · 自用 MVP 就绪）。本轮主要落地（habit-binding 重构之后）：(1) `rail.recurrence` **整段删掉** —— Template + CalendarRule + `HabitBinding.weekdays` 三层过滤够了；rail 级 weekday 过滤只制造空交集 trap。(2) 多 task 同 slot 从数据到 UI 彻底打通 —— CycleCell 堆叠 pill、Today Track 每 task 独立行 + 独立操作、Pending 逐条操作，§4.1 的 one-to-many 不变量在界面上看得见。(3) §5.5.0 B 节奏带点击回填接上。(4) §10.3 配置变更 purge 流程上线，HabitDetail 改 binding + Template Editor 删 rail 都带确认 + Edit Session 批量回滚。(5) Backlog drawer 从 Cycle View 提升到 App shell —— `g b` 快捷键、SideNav 入口、drawer 内 quick-create 带 Line picker。(6) `scheduleTaskToRail` / `scheduleTaskFreeTime` 在 deferred 任务被重排期时自动翻回 pending —— "改期 = 反悔 defer" 语义。(7) Review 加周期对比 match% delta + 每行 stats + 每 phase 段内 match%；HabitDetail 节奏带同步加 phase-band 叠加 + 每段 match%。(8) Cycle 格子任务 pill 可拖拽换日期 / rail。(9) Backup 导出/导入完成 · JSON 经 snapshot write + OPFS reset 完成回灌（Settings → 高级）。(10) 35 个 vitest case 分 3 个 suite 覆盖 materializer + §10.3 purge + timeline/check-in/pending 选择器。下方 History 节保留历史决策链。最近更新 2026-04-19（v0.4 habit 绑定收敛 + Task 编辑面铺开）。四件事一起定：(1) 新增 `HabitBinding` 实体（habitId + railId + 可选 weekdays 过滤器），取代原来 `Rail.defaultLineId === habit.id` 的绑定方式；修掉"两个 habit 同一时段不同 weekday 会在同一 template 里挤两条 rail"的结构性扭曲。(2) `Rail.defaultLineId` 字段彻底删除，曾承担的两个职责分别交给 `HabitBinding` 和"以后真需要再加"。Cycle quick-create 默认落 Inbox。(3) Today Track RailCard + Cycle View slot popover 都接入 TaskDetailDrawer，可以就地改备注 / 子任务 / 里程碑 / 排期。(4) Auto-task 的编辑权限表定稿：title / schedule / milestone 只读（它们是 habit 属性），note / subItems 可改（这是"本次上下文"）；habit 改名只影响未来新物化的 auto-task，老的因 materializer 幂等不会被回写。§5.5.0 / §10.2 / §10.3 / §10.4 / §5.2 / §5.3 一并更新。历史：2026-04-19（数据模型一致性大整理 · v0.4 基石）。合并发布六件事：(1) §10 新增"**三轴速览**" + "**完成状态归属规则**"——Line / Rail × Template × Time / Task 三轴正交，`Task.status` 成为所有完成语义的单一真源，RailInstance 收窄为"墙钟日志"（actualStart/End + Shift 标签），不再和 Task.status 并列承担"做没做"的问题。修掉 v0.3 遗留的"Tasks 页勾完成但 Today Track 仍显 pending"这类一致性裂缝。(2) habit 的"每次发生"改为一条 **auto-task**（幂等 id = `task-auto-{habitId}-{date}`，`lineId = habitId`，`title = habit.name`）。habit Line 硬约束"下不持有手工 Task"；NewTaskInput 永不暴露给 habit 详情页。habit 和 project 完全对齐完成路径 —— Today Track / Pending / Review 全部查 Task.status。(3) §10.2 定下 Auto-task 物化策略 Ⅱ · **按需 on-demand**，触发点：Today Track boot / Cycle View 切换 / 节奏带打开 / Calendar 翻月 / Review 切 scope / 节奏带点回填。每个 `(habitId, cycleId)` 物化一次就打标记，后续不重算；幂等 id 兜底。(4) §10.3 定下 Habit 配置变更规则：改 Rail 的 recurrence / 时间 / templateKey / defaultLineId 之一时，扫 `[今天, 最远已物化 cycle 末尾]`，**只影响** `status='pending' AND plannedStart > now` 的 auto-task（purge + 按新配置补齐），已完成 / 跳过 / 归档的保留。三类事件（task.purged + task.created + rail.updated）在同一个 Edit Session 下，一键回滚。保存前 confirm。(5) §5.5.0 加 **A+B 节奏带交互**：A 只读 + B 点击回填（done / skipped / shifted / clear），点未物化格子现场 upsert。主路（今天）在 Today Track，兜底（忘标 / 漏开 app / 事后补打）在节奏带原地。(6) §5.5.0 **明确关闭** "habit 和 Rail 合并为单一实体"的开放问题 —— 当前三轴分离是特性不是债：Template = 结构不同的一天，habit 是"安排*进*一天的活动"不是"凌驾*于*日历的 cron"，新建模板时重新安排 habit 本来就是 Template 的题中之义。原"跨模板抄很多 rail"、"请病假 habit 不 fire"、"新模板要手动迁移"三个 framing 统一翻转：这些都不是痛点，是设计。§5.6 / §5.7 / §5.8 写路径全部改为读写 Task.status，RailInstance.status 字段在 v0.4 进入 deprecated 状态（保留到 v0.5 清理）。历史：2026-04-18（§5.5.0 Habits 视图心智校正（v0.4 锚点）：用户视角 **habit = 一件反复发生的事**，不是"一堆 Task 的桶"。Project 是 N 个 Task 聚成一个目标；Habit 是 1 件带 recurrence 的事。Habit Line 增加硬约束"不持有 Task"；habit 详情页去 Project 化——去掉 NewTaskInput / FilterBar / GroupedTaskList，改为"名 + 色 + 当前 phase" → 近 14 天节奏带 → 绑定 Rail 列表 → Phase 时间线 → 备注 → Danger。曾讨论过的"habit 下折叠 Task 小抽屉"（B 方案）明确放弃，方向不一致的心智代价 > 杂事便利。`Line.kind='habit'` 最终是否并入 Rail 族合并为单实体留作 schema 级开放问题，本次不碰。历史：2026-04-18（§5.5.0 Habits 真实装（v0.3.3）：habit 分两档——"简单 habit"（默认，为保持固定强度而做，不暴露 phase 概念）和"进阶 habit"（opt-in，手动启用 phase 追踪后可加任意多个时间段标签）。HabitPhase 是纯用户定义的时间段 label（`{ name, description?, startDate }`），没有 endDate、没有预设枚举、没有自动升降、没有 streak / 完成率派生——这些都延到 v0.4 Review 集成。"启用 / 未启用"完全从关联 HabitPhase 记录数派生，不加 `Line.phaseEnabled` 冗余字段。§10 原先 over-engineered 的 `type Phase`（带 advanceRule / railOverrides）下架，换成 `type HabitPhase`；`type Line` 的 phases/currentPhaseId/tasks 内嵌字段拿掉，`kind` 作为 union discriminator，关联数据走独立实体；`Line.createdAt` / `archivedAt` / `deletedAt` 统一到 `number` (epoch ms) 对齐实装。新事件 `habit-phase.upserted` / `habit-phase.removed`。历史：2026-04-18（§5.3.1 Edit Session v0.3 扩到 Cycle View：进入 `/cycle` 开隐式会话；CycleDay 模板切换、Slot drag-drop 排 / 撤排、slot popover "移除排期" / "标记完成"、空格 quick-create、orphan 守护批量 unschedule 全部挂同一 `sessionId`；顶栏常驻"⤺ 撤销本次编辑 · N"按钮一键回滚整批，离开或 15 min idle 自动关。Core 侧对 `overrideCycleDay` / `clearCycleDayOverride` / `scheduleTaskToRail` / `unscheduleTask` / `createTask` / `updateTask` 全部加 optional `sessionId` 参数，appendEvent 带上后 `undoEditSession` 的 drop-session-events 直接一并回滚。单条撤销路径（slot popover 移除 / CycleDay 恢复默认）保留。历史：2026-04-18（§5.4 CalendarRule v0.3 高级规则开动：weekday / cycle / date-range 三种 kind 的 typed `value` + resolver + UI 全部上线。Resolver 按 priority desc 遍历所有规则（single-date 100 > date-range 50 > cycle 30 > weekday 10），miss 才回退内置启发。weekday 规则首次启动自动 seed（workday 覆盖周一-五 / restday 覆盖周末），行为与旧硬编码启发等价、无 breaking change、OPFS 不用清。"高级日历规则" drawer 重新挂上：四段（single-date / date-range / cycle / weekday），每段列表 + 新建 form + 删除；v0.3 采"删 + 重建"，真 in-place edit 留 v0.3.1；drawer **不**走 §5.3.1 Edit Session（即时持久化，与 Cycle View 同策略）。§10 CalendarRule 类型块补 typed value variants + v0.3 实装规矩；§5.4 drawer 小节同步细化。历史：2026-04-18（路由库 + URL 结构拍板：v0.2 用 `react-router-dom` v6，不上 `@tanstack/router`——类型化 params 的卖点对当前复杂度溢价过高；URL 结构 `/` / `/cycle` / `/tasks` + `/tasks/inbox` / `/tasks/line/:lineId` / `/tasks/archived` / `/tasks/trash` / `/review` / `/pending` / `/calendar` / `/templates` / `/templates/:key` / `/settings` / `/settings/:section`。进 URL 的状态：Tasks selection、Settings section、Template tab；搜索 / 过滤 chip / Cycle anchorDate 留本地 state 不入 URL。详见 `docs/v0.2-plan.md §3`。历史：2026-04-18（§5.3 Cycle View 顶部 DAYS 区块合并：原"顶部大 header（跨所有 section、唯一）"取消；section mini-header 从只读升级为**唯一**模板切换入口——每个日期格本身就是触发器，点开同一套 popover（模板列表 + 覆盖态时多一条"恢复默认"），overridden 指示点从顶部 DayButton 挪进 mini-header 的日期格。理由：两处 DAYS 行信息重复、顶部区块和 sticky summary strip 挤占纵向空间；保留"一件事一个入口"——只是入口从"顶部唯一 master"挪成"每个 section 的 mini-header 里自己那几天"。历史：2026-04-18（§5.3 Cycle View 切换模板时的 orphan-task 守护：旧模板下的 Rail 被新模板"切走"时，已排到这些 Rail 的 task 会被静默孤立；现在加一层确认——N=0 静默切，N>0 弹 `将移出 N 个已排任务 · 继续 / 取消`，continue 后批量 `task.unscheduled` 再写规则；"恢复默认"同规则。§5.5 Tasks 视图列表形态调整：状态 chip 从顶部移除，列表主体改为"未完成 / 已完成"两段折叠——未完成展开、已完成默认折叠、未完成空时已完成自动展开并在位置放"都搞定了 ✓"；Archived / Trash 仍只在左栏有入口；搜索命中时两段都展开。历史：2026-04-18（Cycle View CalendarRule 持久化：§5.3 的 CycleDay 模板切换从"本地 state"改为即时写 `calendar-rule.upserted` / `calendar-rule.removed` 事件；`cr-single-{date}` 去重 id；§5.3.1 Edit Session v0.2 范围收窄到只剩 Template Editor，Cycle View 会话级 undo 推迟到 v0.3，面内的误触回退由 Slot popover 的"移除排期" + CycleDay 的"恢复默认"两条单条动作承担；§10 CalendarRule 补 v0.2 实装细则——只 single-date 生效、id 规则、priority=100、事件形态）。历史：2026-04-18（§5.5 从 `Projects / Lines View` 重构为 `Tasks 视图`，定位为"任务管理主入口"—— 侧栏导航树（随手记 + Projects + Habits + 回收站）+ 跨 Project 的 task 列表 / 搜索 / 过滤 + 排期 popover 两种模式（绑 Rail · 默认 / 自由时间 · 逃生口）；新增内置 Inbox Line（`isDefault: true`、不可删）作为"不挑 Project"的 task 默认容器；全面可逆性 + 软删除模型（Task / Line / AdhocEvent 状态加 `'deleted'`，回收站入口 + 二次确认的硬删 `*.purged`）；`AdhocEvent` 加 `taskId` 字段承接自由时间模式排期；Project 进度条改为条件渲染（仅有 milestone task 时显示），任务数永远显示；开放式 Project（无 plannedEnd）明确不计为风险；§10 Task/Line/AdhocEvent 类型定义同步更新；术语精简：`Chunk` 统一改 `Task`（types + events + schema + UI + ERD 全路径改名），降低 jargon 负担；`Line` 作为内部容器类型保留（`kind: 'project' \| 'habit' \| 'group'` 的 union 父类），但**UI 里永远展示具体形态 Project / Habit / Group / Tag**，不再出现"Line"这个字；`Pending` view 改名 `待决定 / Unresolved` 和 `status='pending'` 解耦；§5.7 Pending 不做 24h 老化，成为"等待决定"全集，check-in 条是其"近 24h"的子集）。历史：2026-04-17（check-in 动作集简化：旧的 `完成/跳过/Shift/忽略` 四按钮 + 四子动作 sheet 合并为三按钮 `完成 / 以后再说 / 归档`；`RailInstance.status` 改为 `pending / done / deferred / archived`（`active / skipped` 弃用，"当前进行中"纯墙钟派生）；Shift sheet 替换为 6 秒 Reason toast（3 枚快速 tag chip + undo，无强制 reason）；Postpone / Replace / Swap / Resize 从 Shift 类型里下架，Postpone 交给 Cycle View 拖拽，其余留 v0.3 重评；Pending 队列重命名并收编 `deferred` 条目 + 超 24h stale 的 pending —— 两个来源一个出口；§5.8 Review 热力图三分语义改绑 `deferred / archived / pending-stale`）。历史：2026-04-16（A 组 UI 底线：同步状态徽章、Now View 节奏条、Ad-hoc 叠层、编辑会话通用化、Cycle 记号改 C1、日期格式表落地；B 组 Now View 结构：多 Task pill 行、Slot 三形态、Next Rail 视觉、去掉铁轨副视图、`CURRENT RAIL` chip、Now 顶栏 `Now` + Mono 副标；C 组 Today Track Shift 交互：Skipped 态改 hatching、桌面 hover 出动作栏、Active 主 CTA 改 tonal `Done`、统一 Shift 标签 sheet、去 bento 保留单条时间线；D 组 Cycle View 骨架：按 Template 堆叠 section、顶部 day header 唯一模板切换入口、Cycle pager picker、summary strip 聚合、`⤺ 撤销本次编辑` 按钮、hatching 三分语义、Backlog 变 split drawer；E 组 Template Editor：删 Save 按钮 / 首次进入 inline 引导、Radix 10 色 popover、顶栏 tab + 2px 色条 + dashed `+ 新建模板`、summary strip 聚合、card 式 Rail 行 + time pill popover picker、行间 gap chip `+ 填充 Rail`、`⋯` 行菜单放 Line 绑定 / check-in toggle；通知重审：删 OS push / Capacitor 通知 / 通知权限链路，Signal 塌缩为 `showInCheckin` 布尔，§5.6 / §5.7 合成一条主线 —— check-in 条 + Pending 队列是同一机制前后两个时态；F 组 缺失页面：Projects / Settings 共用 master-detail 形态，Review 单尺度瀑布 + 节奏匹配度热力图（状态染色 + hatching 三分语义），Pending 队列按日期反序 + 每行 4 动作 + 侧栏 `·` 小点不显数字，Calendar 月历网格 + 点日弹 popover + 高级规则 drawer 四 section，新增 §5.9 Settings 定 5 section + 主题三档默认跟随系统 + i18n 语言在外观 / 时间制 + AI locale 在高级；G 组 设计语言：Terracotta CTA 用 `orange-9/10/11` 三档纯色不用渐变；No-Line Rule 明文白名单（装饰色条 + sticky hairline + focus ring）；Surface 四档 `sand-1..4` 取代 `border` 表达层级；圆角 token `sharp / sm / md / lg` = `0 / 6 / 10 / 16`；整站零 glassmorphism；非对称为默认布局。视觉实装阶段调整：Rail 色板从原 10 色剔除 `olive / mauve / gray`（与 sage / slate 近乎同色、或失去色相识别度），换入 `grass / indigo / plum` 覆盖饱和绿 / 冷静蓝 / 创作紫空位，保持 10 色不变但辨识度拉满；CN 主字体从 PingFang 改为 Noto Sans SC（思源黑体）以获得跨平台一致渲染。Terracotta CTA 从 `orange-9` 实测过于鲜亮，改绑 `bronze-9` 以贴合 ERD 原意的 #C97B4A 暖赭石基调）。
+> **状态**：活文档 —— 这里的任何决策都可以被推翻。最近更新 2026-05-18（v0.12 设计讨论锁定 · 同步信任模型 · §7.10）。本轮锁定一件事：sync 不只是机制正确性的问题，更是用户信任问题。§7.9 修完元数据漂移后 dogfood 暴露的是"用户能不能信任系统已经做对了"，不再是"数据安不安全"。新增 §7.10 引入两层模型 —— (a) **用户模式分层**：本地党 / 保险党 / 同步党 · 由活跃设备数自动推断 · **不在 connect 时让用户做"长期 / 临时"分类**（早期草案设计过三档选择，被讨论中拒掉，详见 §7.10.1 末尾"为什么不区分临时设备"）· mode 前进可推断、后退必显式；(b) **信任护栏五件套**：identity pinning（含 `lastKnownMode` 不变量字段）/ 离场 gate（强版同步党阻塞 + 弱版保险党软提示）/ heartbeat + 启动 reconcile（仅同步党）/ 时间维度感（失败持续时长 + pending 堆积主动警示）/ mode regression 守卫（数据层不一致不静默降级）。**讨论中固化的三条 UX 原则**：(1) 不替用户假设场景 —— modal 必须留 "稍后再说" / "我先看看" 这类逃生口，用户的实际处境优先于系统的猜测；(2) 主界面文案不放技术细节 —— "push failed 401 Unauthorized" 折叠到"详情 ⌄"，主界面保持人话；(3) **加功能点前先反思"不做会怎么样"**，避免堆积冷门冗余功能（本轮 §7.10 设计中三次中招"加分支处理新场景"：强制升级 modal / 临时模式只读 24h / connect-time 三档选择 —— 每次都该问"能不能干脆不区分"，工程师本能加分支，产品本能去分支）。三条原则已存进 `feedback_design_principles.md`。详细设计 + 5 个用户故事 + worst case A/B/C/D/E + 6 期 PR 计划见 §7.10。最近更新 2026-05-14（v0.11 设计锁定 · Task occurrences · 把"调度原子"从 Task 上拆出来）。本轮锁定一件事：原 `Task` 同时背着身份单元 / 完成态真源（§10.1）/ 调度原子三件事，"一件事多次坐下来做"被迫拆成 N 个兄弟 Task。新增 §10.6 引入 `TaskOccurrence`：一个 Task 下挂 0..N 条可独立排 slot / 完成 / reschedule 的 occurrence。**关键决策**：(1) `occurrence.percent` 沿用现有 `Task.milestonePercent` 语义（**主 Task 的里程碑标记位**，max-of-done 聚合），不是分摊权重也不是自身进度条；(2) Task 关联 occurrences 时 `Task.status` 完全派生（§10.1 例外段），manage 单位下沉；(3) `Task.slot` 单数字段保留为 0-occurrence 时的简易路径，加第一条 occurrence 时同 transaction 自动转换、零数据丢失；(4) 旧 `Task.subItems` 一次性迁移成 occurrence（label = title、done = done、id 派生 `occ-{taskId}-{subItemId}` 保证幂等），字段保留可读供老版本继续写、新版本双路读不写回；(5) 顶层 `Y.Map<id, TaskOccurrence>` 新 store，per-element CRDT 自动并 —— **顺手关掉** ROADMAP 停车场原本的「`Task.subItems` 重新拆 per-element Y.Array op」条目；(6) `.dryj` 容器版本不升 · 跨版本只需新版本启动 GC 孤儿 + subItems 兼容读两件事 · 不需要顶部冲突卡片 / readonly mode / 转换确认对话；(7) habit auto-task 管线本次明确不动（保持 `task-auto-{habitId}-{date}`）。**真数据验证**：跑 `tools/migrate/dump-tasks.ts` 在用户 5/11 / 5/13 / 5/14 三份本机 `.dryj` backup 上，128 task 中只有 1 条带 subItems（标题"（看子任务）"暴露是测试数据），`milestonePercent` user 数 = 0，所有 edge case bucket 全 = 0 —— 跨版本焦虑实测无对应数据形态。讨论纪要：D1 抽象、D2 字段集、D3 percent = 里程碑、D4 label = 步骤名、D5 status 派生、D6 slot↔occurrence 转换、D7 archive 级联、D8 subItems 收编 (a)、D9 CRDT per-element、D10 跨版本纯加法、D11 habit 不动、D12 §10.5 不参与，全部 12 条决策与 ERD 对齐。详见 §10.6（含 §10.1 / §10.4 / §5.5.6 / §7.7 同步增补）。最近更新 2026-05-08（v0.9.0 桌面端首版 ship 后 · 9 个 PR + 3 次 tag 重打的实装纪要）。本轮主要记录的是从设计锁定（同日先 ship 的 PR #12）到 v0.9.0 published GitHub Release 之间的实装偏离 + 教训：(1) **§15.2 stack 三处偏离**。原计划写的是 `tauri-plugin-stronghold` 存 refresh token + `tauri-plugin-http` 调 Drive API + deep link 接 OAuth callback。实装全部换了：`keyring` crate 替 stronghold（refresh token 是 server-revocable capability，stronghold 的 vault + master-password 模型对这种短命凭证 overkill；`keyring` 一个 `Entry::set_password` 直接落 OS keychain）；`oauth2` + `reqwest` crate 直接在 Rust 进程跑 authorization-code flow（不需要 webview，所以"绕 webview CORS"这个 `tauri-plugin-http` 的存在论据不成立 —— 本来就不在 webview 里跑）；`tokio::TcpListener::bind("127.0.0.1:0")` 让 OS 选随机端口替 deep link（deep link 要逐 OS 注册 LaunchServices / Windows registry / `.desktop` 文件，loopback 是 RFC 8252 推荐的 native-app pattern · 零注册成本 · Google OAuth 直接支持）。§15.2 / §15.3 已同步更新。(2) **图标三轮迭代 + macOS HIG 学习**。第一轮：原 PWA 沿用的 `icon-512.svg` 数学算错 —— 内层 `<g>` 上挂 `transform="scale(11.43)"` 但 `stroke-width="20"` 在外层定义，被缩放后实际成 ~228px 描边，三条铁轨弧线粗到糊成一坨黑色血滴形（用户在 dock 截图里看到了，叫"黑屁股"）。重写消除嵌套 transform 后铁轨设计可识别。第二轮：图标顶满 dock cell，看起来比邻居每个 app 都大 ~1.2x。**macOS 应用图标的 SVG 画布≠图标本体** —— Apple HIG 模板规定 1024 画布里图标本体只占 824（每边留 100px = 9.77% 透明 margin），让 OS 给所有 app 一个统一的 squircle "落点"。我们的 rounded rect 直接铺满整个画布等于自己绕开了系统统一感。第三轮：按 Apple 模板内缩到 `x=50 y=50 w=412 h=412 rx=93`（512 viewBox 下的等比映射），加暖底 `#FBF4EA` 让品牌温度落在视觉里，铁轨本体从 62% 涨到 75% body 占比让 dock 里有"claim"感。教训：调外观时**rsvg-convert 渲 PNG 看 256/64/32 三尺寸**比改 SVG 然后等 cargo 重 build 快一个量级，整个 iteration loop 缩短到秒级。(3) **Release 三次 tag 重打**。第一次 push `v0.9.0` 后 4 个 platform 的 `pnpm install --frozen-lockfile` 全炸 `ERR_PNPM_LOCKFILE_BREAKING_CHANGE` —— `release.yml` 把 `pnpm/action-setup` 钉在了 v10 但 `pnpm-lock.yaml` 是 `lockfileVersion: 5.4`（pnpm 7 时代格式）+ `package.json#engines` 钉的是 `pnpm >= 7`，CI 是 outlier。修：CI pnpm pin 7（PR #19）。第二次：Linux + Windows 通过，macOS 两个 target 都挂在 `failed to import keychain certificate`。原因是 `release.yml` 的 env 块把 `${{ secrets.APPLE_CERTIFICATE }}` 这种没设 secret 的 reference 渲染成**空字符串**而不是 unset env var，tauri-action 把空 `APPLE_CERTIFICATE` 当成"用户提供了 cert，请 base64 解码 + 导入 keychain" → 导入空载荷失败。**`${{ ... || '' }}` 这种 default 也救不了**因为它仍然 emit set-but-empty。唯一干净的 skip 是从 yaml 里**整个删掉**那 6 个 `APPLE_*` env 行（PR #20）。第三次：4/4 全绿 → 草稿 release 自动生成 → 13 件 platform binary + 7 件 `.sig` + `latest.json` 全到位 → `gh release edit v0.9.0 --draft=false --latest` published。这三次 fail 都是 CI hygiene 问题 —— 代码层 / 设计层 0 改动，但暴露了发布流程很多平台间的 cohabitation 假设。(4) **Apple 签名 deferred 的具体回归入口**。`release.yml` 头部的 doc-comment 块保留了 6 个 secret 名（`APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID`），enrollment 通过后只需把这 6 行 env 一次性粘回去 + 在 GitHub Secrets 设值，下个 v0.9.x tag 自动签 + notarize。**unsigned → signed 切换那次更新的 quarantine 行为没真实测过** —— 但 v0.9.0 当下用户只有我自己，不强测，等 v0.9.1 实际遇到再说。(5) **测试基线不动**：203 个 vitest case 全绿；Tauri 端 Rust 测试**没加**（`drive_auth.rs` 4 个 command 当前没有 unit test，loopback OAuth flow 涉及 OS 浏览器 + Google API + keychain 副作用，单测构造代价高于价值）—— 这是已知 debt，扩 beta 用户前要不要补再说。下方 "v0.9 桌面端方向锁定" 条目保留作为最初设计意图档案；本 ship-notes 段是这之后的真实实装路径。最近更新 2026-05-07（v0.9 桌面端方向锁定 · 反转 v0.7「Tauri 不做」决策）。本轮锁定一件事：(1) **桌面端 Tauri 壳从「❌ 明确不做」反转为 v0.9 主线**，理由：v0.7 ship 后 1 个月真实 dogfood 暴露出 PWA + Google Drive + 无后端三件事联立产生一个**结构性 UX 缺陷** —— Google OAuth implicit flow（PWA 唯一能用的）不发 refresh token，access token 1 小时过期，每个 ~1 小时窗口必须走 GIS 续 token 流程。即使配 `use_fedcm_for_prompt: true` 把 popup 降到 FedCM 底部小条，对日常用户也是不可接受的打扰节奏。日常用户预期"首次授权后零打扰"，这个体验在 PWA 架构里不可达 —— 是协议天花板，不是任何 prompt / 缓存策略能解决的事。Tauri shell 把 sync 走 desktop OAuth pattern（authorization code flow + PKCE → 拿 refresh token → 存 OS keychain via `tauri-plugin-stronghold`）+ access token 后台续期 = 物理上消除该 UI。同时是其它一些 PWA 限制（系统通知 / 文件选择器 / 全局快捷键 / 后台 sync）的总解。**auto-update 必须就位**（用户硬约束）—— 用 `tauri-plugin-updater` + 静态 manifest JSON 托管在 GitHub Pages / Vercel（无 DayRail 后端，与 §7.1 立场一致）。详细架构见新增 §15 桌面端章节。**WebDAV 等替代后端继续停车**（v0.7 时代列入 §7.3 "进阶选项"，现在已无明确用户诉求 —— 桌面端 + Drive refresh token 解决了原本 WebDAV 想解决的"零打扰"问题）。**`KEY_CONNECTED` localStorage 在 SW 升级后被清的 PWA bug 暂搁** —— 桌面端 ship 后 PWA 不再是日用主路径，影响降级；v0.9 实装中如果路过 SW 升级路径顺手修也行。**对齐失误反思**：之前 ROADMAP「❌ 明确不做」段把"Tauri 桌面壳"和"移动端响应式 / E2E 测试框架"列在一行，论据是 v0.7 时期"自用 + 小范围 beta scope 内 PWA 已够用"。1 个月真实 dogfood 后这个论据失效。教训：长期不做的决策应该周期性 challenge，不该长期挂着。最近更新 2026-05-07（v0.8.2 ship 后 · AI MVP 实装纪要）。本轮设计锁定（同日先 ship 的 PR #9）后，代码 PR #10 在 dogfood 中经历了多次反转，最终 ship 形态与原设计有几处实质性偏离。按时间顺序：(1) **JSON schema → free Markdown 整体反转**。设计锁定时定的 `{ headline, observations: [{ claim, from_data }], questions_to_sit_with }` 在第一次 dogfood 就被 code-tuned model（`claude-opus-4-7` via `claude-bridge`）持续 schema drift（返回 `finding / severity` 等 lint-style 字段）打穿。补的 alias map + lenient validator + 反 schema-drift 的 few-shot example 越加越多，复杂度跑过价值。整体反转：删 `validateObservationJson`（~150 行）+ alias map + 17 个测试 + `extractJsonFromResponse` 主用路径，改为自由 Markdown 散文 + 内联 「verbatim 引用」 中文方括号约定 —— 用户扫一眼引用就能判断 AI 是否 fabricated。`AiObservation` 类型从 `{ json: AiObservationJson }` 改为 `{ markdown: string }`。(2) **Vercel AI SDK（`ai` + `@ai-sdk/openai-compatible`）替代手卷 SSE**。原本手卷的 `consumeSse` + `parseSseBuffer` + `extractContentDelta` + 错误分类（~120 行 + ~30 个测试）被 AI SDK 的 `streamText({ model: provider(modelId), messages })` 替代。错误分类映射到 SDK 的 `APICallError` 类型，保留 `bodyExcerpt` 字段。SDK 通过**动态 import lazy load** —— 不开启 AI 的用户冷启动 bundle 不变（主 chunk 973KB / 291KB gzipped 不动；AI SDK 占用 ~380KB / ~100KB gzipped 的独立 async chunk，第一次 AI 调用时下载，session 内复用浏览器缓存）。(3) **System prompt 经过 5 轮 dogfood 迭代到 scene-staged「微信里给朋友回消息」persona**。每一轮都因为 model 总是输出"季度复盘"风格的 KPI 报告。Round 1：禁词（黑洞/拖低/必须/下周期建议）—— 模型用「严重欠账」绕。Round 2：禁 markdown bold label（`**主线**` / `**观察**`）—— 模型用独立短句 label 绕（「主线 / 我看到的」）。Round 3：加 anti-example 演示反面写法 —— 用户反馈这是反向投毒（"don't think about a pink elephant"），删掉。Round 4：persona-driven（"warm friend / counselor / kind elder"）+ 显式承载 DayRail「**允许错过**」哲学 —— substance 大幅改善但结构仍偏 dashboard。Round 5：scene-staging —— 从"你是谁"升级为"你身处哪个具体场景"：「几分钟前你朋友在微信里给你发了消息，你正在打字回 ta」+ ABOUT THE MEDIUM 显式段对比 chat reply vs report。medium 的社交常识压住了 dashboard 形态先验。最终 system prompt 显式承载「不评判 / 不下周建议 / 不 KPI 分析 / 提议 2-3 个温和小调整 + 把选择权交回」的形态指令。(4) **三个 Review scope 都接 AI 入口**。原 spec 锁定 Day + Cycle 双场景，dogfood 中发现 Review 还有 Month scope 没接 AI 是 UX 不一致 —— 加了 `MonthReflectionAi`，复用 Cycle 数据切片 + 缓存合成 cycle id `month-${YYYY-MM}`（v0.8.2 顺手实现 ERD §10 `Cycle.endDate` "v0.4 custom-length cycles" 的 reservation —— `upsertCycle` 接受可选 `id` + `endDate` 参数）。Day 反思空时不再 `return null`，改成显示斜体 hint「✨ 写完反思后，可以让 AI 帮你看看」 —— 之前 return null 的写法对用户完全没有 discoverability。(5) **Settings UI 加「刷新可选模型」+ 错误展示加 body excerpt 抽屉**。dogfood 中用户撞到 503 时 `[provider-error] Provider returned 503.` 太 opaque（看不到 bridge 真实回的 body）—— 加 `<details>` 抽屉显示 `bodyExcerpt`（前 500 字）。Model 字段加「刷新可选模型」按钮 + `<datalist>` autocomplete（走 OpenAI-compat `/v1/models` · `parseModelList` 容忍 `{data:[]}` / `{models:[]}` / 裸数组 / 裸字符串数组等多种 envelope）。Confirm panel 「发送」按钮原本写的 `bg-bronze-9` 是不存在的 Tailwind class（项目用语义 token `bg-cta`），导致按钮看起来像被禁用 —— 也在这一轮修了。(6) **model-tone 兼容性观察**。`claude-opus-4-7 via claude-bridge` 即使经过 5 轮 prompt iteration 仍偏向 structured 输出（独立短句 label 始终绕不掉）。这是 RLHF 训练的天花板，不是 prompt 能继续解决的。换 OpenRouter 的 `claude-3-5-sonnet` / `gpt-4o` 通常 prose 更流畅。当前样本只有 1 用户，扩 beta 用户后再决定是否把"推荐 model 默认值"文档化进 ERD §6.6。(7) **AI 全局记忆（"软件记得我"）未纳入 v0.8.2，停车 v0.9 candidate · 结论未定**。dogfood 中冒出"AI 应该有跨调用的记忆，能记得用户身体不好 / 在备考 / 最近压力大等长期事实"的产品想法。当前结论：先用 v0.8.2 跑 2-3 周真实使用，等有具体的"我希望 AI 记住 X 而不忘 Y"用例再设计；当前思路是 `aiMemories` 同步流 + 反思后可选「记下这个」accept/reject UI，但数据模型（独立 store 还是 background 扩展）/ TTL 衰减 / 隐私边界（默认随同步还是仅本机）都未定。详见 `docs/ROADMAP.md` v0.9+ 停车场表。(8) **测试基线**：147 → 203 / 13 → 15 suites（+56 case · +2 suite）。新增主要在 `aiClient.test.ts`（14 case · `parseModelList` 各种 envelope + `listModels` 错误分类）+ `aiPrompts.test.ts`（42 case · scene-staging / 「允许错过」哲学 / 「微信里」medium framing / persona / 引用约定 / 数据切片字段）。`aiValidate.test.ts`（17 case）随 JSON schema 反转一起删掉。下方"v0.8.2 设计锁定 · AI MVP"条目保留作为最初设计意图档案；本 ship-notes 段是这之后的真实实装路径。最近更新 2026-05-07（v0.8.2 设计锁定 · AI MVP）。本轮锁定四件事：(1) **首发场景从『Day 还是 Cycle 实施时再选』收敛为 Day + Cycle 双场景同时上**。两个场景共享 §6.6.1 用户背景注入路径 + §6.2 内置英文 system prompt + JSON 结构化输出 schema；差异只在 scenario-specific framing block + 数据切片 selector + UI 入口位置 + 缓存字段挂哪个实体。Day 入口接 §4.1 DailyReflection 块底部 + Review · Day；Cycle 入口接 Review · Cycle 视图 picker chip 旁。Decompose / Observe 继续停车 v0.8.3+。staged ship（先 Day 后 Cycle）讨论中拒掉 —— 客户端 + system prompt + 输出 schema + UI 卡片渲染全共用，分两轮反而要写两遍 ERD + 两个 PR + 两轮回归 checklist。(2) **API key 存储位置反转**：v0.8 设计锁定时 §6.6 表格写『浏览器内存 + Y.Doc `userProfile.aiApiKey` 持久化（同步流的一部分）』，本轮改为 **仅本机 localStorage（key: `dayrail.aiApiKey`），不入同步流** —— 与 §7.1 凭证心智一致，与 Drive OAuth token / WebDAV 密码同档。Base URL / Model name / Background / aiEnabled 四个『通道里的设置』继续走 Y.Doc 同步流（与主题色 / `enabledHolidayRegions` / `calendarRuleOrder` 同档）。新增 §6.6『userProfile 字段分流原则』段把这条二分写明，二分判别：『这台设备上没了等价于失去对外服务访问权 → 凭证 → 仅本机；丢了只是设置回到默认 → 设置 → 同步流』。`userProfile` Y.Map 因此**只放可同步设置**，AI key 不进 Y.Doc。(3) **AI 输出持久化策略**：选 ephemeral + 单字段 LWW 缓存最近一次。Day 复盘缓存 → `DailyReflection.lastAiObservation: { generatedAt, model, json } | undefined`；Cycle 复盘缓存 → `Cycle.lastAiObservation` 同形态。再点一次直接覆盖；不留历史 array（与 §6.1『AI 输出只是初稿、不保留 AI 原版』心智一致，避免单日反复点 N 次塞 N 条进同步流）。用户想留就『复制 markdown 贴回 reflection』显式动作。挂在 reflection / cycle 实体而不是单独 store 的理由：reflection 已经是『该日的 user 自由文本』实体，AI observation 与之同步增删（reflection 删了 AI observation 跟着没意义）；cycle 同理。(4) **§6.4 首次启动『可关闭 AI 引导卡』UI 停车**到 v0.8.3+（§6.4『默认关闭』toggle 策略本身保留）。理由：v0.8.2 已塞三件事；用户从 SideNav → Settings → AI 自然找得到；引导卡先做容易让用户觉得『必须配 AI 才完整』，与『工具应该安静』价值冲突。触发条件：v0.8.2 ship 后两周看 AI 启用率，如果普遍未启用再设计 surface。本轮测试基线预期：147 → ~160（新增 ~13 case：客户端 SSE / JSON 解析 / error 分类 + prompt builder 三背景 × locale + Settings 字段 round-trip）。设计实装路径详见 §6.6 / §6.6.2 重写。最近更新 2026-05-06（v0.8.1 ship 后 · §5.4 实装纪要）。v0.8.1 ship 后实测 + 多轮迭代捕获到的 deltas（设计层面的而不是单纯实施细节）：(1) **CalendarRulesDrawer 收敛成单一规则列表 + 条件组属性表单**。原计划是「顶部新加优先级 section + 保留 4 个 kind-specific section」的渐进路线，实测用户希望排序 / 新增 / 编辑全在同一处；遂把 4 个 kind-specific section 删掉（function 仍留在 file 内做 reference），所有 CRUD 收到顶部「规则列表」内 inline 完成。属性匹配的子表单也从「4 kind 平铺 toggle + region/note filter 飘在外面」重构为「条件组卡片，narrowing 选项 nest 在所属 kind 卡内」—— 节假日卡（含 假日/非假日 子选）/ 调休 / 我的备注（含 contains/exact toggle + datalist autocomplete 拉用户已写的 label）。schema 不动，UI 只是 derive。(2) **「观察日」UI 文案改「节庆」**。`ExternalEvent.kind = 'observance'` 不动，UI 层把"母亲节 / 七夕 / 教师节 / 圣诞"等归类为「节庆」更贴近中文使用习惯；表单 picker 把「节假日 (holiday)」+「节庆 (observance)」合并成单一「节假日」 toggle，激活后展开 假日 / 非假日 二级 multi-select。schema 仍是两元素 kinds，UI 层 derive。(3) **`CalendarRuleExternalEvent.noteLabelFilter`**：`{ mode: 'contains' | 'exact', query }`，仅对 user-note kind 生效；空 query 降级"匹配任意备注"；exact 模式接 `<datalist>` 拉所有 distinct 用户备注 label 做 autocomplete（O(N) 一次扫描，typical N 几十条可忽略）。(4) **drag handler 抬到 container 级别**：原 per-row dragOver/drop 在第一行上方 / 末行下方有 deadzone 触发不到；改成 container-only 后用光标 Y vs 各 row midpoint 算 dropIdx（0..N），死区为 0；drop 时不读 React state（async 可能滞后），从 drop 事件 `clientY` + `currentTarget.getBoundingClientRect()` 重新算落点 — WYSIWYG 双保险（视觉指示器与最终落点永远对得上光标当时位置）。(5) **resolver caller 漏传 `userProfile`** 的 bug 修复：`pickTemplateForDate` 的 state Pick 之前不含 `userDayNotes` / `userProfile`，导致 resolver 拿不到 `calendarRuleOrder`，"拖了不生效"——widen 类型签名后 typecheck 自动揪出 6 个 caller（Calendar / CycleView / Review / SchedulePopover / cycleFromStore / reviewFromStore）。这是 `Pick<DayRailState, ...>` 类型契约的反面教训：依赖项漏在签名里只能被 typecheck 暴露，运行时 silent。(6) **Calendar 单元格视觉减负**：cell tint step-4 → step-3，删左 5px strip + 删顶 2px border + 实色 step-9 模板 badge 改 dot + ink-secondary 文字。原本三层颜色叠（tint + strip + border + 实色 pill）reinforcing 同一信息，看起来像 90s 电子表格热力图；现在只剩淡 tint + 一颗小色点 + 文字，扫读保留但 saturation 大幅下降。(7) **off-rail row label 列宽溢出修复**：原本「未归属 / off-rail · 拖回任意 rail 即可恢复」是 2 行 stack + dashed border 框，宽度超过 220px 列把日期格全部挤偏移；副标题降级到 `title=` tooltip，仅保留主标题"未归属"，加 `max-w-full overflow-hidden` 防将来再溢出。本轮 ship 测试数 147 / 13 suites（v0.8.0 是 129 / 12，v0.8.1 +18 case）。下方 v0.8.1 design-lock 条目（"§5.4 CalendarRule 重构"）保留作为最初设计意图；本 ship-notes 段是这之后的真实实装路径。最近更新 2026-05-06（v0.8.1 · §5.4 CalendarRule 重构）。本轮锁定两件事：(1) §5.4 优先级模型从硬编码（`single-date 100 > date-range 50 > cycle 30 > weekday 10`）改为**用户控制的全局排序**：`UserProfile.calendarRuleOrder: string[]` 持久化用户拖拽出的优先级链；resolver 先按 order list 走，order list 里没有的 rule 退回到 legacy 数字 priority + createdAt 兜底。`CalendarRule.priority` / `CalendarRuleRevision.priority` 从必填改为可选，新写不再设；老 rule 直到用户碰一下规则抽屉才被纳入 order list（隐式迁移）。(2) §5.4 新增 **`external-event` 第五种 rule kind**：按 §14 ExternalEvent 属性匹配（`match.kinds: ('holiday' | 'observance' | 'makeup-workday' | 'user-note')[]` + 可选 `match.regions: string[]`），命中即应用 `templateKey`。例如「所有节假日 → restday」一条规则，无需逐日列举；将来 ICS 订阅（§14.4）一旦 ship，自动也能被这条规则匹配，不用重做 resolver。新 action `upsertExternalEventRule` / `setCalendarRuleOrder` · 既有 5 个 upsert action 都接入 order list 维护（新 rule prepend 到顶部）· 既有 remove action filter 出 order list。CalendarRulesDrawer 顶部新增「整体优先级」section（drag-to-reorder 全 kind 的 rule），底部新增「属性匹配」section（external-event 编辑器）。最近更新 2026-05-06（v0.8.0 加 §14.3 用户标注）。本轮单点扩展：v0.8.0 在节假日数据集之外再加一类**用户标注**（user-defined day notes），共享 §14.1 `ExternalEvent` 渲染层。新增 §14.3「v0.8.0 实施 — 用户标注」（`UserDayNote { id, date, label, color?, createdAt, updatedAt }`，Y.Doc top-level `userDayNotes` Y.Map keyed by id；UX 三个 surface：Calendar 月视图编辑入口 / Cycle View 日期单元格 chip 叠加 / Today Track 顶栏 metadata 行 · Review Day 顺手挂）。`ExternalEvent.kind` 加一档 `'user-note'`（描线 + 用户色，与节假日 chip 形态一致但视觉区分）。§14.0 动机段重写：把"外部"重新定义为"外部于 task pipeline"（不进物化 / purge / revision），而非"外部于用户"——两类 source（外源节假日 + 内源用户标注）都满足这个意义上的"外部"，共享渲染路径。原 §14.3 ICS 订阅停车场草稿顺序后挪到 §14.4。最近更新 2026-05-06（v0.8 设计锁定 · 外部事件源 + AI 复盘）。当前状态快照 + 后续待办见 `docs/ROADMAP.md`。本轮锁定四件事：(1) 新增 §14 **外部事件源**：抽象 `ExternalEvent` 接口，v0.8.0 ship 内置节假日数据集（bundle 仓库内 JSON · region multi-select），ICS 订阅留 §14.3 v0.9+ 停车场草稿。(2) §6 AI 辅助从「明确不做」解封：新增 §6.6 **v0.8 实施说明**，§6.3 的 OpenRouter-only 接入扩为 **OpenAI-compatible 通用客户端**（Settings 三字段：base URL / API key / model name），覆盖 OpenRouter / Groq / Anthropic-via-proxy / Ollama / LM Studio / `claude-code-router` / `claude-bridge` 等所有兼容端点；显式承认用户已有 Claude Code / Cursor 套餐 + CLI 桥接的存量生态。(3) 新增 §6.6.1 **用户背景 `userProfile.background`**：单 Markdown blob，Y.Doc 同步流，AI 调用前 prepend 到 system prompt；心智对标 Claude Code 的 `CLAUDE.md`。「AI 优化我的背景」按钮停车，等 v0.8.0 ship 后看真实背景文本质量再决定。(4) §6.6.2 v0.8.0 复盘场景 v1 选 Day 还是 Cycle 留实施时拍板；Decompose / Observe 继续停车。§9.3 AI 选型表对齐：网关从 "OpenRouter" 改为 "OpenAI-compatible 协议（默认接入 OpenRouter，可改任意端点）"；fallback chain UI / 远端免费模型清单 / 多 provider 适配层全部明确不做。下方 History 节保留历史决策链。最近更新 2026-04-19（v0.4 实装推进一轮 · 自用 MVP 就绪）。本轮主要落地（habit-binding 重构之后）：(1) `rail.recurrence` **整段删掉** —— Template + CalendarRule + `HabitBinding.weekdays` 三层过滤够了；rail 级 weekday 过滤只制造空交集 trap。(2) 多 task 同 slot 从数据到 UI 彻底打通 —— CycleCell 堆叠 pill、Today Track 每 task 独立行 + 独立操作、Pending 逐条操作，§4.1 的 one-to-many 不变量在界面上看得见。(3) §5.5.0 B 节奏带点击回填接上。(4) §10.3 配置变更 purge 流程上线，HabitDetail 改 binding + Template Editor 删 rail 都带确认 + Edit Session 批量回滚。(5) Backlog drawer 从 Cycle View 提升到 App shell —— `g b` 快捷键、SideNav 入口、drawer 内 quick-create 带 Line picker。(6) `scheduleTaskToRail` / `scheduleTaskFreeTime` 在 deferred 任务被重排期时自动翻回 pending —— "改期 = 反悔 defer" 语义。(7) Review 加周期对比 match% delta + 每行 stats + 每 phase 段内 match%；HabitDetail 节奏带同步加 phase-band 叠加 + 每段 match%。(8) Cycle 格子任务 pill 可拖拽换日期 / rail。(9) Backup 导出/导入完成 · JSON 经 snapshot write + OPFS reset 完成回灌（Settings → 高级）。(10) 35 个 vitest case 分 3 个 suite 覆盖 materializer + §10.3 purge + timeline/check-in/pending 选择器。下方 History 节保留历史决策链。最近更新 2026-04-19（v0.4 habit 绑定收敛 + Task 编辑面铺开）。四件事一起定：(1) 新增 `HabitBinding` 实体（habitId + railId + 可选 weekdays 过滤器），取代原来 `Rail.defaultLineId === habit.id` 的绑定方式；修掉"两个 habit 同一时段不同 weekday 会在同一 template 里挤两条 rail"的结构性扭曲。(2) `Rail.defaultLineId` 字段彻底删除，曾承担的两个职责分别交给 `HabitBinding` 和"以后真需要再加"。Cycle quick-create 默认落 Inbox。(3) Today Track RailCard + Cycle View slot popover 都接入 TaskDetailDrawer，可以就地改备注 / 子任务 / 里程碑 / 排期。(4) Auto-task 的编辑权限表定稿：title / schedule / milestone 只读（它们是 habit 属性），note / subItems 可改（这是"本次上下文"）；habit 改名只影响未来新物化的 auto-task，老的因 materializer 幂等不会被回写。§5.5.0 / §10.2 / §10.3 / §10.4 / §5.2 / §5.3 一并更新。历史：2026-04-19（数据模型一致性大整理 · v0.4 基石）。合并发布六件事：(1) §10 新增"**三轴速览**" + "**完成状态归属规则**"——Line / Rail × Template × Time / Task 三轴正交，`Task.status` 成为所有完成语义的单一真源，RailInstance 收窄为"墙钟日志"（actualStart/End + Shift 标签），不再和 Task.status 并列承担"做没做"的问题。修掉 v0.3 遗留的"Tasks 页勾完成但 Today Track 仍显 pending"这类一致性裂缝。(2) habit 的"每次发生"改为一条 **auto-task**（幂等 id = `task-auto-{habitId}-{date}`，`lineId = habitId`，`title = habit.name`）。habit Line 硬约束"下不持有手工 Task"；NewTaskInput 永不暴露给 habit 详情页。habit 和 project 完全对齐完成路径 —— Today Track / Pending / Review 全部查 Task.status。(3) §10.2 定下 Auto-task 物化策略 Ⅱ · **按需 on-demand**，触发点：Today Track boot / Cycle View 切换 / 节奏带打开 / Calendar 翻月 / Review 切 scope / 节奏带点回填。每个 `(habitId, cycleId)` 物化一次就打标记，后续不重算；幂等 id 兜底。(4) §10.3 定下 Habit 配置变更规则：改 Rail 的 recurrence / 时间 / templateKey / defaultLineId 之一时，扫 `[今天, 最远已物化 cycle 末尾]`，**只影响** `status='pending' AND plannedStart > now` 的 auto-task（purge + 按新配置补齐），已完成 / 跳过 / 归档的保留。三类事件（task.purged + task.created + rail.updated）在同一个 Edit Session 下，一键回滚。保存前 confirm。(5) §5.5.0 加 **A+B 节奏带交互**：A 只读 + B 点击回填（done / skipped / shifted / clear），点未物化格子现场 upsert。主路（今天）在 Today Track，兜底（忘标 / 漏开 app / 事后补打）在节奏带原地。(6) §5.5.0 **明确关闭** "habit 和 Rail 合并为单一实体"的开放问题 —— 当前三轴分离是特性不是债：Template = 结构不同的一天，habit 是"安排*进*一天的活动"不是"凌驾*于*日历的 cron"，新建模板时重新安排 habit 本来就是 Template 的题中之义。原"跨模板抄很多 rail"、"请病假 habit 不 fire"、"新模板要手动迁移"三个 framing 统一翻转：这些都不是痛点，是设计。§5.6 / §5.7 / §5.8 写路径全部改为读写 Task.status，RailInstance.status 字段在 v0.4 进入 deprecated 状态（保留到 v0.5 清理）。历史：2026-04-18（§5.5.0 Habits 视图心智校正（v0.4 锚点）：用户视角 **habit = 一件反复发生的事**，不是"一堆 Task 的桶"。Project 是 N 个 Task 聚成一个目标；Habit 是 1 件带 recurrence 的事。Habit Line 增加硬约束"不持有 Task"；habit 详情页去 Project 化——去掉 NewTaskInput / FilterBar / GroupedTaskList，改为"名 + 色 + 当前 phase" → 近 14 天节奏带 → 绑定 Rail 列表 → Phase 时间线 → 备注 → Danger。曾讨论过的"habit 下折叠 Task 小抽屉"（B 方案）明确放弃，方向不一致的心智代价 > 杂事便利。`Line.kind='habit'` 最终是否并入 Rail 族合并为单实体留作 schema 级开放问题，本次不碰。历史：2026-04-18（§5.5.0 Habits 真实装（v0.3.3）：habit 分两档——"简单 habit"（默认，为保持固定强度而做，不暴露 phase 概念）和"进阶 habit"（opt-in，手动启用 phase 追踪后可加任意多个时间段标签）。HabitPhase 是纯用户定义的时间段 label（`{ name, description?, startDate }`），没有 endDate、没有预设枚举、没有自动升降、没有 streak / 完成率派生——这些都延到 v0.4 Review 集成。"启用 / 未启用"完全从关联 HabitPhase 记录数派生，不加 `Line.phaseEnabled` 冗余字段。§10 原先 over-engineered 的 `type Phase`（带 advanceRule / railOverrides）下架，换成 `type HabitPhase`；`type Line` 的 phases/currentPhaseId/tasks 内嵌字段拿掉，`kind` 作为 union discriminator，关联数据走独立实体；`Line.createdAt` / `archivedAt` / `deletedAt` 统一到 `number` (epoch ms) 对齐实装。新事件 `habit-phase.upserted` / `habit-phase.removed`。历史：2026-04-18（§5.3.1 Edit Session v0.3 扩到 Cycle View：进入 `/cycle` 开隐式会话；CycleDay 模板切换、Slot drag-drop 排 / 撤排、slot popover "移除排期" / "标记完成"、空格 quick-create、orphan 守护批量 unschedule 全部挂同一 `sessionId`；顶栏常驻"⤺ 撤销本次编辑 · N"按钮一键回滚整批，离开或 15 min idle 自动关。Core 侧对 `overrideCycleDay` / `clearCycleDayOverride` / `scheduleTaskToRail` / `unscheduleTask` / `createTask` / `updateTask` 全部加 optional `sessionId` 参数，appendEvent 带上后 `undoEditSession` 的 drop-session-events 直接一并回滚。单条撤销路径（slot popover 移除 / CycleDay 恢复默认）保留。历史：2026-04-18（§5.4 CalendarRule v0.3 高级规则开动：weekday / cycle / date-range 三种 kind 的 typed `value` + resolver + UI 全部上线。Resolver 按 priority desc 遍历所有规则（single-date 100 > date-range 50 > cycle 30 > weekday 10），miss 才回退内置启发。weekday 规则首次启动自动 seed（workday 覆盖周一-五 / restday 覆盖周末），行为与旧硬编码启发等价、无 breaking change、OPFS 不用清。"高级日历规则" drawer 重新挂上：四段（single-date / date-range / cycle / weekday），每段列表 + 新建 form + 删除；v0.3 采"删 + 重建"，真 in-place edit 留 v0.3.1；drawer **不**走 §5.3.1 Edit Session（即时持久化，与 Cycle View 同策略）。§10 CalendarRule 类型块补 typed value variants + v0.3 实装规矩；§5.4 drawer 小节同步细化。历史：2026-04-18（路由库 + URL 结构拍板：v0.2 用 `react-router-dom` v6，不上 `@tanstack/router`——类型化 params 的卖点对当前复杂度溢价过高；URL 结构 `/` / `/cycle` / `/tasks` + `/tasks/inbox` / `/tasks/line/:lineId` / `/tasks/archived` / `/tasks/trash` / `/review` / `/pending` / `/calendar` / `/templates` / `/templates/:key` / `/settings` / `/settings/:section`。进 URL 的状态：Tasks selection、Settings section、Template tab；搜索 / 过滤 chip / Cycle anchorDate 留本地 state 不入 URL。详见 `docs/v0.2-plan.md §3`。历史：2026-04-18（§5.3 Cycle View 顶部 DAYS 区块合并：原"顶部大 header（跨所有 section、唯一）"取消；section mini-header 从只读升级为**唯一**模板切换入口——每个日期格本身就是触发器，点开同一套 popover（模板列表 + 覆盖态时多一条"恢复默认"），overridden 指示点从顶部 DayButton 挪进 mini-header 的日期格。理由：两处 DAYS 行信息重复、顶部区块和 sticky summary strip 挤占纵向空间；保留"一件事一个入口"——只是入口从"顶部唯一 master"挪成"每个 section 的 mini-header 里自己那几天"。历史：2026-04-18（§5.3 Cycle View 切换模板时的 orphan-task 守护：旧模板下的 Rail 被新模板"切走"时，已排到这些 Rail 的 task 会被静默孤立；现在加一层确认——N=0 静默切，N>0 弹 `将移出 N 个已排任务 · 继续 / 取消`，continue 后批量 `task.unscheduled` 再写规则；"恢复默认"同规则。§5.5 Tasks 视图列表形态调整：状态 chip 从顶部移除，列表主体改为"未完成 / 已完成"两段折叠——未完成展开、已完成默认折叠、未完成空时已完成自动展开并在位置放"都搞定了 ✓"；Archived / Trash 仍只在左栏有入口；搜索命中时两段都展开。历史：2026-04-18（Cycle View CalendarRule 持久化：§5.3 的 CycleDay 模板切换从"本地 state"改为即时写 `calendar-rule.upserted` / `calendar-rule.removed` 事件；`cr-single-{date}` 去重 id；§5.3.1 Edit Session v0.2 范围收窄到只剩 Template Editor，Cycle View 会话级 undo 推迟到 v0.3，面内的误触回退由 Slot popover 的"移除排期" + CycleDay 的"恢复默认"两条单条动作承担；§10 CalendarRule 补 v0.2 实装细则——只 single-date 生效、id 规则、priority=100、事件形态）。历史：2026-04-18（§5.5 从 `Projects / Lines View` 重构为 `Tasks 视图`，定位为"任务管理主入口"—— 侧栏导航树（随手记 + Projects + Habits + 回收站）+ 跨 Project 的 task 列表 / 搜索 / 过滤 + 排期 popover 两种模式（绑 Rail · 默认 / 自由时间 · 逃生口）；新增内置 Inbox Line（`isDefault: true`、不可删）作为"不挑 Project"的 task 默认容器；全面可逆性 + 软删除模型（Task / Line / AdhocEvent 状态加 `'deleted'`，回收站入口 + 二次确认的硬删 `*.purged`）；`AdhocEvent` 加 `taskId` 字段承接自由时间模式排期；Project 进度条改为条件渲染（仅有 milestone task 时显示），任务数永远显示；开放式 Project（无 plannedEnd）明确不计为风险；§10 Task/Line/AdhocEvent 类型定义同步更新；术语精简：`Chunk` 统一改 `Task`（types + events + schema + UI + ERD 全路径改名），降低 jargon 负担；`Line` 作为内部容器类型保留（`kind: 'project' \| 'habit' \| 'group'` 的 union 父类），但**UI 里永远展示具体形态 Project / Habit / Group / Tag**，不再出现"Line"这个字；`Pending` view 改名 `待决定 / Unresolved` 和 `status='pending'` 解耦；§5.7 Pending 不做 24h 老化，成为"等待决定"全集，check-in 条是其"近 24h"的子集）。历史：2026-04-17（check-in 动作集简化：旧的 `完成/跳过/Shift/忽略` 四按钮 + 四子动作 sheet 合并为三按钮 `完成 / 以后再说 / 归档`；`RailInstance.status` 改为 `pending / done / deferred / archived`（`active / skipped` 弃用，"当前进行中"纯墙钟派生）；Shift sheet 替换为 6 秒 Reason toast（3 枚快速 tag chip + undo，无强制 reason）；Postpone / Replace / Swap / Resize 从 Shift 类型里下架，Postpone 交给 Cycle View 拖拽，其余留 v0.3 重评；Pending 队列重命名并收编 `deferred` 条目 + 超 24h stale 的 pending —— 两个来源一个出口；§5.8 Review 热力图三分语义改绑 `deferred / archived / pending-stale`）。历史：2026-04-16（A 组 UI 底线：同步状态徽章、Now View 节奏条、Ad-hoc 叠层、编辑会话通用化、Cycle 记号改 C1、日期格式表落地；B 组 Now View 结构：多 Task pill 行、Slot 三形态、Next Rail 视觉、去掉铁轨副视图、`CURRENT RAIL` chip、Now 顶栏 `Now` + Mono 副标；C 组 Today Track Shift 交互：Skipped 态改 hatching、桌面 hover 出动作栏、Active 主 CTA 改 tonal `Done`、统一 Shift 标签 sheet、去 bento 保留单条时间线；D 组 Cycle View 骨架：按 Template 堆叠 section、顶部 day header 唯一模板切换入口、Cycle pager picker、summary strip 聚合、`⤺ 撤销本次编辑` 按钮、hatching 三分语义、Backlog 变 split drawer；E 组 Template Editor：删 Save 按钮 / 首次进入 inline 引导、Radix 10 色 popover、顶栏 tab + 2px 色条 + dashed `+ 新建模板`、summary strip 聚合、card 式 Rail 行 + time pill popover picker、行间 gap chip `+ 填充 Rail`、`⋯` 行菜单放 Line 绑定 / check-in toggle；通知重审：删 OS push / Capacitor 通知 / 通知权限链路，Signal 塌缩为 `showInCheckin` 布尔，§5.6 / §5.7 合成一条主线 —— check-in 条 + Pending 队列是同一机制前后两个时态；F 组 缺失页面：Projects / Settings 共用 master-detail 形态，Review 单尺度瀑布 + 节奏匹配度热力图（状态染色 + hatching 三分语义），Pending 队列按日期反序 + 每行 4 动作 + 侧栏 `·` 小点不显数字，Calendar 月历网格 + 点日弹 popover + 高级规则 drawer 四 section，新增 §5.9 Settings 定 5 section + 主题三档默认跟随系统 + i18n 语言在外观 / 时间制 + AI locale 在高级；G 组 设计语言：Terracotta CTA 用 `orange-9/10/11` 三档纯色不用渐变；No-Line Rule 明文白名单（装饰色条 + sticky hairline + focus ring）；Surface 四档 `sand-1..4` 取代 `border` 表达层级；圆角 token `sharp / sm / md / lg` = `0 / 6 / 10 / 16`；整站零 glassmorphism；非对称为默认布局。视觉实装阶段调整：Rail 色板从原 10 色剔除 `olive / mauve / gray`（与 sage / slate 近乎同色、或失去色相识别度），换入 `grass / indigo / plum` 覆盖饱和绿 / 冷静蓝 / 创作紫空位，保持 10 色不变但辨识度拉满；CN 主字体从 PingFang 改为 Noto Sans SC（思源黑体）以获得跨平台一致渲染。Terracotta CTA 从 `orange-9` 实测过于鲜亮，改绑 `bronze-9` 以贴合 ERD 原意的 #C97B4A 暖赭石基调）。
 >
 > 本文档描述 DayRail 的产品逻辑、交互设计与技术选型。它不是最终蓝图，而是设计意图与取舍的记录（包括我们考虑过又否决掉的方案），方便贡献者理解代码**为什么**长成这样。
 >
@@ -1881,6 +1881,439 @@ Y.Doc 序列化字节仍是 sync 传输格式（`Y.encodeStateAsUpdate(doc)`）�
 | F | Sanity check + UI 改语义 | `BootGate.tsx` · `syncController.ts` · `SideNav.tsx` |
 
 预估 ~400 行 source · 一节 ERD · 跑现有 203 测试 + 加针对 store 的单测 + 双端 dogfood（桌面 + 浏览器各一轮）。
+
+### 7.10 v0.12 实施说明 — 同步信任模型 · 三种用户模式 + 五件套护栏
+
+> 状态：2026-05-18 决策讨论锁定（doc-only PR · 实施分阶段独立 PR）。本节延续 §7.6 → §7.7 → §7.8 → §7.9 的修复路径：前面几节解的是"sync 机制本身的正确性"，本节解的是"用户在 sync 出问题（或没出问题）时的体感与信任"。**取代** §7.6 / §7.8 中"sync = 单一模式 · UI 状态 = 单一状态点"的隐含假设；其余决策（push firewall / smart diff / co-resident store / Drive history UI）继续生效。
+
+**触发因素 · 用户故事**
+
+§7.9 修完元数据漂移之后，dogfood 中暴露的不再是"数据安不安全"，而是 **"用户能不能信任系统已经做对了"**。讨论中浮现的几个具体故事（归档摘要）：
+
+- **故事 1 · Identity 错连**（最隐蔽）：重连 Drive 时账号选择器分神点错（默认选中浏览器当前登录的另一账号），系统沉默接受。从此 push 进了错账号的 appdata，几个月后才发现真账号备份停在某个旧时点。
+- **故事 2 · 关电脑前未检查**：18:30 合上工作 Mac 回家，pagehide push silently fail。下次到家打开个人 Mac 看到的是早上版本 —— 不是误读信号，是**根本没有信号触达用户**（用户不会主动 verify）。
+- **worst case A · 跨周末分歧**：周五 push 失败，周末家 Mac 基于"周五早上视角"调整下周计划，周一开工作 Mac → 12 条字段级冲突。**冲突数量线性于时间，认知成本指数于时间**。
+- **worst case B · 假期分歧**：工作 Mac 节前 push 失败，假期只用家 Mac，节后回办公室 → 2 周累积冲突，记忆完全失效。
+- **worst case C · 长期 identity 漂移**：故事 1 持续几个月 → 两台 Mac 各自在不同账号上"同步成功" → 触发条件是某台机器坏了去拉数据，发现少了大量内容。**成本 = 数月数据不可逆丢失**（不是冲突 · 是直接没了，因为另一台设备已经在错误状态上被反复覆盖）。
+
+共同根因：**当前 UI 把"失败状态"表达为瞬时 boolean，缺时间维度、缺用户意图分层、缺接收端可见性、缺源头预防**。
+
+叠加一个之前没认真分类的观察：**不是所有用户都需要 sync**。当前 DayRail 把 backup 与 multi-device sync 揉成同一个 mode（连了 Drive → 全套机制开），导致：
+- 单设备保险党觉得 ConflictPanel / pull reconcile / "同步策略"等概念多余
+- 多设备同步党觉得绿点不足以承担 worst case 信任
+
+**决策概览**
+
+引入两层模型 ——
+
+1. **用户模式分层**（前进可推断 · 后退必显式）：本地党 / 保险党 / 同步党。Mode 由当前活跃设备数自动推断 · 不让用户在 connect 时做"长期 / 临时"分类 · mode 不会被系统静默回退（见 §7.10.1）。
+2. **信任护栏五件套**（按 mode 启用子集）：
+   - Identity pinning · 账号身份基线（含 `lastKnownMode` 不变量）
+   - 离场 gate · 强版（同步党）+ 弱版（保险党软提示）
+   - Heartbeat + 启动 reconcile · 仅同步党
+   - 时间维度感 · 失败持续时长 + pending 堆积主动警示
+   - Mode regression 守卫 · 数据层不一致时不静默降级
+
+**为什么不让用户在 Settings 显式选 mode（拒绝方案 X）**
+
+显式三档「不连云 / 仅备份 / 多设备同步」UX 边界清楚，但要求用户**自我分类**并理解三档语义差异。DayRail 的 §8 No-guilt design + Silent by default 一直是"让系统懂用户"而不是"让用户教系统" —— v0.11 occurrence adoption gate、samples-only flag、§7.9 metadata 推断都是这条路径。隐式推断方案 Y 与之一致。代价：mode 切换的时机和告知必须做对（见 §7.10.1 的"mode 上升"和"mode 下降"两段）。
+
+**为什么 mode 不能静默回退**
+
+mode 上升可以由"检测到新活跃设备"自动触发，但**回退路径必须由用户显式触发**（Settings → 主动断开 Drive · 或主动从设备列表移除某台设备）。如果允许 mode 在用户不知情下自动回到本地党或保险党，下面这类事故就会再次发生：
+
+- 软件 bug 清掉 `driveConnected` localStorage → UI 切本地党 → 同步子系统对用户隐藏 → 用户继续编辑、改动累积本地、心跳不写、push 不发 → 其它设备看不到这台
+- 用户**完全不知道刚才发生了什么**，因为四件套护栏都依赖 mode = sync/backup 才工作
+
+§7.10.6 Mode regression 守卫专门处理这条 —— "运行时推断的 mode 比 IdentityPin 里上次确认过的 mode 低 → 弹阻塞 banner 让用户选择，不静默降级"。这条与 §7.9 精神一致：out-of-band 漂移要架构层阻止，不只是写防御网。
+
+**为什么不依赖单一"绿点 / 黄点 / 红点"做所有 surface**
+
+事故 dogfood 反复证明：单 binary 状态点既不能区分"瞬时失败"和"持续多日失败"，也不能区分"发送端"和"接收端"。五件套是同一信任问题的多个 cut：
+- **源头预防**：离场 gate
+- **身份校验**：identity pinning
+- **接收端可见**：reconcile + banner
+- **时间维度**：失败持续时长 + pending 堆积
+- **数据层不一致守卫**：mode regression guard
+
+**任何单一机制不能替代其它**。
+
+**关于文案风格的原则**
+
+本节所有 UI 文案草稿遵循两条原则：
+
+1. **不替用户假设场景**：用户的实际情境可能超出我们的设想，决策按钮要给用户灵活变通的空间（"稍后再说" / "临时使用" / "我先看看"），不要把用户的头按下去服从我们的某一种判断
+2. **不暴露技术细节到主界面**：用户不需要在主界面读到 "push 失败 401 Unauthorized" 这种东西。技术细节若有必要呈现，折叠到"详情 ⌄"或 hover tooltip 里，主界面保持温和的人话
+
+***
+
+#### 7.10.1 用户模式分层 · 显式前进 · 不静默后退
+
+**三种模式**
+
+| 模式 | 触发条件 | UI 表现 | 启用机制 |
+|---|---|---|---|
+| **本地党** | 未连接 Drive | 同步子系统对 UI 完全隐藏 · Settings → 同步只露"连接 Drive"入口 | — |
+| **保险党** | 已连 Drive · 唯一在线设备 | "备份"心智 · 顶部时间感粗版 · 不弹 reconcile banner · 不弹 ConflictPanel | identity pinning · 时间感粗版 · 离场 gate 弱版 |
+| **同步党** | 已连 Drive · ≥ 2 台活跃设备 | "同步"心智 · 启动 reconcile banner · ConflictPanel · 时间感细版 | 全套 |
+
+**Connect 流程 · 不区分设备类型**
+
+> 设计决策：**不让用户在 connect 时回答"这是长期还是临时设备"**。早期草案曾设计三档选择（长期 / 临时主用 / 临时只读），实测各档要解的边界场景（朋友借笔记本 / 电脑送修 / 公用电脑 / dev Drive）都已被其它机制兜底，三档反而强迫用户回答一个**他不需要在 connect 时回答的问题**。详见本节末尾"为什么不区分临时设备"。
+
+连接 Drive 是一步走完：
+
+```
+Settings → 同步 → 「连接 Drive」
+→ Google OAuth（标准流程）
+→ 完成 · 顶部温和 toast：
+
+  ✓ 已连接到 meowjolan@gmail.com · 数据会自动同步
+    [多设备同步是怎么回事 ⌄]
+```
+
+折叠区只一句话："你在多台设备登录同一个 Drive，DayRail 会自动把它们的数据合在一起。某台设备 30 天没活动会从列表移除。"
+
+**Mode 推断时机**
+
+- 启动 reconcile 拉所有设备心跳后立即决定 mode（仅看 ≤30 天有活动的设备）
+- 每次 push 成功后重新评估
+- 状态存 §7.9 co-resident store 的 `syncMeta.detectedMode = 'local' | 'backup' | 'sync'`
+- 同时把当前 mode 写入 `IdentityPin.lastKnownMode`（§7.10.2）· 供 §7.10.6 守卫比对
+
+**Mode 上升 · 温和告知 · 不阻塞**
+
+主设备发现第二台新设备的心跳时（用户在新设备上完成了 connect），意图已通过 connect 行为表达 · 主设备**不弹阻塞 modal**：
+
+```
+顶部温和一行（24h 内只显示一次 · 可一键关掉）：
+
+ℹ 另一台设备加入了同步 · 看看会有什么变化 ⌄ · [关掉]
+```
+
+点开折叠区是简短说明（用户想读再读），不强迫接受。
+
+**Mode 下降 · 自然 + 用户可控 · 永不静默**
+
+- **自然路径**：某设备 30 天未写心跳 → 系统视作"久未上线"，自动从设备列表灰显 · mode 可能从 sync 退回 backup（如果剩 1 台活跃设备）· 顶部一次性温和 toast 告知，**不阻塞**
+- **用户主动**：Settings → 同步 → 设备列表 → "移除这台"（比如电脑卖了 / 修好回来不再用 substitute）· 不删任何数据
+- **不自动**：软件 bug / 网络问题 / OAuth 失效**不会**让 mode 静默回退到更低档 —— 这种情况由 §7.10.6 不变量守卫拦截，要求用户显式做选择
+
+**为什么不区分"临时设备"**
+
+> 设计早期为"朋友借笔记本临时登一下" / "电脑送修临时主用"这类场景设计过 connect-time 三档选择，最终拒掉。原因：试图防的几类场景，要么本来无害，要么有其它机制兜底。
+
+| 想防的场景 | 不区分 = 普通连接 后果 | 兜底机制 |
+|---|---|---|
+| 电脑送修 / 临时主用几天 | 当普通设备连 · 双向同步 · 修好后用户从设备列表移除 / 30 天自动归档 | **这本来就是正确行为**，无需特殊态 |
+| 朋友借笔记本查一眼 | 当普通设备连 · 写一次心跳 · 主设备 mode 短暂升级到同步 · 30 天后自动归档退回 | 短期 mild UI 噪声 · 无数据风险 · 用户随时可在 Settings 主动移除 |
+| 公用电脑 / kiosk 临时登录 | 同上 · 加上"用完登出 OAuth"的常规 web 卫生 | 安全靠 OAuth 退出 · 不是 mode flag |
+| 意外登错账号 | 与"临时 vs 长期"维度无关 | §7.10.2 Identity pinning |
+| Dev / staging Drive | 主 Drive 看不到 dev Drive 活动 · 不同账号天然隔离 | OAuth 账号天然边界 |
+
+**这里取消的不只是一个 modal，是一类工程师本能：**每次撞到反例，倾向"加分支处理新场景"而不是"问能不能干脆不区分"。Connect-time 三档相当于把"这台机器以后会怎样"的判断压到用户身上，但 30 天自动归档 + 设备列表手动移除已经把"以后"的善后做完。区分给出的额外控制力，**用户在 connect 那一刻还判断不了**（电脑送修两周还是两个月？连接的时候真不知道），不区分反而把决策延后到事情发生时（"修好了 → 设备列表移除"）—— 决策时机更接近真实信息。
+
+***
+
+#### 7.10.2 Identity pinning · 同步 + 备份共享身份基线
+
+治 故事 1 + worst case C 的根因。
+
+**Schema**
+
+存 §7.9 co-resident store：
+
+```typescript
+interface IdentityPin {
+  accountEmail: string;             // 首次连接时记下的 Drive 账号邮箱
+  appdataFileId?: string;           // 首次拿到的 .dryj 文件 id（已有时）
+  lastKnownMode: 'backup' | 'sync'; // 上次成功运行时确认过的 mode · 供 §7.10.6 不变量守卫比对
+  pinnedAt: string;                 // ISO timestamp
+}
+```
+
+**比较时机**
+
+| 时机 | 调用 |
+|---|---|
+| 每次 token refresh 完成 | `oauth2/v3/userinfo` 拿 email · 对比 `pin.accountEmail` |
+| 每次 push 前（与 §7.8 HEAD check 同次调用） | Drive metadata `owners[0].emailAddress` · 对比 pin |
+| 重连 Drive 完成 OAuth | 立即对比 |
+
+**不一致 UX · 阻塞模态（用户友好版）**
+
+```
+登录的账号不太对吗？
+
+之前用的是 meowjolan@gmail.com
+现在登录的是 guojunnan@bytedance.com
+
+[让我重选账号]
+[确实要换到这个账号]
+[稍后再说 · 暂不同步]
+
+──
+不确定？看看会发生什么 ⌄
+（折叠详情：之前的备份留在原账号 · 这台设备从此连到新账号 · 两边账号的数据不会自动合并）
+```
+
+三个按钮：
+- **"让我重选账号"**：返回到 OAuth 账号选择器（最可能的真实意图 · 误点 / 浏览器自动登错账号的逃生口）
+- **"确实要换到这个账号"**：写入新 `IdentityPin` 覆盖旧 pin · `syncMeta` 重置为 first-connect 态（走 §7.6 + §7.8 的 first-connect 路径）· UI 上立刻进入新账号的同步流
+- **"稍后再说 · 暂不同步"**：本会话内同步整段挂起（数据层照常运行 · 本地编辑正常 · 但不 push / 不写心跳）· 下次启动再问
+
+文案选择上避免技术化词汇（删 "destructive action"、"我知道我在做什么"、"账号变化"等系统消息口吻）· 详情折叠 · 主界面读起来是问句不是警告。
+
+**保险党 vs 同步党的差别**
+
+| 阶段 | 保险党 | 同步党 |
+|---|---|---|
+| 触发面 | 仅在"备份目标"切换 | 同步主账号切换 + 任何 token refresh |
+| 文案重点 | "备份历史会断成两段" | "另一台设备的同步会找不到这台" |
+
+***
+
+#### 7.10.3 离场 gate
+
+治 故事 2 + worst case A/B 的源头。
+
+**强版（同步党）· 阻塞模态**
+
+触发时机：
+- **Tauri**：`app.on_close_requested` 监听用户主动关窗 → pending > 0 时阻塞窗口关闭 → 弹模态
+- **PWA**：`beforeunload` 是 fire-and-forget · 无法真正阻塞 · 改为 **离场前的"显式 quit 流程"** —— 用户主动点 Settings → "安全退出" 才走 gate · 浏览器关 tab 仍是软兜底 · 兜底失败时下次启动通过 §7.10.4 reconcile banner 告知 + 标记 `pending-departure`
+
+模态状态机：
+
+```
+[初始]
+   │ push 尚未完成
+   ▼
+[正在上传你最近的改动 3/5...] ──── 成功 ────► [自动关闭]
+   │
+   │ 失败（网络 / 凭证 / 服务端错误）
+   ▼
+[温和提示 · 不红不黑]
+   "还有 5 个改动没传上去 · 网络好像有点问题"
+   [再试一次]  [先这样，下次开机继续传]
+```
+
+"先这样"分支：写一条 `pending-departure` 标记到 co-resident store · 下次启动时 reconcile banner 优先显示"上次还有几个改动没传 · 现在试一下吗？"。语言上不是责备而是接续 —— 用户不会觉得"软件在催我"，更像"软件记着这事，下次帮我做"。
+
+技术错误细节（401 / 5xx / 具体 body）折叠到提示下方的 "看看详情 ⌄"，主界面只露"网络好像有点问题"这一句人话。
+
+**弱版（保险党）· 软 toast**
+
+触发时机：用户主动 quit / window close · 检测「距上次成功备份 > 3 天 且 当前有未备份改动」→ 右下角 toast：
+```
+📦 5 天没备份了，要不要现在传一下? [备份 · ~10s] [明天再说]
+```
+不阻塞 · 用户点"明天再说"或直接忽略都直接关。"明天再说" 写 `skipBackupReminderUntil = today + 1d`，24 小时内不再提醒。
+
+***
+
+#### 7.10.4 Heartbeat + 启动 reconcile · 仅同步党
+
+治 故事 2 + worst case A/B 的接收端可见性。
+
+**Heartbeat schema**
+
+每台设备 push 成功后追写一条 `device-heartbeat-{deviceId}.json` 到 Drive appdata（与主 `.dryj` 同 folder · 旁路文件 · 不进 Y.Doc）：
+
+```typescript
+interface DeviceHeartbeat {
+  deviceId: string;              // §7.9 中已有 · localStorage 持久
+  deviceName: string;            // 用户可改 · Settings → 同步 → 设备名
+  lastActivityAt: string;        // 最近一次用户编辑 Y.Doc 的时间
+  lastPushedAt: string;          // 这条心跳的写入时间 = 最近一次成功 push
+  lastPushedSnapshotId: string;  // 推上去的 .dryj 文件版本（Drive etag / revision id）
+  pendingCount: number;          // 写心跳时 pending 数 · 此次成功推送的话 0
+  schemaVersion: 1;
+}
+```
+
+文件名带 deviceId · 多设备天然不冲突。心跳是"最近一次成功 push"的产物 · 不另起独立写入触发器 · 简化设计（push 失败时心跳不更新 · 与"上次成功推送时点"语义自然一致）。
+
+**启动 reconcile 流程**
+
+`runBootProbe`（§7.8 / §7.9 已有）之后增加 reconcile 阶段（仅同步党 mode）：
+
+1. 列出 `device-heartbeat-*.json` 全部文件 · 过滤掉自己 deviceId
+2. 对比每条心跳的 `lastActivityAt` 与 `lastPushedAt`
+3. 综合三态 banner：
+
+   | 状态 | 条件 | 主界面文案 |
+   |---|---|---|
+   | ✓ 一切就绪 | 所有其它长期设备心跳健康 + 本机 reconcile 拉完 | `✓ 一切就绪 · {对方设备名} 也是 {时间} 的版本` |
+   | ⚠ 可能不是最新 | 至少一台对方心跳显示 `lastActivityAt > lastPushedAt + 1h` | `⚠ {对方设备名} 今天有用，但最新内容可能还没传过来` |
+   | ✕ 现在连不上 | 本机无法连 Drive | `✕ 现在连不上 Drive · 显示的是这台机器上保存的版本（最后同步 {时间}）` |
+
+   banner 在主界面顶部 · ✓ 状态持续 5 秒淡出 · ⚠ / ✕ 持续显示直到状态变化或用户主动关闭。详细技术信息（具体时间戳 / push id / 错误码）折叠到 banner 旁的 "详情 ⌄"，主文案只露人话。
+
+**性能 / 配额**
+
+每次 boot 多一次 list + 几次 GET 心跳文件 · Drive API 配额日均 < 50 次（每用户每天开应用次数 × 设备数）· 远低于免费额度。心跳文件 < 1KB · 不影响 `.dryj` 主体传输。
+
+**长尾不可达设备**
+
+某台设备 30 天未更新心跳:
+- Settings → 同步 → 已连接设备列表显示"已离线 30 天" · 系统自动归档
+- reconcile 不再纳入归档设备的 banner 判定
+- 归档设备某天又写心跳 → 自动复活 · 弹 §7.10.1 升级 modal
+
+***
+
+#### 7.10.5 时间维度感 · 失败的持续时长可见
+
+治 worst case A/B/C 中"warn 点亮 3 分钟 vs 3 天看起来一样"的盲区。
+
+**Failure history schema**
+
+存 §7.9 co-resident store:
+
+```typescript
+interface SyncAttempt {
+  at: string;                    // ISO timestamp
+  direction: 'push' | 'pull';
+  result: 'ok' | 'fail';
+  errorCode?: string;            // 'network' | '401' | '5xx' | 'identity-mismatch' | ...
+  errorBody?: string;            // 前 500 字 · 仅 fail 时
+}
+
+interface SyncMeta {
+  // ... §7.9 已有字段 ...
+  recentAttempts: SyncAttempt[];        // 最近 100 条 · 环形队列
+  lastSuccessAt: {                      // 永久 · 不参与窗口淘汰
+    push: string | null;
+    pull: string | null;
+  };
+}
+```
+
+**同步党细版 · SideNav 状态点 hover tooltip**
+
+状态正常时（主界面只有一个安静的小绿点 · hover 才看到信息）：
+```
+✓ 一切就绪
+刚刚同步过 · 3 分钟前
+```
+
+状态告警时（主界面是温和的黄点 / 红点 · hover 看到时间维度）：
+```
+⚠ 已经 3 天多没传上去
+上次成功传是 上周五 17:14
+[再试一次]  [看看具体怎么了 ⌄]
+```
+
+"看看具体怎么了 ⌄" 折叠展开后显示技术细节（具体尝试次数 / 最近错误代码 / Settings → 同步 → 故障历史 链接）。**主提示永远是"已经几天没传上去"这一句人话**，技术细节不进 hover 主体。
+
+**同步党 · 长期 silent 失败升级阶梯**
+
+> 原则：失败时间越长越要让用户看到 · 但**永远不阻塞主界面进入**。用户的判断可能比我们的猜测更准（比如他知道自己在飞机上 / 在出差），不要替他做"不允许编辑"的决定。
+
+| 失败持续 | UI 升级 | 阻塞？ |
+|---|---|---|
+| < 1 小时 | SideNav 状态点变 warn · 无主动提醒 | 否 |
+| 1-24 小时 | 顶部温和提示条："传不上去 N 小时了 · [再试] [先关掉]" | 否（可一键关掉，会话内不再出现） |
+| 1-3 天 | 顶部明显提示条："已经 N 天没传上去 · 这台机器看到的可能不是最新版本 · [再试] [先关掉]" | 否 |
+| > 3 天 | 同上 · 颜色更深 + 第一次进入时附一个温和 toast："要不要先 [重连一下 Drive] 再继续？" | 否 |
+
+不阻塞的原因：用户可能完全知道发生了什么（"我自己关了网" / "我在改一个我不打算同步的设备"），强制阻塞主界面 = 替用户假设场景，违反**用户的实际处境优先于系统的猜测**。
+
+**同步党 · pending 堆积主动警示（v0.11 改动后扩展）**
+
+只有失败的持续时长还不够 —— 如果用户长会话中没主动 hover SideNav，会在不知情中工作在"以为传上去了但其实没"。补一条：
+
+| 触发条件 | UI |
+|---|---|
+| pending 数 > 20 且 距上次成功 push > 1 小时 | 顶部温和提示："你最近改的内容有 20 个还在本机 · 大约 1 小时没传上去 · [再试一下] [先关掉]" |
+
+- "先关掉"按钮写 `dismissPendingPileUntil = now + 24h`，24h 内不再提醒
+- 阈值（20 / 1h）后续根据 dogfood 调
+- pending 数怎么界定：以 Y.Doc state vector 对比"上次成功 push 时的 vector"为准 · 用户语言上表达为"改的内容"而不是"事务" / "事件"等技术词
+
+**保险党粗版 · 主界面顶部一行**
+
+```
+📦 距上次备份：14 天
+```
+
+颜色阈值：
+- 绿（< 3 天）：不显示 banner（避免噪声）· 仅在 Settings 内可见
+- 黄（3-14 天）：温和黄色顶部条
+- 红（> 14 天）：红色顶部条 + 进入 DayRail 后第 5 秒弹一次温和 toast："要不要现在备份一下 ([10s])"（一天最多一次）
+- 灰（> 30 天）：进入 DayRail 时一次性温和卡片提醒（**不阻塞**，可一键关掉，但下次启动还会出现，直到用户主动备份过一次）
+
+灰档的设计原则：不强制用户立刻备份，但每次启动都温和地"问一下"，直到事情被解决。
+
+***
+
+#### 7.10.6 Mode regression 守卫 · 数据层不一致不静默降级
+
+治 Q2a 类事故 —— 软件 bug / OS-level eviction / 缓存清除等让 mode 在用户不知情下回到更低档。这是 §7.10.1 "mode 后退必显式" 的落地机制。
+
+**触发条件**
+
+boot 时：
+- 读 `IdentityPin.lastKnownMode`（§7.10.2 schema 字段）
+- 读当前运行时推断出的 mode（按 §7.10.1 推断逻辑）
+- 若 `pin.lastKnownMode ∈ {backup, sync}` 且 `runtime.mode == 'local'` → **数据层不一致** · 进入 regression 守卫流程
+
+**UX · 阻塞 banner（用户必须做选择，但选项灵活）**
+
+```
+🔌 跟 Drive 的连接好像断了
+
+这台设备之前在和 meowjolan@gmail.com 同步，
+现在看起来连接掉了。
+你的本地数据完好，可以随时继续用。
+
+[重新连一下 Drive]
+[先不连了，本地用就好]
+[稍后再说 · 这次先用着，下次启动再问]
+
+──
+为什么会这样？看看 ⌄
+（折叠详情：常见原因是 OS 缓存被清 / 软件升级重置了一些设置 / OAuth 凭证过期 · 数据本身没问题）
+```
+
+三个分支：
+- **"重新连一下 Drive"**：走标准重连流程（§7.6）· 成功后 `IdentityPin` 保留 · runtime mode 恢复到 pin.lastKnownMode 或更高
+- **"先不连了，本地用就好"**：显式降级 · 清掉 `IdentityPin` · `syncMeta` 重置为 first-connect 态 · UI 变成本地党模式
+- **"稍后再说"**：本次启动跳过 · 主界面正常进入 · 不写 / 不同步 · 下次启动再问
+
+**为什么不静默自动重连**
+
+试图自动重连听起来更"无感"，但如果重连失败（token 真的失效了），结果是 mode 仍然在 local 但 pin 未清 → 下次启动再次撞同样的 banner。从用户角度看像 "软件一直在跟我抱怨同步问题"。让用户**显式知情**这件事更尊重他的意图 —— 他可能本来就想暂时离线工作，这种情况下"先不连了"是合理选择。
+
+**保险党也用同一守卫**
+
+如果 `pin.lastKnownMode == 'backup'` · `runtime.mode == 'local'`，弹同款 banner（只是文案里的"同步"换成"备份"）。保险党也需要"我以为有备份但其实没有"的护栏，本质和同步党一致。
+
+***
+
+**实施分阶段 PR 计划**
+
+| Phase | PR 范围 | 风险 | 用户价值 |
+|---|---|---|---|
+| P1 · Identity pinning（含 `lastKnownMode`） | localStorage pin · OAuth 后比较 · 不一致弹模态 | 低（纯加 gate） | 防 worst case C 数据损失 |
+| P2 · 时间维度感 · 失败历史 + pending 堆积警示 | Co-resident store 加 `recentAttempts` · SideNav tooltip · 顶部 pending 警示 · Settings 故障历史 | 低（纯加 UI + 记录） | 长期 silent 失败 + 长会话堆积都能显形 |
+| P3 · Mode regression 守卫 | boot 时比较 `pin.lastKnownMode` vs runtime · 阻塞 banner | 低（纯加判断 + UI） | 防 Q2a 类"以为还在同步但其实没了" |
+| P4 · Heartbeat 写入 + 启动 reconcile | Drive 旁路文件 schema · boot probe 拉心跳 · banner 三态 | 中（新 Drive 文件 + 启动流程） | 同步党"我能放心动了"体感 |
+| P5 · Mode 推断 + 设备列表 UI | 心跳数 → backup/sync 自动切换 · Settings 设备列表 · 主设备发现新设备的温和 toast | 中（包装层 · 决定其它机制可见性） | 保险党不被多设备复杂度污染 · 用户能管理设备 |
+| P6 · 离场 gate · 强版 + 弱版 | Tauri close listener · 模态状态机 · 弱版 toast | 中（Tauri 端 + cross-platform 行为差异） | 源头预防 worst case A/B |
+
+每 phase 独立 PR · 每 PR 跑现有 244+ 测试 + 加新单测 + 双端 dogfood。**P1 + P2 + P3 单独可 ship**（互不依赖）作为"先让失败可见 + 防数据损失 + 防 mode 静默降级"的最小步；P4-P6 互有依赖按顺序。
+
+**v0.12 显式停车**（不在本轮范围）
+
+- ❌ 设备数 > 2 的同步党体验（banner 文案在 N 台设备下会爆 · 简化用"还有 {N-1} 台设备活跃"代替逐台列出 · 留到第三台设备真出现再设计）
+- ❌ 心跳数据进 Y.Doc / CRDT（保持旁路文件 · 避免 sync 路径复杂化）
+- ❌ 失败历史的云端持久化（仅本机 · 跨设备故障关联留 v1.x）
+- ❌ §7.5 加密层（继续停车）
+- ❌ Mode 显式选择 UI（按方案 Y 推断 · 不让用户手动切 backup ↔ sync）
+- ❌ "上次离开时有 M 条改动没传上去" 的具体内容回放（schema 上只标 count · 想展开见 Drive history）
+- ❌ "临时设备" / 只读连接 / 24h 自动断 等特殊连接模式（早期草案设计过 · 拒掉 · 见 §7.10.1 "为什么不区分临时设备"）
 
 ***
 

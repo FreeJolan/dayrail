@@ -160,6 +160,50 @@ grouping、SideNav 重排、drag highlight per-section、per-cell insertion-line
 
 ---
 
+### 🚧 v0.12 · 同步信任模型 · 三种用户模式 + 五件套护栏（ERD §7.10）
+
+> 详细设计：ERD §7.10。触发因素：§7.9 修完元数据漂移之后，dogfood
+> 暴露的不再是"数据安不安全"，而是"用户能不能信任系统已经做对了"
+> —— 故事 1（Identity 错连）/ 故事 2（关电脑前没看状态）/ worst case
+> A 跨周末分歧 / worst case C 长期 identity 漂移月级数据丢失。共同根
+> 因：当前 UI 把"失败状态"表达为瞬时 boolean，缺时间维度、缺用户意
+> 图分层、缺接收端可见性、缺源头预防。
+
+- 🚧 **设计讨论锁定**（2026-05-18）—— ERD §7.10 + History 顶部条目 +
+  ROADMAP 立项。引入两层模型：用户模式分层（本地党 / 保险党 / 同步党
+  · 由活跃设备数自动推断 · **不在 connect 时做长期 / 临时分类**）+
+  信任护栏五件套（identity pinning 含 `lastKnownMode` 不变量 / 离场
+  gate 强 + 弱版 / heartbeat + 启动 reconcile / 时间维度感含 pending
+  堆积警示 / mode regression 守卫）。
+- 🚧 **P1 · Identity pinning** —— localStorage pin · OAuth 后比较 ·
+  不一致弹模态（"登录的账号不太对吗？" + "稍后再说"逃生口）。低风险
+  · 单独可 ship。防 worst case C 月级数据丢失。
+- 🚧 **P2 · 时间维度感 + pending 堆积警示** —— co-resident store 加
+  `recentAttempts` 环形队列 · SideNav tooltip 显示"已经 N 天没传上去"
+  · 长会话内 pending > 20 + 1h 主动弹温和顶部条。低风险 · 单独可 ship。
+- 🚧 **P3 · Mode regression 守卫** —— boot 时比较 `pin.lastKnownMode`
+  vs 运行时推断 · 不一致弹"🔌 跟 Drive 的连接好像断了"三选一 banner
+  （重连 / 暂不同步 / 稍后再说）· 永不静默降级。低风险 · 单独可 ship。
+- 🚧 **P4 · Heartbeat + 启动 reconcile** —— Drive 旁路文件
+  `device-heartbeat-{deviceId}.json` · boot probe 拉所有心跳 · 主界
+  面顶部三态 banner（✓ 一切就绪 / ⚠ 可能不是最新 / ✕ 现在连不上）。
+  中风险（新 Drive 文件 + 启动流程）。
+- 🚧 **P5 · Mode 推断 + 设备列表 UI** —— 心跳数 → backup/sync 自动切
+  · Settings → 同步 → 设备列表 · 主设备发现新设备的温和 toast（不弹
+  阻塞 modal）。中风险（包装层 · 决定其它机制可见性）。
+- 🚧 **P6 · 离场 gate · 强 + 弱版** —— Tauri close listener 拦窗口关
+  闭 · 模态状态机（"正在上传 3/5..." → 成功自动关 / 失败温和提示）·
+  弱版 toast。中风险（Tauri + cross-platform 行为差异）。
+- 🚧 **三条 UX 设计原则**（讨论中固化，已存进
+  `feedback_design_principles.md`）：(1) 不替用户假设场景 · 留逃生口;
+  (2) 主界面文案不放技术细节 · 折叠到"详情 ⌄";  (3) 加功能点前先反
+  思"不做会怎么样" · 避免堆积冷门冗余功能。
+- 🚧 **显式停车**：临时设备 / 只读连接 / 24h 自动断 / 心跳进 Y.Doc /
+  设备数 > 2 同步党体验 / mode 显式 UI / 失败历史云端持久化 / §7.5
+  加密层 —— 见 ERD §7.10 末尾 "v0.12 显式停车" 列表。
+
+---
+
 ### 🅿️ v0.9+ 停车场（触发条件明确，捡起来不用从头想）
 
 | 项 | 触发条件 | 设计草稿位置 |
@@ -681,12 +725,18 @@ dogfood 发现 `claude-opus-4-7 via claude-bridge` 即使经过 5 轮 prompt ite
 - ✅ **可读格式导出**（Markdown 反思 / CSV 任务 / iCal 日程）—— 此前停车场项 · ship 时间忘记标，本次清理同步 confirmed shipped。位于 Settings → 同步 → 可读格式导出。"作者跑路了我也能拿到自己数据" 心智的真正闭环 —— DayRail-specific 的 JSON / `.dryj` 只是底线，markdown / csv / ical 让用户能换软件继续用。
 - ✅ **v0.10.0 release** —— Tag v0.10.0 · 4 平台全过（v0.9.11 时 Intel Mac DMG 因 cross-compile bundle_dmg.sh 偶发 CI flake 失败 · v0.10.0 自然恢复，无需修 release.yml）。
 
-### 接下来可能做（v0.10 ship 后的候选 · 触发条件未到）
+### v0.12 主线（设计讨论锁定 · 2026-05-18 · 实施未开）
 
-- v0.10.1 候选：dogfood v0.10.0 攒到具体反馈再开工 —— 8s debounce 体感 · ConflictPanel 是否真触发过 · smartDiff 误判
-- v0.10.x 候选：**AI 全局记忆**（结论未定 · 不过 v0.8.2 已经 ship 2 周以上，可以开始评估了）/ AI 多场景全开（Decompose / Observe）
-- v0.10.x 小修候选：§6.4 AI 引导卡 UI / 「AI 优化我的背景」按钮 / 键盘快捷键扩展 / Calendar 规则 inline 编辑
-- v0.11+ 候选：定时自动备份 UI · action 层集成测 · ICS 订阅 · HabitPhase 结构化目标
+- 🚧 **同步信任模型**（ERD §7.10）—— 详见上方「v0.12 · 同步信任模型」段。
+  设计已锁定，分 6 期 PR 实施，P1 + P2 + P3 互不依赖，可作为"先让失败可
+  见 + 防数据损失 + 防 mode 静默降级"的最小可 ship 步骤先单独推。
+
+### 接下来可能做（触发条件未到 / 看 v0.12 dogfood 反馈）
+
+- v0.11.x 候选：dogfood v0.11.x 攒到具体反馈再开工 —— occurrence 操作流畅度 · 跨容器 dnd 边界
+- v0.12.x 候选：**AI 全局记忆**（结论未定 · v0.8.2 已 ship 2 周+ 可评估了）/ AI 多场景全开（Decompose / Observe）
+- v0.12.x 小修候选：§6.4 AI 引导卡 UI / 「AI 优化我的背景」按钮 / 键盘快捷键扩展 / Calendar 规则 inline 编辑
+- v0.13+ 候选：定时自动备份 UI · action 层集成测 · ICS 订阅 · HabitPhase 结构化目标
 
 ### 通用回归 checklist（每轮迭代结束都跑一遍）
 
