@@ -43,6 +43,7 @@ import {
   getDeviceId,
   getDeviceLabel,
   getDirtyCount,
+  getIdentityPin,
   getLastPulledSnapshotId,
   getLastPushedCounts,
   isLocalSamplesOnly,
@@ -54,6 +55,10 @@ import {
   setLastSyncInfo,
 } from './identity';
 import { checkAccountIdentity, recordFirstConnect } from './identityPin';
+import {
+  detectModeRegression,
+  runtimeModeFromConnection,
+} from '@dayrail/core';
 import {
   downloadDryjById,
   getRemoteMeta,
@@ -387,6 +392,30 @@ export type ManualSyncOutcome =
   | { kind: 'noop' }
   | { kind: 'pulled' }
   | { kind: 'offline'; reason: string };
+
+/** Check for mode regression at boot (ERD §7.10.6 · v0.12 P3).
+ *  Reads the persisted `IdentityPin.lastKnownMode` and compares to
+ *  the runtime-inferred mode. If pin says backup/sync but runtime
+ *  has dropped to local, set `pendingModeRegression` on syncStore
+ *  to surface the ModeRegressionModal.
+ *
+ *  Fire once per page load · App.tsx mount-time `useEffect` is the
+ *  natural hook (after `loadSyncMetaCache` has resolved as part of
+ *  boot.ts, so getIdentityPin() reads the hydrated cache).
+ *
+ *  No-op if pin is null or runtime is still connected. */
+export function checkModeRegressionAtBoot(): void {
+  const pin = getIdentityPin();
+  const runtime = runtimeModeFromConnection(isDriveConnected());
+  const result = detectModeRegression(pin, runtime);
+  if (result.kind === 'regression') {
+    syncStore.setPendingModeRegression({
+      pinnedMode: result.pinnedMode,
+      pinnedAccountEmail: result.pinnedAccountEmail,
+      detectedAt: Date.now(),
+    });
+  }
+}
 
 /** Verify the connected account's identity against the stored pin
  *  (ERD §7.10.2 · v0.12 P1). Called by BootGate + Settings → 同步 →

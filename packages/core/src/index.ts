@@ -17,3 +17,4 @@ export * from './ai';
 export * from './smartDiff';
 export * from './identityPin';
 export * from './syncStatus';
+export * from './modeRegression';

@@ -61,6 +61,18 @@ export interface PendingIdentityMismatch {
   source: 'connect' | 'push';
 }
 
+/** State surfaced when boot-time mode regression check (ERD §7.10.6)
+ *  finds that `IdentityPin.lastKnownMode` is backup/sync but runtime
+ *  reads local-only. The ModeRegressionModal lets the user pick
+ *  reconnect / explicit-downgrade / defer-until-next-launch. */
+export interface PendingModeRegression {
+  /** What mode the pin remembers from the last successful run. */
+  pinnedMode: 'backup' | 'sync';
+  /** Email under which the pin was written. */
+  pinnedAccountEmail: string;
+  detectedAt: number;
+}
+
 export interface SyncSnapshot {
   /** OAuth-connected on this device. Mirrors identity flag; cached
    *  here so subscribers re-render on connect/disconnect. */
@@ -75,6 +87,10 @@ export interface SyncSnapshot {
   /** Set when identity-pin check detects a different account; null
    *  otherwise. IdentityMismatchModal mounts iff this is non-null. */
   pendingIdentityMismatch: PendingIdentityMismatch | null;
+  /** Set when boot-time check detects pin.lastKnownMode ∈ {backup,
+   *  sync} but runtime is local. ModeRegressionModal mounts iff
+   *  this is non-null. */
+  pendingModeRegression: PendingModeRegression | null;
   /** True once a successful push or pull has completed in the
    *  current browser session (ERD §7.9 decision 5). The "已同步"
    *  label only displays when this is true — `lastSync` alone can
@@ -94,6 +110,7 @@ function readSnapshot(): SyncSnapshot {
     deviceLabel: getDeviceLabel(),
     pendingConflict: null,
     pendingIdentityMismatch: null,
+    pendingModeRegression: null,
     sessionRoundTripDone: hasSessionRoundTrip(),
   };
 }
@@ -142,6 +159,9 @@ export const syncStore = {
   },
   setPendingIdentityMismatch(m: PendingIdentityMismatch | null): void {
     update({ pendingIdentityMismatch: m });
+  },
+  setPendingModeRegression(m: PendingModeRegression | null): void {
+    update({ pendingModeRegression: m });
   },
 };
 
