@@ -37,6 +37,13 @@ tauri-plugin-process = "2"
 # reads via `tauri-plugin-fs`.
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+# ERD §15.8 — autostart at login (v0.11.6). Cross-platform: writes
+# Launch Agent plist on macOS, Registry HKCU\...\Run on Windows,
+# .desktop file on Linux. The autostart plugin's mechanism for
+# signaling "this launch came from autostart" is appending CLI args
+# to the registered launch entry — we use `--autostart` and check
+# argv in setup() to decide whether to hide the main window.
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

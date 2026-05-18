@@ -4113,8 +4113,7 @@ Two independent but semantically-aligned desktop UX rules: **the app foregrounds
   - Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
   - Linux: `~/.config/autostart/app.dayrail.desktop.desktop`
 - **Launch behavior = hidden**: when autostart fires, the app process starts but **the main window does not show** — only the dock / menubar / taskbar icon appears. The user clicks the icon to surface the window.
-  - macOS impl: plist sets `RunAtLoad = true` plus an `EnvironmentVariables` entry that injects `DAYRAIL_AUTOSTART=1`. Rust `setup()` detects the env var → skips the default `window.show()`.
-  - Windows / Linux: same pattern, env var injected via the respective autostart entry's launch args.
+  - Impl: `tauri-plugin-autostart` injects `--autostart` as a launch arg into the OS-side entry (plist `ProgramArguments` / Registry Run value / .desktop `Exec=`). Rust `setup()` checks `std::env::args()` for `--autostart` → skips the default `window.show()`.
 - **Rationale**: at login the user is opening Slack / Mail / browser; having DayRail steal focus is an anti-pattern. Autostart's value is "background process ready → instantly available when the user wants it + sync already running", not "force-visible at boot".
 
 **Post-update relaunch foregrounding**
@@ -4126,13 +4125,13 @@ Two independent but semantically-aligned desktop UX rules: **the app foregrounds
 
 **Full rule table**
 
-| Launch source | env var | Behavior |
+| Launch source | Signal | Behavior |
 |---|---|---|
 | User clicks dock / Finder / Spotlight | (none) | macOS default foreground ✓ |
 | `pnpm desktop:dev` | (none) | Dev behavior unchanged ✓ |
-| Auto-start at login | `DAYRAIL_AUTOSTART=1` | Hidden (dock icon only) |
-| Post-update relaunch | `DAYRAIL_RESTART_REASON=update` | Force foreground |
-| Autostart + update relaunch (hypothetical overlap) | both set | Foreground wins (explicit update intent) |
+| Auto-start at login | argv contains `--autostart` (injected by the autostart plugin) | Hidden (dock icon only) |
+| Post-update relaunch | env var `DAYRAIL_RESTART_REASON=update` (set by `relaunch_for_update` before `app.restart()`) | Force foreground |
+| Autostart + update relaunch (hypothetical overlap) | both | Foreground wins (explicit update intent) |
 
 ---
 

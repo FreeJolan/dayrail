@@ -3716,8 +3716,7 @@ v0.9 ship 路径：
   - Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
   - Linux: `~/.config/autostart/app.dayrail.desktop.desktop`
 - **启动行为 = hidden**:autostart 触发时 app 进程启动,但**主窗口不显示**,只在 dock / menubar / 任务栏出现图标。用户主动点击图标才把窗口拉出来。
-  - macOS 实现:plist 写 `RunAtLoad = true` + 启动后 Rust 端 `setup()` 检测 autostart 上下文(env var `DAYRAIL_AUTOSTART=1`,由 plist 通过 `EnvironmentVariables` 字段注入)→ 跳过默认 `window.show()`。
-  - Windows / Linux 同模式 · 各自启动参数注入 env var。
+  - 实现:`tauri-plugin-autostart` 把 `--autostart` 作为启动参数注入到 OS 注册的启动入口(plist `ProgramArguments` / Registry Run 值 / .desktop `Exec=`)。Rust `setup()` 检测 `std::env::args()` 里有 `--autostart` → 跳过默认 `window.show()`。
 - **理由**:开机时用户在打开 Slack / Mail / 浏览器,DayRail 抢焦点是 anti-pattern。autostart 的价值是"后台进程就绪 → 用户想看时一点即开 + sync 已经在背后跑了",不是"开机就强制看到"。
 
 **升级 relaunch foreground**
@@ -3729,12 +3728,12 @@ v0.9 ship 路径：
 
 **总规则表**
 
-| 启动来源 | env var | 行为 |
+| 启动来源 | 信号 | 行为 |
 |---|---|---|
 | 用户点 dock / Finder / Spotlight | (none) | macOS 默认 foreground ✓ |
 | `pnpm desktop:dev` | (none) | dev 行为不变 ✓ |
-| autostart at login | `DAYRAIL_AUTOSTART=1` | hidden(只在 dock 显示) |
-| post-update relaunch | `DAYRAIL_RESTART_REASON=update` | 强制 foreground |
+| autostart at login | argv 里有 `--autostart`(由 autostart plugin 注入) | hidden(只在 dock 显示) |
+| post-update relaunch | env var `DAYRAIL_RESTART_REASON=update`(由 `relaunch_for_update` 命令在 `app.restart()` 前设) | 强制 foreground |
 | autostart + update relaunch(理论交叉) | 两个都有 | foreground 胜出(update 明确意图) |
 
 ***

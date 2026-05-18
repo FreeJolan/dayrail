@@ -3,10 +3,37 @@
 // As of PR-C: shell + auto-update + desktop OAuth Drive auth wired.
 // The frontend invokes the `drive_*` commands instead of going
 // through GIS implicit flow when running in Tauri (ERD §15.3).
+//
+// v0.11.6: autostart at login + post-update foregrounding (ERD §15.8).
+// Launch source is signaled via CLI args / env vars set by either the
+// autostart plugin (`--autostart` arg in the registered launch entry)
+// or the `relaunch_for_update` command (sets `DAYRAIL_RESTART_REASON=
+// update` before `app.restart()`). The setup hook reads both and
+// decides whether to hide the window (autostart) or force foreground
+// (post-update relaunch).
 
 mod backup;
 mod drive_auth;
 mod system_info;
+
+use tauri::Manager;
+use tauri_plugin_autostart::MacosLauncher;
+
+const RESTART_REASON_ENV: &str = "DAYRAIL_RESTART_REASON";
+const RESTART_REASON_UPDATE: &str = "update";
+const AUTOSTART_ARG: &str = "--autostart";
+
+/// Restart the app after an updater install, signalling the new
+/// process that it should foreground itself instead of inheriting
+/// macOS's default "stay hidden behind whatever the user is doing"
+/// behavior for relaunched processes (ERD §15.8). `std::env::set_var`
+/// here propagates to the child via `Command::spawn` inheritance,
+/// which `app.restart()` uses under the hood.
+#[tauri::command]
+fn relaunch_for_update(app: tauri::AppHandle) {
+    std::env::set_var(RESTART_REASON_ENV, RESTART_REASON_UPDATE);
+    app.restart();
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,8 +52,19 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // `tauri-plugin-process` provides `relaunch()` to the
         // frontend; the updater calls it after install to land users
-        // on the new version cleanly.
+        // on the new version cleanly. v0.11.6 routes through our
+        // `relaunch_for_update` command instead so we can set the
+        // restart-reason env var first (ERD §15.8).
         .plugin(tauri_plugin_process::init())
+        // ERD §15.8 — autostart at login. Args are appended to the
+        // registered launch entry (Launch Agent / Run registry /
+        // .desktop), so a launch from that path arrives with
+        // `--autostart` in argv — the setup hook below reads this to
+        // decide whether to hide the main window.
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec![AUTOSTART_ARG]),
+        ))
         // ERD §15.3 — desktop Drive auth commands. Keep the OAuth
         // flow + keychain access in Rust so the refresh token never
         // crosses the IPC boundary; the frontend only sees fresh
@@ -43,7 +81,44 @@ pub fn run() {
             backup::backup_read,
             backup::backup_delete,
             backup::backup_export_to,
+            relaunch_for_update,
         ])
+        .setup(|app| {
+            // ERD §15.8 launch-source detection.
+            //
+            // Two independent signals; both checked because they can
+            // arrive together in the theoretical autostart + update
+            // overlap case (update wins → foreground).
+            let argv: Vec<String> = std::env::args().collect();
+            let is_autostart = argv.iter().any(|a| a == AUTOSTART_ARG);
+            let is_update_restart = std::env::var(RESTART_REASON_ENV)
+                .map(|v| v == RESTART_REASON_UPDATE)
+                .unwrap_or(false);
+
+            // Clear the env var so any subsequent user-initiated
+            // restart (e.g. crash recovery later in the session)
+            // doesn't inherit the update signal.
+            if is_update_restart {
+                std::env::remove_var(RESTART_REASON_ENV);
+            }
+
+            if let Some(window) = app.get_webview_window("main") {
+                if is_update_restart {
+                    // Post-update: force foreground regardless of
+                    // autostart status (update intent is explicit).
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                } else if is_autostart {
+                    // Autostart with no update reason → hide; user
+                    // surfaces the window by clicking the dock icon.
+                    let _ = window.hide();
+                }
+                // Other paths (dock click, Finder, dev) → leave
+                // tauri's default show() behavior in place.
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running DayRail desktop");
 }
