@@ -15,3 +15,4 @@ export * from './revisions';
 export * from './externalEvents';
 export * from './ai';
 export * from './smartDiff';
+export * from './identityPin';

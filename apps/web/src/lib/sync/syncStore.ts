@@ -46,6 +46,21 @@ export interface PendingConflict {
   demo?: boolean;
 }
 
+/** State surfaced when identity pin check (ERD §7.10.2) detects a
+ *  different Drive account than the pinned one. The
+ *  IdentityMismatchModal reads this · user picks among three
+ *  branches (re-pick / switch / defer) · resolver clears it. */
+export interface PendingIdentityMismatch {
+  /** Email captured on the original first connect. */
+  stored: string;
+  /** Email currently authenticated against Drive. */
+  current: string;
+  /** Where the mismatch was detected (only for diagnostic logging
+   *  · the modal copy is the same either way). */
+  detectedAt: number;
+  source: 'connect' | 'push';
+}
+
 export interface SyncSnapshot {
   /** OAuth-connected on this device. Mirrors identity flag; cached
    *  here so subscribers re-render on connect/disconnect. */
@@ -57,6 +72,9 @@ export interface SyncSnapshot {
   /** Set when classify returns 'true-conflict'; null otherwise. The
    *  SyncConflictPanel mounts iff this is non-null. */
   pendingConflict: PendingConflict | null;
+  /** Set when identity-pin check detects a different account; null
+   *  otherwise. IdentityMismatchModal mounts iff this is non-null. */
+  pendingIdentityMismatch: PendingIdentityMismatch | null;
   /** True once a successful push or pull has completed in the
    *  current browser session (ERD §7.9 decision 5). The "已同步"
    *  label only displays when this is true — `lastSync` alone can
@@ -75,6 +93,7 @@ function readSnapshot(): SyncSnapshot {
     lastSync: getLastSyncInfo(),
     deviceLabel: getDeviceLabel(),
     pendingConflict: null,
+    pendingIdentityMismatch: null,
     sessionRoundTripDone: hasSessionRoundTrip(),
   };
 }
@@ -120,6 +139,9 @@ export const syncStore = {
   },
   setPendingConflict(c: PendingConflict | null): void {
     update({ pendingConflict: c });
+  },
+  setPendingIdentityMismatch(m: PendingIdentityMismatch | null): void {
+    update({ pendingIdentityMismatch: m });
   },
 };
 
