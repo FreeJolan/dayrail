@@ -37,7 +37,9 @@ import { ImportSuccessToast } from './components/ImportSuccessToast';
 import { ReasonToast } from './components/ReasonToast';
 import { SyncConflictPanel } from './components/SyncConflictPanel';
 import { IdentityMismatchModal } from './components/IdentityMismatchModal';
+import { ModeRegressionModal } from './components/ModeRegressionModal';
 import { SyncStatusBanner } from './components/SyncStatusBanner';
+import { checkModeRegressionAtBoot } from './lib/sync/syncController';
 import { SideNav } from './components/SideNav';
 import { ShortcutCheatsheet } from './components/ShortcutCheatsheet';
 import { UpdateBanner } from './components/UpdateBanner';
@@ -143,6 +145,13 @@ function Shell() {
   useGlobalShortcuts(cheatsheet.show, backlog.toggle);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const { mirror, setMirror } = useDragMirror();
+
+  // Boot-time mode regression check (ERD §7.10.6 · v0.12 P3). Fires
+  // once per page load · cache is hydrated by the time Shell mounts
+  // because boot.ts awaits loadSyncMetaCache before rendering App.
+  useEffect(() => {
+    checkModeRegressionAtBoot();
+  }, []);
   // Global overdue-shift Reason toast (§5.5.6). Mounted at the shell
   // level so every schedule surface (CycleCell drag, SchedulePopover,
   // TaskDetailDrawer, BacklogDrawer, Tasks-page reschedules) gets the
@@ -461,6 +470,7 @@ function Shell() {
       <ImportSuccessToast />
       <SyncConflictPanel />
       <IdentityMismatchModal />
+      <ModeRegressionModal />
     </div>
     <DragOverlay dropAnimation={null}>
       {activeTaskId ? <TaskDragPreview taskId={activeTaskId} /> : null}
