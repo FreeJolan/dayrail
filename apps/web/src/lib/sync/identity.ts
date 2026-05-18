@@ -207,6 +207,8 @@ function readLegacySyncMeta(): SyncMeta | null {
     lastActivityAt: null,
     // v0.12 P5 · mode-upgrade toast cooldown.
     lastModeUpgradeToastAt: null,
+    // v0.12 P6 · clean-departure marker.
+    pendingDeparture: null,
   };
 }
 
@@ -516,6 +518,23 @@ export function getLastModeUpgradeToastAt(): string | null {
 
 export function setLastModeUpgradeToastAt(iso: string | null): void {
   _cache.lastModeUpgradeToastAt = iso;
+  scheduleFlush();
+}
+
+// ============ departure marker (ERD §7.10.3 · v0.12 P6) ============
+
+export type PendingDeparture = { count: number; at: string };
+
+export function getPendingDeparture(): PendingDeparture | null {
+  return _cache.pendingDeparture;
+}
+
+/** Write the marker when the user opts to "leave anyway" through the
+ *  DepartureGateModal failure branch. Carries the pending count so
+ *  the next launch's ReconcileBanner can echo it back ("上次离开时
+ *  有 N 个改动没传上去"). */
+export function setPendingDeparture(p: PendingDeparture | null): void {
+  _cache.pendingDeparture = p;
   scheduleFlush();
 }
 

@@ -58,6 +58,7 @@ import {
   setLastPushedCounts,
   setLastSuccessAt,
   setLastSyncInfo,
+  setPendingDeparture,
 } from './identity';
 import { checkAccountIdentity, recordFirstConnect } from './identityPin';
 import {
@@ -714,6 +715,9 @@ export async function runForcePush(): Promise<void> {
         result: 'ok',
       });
       setDismissPendingPileUntil(null);
+      // ERD §7.10.3 · v0.12 P6 · any successful push clears the
+      // pending-departure marker.
+      setPendingDeparture(null);
       // ERD §7.10.4 · v0.12 P4 · drop a heartbeat.
       void writeHeartbeatBestEffort(snapshotId);
       syncStore.setPhase({ kind: 'idle' });
@@ -1163,6 +1167,9 @@ async function runPush(opts: RunPushOpts): Promise<void> {
         // drop the dismiss so the banner can fire again if the pile
         // grows back.
         setDismissPendingPileUntil(null);
+        // ERD §7.10.3 · v0.12 P6 · any successful push pays off the
+        // "left without uploading" marker.
+        setPendingDeparture(null);
         // ERD §7.10.4 · v0.12 P4 · drop a heartbeat so peers can see
         // this device pushed. Best-effort; failures don't break push.
         void writeHeartbeatBestEffort(snapshotId);

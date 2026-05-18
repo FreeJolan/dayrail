@@ -36,9 +36,11 @@ import { DevModeIndicator } from './components/DevModeIndicator';
 import { ImportSuccessToast } from './components/ImportSuccessToast';
 import { ReasonToast } from './components/ReasonToast';
 import { SyncConflictPanel } from './components/SyncConflictPanel';
+import { DepartureGateModal } from './components/DepartureGateModal';
 import { IdentityMismatchModal } from './components/IdentityMismatchModal';
 import { ModeRegressionModal } from './components/ModeRegressionModal';
 import { ModeUpgradeToast } from './components/ModeUpgradeToast';
+import { PendingDepartureBanner } from './components/PendingDepartureBanner';
 import { ReconcileBanner } from './components/ReconcileBanner';
 import { SyncStatusBanner } from './components/SyncStatusBanner';
 import {
@@ -446,6 +448,7 @@ function Shell() {
       <UpdateBanner />
       <SideNav />
       <main className="min-w-0 flex-1">
+        <PendingDepartureBanner />
         <ModeUpgradeToast />
         <ReconcileBanner />
         <SyncStatusBanner />
@@ -481,6 +484,7 @@ function Shell() {
       <SyncConflictPanel />
       <IdentityMismatchModal />
       <ModeRegressionModal />
+      <DepartureGateModal />
     </div>
     <DragOverlay dropAnimation={null}>
       {activeTaskId ? <TaskDragPreview taskId={activeTaskId} /> : null}
