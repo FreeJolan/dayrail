@@ -1022,35 +1022,40 @@ Pending 是"等待决定"的**全集**；§5.6 check-in 条是它"近 24h 这一
 
 1. **外观（Appearance）**
    - `主题`：三档 segmented `跟随系统 / 总是浅色 / 总是深色`，默认 `跟随系统`（CSS `prefers-color-scheme: dark` + manual override class；Radix Colors 已带配对的 `*Dark` scale，零手工派生）。
-   - `语言`：`跟随系统 / 简体中文 / English`（默认 `跟随系统`，见 §9.7）。时间制与 AI 输出语言的覆盖入口放"高级"，不在此处出现。
+   - `界面语言`：`跟随系统 / 简体中文 / English`（默认 `跟随系统`，见 §9.7）。
+   - `时间制`：`跟随 locale / 24 小时 / AM-PM`，默认 `跟随 locale`（v0.12.x 从「高级」搬过来，跟主题 / 语言同属"显示偏好"家族）。
+   - `节假日 region`：multi-select chips，决定 Cycle View / Calendar / Today Track 显示哪些区域的节假日。
 
-2. **同步（Sync）**
-   - 列出当前同步后端（Google Drive / iCloud / WebDAV 三选一的连接状态徽标，与 §A 组顶栏 sync-status 徽章数据同源）。
-   - 操作：`连接 / 断开 / 更换设备 / 重新输入密码短语 / 查看冲突日志`。
-   - 本节详细的同步模型（事件日志 + 快照 / 压缩）见 §9.x / §12 roadmap。
-
-   **开机自启动**（桌面端，v0.11.6 加）：toggle 默认关。开启时通过 `tauri-plugin-autostart` 写入 OS 自启动入口（macOS Launch Agents / Windows Registry Run / Linux .desktop）。**自启动行为**：app 在后台启动（dock / menubar 显示图标但不弹窗），用户主动点击图标才显示窗口 —— 避免开机时跟 Slack / Mail / 浏览器抢焦点。跟 §15 「升级 relaunch 走前台」的规则同源：只在用户主动触发或上下文明确期望前台时（升级完成）才 foreground，其它情况一律后台。Tauri only,PWA 不显示此 toggle。
+2. **同步（Sync）** · v0.12.x 起切 5 个二级 tab（见下方专门段落）。
 
 3. **AI 辅助**
    - 顶部主开关：**默认关闭**（与 §6.4 一致）。关闭状态下隐藏其余控件。
-   - `OpenRouter API Key`：用户自备，粘贴入框即验证。
-   - `Fallback 链卡片`：一张卡片呈现，不是多面板。pills（模型名 + 免费/付费徽标）横向排列，拖拽重排，`+` 可插入付费模型。高级开关（temperature / max tokens / 单模型覆盖）折叠在"高级"里。
-   - 免费模型清单为远端 JSON（CDN 托管 + 兜底清单），详见 §6.3。
+   - `Base URL` / `API key` / `Model` / `测试连接` / `刷新可选模型`（OpenAI-compatible 通用客户端，见 §6.6）。
+   - `AI 输出语言`：`跟随界面 / 简体中文 / English`，默认 `跟随界面`（v0.12.x 从「高级」搬过来，所有 AI 旋钮聚拢，只在 AI 启用时显示）。
+   - `我的背景`：Markdown blob，AI 调用前 prepend 到 system prompt（见 §6.6.1）。
 
 4. **高级（Advanced）**
-   - `"让它们都过去吧"阈值`：默认 `7 天`，数字输入。
+   - `Pending 队列 · 批量忽略阈值`：默认 `7 天`，数字输入。
    - `归档 Line 计入长期统计`：默认开。
-   - `时间制`：`跟随 locale / 24 小时 / AM-PM`，默认 `跟随 locale`。
-   - `AI 输出语言`：`跟随 UI 语言 / 简体中文 / English`，默认 `跟随 UI 语言`（见 §6.2）。
    - `日期格式表`：列出各视图当前的日期格式（见 §A 组落地的 per-view 日期格式表），只读或可覆盖。
+   - `升级前备份偏好`：（v0.12.x 从「关于」搬过来 · 它是 preference 不是 info）。
+   - **桌面端**子段（仅 Tauri 显示，v0.12.x 加）：`开机自启动` toggle。开启时通过 `tauri-plugin-autostart` 写入 OS 自启动入口（macOS Launch Agents / Windows Registry Run / Linux .desktop）。自启动 app 在后台启动（dock / menubar 显示图标但不弹窗），用户主动点击图标才显示窗口 —— 避免开机时跟 Slack / Mail / 浏览器抢焦点。跟 §15 「升级 relaunch 走前台」的规则同源。Tauri-only · PWA 不显示此 toggle。**v0.12.x 之前** autostart 错放在「同步」节，code 注释自己都承认 "independent from sync with Drive"，本轮归位。
+   - `导出 JSON（仅人读）`：legacy 检查工具；完整 round-trip 仍走 .dryj。
+   - `重置本地数据`（DangerZone）。
    - 其余高频低频交叉的旋钮都在此集中。
 
 5. **关于（About）**
+   - 纯 identity + diagnostic + 链接 · 不放 preference（v0.12.x 把 `升级前备份偏好` 搬到「高级」就是这条原则的体现）。
    - DayRailMark logo + 副标题 `STAY ON THE RAIL`。
-   - 版本号、源码仓库链接、贡献者名单（PR 机制维护）。
+   - 版本号 / 构建 / 环境 / 许可证 / 维护者（read-only KeyValue）。
+   - 存储用量 / 持久化状态（read-only diagnostic · PWA 显示，Tauri 隐藏）。
+   - `检查更新`：one-click 触发 + 最近检查时间（OS app convention，跟 macOS About → check updates 同款心智）。
+   - 源码仓库 / Issue / 贡献链接（外链）。
    - 无"登录 / 账号"入口 —— DayRail 无账号。
 
-**v0.12.x · 「同步」二级 tab**：v0.12 把五件套护栏全上线后，「同步」一节膨胀到 ~15 行（`SyncStatusCard` + `RemoteStatePanel` + 8 个 sync row + 桌面端 autostart + 本地数据 3 row + 可读格式导出 3 row + dev tools）—— 即便用 `hairline-t` + 小灰字 overline 切子段，视觉同质，滚屏才能找到目标。dogfood 一两天后改用 `Segmented` 切 5 个 tab，按"用户来这里要做什么"分而不是按"功能归属哪一类"分：**概览 / 连接 / 设备 / 备份 / 导出**。默认 `概览`（status + 立即同步 + 安全退出，最高频）；`连接` 装首次授权 / 设备名 / boot choice / autostart / 断开（一次性配置）；`设备` 是 §7.10.1 P5 设备列表的独立家；`备份` 收 `.dryj` in/out + Drive 历史；`导出` 收 markdown/csv/ical。URL `?tab=...` deep-link 让 banner / boot reconcile 等可以直接把用户带到正确 tab。原 `ConnectedSyncControls` 容器一起删掉。其它 4 个 section（外观 / AI / 高级 / 关于）保持单页 · 现在还没密到需要二级 tab。
+**v0.12.x · 「同步」二级 tab**：v0.12 把五件套护栏全上线后，「同步」一节膨胀到 ~15 行（`SyncStatusCard` + `RemoteStatePanel` + 8 个 sync row + 桌面端 autostart + 本地数据 3 row + 可读格式导出 3 row + dev tools）—— 即便用 `hairline-t` + 小灰字 overline 切子段，视觉同质，滚屏才能找到目标。dogfood 一两天后改用 `Segmented` 切 5 个 tab，按"用户来这里要做什么"分而不是按"功能归属哪一类"分：**概览 / 连接 / 设备 / 备份 / 导出**。默认 `概览`（status + 立即同步 + 安全退出，最高频）；`连接` 装首次授权 / 设备名 / boot choice / 断开（一次性配置）；`设备` 是 §7.10.1 P5 设备列表的独立家；`备份` 收 `.dryj` in/out + Drive 历史；`导出` 收 markdown/csv/ical。URL `?tab=...` deep-link 让 banner / boot reconcile 等可以直接把用户带到正确 tab。原 `ConnectedSyncControls` 容器一起删掉。其它 4 个 section（外观 / AI / 高级 / 关于）保持单页 · 现在还没密到需要二级 tab。
+
+**v0.12.x · 跨 section 归位（同步 doc-only 的同伴重构）**：trail of breadcrumbs after audit of every Settings row · 把放错位置的搬回正确的家。4 处移动：(1) `开机自启动` 同步 → 高级（OS lifecycle ≠ sync）；(2) `升级前备份偏好` 关于 → 高级（preference ≠ info）；(3) `AI 输出语言` 高级 → AI 辅助（AI 旋钮聚拢）；(4) `时间制` 高级 → 外观（显示格式同主题 / 语言一类）。原则：**section 心智一致** —— 关于装 identity / diagnostic 不装 preference · 同步装 Drive-related 不装 OS-level lifecycle · 外观装"显示如何呈现" · AI 装所有 AI 旋钮 · 高级是兜底（低频 / 跨语义 / 诊断 / 危险）。保留三处不动：节假日 region 留外观（显示过滤而非数据配置）· 检查更新留关于（OS app 惯例）· 日期格式表留高级（只读诊断 · 低频）。
 
 ***
 

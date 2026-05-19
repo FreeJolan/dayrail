@@ -108,12 +108,13 @@ export function AppearanceSection() {
     applyTheme(next);
   };
   const [lang, setLang] = useState<'auto' | 'zh-CN' | 'en'>('zh-CN');
+  const [timeFormat, setTimeFormat] = useState<'auto' | '24h' | 'ampm'>('auto');
 
   return (
     <SettingsSectionShell
       overline="Appearance"
       title="外观"
-      description="主题与语言。跨设备同步前，这些选项存在本设备（device-local，见 §7.2.1）。"
+      description="主题、语言、显示偏好。跨设备同步前，这些选项存在本设备（device-local，见 §7.2.1）。"
     >
       <Row
         label="主题"
@@ -132,7 +133,7 @@ export function AppearanceSection() {
       />
       <Row
         label="界面语言"
-        description="首次启动读 navigator.language；此处覆盖。AI 输出语言在「高级」里独立设置。"
+        description="首次启动读 navigator.language；此处覆盖。AI 输出语言在「AI 辅助」里独立设置。"
         control={
           <Segmented
             value={lang}
@@ -141,6 +142,21 @@ export function AppearanceSection() {
               { key: 'auto', label: '跟随系统' },
               { key: 'zh-CN', label: '简体中文' },
               { key: 'en', label: 'English' },
+            ]}
+          />
+        }
+      />
+      <Row
+        label="时间制"
+        description="应用内所有 HH:MM 的显示格式。跟随 locale 时 zh-CN 默认 24 小时，en-US 默认 AM/PM。"
+        control={
+          <Segmented
+            value={timeFormat}
+            onChange={setTimeFormat}
+            options={[
+              { key: 'auto', label: '跟随 locale' },
+              { key: '24h', label: '24 小时' },
+              { key: 'ampm', label: 'AM/PM' },
             ]}
           />
         }
@@ -358,14 +374,6 @@ function SyncConnectTab({ connected }: { connected: boolean }) {
     return (
       <div className="flex flex-col">
         <ConnectDrivePanel />
-        {isTauriRuntime() && (
-          <div className="hairline-t mt-6 flex flex-col pt-4">
-            <span className="pb-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-              桌面端
-            </span>
-            <AutostartRow />
-          </div>
-        )}
       </div>
     );
   }
@@ -373,7 +381,6 @@ function SyncConnectTab({ connected }: { connected: boolean }) {
     <div className="flex flex-col">
       <DeviceLabelRow />
       <BootSyncChoiceRow />
-      {isTauriRuntime() && <AutostartRow />}
       <DisconnectRow />
     </div>
   );
@@ -2467,6 +2474,7 @@ export function AISection() {
   const background = userProfile?.background ?? '';
 
   const [apiKey, setApiKeyLocal] = useState<string>(() => getAiApiKey());
+  const [aiLocale, setAiLocale] = useState<'ui' | 'zh-CN' | 'en'>('ui');
   useEffect(() => {
     const unsub = subscribeAiApiKey(setApiKeyLocal);
     return unsub;
@@ -2685,6 +2693,22 @@ export function AISection() {
           )}
           {testState.kind === 'error' && <ErrorPanel state={testState} />}
 
+          <Row
+            label="AI 输出语言"
+            description="和界面语言解耦。界面用中文 + AI 用英文（或反之）是合法组合。"
+            control={
+              <Segmented
+                value={aiLocale}
+                onChange={setAiLocale}
+                options={[
+                  { key: 'ui', label: '跟随界面' },
+                  { key: 'zh-CN', label: '简体中文' },
+                  { key: 'en', label: 'English' },
+                ]}
+              />
+            }
+          />
+
           <div className="hairline-t flex flex-col gap-2 py-4">
             <header className="flex flex-col gap-1">
               <h3 className="text-sm font-medium text-ink-primary">我的背景</h3>
@@ -2740,8 +2764,6 @@ function ErrorPanel({
 export function AdvancedSection() {
   const [ignoreThreshold, setIgnoreThreshold] = useState('7');
   const [archivedInStats, setArchivedInStats] = useState(true);
-  const [timeFormat, setTimeFormat] = useState<'auto' | '24h' | 'ampm'>('auto');
-  const [aiLocale, setAiLocale] = useState<'ui' | 'zh-CN' | 'en'>('ui');
 
   return (
     <SettingsSectionShell
@@ -2777,36 +2799,6 @@ export function AdvancedSection() {
         }
       />
       <Row
-        label="时间制"
-        description="应用内所有 HH:MM 的显示格式。跟随 locale 时 zh-CN 默认 24 小时，en-US 默认 AM/PM。"
-        control={
-          <Segmented
-            value={timeFormat}
-            onChange={setTimeFormat}
-            options={[
-              { key: 'auto', label: '跟随 locale' },
-              { key: '24h', label: '24 小时' },
-              { key: 'ampm', label: 'AM/PM' },
-            ]}
-          />
-        }
-      />
-      <Row
-        label="AI 输出语言"
-        description="和界面语言解耦。界面用中文 + AI 用英文（或反之）是合法组合。"
-        control={
-          <Segmented
-            value={aiLocale}
-            onChange={setAiLocale}
-            options={[
-              { key: 'ui', label: '跟随界面' },
-              { key: 'zh-CN', label: '简体中文' },
-              { key: 'en', label: 'English' },
-            ]}
-          />
-        }
-      />
-      <Row
         label="日期格式表"
         description="各视图当前采用的日期格式。只读；后续版本开放自定义。"
         control={
@@ -2822,6 +2814,15 @@ export function AdvancedSection() {
         <KeyValue label="Review period" value="C1 · Apr 13 – Apr 19" mono />
         <KeyValue label="Pending 日期组" value="04.16 · THU · 1 天前" mono />
       </div>
+      <UpgradeBackupPrefRow />
+      {isTauriRuntime() && (
+        <div className="hairline-t mt-6 flex flex-col pt-4">
+          <span className="pb-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            桌面端
+          </span>
+          <AutostartRow />
+        </div>
+      )}
       <BackupSection />
       <DangerZone />
     </SettingsSectionShell>
@@ -3075,7 +3076,6 @@ export function AboutSection() {
         </div>
 
         <UpdateCheckRow />
-        <UpgradeBackupPrefRow />
 
         <div className="flex flex-col gap-1">
           <a
