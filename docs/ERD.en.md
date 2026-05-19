@@ -1102,33 +1102,40 @@ Pending is the *complete* set of "awaiting a decision"; §5.6's check-in strip i
 
 1. **Appearance**
    - `Theme`: three-way segmented `Follow system / Always light / Always dark`, default `Follow system` (CSS `prefers-color-scheme: dark` + manual override class; Radix Colors ships paired `*Dark` scales, no manual derivation).
-   - `Language`: `Follow system / 简体中文 / English` (default `Follow system`, see §9.7). Time-format and AI output-locale overrides live under Advanced, not here.
+   - `UI language`: `Follow system / 简体中文 / English` (default `Follow system`, see §9.7).
+   - `Time format`: `Follow locale / 24-hour / AM-PM`, default `Follow locale` (moved here from Advanced in v0.12.x — same "display preference" family as theme / language).
+   - `Holiday region`: multi-select chips driving which regions' holiday chips render on Cycle View / Calendar / Today Track.
 
-2. **Sync**
-   - Shows the current sync backend (Google Drive / iCloud / WebDAV connection-status badge, same data source as the Group-A top-bar sync-status badge).
-   - Actions: `Connect / Disconnect / Switch device / Re-enter passphrase / View conflict log`.
-   - Detailed sync model (event log + snapshot / compaction) lives in §9.x / §12 roadmap.
-
-   **Auto-start at login** (desktop only, added v0.11.6): toggle, default off. When on, `tauri-plugin-autostart` writes the OS-side autostart entry (macOS Launch Agents / Windows Registry Run / Linux .desktop). **Launch behavior**: the app starts in the background (dock / menubar icon visible but window hidden); the user clicks the icon to surface the window — avoiding focus-theft contention with Slack / Mail / browser at login. Same rule family as §15.8 "post-update relaunch foreground": only foreground when the user explicitly triggers or context unambiguously expects it (update done). Tauri only — PWA hides this toggle.
+2. **Sync** · split into 5 sub-tabs starting v0.12.x (see the dedicated paragraph below).
 
 3. **AI Assistance**
    - Top master switch: **off by default** (consistent with §6.4). When off, the remaining controls are hidden.
-   - `OpenRouter API Key`: user-supplied; paste and verify.
-   - `Fallback chain card`: a single card, not a multi-panel config. Pills (model name + free/paid badge) arranged horizontally; drag to reorder; `+` to insert a paid model. Advanced knobs (temperature / max tokens / per-model overrides) fold into "Advanced".
-   - Free-model list is a remote JSON (CDN-hosted + a bundled fallback list); see §6.3.
+   - `Base URL` / `API key` / `Model` / `Test connection` / `Refresh available models` (OpenAI-compatible generic client, see §6.6).
+   - `AI output language`: `Follow UI / 简体中文 / English`, default `Follow UI` (moved here from Advanced in v0.12.x — all AI knobs cluster together; only visible when AI is enabled).
+   - `My background`: Markdown blob prepended into the system prompt at AI-call time (see §6.6.1).
 
 4. **Advanced**
-   - `"Let these pass" threshold`: default `7 days`, numeric input.
+   - `Pending queue · batch-ignore threshold`: default `7 days`, numeric input.
    - `Archived Lines included in long-term stats`: default on.
-   - `Time format`: `Follow locale / 24-hour / AM-PM`, default `Follow locale`.
-   - `AI output language`: `Follow UI language / 简体中文 / English`, default `Follow UI language` (see §6.2).
    - `Date-format table`: the per-view date format decisions from Group A — read-only or overridable.
-   - All lower-frequency cross-cutting knobs cluster here.
+   - `Upgrade pre-backup preference`: moved here from About in v0.12.x — it's a preference (config), not info.
+   - **Desktop** sub-group (Tauri-only, added v0.12.x): `Auto-start at login` toggle. When on, `tauri-plugin-autostart` writes the OS-side autostart entry (macOS Launch Agents / Windows Registry Run / Linux .desktop). The autostarted app launches in the background (dock / menubar icon visible but window hidden); the user clicks the icon to surface the window — avoiding focus contention with Slack / Mail / browser at login. Same rule family as §15.8 "post-update relaunch foreground". Tauri-only; PWA hides this toggle. **Pre-v0.12.x** this row was misplaced under Sync; the code comment even acknowledged "independent from sync with Drive". v0.12.x relocated it here.
+   - `Export JSON (human-readable only)`: legacy inspection tool; complete round-trip still uses `.dryj`.
+   - `Reset local data` (DangerZone).
+   - All lower-frequency / cross-cutting / diagnostic / destructive knobs cluster here.
 
 5. **About**
+   - Pure identity + diagnostic + links · no preferences (v0.12.x moved `Upgrade pre-backup preference` to Advanced to enforce this).
    - DayRailMark logo + subtitle `STAY ON THE RAIL`.
-   - Version, source-repo link, contributor list (maintained via PRs).
+   - Version / build / env / license / maintainer (read-only KeyValue).
+   - Storage usage / persistence status (read-only diagnostic; PWA shows it, Tauri hides it).
+   - `Check for updates`: one-click trigger + last-checked timestamp (OS-app convention, mirrors macOS About → check updates).
+   - Source repo / Issue / contribute links (external).
    - No "Sign in / Account" entry — DayRail has no accounts.
+
+**v0.12.x · Sync section sub-tabs**: After v0.12 landed all five trust safeguards, the Sync section ballooned to ~15 rows (`SyncStatusCard` + `RemoteStatePanel` + 8 sync rows + desktop autostart + 3 local-data rows + 3 readable-export rows + dev tools). Even with `hairline-t` dividers + small uppercase overlines splitting sub-groups, the visual texture was uniform and finding the right row meant scrolling. A day or two of dogfooding pushed a switch to `Segmented` with 5 tabs split by user intent (*what am I here to do*) rather than feature taxonomy: **Overview / Connect / Devices / Backup / Export**. Default `Overview` (status + Sync Now + Safe Quit · highest-frequency); `Connect` carries first-time consent / device name / boot-sync choice / disconnect (one-time setup); `Devices` is the standalone home of the §7.10.1 P5 peer-device list; `Backup` collects `.dryj` in/out + Drive history; `Export` holds the readable markdown / csv / ical paths. URL `?tab=...` deep-links let banners / boot reconcile / etc. drop the user onto the right tab. The old `ConnectedSyncControls` wrapper is removed in the same pass. The other four sections (Appearance / AI / Advanced / About) stay single-page · none are dense enough yet to justify a second nav layer.
+
+**v0.12.x · Cross-section relocation (companion to the sub-tab refactor)**: An audit of every Settings row turned up four misplaced items, moved back to their right homes in the same pass: (1) `Auto-start at login` Sync → Advanced (OS lifecycle ≠ sync); (2) `Upgrade pre-backup preference` About → Advanced (preference ≠ info); (3) `AI output language` Advanced → AI Assistance (all AI knobs together); (4) `Time format` Advanced → Appearance (display format, same family as theme / language). Operating principle: **each section's mental model should be coherent** — About is identity / diagnostic only · Sync is Drive-related only, not OS-level lifecycle · Appearance is "how things render" · AI hosts all AI knobs · Advanced is the catch-all (low-frequency / cross-semantic / diagnostic / destructive). Three items intentionally stayed: holiday region remains in Appearance (display filter, not data config); Check-for-updates remains in About (OS app convention); Date-format table remains in Advanced (read-only diagnostic, low-frequency).
 
 ---
 
