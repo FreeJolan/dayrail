@@ -292,10 +292,23 @@ function adaptRow(
     ? 0
     : Math.max(0, Math.floor((now.getTime() - startMs) / MS_PER_DAY));
   if (row.rail && row.plannedStart && row.plannedEnd) {
+    // Date source priority: occurrence.slot.date (occurrence-managed
+    // tasks per §10.6 keep slot on the occurrence) > task.slot.date
+    // (legacy single-slot tasks) > plannedStart's date prefix
+    // (always valid because we're in the rail-bound branch). Prior
+    // to v0.12 this only read `task.slot?.date`; occurrence-managed
+    // tasks then produced an empty string here, and groupByDate's
+    // `new Date("T00:00:00")` blew up with RangeError on
+    // `Intl.DateTimeFormat.format()` — white-screened the whole
+    // Pending route.
+    const date =
+      row.occurrence?.slot?.date ??
+      row.task.slot?.date ??
+      row.plannedStart.slice(0, 10);
     return {
       taskId: row.task.id,
       railId: row.rail.id,
-      date: row.task.slot?.date ?? '',
+      date,
       start: row.plannedStart.slice(11, 16) || '00:00',
       end: row.plannedEnd.slice(11, 16) || '00:00',
       railName: row.rail.name,
@@ -351,6 +364,23 @@ function groupByDate(rows: PendingRow[]): Group[] {
     .sort((a, b) => b[0].localeCompare(a[0]))
     .map(([date, items]) => {
       const d = new Date(`${date}T00:00:00`);
+      // Defensive guard: a row with an empty / unparseable date
+      // produces an Invalid Date. Before this guard,
+      // Intl.DateTimeFormat.format() would throw RangeError on
+      // Invalid Date and crash the whole Pending route. Now we
+      // surface a "未知日期" group instead so one bad row stays
+      // visible without taking down the page.
+      const valid = !Number.isNaN(d.getTime());
+      const sortedItems = items.sort((a, b) => a.start.localeCompare(b.start));
+      if (!valid) {
+        return {
+          date: date || '未知日期',
+          relative: '未知日期',
+          weekdayShort: '—',
+          dayLabel: '—',
+          items: sortedItems,
+        };
+      }
       const relative =
         date === today ? '今天' : date === yesterday ? '昨天' : daysAgoLabel(d);
       return {
@@ -358,7 +388,7 @@ function groupByDate(rows: PendingRow[]): Group[] {
         relative,
         weekdayShort: weekdayFmt.format(d),
         dayLabel: dayFmt.format(d),
-        items: items.sort((a, b) => a.start.localeCompare(b.start)),
+        items: sortedItems,
       };
     });
 }
