@@ -31,7 +31,15 @@ const STALE_THRESHOLD_DAYS = 7;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 interface PendingRow {
+  /** Composite unique key per row · `${taskId}|${occurrenceId ?? '_root'}`.
+   *  v0.11 §10.6 occurrence-managed tasks produce one row per
+   *  pending occurrence · taskId alone is ambiguous. Used for React
+   *  list key + keyboard cursor identity. */
+  key: string;
   taskId: string;
+  /** Set when this row represents a TaskOccurrence rather than the
+   *  bare Task. Carries the per-row identity for keys + cursor. */
+  occurrenceId?: string;
   railId: string;
   date: string; // YYYY-MM-DD
   start: string; // HH:MM
@@ -39,7 +47,13 @@ interface PendingRow {
   railName: string;
   railColor: RailColor;
   subtitle?: string;
-  title: string; // task title (hand-built) / habit name (auto-task)
+  /** Display title: `occurrence.label` when this row is an occurrence
+   *  with a label · falls back to task title (habit name for auto-task). */
+  title: string;
+  /** Parent task title when `title` came from an occurrence label that
+   *  differs from the task's own title. Renders as a small subtitle
+   *  so the user can see "this is the 调查价格 split of 组装电脑". */
+  parentTaskTitle?: string;
   /** Full Task reference — lets the row wire SchedulePopover + detail
    *  drawer without re-looking up the task each render. */
   task: Task;
@@ -62,11 +76,12 @@ export function Pending() {
 
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   // Keyboard navigation cursor (Pending page · ROADMAP 停车场 ·
-  // 键盘快捷键扩展). Tracked by taskId rather than index so rows
-  // shifting (after archive/complete) don't move the cursor off the
-  // intended row. Auto-selects the first row when rows change and
-  // cursor is unset / stale.
-  const [cursorTaskId, setCursorTaskId] = useState<string | null>(null);
+  // 键盘快捷键扩展). Tracked by the row's composite key
+  // (`${taskId}|${occurrenceId ?? '_root'}`) so multiple occurrences
+  // of the same task don't collide, and rows shifting (after archive
+  // / complete) don't move the cursor off the intended row. Auto-
+  // selects the first row when rows change and cursor is unset / stale.
+  const [cursorRowKey, setCursorRowKey] = useState<string | null>(null);
   const cursorRowRef = useRef<HTMLDivElement | null>(null);
   const { toast, fire, handleAddTag, handleUndo, handleClose } = useReasonToast(
     'pending-queue',
@@ -126,27 +141,27 @@ export function Pending() {
   // next-nearest row (prefer the row that took its index slot).
   useEffect(() => {
     if (rows.length === 0) {
-      if (cursorTaskId !== null) setCursorTaskId(null);
+      if (cursorRowKey !== null) setCursorRowKey(null);
       return;
     }
-    if (cursorTaskId === null) {
-      setCursorTaskId(rows[0]!.taskId);
+    if (cursorRowKey === null) {
+      setCursorRowKey(rows[0]!.key);
       return;
     }
-    const stillExists = rows.some((r) => r.taskId === cursorTaskId);
+    const stillExists = rows.some((r) => r.key === cursorRowKey);
     if (!stillExists) {
       // Best-effort: pick row 0 (oldest) when our row disappeared.
       // Could try to preserve index, but the row order can shift
       // unpredictably after a write, so "back to top" is safer.
-      setCursorTaskId(rows[0]!.taskId);
+      setCursorRowKey(rows[0]!.key);
     }
-  }, [rows, cursorTaskId]);
+  }, [rows, cursorRowKey]);
 
   // Auto-scroll focused row into view (smooth, nearest). Fires when
   // cursor moves or row layout shifts.
   useEffect(() => {
     cursorRowRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }, [cursorTaskId]);
+  }, [cursorRowKey]);
 
   // Page-local shortcuts (ROADMAP 停车场 · 键盘快捷键扩展):
   //   j / k · move cursor down / up
@@ -170,18 +185,18 @@ export function Pending() {
       // Don't fire while a modal sits in front (detail drawer / dialog).
       if (detailTaskId !== null) return;
       if (rows.length === 0) return;
-      const idx = cursorTaskId
-        ? rows.findIndex((r) => r.taskId === cursorTaskId)
+      const idx = cursorRowKey
+        ? rows.findIndex((r) => r.key === cursorRowKey)
         : -1;
       const key = e.key.toLowerCase();
       if (key === 'j') {
         e.preventDefault();
         const next = idx < 0 ? 0 : Math.min(rows.length - 1, idx + 1);
-        setCursorTaskId(rows[next]!.taskId);
+        setCursorRowKey(rows[next]!.key);
       } else if (key === 'k') {
         e.preventDefault();
         const next = idx <= 0 ? 0 : idx - 1;
-        setCursorTaskId(rows[next]!.taskId);
+        setCursorRowKey(rows[next]!.key);
       } else if (key === 'd') {
         if (idx < 0) return;
         e.preventDefault();
@@ -200,7 +215,7 @@ export function Pending() {
     return () => window.removeEventListener('keydown', onKey);
   }, [
     rows,
-    cursorTaskId,
+    cursorRowKey,
     detailTaskId,
     handleComplete,
     handleArchive,
@@ -240,7 +255,7 @@ export function Pending() {
               weekdayShort={g.weekdayShort}
               dayLabel={g.dayLabel}
               items={g.items}
-              focusedTaskId={cursorTaskId}
+              focusedRowKey={cursorRowKey}
               focusedRowRef={cursorRowRef}
               onComplete={handleComplete}
               onArchive={handleArchive}
@@ -291,17 +306,47 @@ function adaptRow(
   const ageDays = Number.isNaN(startMs)
     ? 0
     : Math.max(0, Math.floor((now.getTime() - startMs) / MS_PER_DAY));
+  // ERD §10.6 · per-row identity must include occurrenceId so multiple
+  // occurrences of the same task don't collide on React key / cursor.
+  const occurrenceId = row.occurrence?.id;
+  const key = `${row.task.id}|${occurrenceId ?? '_root'}`;
+  // Display title: occurrence.label takes precedence when set. When
+  // the occurrence label differs from the parent task title, surface
+  // the parent in the subtitle slot ("this is the 调查价格 split of
+  // 组装电脑").
+  const occLabel = row.occurrence?.label?.trim();
+  const title = occLabel && occLabel.length > 0 ? occLabel : row.task.title;
+  const parentTaskTitle =
+    occLabel && occLabel.length > 0 && occLabel !== row.task.title
+      ? row.task.title
+      : undefined;
   if (row.rail && row.plannedStart && row.plannedEnd) {
+    // Date source priority: occurrence.slot.date (occurrence-managed
+    // tasks per §10.6 keep slot on the occurrence) > task.slot.date
+    // (legacy single-slot tasks) > plannedStart's date prefix
+    // (always valid because we're in the rail-bound branch). Prior
+    // to v0.12 this only read `task.slot?.date`; occurrence-managed
+    // tasks then produced an empty string here, and groupByDate's
+    // `new Date("T00:00:00")` blew up with RangeError on
+    // `Intl.DateTimeFormat.format()` — white-screened the whole
+    // Pending route.
+    const date =
+      row.occurrence?.slot?.date ??
+      row.task.slot?.date ??
+      row.plannedStart.slice(0, 10);
     return {
+      key,
       taskId: row.task.id,
+      ...(occurrenceId && { occurrenceId }),
       railId: row.rail.id,
-      date: row.task.slot?.date ?? '',
+      date,
       start: row.plannedStart.slice(11, 16) || '00:00',
       end: row.plannedEnd.slice(11, 16) || '00:00',
       railName: row.rail.name,
       railColor: row.rail.color as RailColor,
       ...(row.rail.subtitle && { subtitle: row.rail.subtitle }),
-      title: row.task.title,
+      title,
+      ...(parentTaskTitle && { parentTaskTitle }),
       task: row.task,
       source: row.task.status === 'deferred' ? 'deferred' : 'unmarked',
       tags: latestTagsForTask(row.task.id, shifts),
@@ -310,14 +355,17 @@ function adaptRow(
   }
   // Slot-less deferred task (e.g. Inbox item user pushed to later).
   return {
+    key,
     taskId: row.task.id,
+    ...(occurrenceId && { occurrenceId }),
     railId: '',
     date: (row.task.deferredAt ?? '').slice(0, 10),
     start: '—',
     end: '—',
     railName: '未排期',
     railColor: 'slate' as RailColor,
-    title: row.task.title,
+    title,
+    ...(parentTaskTitle && { parentTaskTitle }),
     task: row.task,
     source: 'deferred',
     tags: latestTagsForTask(row.task.id, shifts),
@@ -351,6 +399,23 @@ function groupByDate(rows: PendingRow[]): Group[] {
     .sort((a, b) => b[0].localeCompare(a[0]))
     .map(([date, items]) => {
       const d = new Date(`${date}T00:00:00`);
+      // Defensive guard: a row with an empty / unparseable date
+      // produces an Invalid Date. Before this guard,
+      // Intl.DateTimeFormat.format() would throw RangeError on
+      // Invalid Date and crash the whole Pending route. Now we
+      // surface a "未知日期" group instead so one bad row stays
+      // visible without taking down the page.
+      const valid = !Number.isNaN(d.getTime());
+      const sortedItems = items.sort((a, b) => a.start.localeCompare(b.start));
+      if (!valid) {
+        return {
+          date: date || '未知日期',
+          relative: '未知日期',
+          weekdayShort: '—',
+          dayLabel: '—',
+          items: sortedItems,
+        };
+      }
       const relative =
         date === today ? '今天' : date === yesterday ? '昨天' : daysAgoLabel(d);
       return {
@@ -358,7 +423,7 @@ function groupByDate(rows: PendingRow[]): Group[] {
         relative,
         weekdayShort: weekdayFmt.format(d),
         dayLabel: dayFmt.format(d),
-        items: items.sort((a, b) => a.start.localeCompare(b.start)),
+        items: sortedItems,
       };
     });
 }
@@ -454,7 +519,7 @@ function DateGroup({
   weekdayShort,
   dayLabel,
   items,
-  focusedTaskId,
+  focusedRowKey,
   focusedRowRef,
   onComplete,
   onArchive,
@@ -465,7 +530,7 @@ function DateGroup({
   weekdayShort: string;
   dayLabel: string;
   items: PendingRow[];
-  focusedTaskId: string | null;
+  focusedRowKey: string | null;
   focusedRowRef: React.RefObject<HTMLDivElement>;
   onComplete: (row: PendingRow) => void;
   onArchive: (row: PendingRow) => void;
@@ -485,9 +550,9 @@ function DateGroup({
       </header>
       <ul className="flex flex-col gap-1">
         {items.map((it) => {
-          const isFocused = it.taskId === focusedTaskId;
+          const isFocused = it.key === focusedRowKey;
           return (
-            <li key={it.taskId}>
+            <li key={it.key}>
               <PendingItemRow
                 row={it}
                 eligible={it.ageDays > STALE_THRESHOLD_DAYS}
@@ -561,6 +626,11 @@ function PendingItemRow({
           {row.start}–{row.end}
         </span>
         <span className="truncate text-sm text-ink-primary">{row.title}</span>
+        {row.parentTaskTitle && (
+          <span className="truncate text-xs text-ink-tertiary">
+            · {row.parentTaskTitle}
+          </span>
+        )}
         {row.title !== row.railName && (
           <span className="truncate text-xs text-ink-tertiary">
             · {row.railName}
