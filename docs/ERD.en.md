@@ -1130,6 +1130,8 @@ Pending is the *complete* set of "awaiting a decision"; §5.6's check-in strip i
    - Version, source-repo link, contributor list (maintained via PRs).
    - No "Sign in / Account" entry — DayRail has no accounts.
 
+**v0.12.x · Sync section sub-tabs**: After v0.12 landed all five trust safeguards, the Sync section ballooned to ~15 rows (`SyncStatusCard` + `RemoteStatePanel` + 8 sync rows + desktop autostart + 3 local-data rows + 3 readable-export rows + dev tools). Even with `hairline-t` dividers + small uppercase overlines splitting sub-groups, the visual texture was uniform and finding the right row meant scrolling. A day or two of dogfooding pushed a switch to `Segmented` with 5 tabs split by user intent (*what am I here to do*) rather than feature taxonomy: **Overview / Connect / Devices / Backup / Export**. Default `Overview` (status + Sync Now + Safe Quit · highest-frequency); `Connect` carries first-time consent / device name / boot-sync choice / autostart / disconnect (one-time setup); `Devices` is the standalone home of the §7.10.1 P5 peer-device list; `Backup` collects `.dryj` in/out + Drive history; `Export` holds the readable markdown / csv / ical paths. URL `?tab=...` deep-links let banners / boot reconcile / etc. drop the user onto the right tab. The old `ConnectedSyncControls` wrapper is removed in the same pass. The other four sections (Appearance / AI / Advanced / About) stay single-page · none are dense enough yet to justify a second nav layer.
+
 ---
 
 ## 6. AI Assistance

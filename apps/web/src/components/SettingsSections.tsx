@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { clsx } from 'clsx';
 import {
   Archive,
@@ -249,64 +250,182 @@ function HolidayRegionRow() {
 
 // ============ Sync ============
 
+// Settings → 同步 sub-tabs (ERD §5.9 · v0.12.x).
+//
+// SyncSection used to be a single tall page (~15 rows after v0.12)
+// where sub-groups split only by a `hairline-t` divider + a small
+// uppercase overline label. Hard to scan; requires scrolling to find
+// anything. This refactor splits it into five tabs by user intent
+// (what am I here to do), each tab a focused workspace.
+//
+// Tabs:
+//   overview — status at a glance + 立即同步 + 安全退出 (+ dev demo)
+//   connect  — first-time connect / device-level config (label, boot
+//              choice, autostart, disconnect)
+//   devices  — peer device list (ERD §7.10.1 P5 panel)
+//   backup   — local .dryj snapshot in/out + Drive history
+//   export   — human-readable export (md / csv / ical)
+//
+// Deep-link via `?tab=...` query param so banners / boot reconcile /
+// etc. can drop the user on the right tab. Default 'overview'.
+type SyncTabKey = 'overview' | 'connect' | 'devices' | 'backup' | 'export';
+
+const SYNC_TAB_KEYS: SyncTabKey[] = [
+  'overview',
+  'connect',
+  'devices',
+  'backup',
+  'export',
+];
+
+const SYNC_TAB_LABELS: Record<SyncTabKey, string> = {
+  overview: '概览',
+  connect: '连接',
+  devices: '设备',
+  backup: '备份',
+  export: '导出',
+};
+
+function isSyncTabKey(s: string | null): s is SyncTabKey {
+  return s !== null && (SYNC_TAB_KEYS as string[]).includes(s);
+}
+
 export function SyncSection() {
   const status = useSyncStatus();
+  const [params, setParams] = useSearchParams();
+  const tabParam = params.get('tab');
+  const tab: SyncTabKey = isSyncTabKey(tabParam) ? tabParam : 'overview';
+
+  const setTab = useCallback(
+    (next: SyncTabKey) => {
+      const newParams = new URLSearchParams(params);
+      if (next === 'overview') newParams.delete('tab');
+      else newParams.set('tab', next);
+      setParams(newParams, { replace: true });
+    },
+    [params, setParams],
+  );
+
   return (
     <SettingsSectionShell
       overline="Sync"
       title="同步"
       description="DayRail 无账号。Google Drive 同步把整份数据放到你自己 Google 账号下的隐藏空间（appdata），其它应用看不到；详见 ERD §7.6。"
     >
-      <SyncStatusCard connected={status.connected} />
-      {!status.connected && <ConnectDrivePanel />}
-      {status.connected && <ConnectedSyncControls />}
+      <div className="pb-4">
+        <Segmented
+          value={tab}
+          onChange={setTab}
+          options={SYNC_TAB_KEYS.map((k) => ({
+            key: k,
+            label: SYNC_TAB_LABELS[k],
+          }))}
+        />
+      </div>
 
-      {/* ERD §15.8 — desktop-only auto-start at login. Rendered
-          unconditionally (regardless of Drive connection) because
-          "start the app in the background at boot" is independent
-          from "sync with Drive". Hidden in the PWA. */}
-      {isTauriRuntime() && (
+      {tab === 'overview' && <SyncOverviewTab connected={status.connected} />}
+      {tab === 'connect' && <SyncConnectTab connected={status.connected} />}
+      {tab === 'devices' && <SyncDevicesTab connected={status.connected} />}
+      {tab === 'backup' && <SyncBackupTab connected={status.connected} />}
+      {tab === 'export' && <SyncExportTab />}
+    </SettingsSectionShell>
+  );
+}
+
+function SyncOverviewTab({ connected }: { connected: boolean }) {
+  return (
+    <div className="flex flex-col">
+      <SyncStatusCard connected={connected} />
+      {connected ? (
+        <div className="flex flex-col pt-4">
+          <RemoteStatePanel />
+          <SyncNowRow />
+          <SafeQuitRow />
+        </div>
+      ) : (
+        <p className="pt-4 text-xs leading-relaxed text-ink-tertiary">
+          还没连接 Drive。去「连接」tab 完成首次授权，数据就会自动同步到你 Google
+          账号下的隐藏 appdata 空间。
+        </p>
+      )}
+      <ConflictDemoSection />
+    </div>
+  );
+}
+
+function SyncConnectTab({ connected }: { connected: boolean }) {
+  if (!connected) {
+    return (
+      <div className="flex flex-col">
+        <ConnectDrivePanel />
+        {isTauriRuntime() && (
+          <div className="hairline-t mt-6 flex flex-col pt-4">
+            <span className="pb-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              桌面端
+            </span>
+            <AutostartRow />
+          </div>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col">
+      <DeviceLabelRow />
+      <BootSyncChoiceRow />
+      {isTauriRuntime() && <AutostartRow />}
+      <DisconnectRow />
+    </div>
+  );
+}
+
+function SyncDevicesTab({ connected }: { connected: boolean }) {
+  if (!connected) {
+    return (
+      <p className="text-xs leading-relaxed text-ink-tertiary">
+        还没连接 Drive。先去「连接」tab 完成首次授权，之后这里会列出所有同步过的设备
+        —— 包括这台。
+      </p>
+    );
+  }
+  return <ConnectedDevicesPanel />;
+}
+
+function SyncBackupTab({ connected }: { connected: boolean }) {
+  return (
+    <div className="flex flex-col">
+      <p className="pb-3 text-2xs leading-relaxed text-ink-tertiary">
+        本地 `.dryj` 快照是完整无损的二进制 round-trip 格式。下载 / 导入都是纯本机操作 ——
+        不依赖 Drive，即使云端坏了也能用。Drive 备份历史（下方）在连接 Drive 时显示，每次成功
+        push 自动滚一份，保留最近 14 条。
+      </p>
+      <DownloadSnapshotRow />
+      <ImportSnapshotRow />
+      {isTauriRuntime() && <AutoBackupListRow />}
+      {connected && (
         <div className="hairline-t mt-6 flex flex-col pt-4">
           <span className="pb-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-            桌面端
+            Drive 历史
           </span>
-          <AutostartRow />
+          <BackupHistoryRow />
         </div>
       )}
+    </div>
+  );
+}
 
-      {/* Local snapshot import/export is fundamentally a local
-          operation — Y.Doc encoded to a `.dryj` byte buffer, no Drive
-          API touched. It used to live inside ConnectedSyncControls
-          (only visible when Drive is connected), which inverted the
-          dependency: if your Drive is broken and you need to grab a
-          local snapshot to recover, you'd be locked out. v0.9.0→
-          v0.9.1 incident reinforced this: surface backup operations
-          unconditionally, alongside the Drive-specific controls. */}
-      <div className="hairline-t mt-6 flex flex-col pt-4">
-        <span className="pb-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          本地数据
-        </span>
-        <DownloadSnapshotRow />
-        <ImportSnapshotRow />
-        {isTauriRuntime() && <AutoBackupListRow />}
-      </div>
-
-      <div className="hairline-t mt-6 flex flex-col pt-4">
-        <span className="pb-2 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          可读格式导出
-        </span>
-        <p className="pb-3 text-2xs leading-relaxed text-ink-tertiary">
-          把数据导出成其它软件能直接吃的格式 ——「作者跑路了我也能继续用我的数据」心智的真正闭环。
-          有损导出（DayRail 的模板 / Rail / 节奏概念其它工具不认），但反思 / 任务 /
-          已排期项的核心信息都带得出去。完整无损 round-trip 仍走「下载本地快照」(.dryj)。
-        </p>
-        <ExportReflectionsRow />
-        <ExportTasksRow />
-        <ExportScheduleRow />
-      </div>
-
-      <ConflictDemoSection />
-    </SettingsSectionShell>
+function SyncExportTab() {
+  return (
+    <div className="flex flex-col">
+      <p className="pb-3 text-2xs leading-relaxed text-ink-tertiary">
+        把数据导出成其它软件能直接吃的格式 ——「作者跑路了我也能继续用我的数据」心智的真正闭环。
+        有损导出（DayRail 的模板 / Rail / 节奏概念其它工具不认），但反思 / 任务 /
+        已排期项的核心信息都带得出去。完整无损 round-trip 仍走「下载本地快照」(.dryj)。
+      </p>
+      <ExportReflectionsRow />
+      <ExportTasksRow />
+      <ExportScheduleRow />
+    </div>
   );
 }
 
@@ -786,21 +905,6 @@ function ConnectStatusModal({ text }: { text: string }) {
         />
         <span className="text-sm text-ink-secondary">{text}</span>
       </div>
-    </div>
-  );
-}
-
-function ConnectedSyncControls() {
-  return (
-    <div className="flex flex-col pt-4">
-      <RemoteStatePanel />
-      <ConnectedDevicesPanel />
-      <DeviceLabelRow />
-      <BootSyncChoiceRow />
-      <SyncNowRow />
-      <SafeQuitRow />
-      <DisconnectRow />
-      <BackupHistoryRow />
     </div>
   );
 }

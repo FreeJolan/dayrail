@@ -1050,6 +1050,8 @@ Pending 是"等待决定"的**全集**；§5.6 check-in 条是它"近 24h 这一
    - 版本号、源码仓库链接、贡献者名单（PR 机制维护）。
    - 无"登录 / 账号"入口 —— DayRail 无账号。
 
+**v0.12.x · 「同步」二级 tab**：v0.12 把五件套护栏全上线后，「同步」一节膨胀到 ~15 行（`SyncStatusCard` + `RemoteStatePanel` + 8 个 sync row + 桌面端 autostart + 本地数据 3 row + 可读格式导出 3 row + dev tools）—— 即便用 `hairline-t` + 小灰字 overline 切子段，视觉同质，滚屏才能找到目标。dogfood 一两天后改用 `Segmented` 切 5 个 tab，按"用户来这里要做什么"分而不是按"功能归属哪一类"分：**概览 / 连接 / 设备 / 备份 / 导出**。默认 `概览`（status + 立即同步 + 安全退出，最高频）；`连接` 装首次授权 / 设备名 / boot choice / autostart / 断开（一次性配置）；`设备` 是 §7.10.1 P5 设备列表的独立家；`备份` 收 `.dryj` in/out + Drive 历史；`导出` 收 markdown/csv/ical。URL `?tab=...` deep-link 让 banner / boot reconcile 等可以直接把用户带到正确 tab。原 `ConnectedSyncControls` 容器一起删掉。其它 4 个 section（外观 / AI / 高级 / 关于）保持单页 · 现在还没密到需要二级 tab。
+
 ***
 
 ## 6. AI 辅助
