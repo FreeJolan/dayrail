@@ -4009,6 +4009,28 @@ occurrence simply ignore the field (no breakage); the write path
 Consistent with the beta "data layer is additive-only, never
 destructive" policy.
 
+#### v0.12.3 · quick-add shortcut: a bare number becomes a percent
+
+Dogfood feedback: creating a "pure milestone" occurrence (just
+`percent`, no label) took two steps — press Enter on the empty add
+box to create one, then type the number into that row's `%` field.
+The add box is "step name"-oriented, so there was no one-step path.
+
+v0.12.3 adds a lightweight recognition to the add box: a **bare
+integer ≤ 100** (i.e. inside the valid 0–100 percent range) creates a
+**label-less** occurrence with that `percent` directly; a number
+**out of range** (150 / 2024 / …) or any text with non-digits falls
+through to a label, so numeric step names still work (e.g. "365-day
+streak"); empty stays a blank occurrence (unchanged).
+
+This is "number = progress" plus a range guard: valid percents become
+percents in one step, invalid values gracefully fall back to a label.
+The escape hatch for naming a step with a pure number still exists —
+create the blank occurrence, then type into the row's label field.
+The `percent` argument to `addTaskOccurrence` triggers the existing
+legacy-slot conversion (§10.6 boundary rule), matching the behavior
+of typing a percent by hand.
+
 ---
 
 ## 11. Open Questions

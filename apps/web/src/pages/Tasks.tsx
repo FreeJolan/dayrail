@@ -1692,10 +1692,21 @@ function OccurrencesSection({ task }: { task: Task }) {
 
   const addOccurrence = () => {
     const trimmed = draft.trim();
-    void addTaskOccurrence(
-      task.id,
-      trimmed.length > 0 ? { label: trimmed } : undefined,
-    );
+    // ERD §10.6 v0.12.3 — quick-add shortcut: a bare integer in the
+    // valid percent range (0–100) creates a label-less milestone
+    // occurrence directly, so "add a 50% milestone" is one step instead
+    // of "create empty → type 50 in the row". A number out of range
+    // (e.g. 150, 2024) or any non-numeric text falls through to a
+    // label, so numeric step names still work. Empty = blank occurrence.
+    let partial: Partial<Omit<TaskOccurrence, 'id' | 'taskId'>> | undefined;
+    if (trimmed.length === 0) {
+      partial = undefined;
+    } else if (/^\d+$/.test(trimmed) && Number(trimmed) <= 100) {
+      partial = { percent: Number(trimmed) };
+    } else {
+      partial = { label: trimmed };
+    }
+    void addTaskOccurrence(task.id, partial);
     setDraft('');
   };
 
@@ -1746,8 +1757,8 @@ function OccurrencesSection({ task }: { task: Task }) {
           onChange={(e) => setDraft(e.target.value)}
           placeholder={
             items.length === 0
-              ? '+ 切分 · 输入步骤名后回车 (留空也行)'
-              : '继续加一个 · Enter'
+              ? '+ 切分 · 步骤名，或直接填进度数字 0-100 · 回车 (留空也行)'
+              : '继续加一个 · 名字或进度数字 · Enter'
           }
           onCompositionStart={ime.onCompositionStart}
           onCompositionEnd={ime.onCompositionEnd}
