@@ -448,7 +448,9 @@ function entryToTimelineTask(
   }
 
   const tags = latestTagsForTask(task.id, shifts);
-  const trimmedNote = task.note?.trim() ?? '';
+  // ERD §10.6 v0.12.2 — occurrence rows show ONLY their own note (no
+  // fallback to task.note); legacy non-occurrence rows keep task.note.
+  const trimmedNote = (occurrence ? occurrence.note : task.note)?.trim() ?? '';
   const labelTrimmed = occurrence?.label?.trim() ?? '';
   const hasDistinctLabel =
     labelTrimmed.length > 0 && labelTrimmed !== task.title;

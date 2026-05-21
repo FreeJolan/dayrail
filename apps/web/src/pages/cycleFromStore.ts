@@ -343,7 +343,9 @@ function buildOccurrenceSummary(
   if (occ.status === 'done') state = 'done';
   else if (occ.status === 'archived') state = 'archived';
   else state = 'pending';
-  const trimmedNote = task.note?.trim() ?? '';
+  // ERD §10.6 v0.12.2 — occurrence pills show ONLY their own note,
+  // never falling back to the parent task.note.
+  const trimmedNote = occ.note?.trim() ?? '';
   const labelTrimmed = occ.label?.trim() ?? '';
   const hasDistinctLabel =
     labelTrimmed.length > 0 && labelTrimmed !== task.title;

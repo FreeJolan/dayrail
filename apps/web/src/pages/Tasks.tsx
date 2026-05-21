@@ -19,6 +19,7 @@ import {
   Pencil,
   Plus,
   Search,
+  StickyNote,
   Trash2,
   Undo2,
   X,
@@ -1789,6 +1790,13 @@ function OccurrenceRow({
     occurrence.percent != null ? String(occurrence.percent) : '',
   );
   const [pickerOpen, setPickerOpen] = useState(false);
+  // ERD §10.6 v0.12.2 — per-occurrence note disclosure. Collapsed by
+  // default; the StickyNote icon lights up when a note exists so the
+  // dense row doesn't have to surface the body. Clicking expands an
+  // inline MarkdownField (same component / fullscreen support as the
+  // Task note) below the row.
+  const [noteOpen, setNoteOpen] = useState(false);
+  const hasNote = !!occurrence.note && occurrence.note.trim().length > 0;
 
   // Sync controlled inputs when the upstream occurrence changes (e.g.
   // CRDT pull from another device). Only resync when the value
@@ -1823,6 +1831,12 @@ function OccurrenceRow({
     const clamped = Math.max(0, Math.min(100, n));
     if (clamped === occurrence.percent) return;
     onUpdate({ percent: clamped });
+  };
+
+  const commitNote = (next: string | undefined) => {
+    const normalized = next && next.trim() ? next.trim() : undefined;
+    if ((occurrence.note ?? undefined) === normalized) return;
+    onUpdate({ note: normalized });
   };
 
   const slotChip = (() => {
@@ -1908,6 +1922,21 @@ function OccurrenceRow({
         {slotChip}
         <button
           type="button"
+          onClick={() => setNoteOpen((v) => !v)}
+          aria-label={hasNote ? 'Edit occurrence note' : 'Add occurrence note'}
+          title={hasNote ? '备注' : '添加备注'}
+          className={clsx(
+            'rounded-sm p-0.5 transition hover:bg-surface-2 hover:text-ink-primary',
+            hasNote
+              ? 'text-ink-secondary'
+              : 'text-ink-tertiary opacity-0 group-hover:opacity-100',
+            noteOpen && 'bg-surface-2 text-ink-primary opacity-100',
+          )}
+        >
+          <StickyNote className="h-3 w-3" strokeWidth={1.8} />
+        </button>
+        <button
+          type="button"
           onClick={onRemove}
           aria-label="Delete occurrence"
           className="rounded-sm p-0.5 text-ink-tertiary opacity-0 transition hover:bg-surface-2 hover:text-ink-primary group-hover:opacity-100"
@@ -1915,6 +1944,18 @@ function OccurrenceRow({
           <X className="h-3 w-3" strokeWidth={1.8} />
         </button>
       </div>
+      {noteOpen && (
+        <div className="pl-[1.375rem] pr-1">
+          <MarkdownField
+            value={occurrence.note}
+            onCommit={commitNote}
+            placeholder="+ 添加备注 · Markdown"
+            dialogTitle={`${occurrence.label?.trim() || task.title || '切分'} · 备注`}
+            ariaLabel="切分备注"
+            displayMaxHeight="12rem"
+          />
+        </div>
+      )}
       {pickerOpen && (
         <OccurrenceSlotPicker
           occurrence={occurrence}

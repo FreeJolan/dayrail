@@ -203,3 +203,36 @@ describe('migration safety', () => {
     expect(deriveTaskStatus(TASK, occs)).toBe('pending');
   });
 });
+
+describe('per-occurrence note (v0.12.2)', () => {
+  // ERD §10.6 v0.12.2 — `note` is a display-only field. Like `percent`
+  // is decoupled from done-ness, `note` is decoupled from status /
+  // progress derivation: adding or changing it must not move the
+  // derived Task status or high-water progress. This is the invariant
+  // worth pinning; the write path itself is the generic patchEntityYMap
+  // (covered by yjs.test.ts).
+  const noteful: TaskOccurrence[] = [
+    occ({ id: 'o1', label: '调查价格', status: 'done', percent: 40, note: '这家店周三前有券' }),
+    occ({ id: 'o2', label: '装机', status: 'pending', note: '等显卡到货' }),
+  ];
+
+  it('does not affect isOccurrenceManaged', () => {
+    expect(isOccurrenceManaged(noteful)).toBe(true);
+    // A lone label+note occurrence still counts as managed.
+    expect(isOccurrenceManaged([occ({ id: 'o', note: 'jot' })])).toBe(true);
+  });
+
+  it('does not affect status derivation', () => {
+    expect(deriveTaskStatus(TASK, noteful)).toBe('in-progress');
+    // Same occurrences without notes derive identically.
+    const stripped = noteful.map(({ note: _note, ...rest }) => rest);
+    expect(deriveTaskStatus(TASK, stripped)).toBe(
+      deriveTaskStatus(TASK, noteful),
+    );
+  });
+
+  it('does not affect progress derivation (only done.percent counts)', () => {
+    // o1 is done with percent 40; o2 is a pending note-only occurrence.
+    expect(deriveTaskProgress(TASK, noteful)).toBe(40);
+  });
+});

@@ -608,6 +608,14 @@ export interface TaskOccurrence {
   order?: number;
   doneAt?: string;
   archivedAt?: string;
+  /** ERD §10.6 v0.12.2 — this occurrence's own Markdown note, rendered
+   *  via the shared `MarkdownView` (§5.5.4), same surface as `Task.note`.
+   *  Fully INDEPENDENT of `Task.note`: occurrence pills / rows show only
+   *  this and never fall back to the parent Task's note (unlike the
+   *  `occurrence.label ?? task.title` fallback — a whole-Task note on a
+   *  split step would be misleading context). Written via the generic
+   *  `updateTaskOccurrence` patch path. */
+  note?: string;
 }
 
 /** Derived Task status when occurrences are non-empty (ERD §10.1
