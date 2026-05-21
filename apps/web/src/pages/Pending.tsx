@@ -9,6 +9,7 @@ import {
   type Task,
 } from '@dayrail/core';
 import { RAIL_COLOR_HEX } from '@/components/railColors';
+import { NoteHoverPopover } from '@/components/NoteHoverPopover';
 import { ReasonToast } from '@/components/ReasonToast';
 import { SchedulePopover } from '@/components/SchedulePopover';
 import {
@@ -63,6 +64,11 @@ interface PendingRow {
   source: 'deferred' | 'unmarked';
   tags: string[];
   ageDays: number;
+  /** ERD §10.6 v0.12.2 — the note to surface for this row, mirroring
+   *  Today/Cycle: an occurrence row carries `occurrence.note`, a
+   *  whole-task row carries `task.note`. The two layers never fall
+   *  back to each other. Undefined / empty = no note badge. */
+  note?: string;
 }
 
 export function Pending() {
@@ -320,6 +326,10 @@ function adaptRow(
     occLabel && occLabel.length > 0 && occLabel !== row.task.title
       ? row.task.title
       : undefined;
+  // ERD §10.6 v0.12.2 — occurrence rows surface occurrence.note;
+  // whole-task rows surface task.note. No cross-layer fallback.
+  const noteSource = row.occurrence ? row.occurrence.note : row.task.note;
+  const note = noteSource && noteSource.trim() ? noteSource.trim() : undefined;
   if (row.rail && row.plannedStart && row.plannedEnd) {
     // Date source priority: occurrence.slot.date (occurrence-managed
     // tasks per §10.6 keep slot on the occurrence) > task.slot.date
@@ -347,6 +357,7 @@ function adaptRow(
       ...(row.rail.subtitle && { subtitle: row.rail.subtitle }),
       title,
       ...(parentTaskTitle && { parentTaskTitle }),
+      ...(note && { note }),
       task: row.task,
       source: row.task.status === 'deferred' ? 'deferred' : 'unmarked',
       tags: latestTagsForTask(row.task.id, shifts),
@@ -366,6 +377,7 @@ function adaptRow(
     railColor: 'slate' as RailColor,
     title,
     ...(parentTaskTitle && { parentTaskTitle }),
+    ...(note && { note }),
     task: row.task,
     source: 'deferred',
     tags: latestTagsForTask(row.task.id, shifts),
@@ -635,6 +647,16 @@ function PendingItemRow({
           <span className="truncate text-xs text-ink-tertiary">
             · {row.railName}
           </span>
+        )}
+        {row.note && (
+          <NoteHoverPopover note={row.note} side="top" align="start">
+            <span
+              tabIndex={0}
+              className="shrink-0 cursor-help rounded-sm font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:text-ink-primary focus:outline-none focus-visible:text-ink-primary"
+            >
+              · 备注
+            </span>
+          </NoteHoverPopover>
         )}
         {row.tags.length > 0 && (
           <span className="flex shrink-0 items-center gap-1">

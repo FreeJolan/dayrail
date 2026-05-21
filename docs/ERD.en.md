@@ -3258,6 +3258,10 @@ type TaskOccurrence = {
                                // legacy subItems migration takes the array index.
   doneAt?: string;             // ISO timestamp
   archivedAt?: string;
+  note?: string;               // v0.12.2+ · this occurrence's own Markdown note (rendered per §5.5.4
+                               // via the same MarkdownField as Task.note). **Fully independent** of
+                               // Task.note: occurrence pills / rows show only this, never falling
+                               // back to task.note (see §10.6 v0.12.2 note).
 };
 
 // ========= Settings =========
@@ -3665,7 +3669,8 @@ the identity unit; its status becomes derived (§10.1 exception).
 Full schema lives in §10.4 `TaskOccurrence`. Key fields: `taskId`
 (foreign key) / `slot?` (same shape as Task.slot) / `label?` (step
 name) / `percent?` (milestone marker on the parent Task) / `status`
-/ `order?`.
+/ `order?` / `note?` (the occurrence's own Markdown note · since
+v0.12.2 · see the "v0.12.2" note at the end of this section).
 
 #### Two usage shapes (not mutually exclusive — they compose)
 
@@ -3922,6 +3927,87 @@ Both bugs share the v0.11.4 pattern — "an implementation surface
 drifted from its own section's spec" — and the section's core
 invariant ("`Task.slot` is ignored when occurrences are non-empty")
 is now enforced both at the UI and at the data layer.
+
+#### v0.12.2 · per-occurrence note
+
+**Motivation**: `Task` has always had `note` (§5.5.4 Markdown note),
+but a split-off occurrence only carried `label` / `percent` / `slot`
+/ `status` — nowhere to jot something down per step. When one thing
+splits into steps ("build a PC" → "price parts / order / assemble"),
+each step often has its **own** context ("this shop has a coupon
+until Wednesday" / "waiting on the GPU to ship") that fits neither
+in nor alongside the whole-Task note. Give the occurrence a note
+field of the same shape as the Task's.
+
+**Field**: `TaskOccurrence.note?: string` (§10.4). Markdown, reusing
+the same renderer as `Task.note` / `Line.note` (§5.5.4 `MarkdownView`).
+A purely additive optional field.
+
+**Display semantics — occurrence note only, no fallback**: when a
+pill / row represents an occurrence, the surface shows **only**
+`occurrence.note` and **never falls back to `task.note`**. The two
+note layers are fully independent.
+
+> This deliberately **differs** from the label → title fallback
+> chain (an occurrence with no label shows task.title). Why notes do
+> NOT fall back: attaching "the whole thing's note" to a specific
+> split step would create **misleading context** — when the user
+> reads the note on the "price parts" step they expect that step's
+> business, not the overall "build a PC" blurb. Showing empty when
+> there's no occurrence note is the honest answer.
+
+Legacy non-occurrence Tasks (empty `occurrences`) keep showing
+`task.note` unchanged.
+
+**Editing affordance — inline disclosure**: in the Task detail
+drawer's "split" block (`OccurrenceRow` in `Tasks.tsx`), each row
+gains a small note icon — lit when a note exists, dimmed when not.
+Clicking expands a `MarkdownField` (the same component as the Task
+note, fullscreen-dialog capable) **inline below the row**, collapsed
+by default so it doesn't crowd the already-dense occurrence row
+(checkbox + label + % + schedule chip + delete).
+
+**Display surfaces (three, unified)**: occurrence notes surface on
+the three surfaces where occurrences appear, all reusing
+`NoteHoverPopover` (the `· 备注` badge + hover card), so no new
+component is needed —
+- **Today Track** (`TodayTrack.buildTimelineTask`): the occurrence
+  branch's `note` source switches from `task.note` to
+  `occurrence.note`.
+- **Cycle View** (`cycleFromStore.buildOccurrenceSummary`): same.
+- **Pending queue** (§5.7): occurrence rows render `occurrence.note`.
+
+> **On the Pending call** (briefly considered "explicitly out of
+> scope", then folded in after discussion): Pending is where you
+> **re-decide** a deferred / overdue occurrence, and the per-step
+> note ("waiting on the GPU to ship") is exactly the context that
+> informs whether to keep deferring — value here is no lower than the
+> Today/Cycle hovers. Cost-wise the Pending row already carries
+> `row.occurrence`, so the same hover drops right in; it's not a new
+> UI. The original "don't" reason (Pending showed no note before, so
+> adding one would feel inconsistent) is outweighed by that value
+> argument; §7.10 principle #3 is meant to block cold, redundant
+> branches, and this one isn't cold.
+
+**Pending aligns to the same note model across all three surfaces**:
+to avoid creating a fresh "split rows have notes, whole-task rows
+don't" split *inside* Pending, Pending fully mirrors the Today/Cycle
+rule — occurrence rows show `occurrence.note`, and **non-occurrence
+whole-task rows show `task.note`**. This means Pending now also
+starts surfacing task notes (it didn't before); `row.task` /
+`row.occurrence` are both already in hand, still through the same
+`NoteHoverPopover`. All three surfaces now share one sentence of note
+rule: "occurrence row → occurrence.note; whole-task row → task.note;
+the two layers never fall back to each other".
+
+**Data layer / compat**: `note` is a purely additive optional field
+on the per-element CRDT `TaskOccurrence`; the `.dryj` container
+version does not bump; older clients reading a note-bearing
+occurrence simply ignore the field (no breakage); the write path
+`updateTaskOccurrence` already goes through the generic
+`patchEntityYMap`, so writing / clearing needs zero store changes.
+Consistent with the beta "data layer is additive-only, never
+destructive" policy.
 
 ---
 

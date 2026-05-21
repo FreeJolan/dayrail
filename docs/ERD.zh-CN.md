@@ -3069,6 +3069,9 @@ type TaskOccurrence = {
                                // percent 模式下不重要。新建不预填，老 subItems 迁移时取 array index。
   doneAt?: string;             // ISO 时间戳
   archivedAt?: string;
+  note?: string;               // v0.12.2+ · 该切分自己的 Markdown 备注（按 §5.5.4 渲染，与 Task.note
+                               // 同款 MarkdownField）。与 Task.note **完全独立**：occurrence pill / 行
+                               // 只看这条、不回退到 task.note（见 §10.6 v0.12.2 节）。
 };
 
 // ============= 设置 =============
@@ -3406,7 +3409,7 @@ v0.11 把"调度原子"从 `Task` 上剥离成独立实体 `TaskOccurrence`：�
 
 #### 实体定义
 
-完整 schema 在 §10.4 `TaskOccurrence`。关键字段：`taskId`（外键）/ `slot?`（与 Task.slot 同形）/ `label?`（步骤名）/ `percent?`（主 Task 的里程碑标记）/ `status` / `order?`。
+完整 schema 在 §10.4 `TaskOccurrence`。关键字段：`taskId`（外键）/ `slot?`（与 Task.slot 同形）/ `label?`（步骤名）/ `percent?`（主 Task 的里程碑标记）/ `status` / `order?` / `note?`（该切分自己的 Markdown 备注 · v0.12.2 起 · 见本节末「v0.12.2」节）。
 
 #### 两种使用形态（彼此不互斥，可混搭）
 
@@ -3532,6 +3535,31 @@ v0.11.5 两件并修：
 2. **切分后 task-level 排期入口隐藏**：task 详情抽屉 / Tasks 列表行的"排期…"按钮在 `isOccurrenceManaged(occs)` 为真时不渲染，替换成中性提示「已切分 · 请在下方 occurrence 列表逐条排期」。store 层 `scheduleTaskToRail` 加防御守卫：若 task 已有 occurrences 直接 throw（防止后续新增的入口忘加 UI 守卫又重蹈静默死路）。
 
 这两件的共同模式 —— "实装 surface 偏离同一节的 spec" —— 跟 v0.11.4 修的两件同源。本节的核心不变量「occurrences 非空时 Task.slot 被忽略」终于在 UI 层 + 数据层都强制起来。
+
+#### v0.12.2 · 切分备注（per-occurrence note）
+
+**动机**：`Task` 一直有 `note`（§5.5.4 Markdown 备注），但切出来的 occurrence 只有 `label` / `percent` / `slot` / `status`，没法单独记东西。当一件事拆成多步（"组装电脑" → "调查价格 / 下单 / 装机"），每一步往往有它**自己的**上下文（"这家店周三前有券" / "等显卡到货"），塞进父 Task 的整体备注里既不贴切也会互相污染。给 occurrence 加一个跟 Task 同款的备注字段。
+
+**字段**：`TaskOccurrence.note?: string`（§10.4）。Markdown，复用 `Task.note` / `Line.note` 同一个渲染器（§5.5.4 `MarkdownView`）。纯增量可选字段。
+
+**展示语义 —— 只显示切分备注，不回退**：当某个 pill / 行代表一个 occurrence 时，该 surface **只**展示 `occurrence.note`，**绝不回退到 `task.note`**。两层备注彻底独立。
+
+> 这条刻意**不同于** label → title 的回退链（occurrence 没 label 时显示 task.title）。备注不回退的理由：把"整件事的备注"挂到某个具体切分步骤上会制造**误导性上下文**——用户看"调查价格"这一步的备注时，期待看到的是这一步的事，而不是整件"组装电脑"的总说明。没有 occurrence 备注就显示空，是诚实的。
+
+非 occurrence 的旧 Task（`occurrences` 为空）pill 维持显示 `task.note` 不变。
+
+**编辑入口 —— 行内折叠展开**：Task 详情抽屉的「切分」区块（`Tasks.tsx` 的 `OccurrenceRow`），每行加一个备注小图标 —— 有备注时点亮、无备注时弱化。点击在该行**下方就地展开**一个 `MarkdownField`（与 Task 备注同款组件，支持全屏 dialog），默认收起，不挤占本就密集的切分行（勾选框 + label + % + 排期 chip + 删除）。
+
+**展示入口（三处统一）**：occurrence 备注出现在 occurrence 会现身的三处 surface，全部复用 `NoteHoverPopover`（`· 备注` 角标 + hover 卡片），无需新组件 —
+- **Today Track**（`TodayTrack.buildTimelineTask`）：occurrence 分支的 `note` 源从 `task.note` 改为 `occurrence.note`。
+- **Cycle View**（`cycleFromStore.buildOccurrenceSummary`）：同上。
+- **Pending 队列**（§5.7）：occurrence 行展示 `occurrence.note`。
+
+> **关于 Pending 的取舍**（一度想"显式不做"，讨论后纳入）：Pending 是**重新决策** defer / overdue 切分的地方，per-step 备注（"等显卡到货"）恰是此刻决定要不要继续 defer 的关键上下文——论价值不低于 Today/Cycle 的 hover。成本上 Pending 行的数据结构里已带 `row.occurrence`，套同一个 hover 即可，不是新造 UI。原先"不做"的理由（Pending 此前不展示任何备注、单独加会割裂）被这条价值论压过；§7.10 原则 #3 是用来挡冷门冗余分支的，这条不冷门。
+
+**Pending 一并对齐三 surface 的 note 模型**：为避免在 Pending 内部造出"切分行有备注、整任务行没有"的新割裂，Pending 完整对齐 Today/Cycle 的展示规则——occurrence 行显示 `occurrence.note`，**非 occurrence 的整任务行显示 `task.note`**。这等于让 Pending 顺带开始展示 task 备注（此前没有）；数据 `row.task` / `row.occurrence` 均现成，仍是同一个 `NoteHoverPopover`。三处 surface 自此共享同一句话的 note 规则：「occurrence 行 → occurrence.note；整任务行 → task.note；两层互不回退」。
+
+**数据层 / 兼容**：`note` 是 per-element CRDT 的 `TaskOccurrence` 上的纯加法可选字段，`.dryj` 容器版本不升；老版本读到带 note 的 occurrence 直接忽略该字段（不破坏）；写路径 `updateTaskOccurrence` 已走通用 `patchEntityYMap`，零 store 改动即可写入 / 清空。符合 beta「数据层只增不毁」策略。
 
 ***
 
