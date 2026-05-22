@@ -127,6 +127,30 @@ describe('deriveTaskStatus', () => {
       ]),
     ).toBe('deleted');
   });
+
+  it('stale raw `done` is overridden by the rollup (Tasks-page grouping contract)', () => {
+    // Regression for the Tasks page grouping by raw `task.status`: a task
+    // whose stored status is 'done' (e.g. completed before occurrences
+    // were added — the store never materializes status back) but whose
+    // occurrences are only partly done MUST derive to a non-done status,
+    // so it lands in 未完成, not 已完成. Only 'deleted' short-circuits.
+    expect(
+      deriveTaskStatus({ ...TASK, status: 'done' }, [
+        occ({ id: 'o1', status: 'done' }),
+        occ({ id: 'o2', status: 'pending' }),
+        occ({ id: 'o3', status: 'pending' }),
+        occ({ id: 'o4', status: 'pending' }),
+      ]),
+    ).toBe('in-progress');
+    // And the inverse: a task created 'pending' whose occurrences are all
+    // done derives to 'done' (lands in 已完成 despite the stale raw field).
+    expect(
+      deriveTaskStatus({ ...TASK, status: 'pending' }, [
+        occ({ id: 'o1', status: 'done' }),
+        occ({ id: 'o2', status: 'done' }),
+      ]),
+    ).toBe('done');
+  });
 });
 
 describe('deriveTaskProgress', () => {

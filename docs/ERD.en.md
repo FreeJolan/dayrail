@@ -4031,6 +4031,58 @@ The `percent` argument to `addTaskOccurrence` triggers the existing
 legacy-slot conversion (§10.6 boundary rule), matching the behavior
 of typing a percent by hand.
 
+#### v0.12.4 correction · Tasks page groups by derived status
+
+Dogfood surfaced an occurrence-managed task (1/4 occurrences done)
+sitting in the Tasks page's **已完成 (completed)** group — a direct
+contradiction of this section's "Task.status is fully derived when
+occurrences are non-empty".
+
+Root cause — again "an implementation surface drifted from this
+section's spec" (same as v0.11.4 / v0.11.5):
+
+- **`task.status` is never written back.** `completeTaskOccurrence`
+  et al. only mutate the occurrence's own status; they **never**
+  materialize the derived result onto `task.status` (this section
+  says status is "derived on read, not stored"). So an
+  occurrence-managed task's raw `task.status` is stale and drifts
+  from the rollup.
+- **The Tasks page list grouped / filtered / rendered by the raw
+  `task.status`**: the 已完成/未完成 split, the overdue filter, the
+  row's done glyph + strikethrough, the milestone badge, and the
+  PageHeader `N/total` count + progress bar all read the raw field.
+  So raw `done` (task ticked before occurrences were added) → wrongly
+  in 已完成; raw `pending` (never ticked, all occurrences done) →
+  wrongly stuck in 未完成. The `countTasks` / `selectProjectProgress`
+  selectors already called `deriveTaskStatus`; only the Tasks page
+  list missed it.
+
+Fix (v0.12.4) — the Tasks page now reads `deriveTaskStatus` /
+`deriveTaskProgress` everywhere it judges completion/progress (for
+occurrence-free tasks both return the raw values verbatim, so legacy
+rows are unchanged):
+
+1. Grouping: `doneTasks = derived === 'done'`, `openTasks = derived
+   !== 'done'` ("not done" rather than an explicit enum, so the rare
+   occurrence-managed "all occurrences archived" edge doesn't vanish
+   from both groups).
+2. Overdue filter, PageHeader count + progress bar: by derived
+   status/progress.
+3. Row rendering: done glyph / strikethrough / milestone badge read
+   the derived values.
+4. **The row's status circle is read-only for occurrence-managed
+   tasks** — completion is occurrence-driven, so a task-level toggle
+   would write the (ignored) raw status and appear to do nothing.
+   The toggle is disabled for those rows, routing completion to the
+   detail drawer's 切分 section (same move as v0.11.5 disabling the
+   task-level Schedule entry).
+
+**Explicitly not done**: do NOT materialize status back onto
+`task.status`. That would contradict this section's "derived, not
+stored" and create a drift-prone dual source of truth (exactly the
+metadata-vs-data lifecycle anti-pattern). The correct fix is to make
+the read sites use the derived functions.
+
 ---
 
 ## 11. Open Questions
