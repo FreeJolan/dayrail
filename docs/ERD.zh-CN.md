@@ -4232,6 +4232,21 @@ v0.9 ship 路径：
 | post-update relaunch | env var `DAYRAIL_RESTART_REASON=update`(由 `relaunch_for_update` 命令在 `app.restart()` 前设) | 强制 foreground |
 | autostart + update relaunch(理论交叉) | 两个都有 | foreground 胜出(update 明确意图) |
 
+### 15.9 桌面 webview 不支持 `window.prompt`(v0.12.6 修正纪要)
+
+dogfood 暴露:Tasks 页 Projects / Habits 的「+ 新建」在桌面端**点了没反应**。
+
+根因:Tauri 的 webview(wry / 底层 WKWebView)**没有实现 `window.prompt`**(对应的 `runJavaScriptTextInputPanel` 未接) —— 调用即静默返回 `null`、不弹任何框。代码里 `const raw = window.prompt(...); if (raw == null) return;` 于是直接 return,表现就是"死按钮"。**web 浏览器正常**,所以只有桌面端中招。
+
+**关键区分**:`window.alert` / `window.confirm` 在 wry 里**是实现了的**(alert/confirm panel 都接了),桌面端能正常用 —— 所以删除确认、提示这些没坏。**唯独 `window.prompt`(需要文本输入)是缺口**。
+
+修法(v0.12.6):把全部 4 处 `window.prompt` 换成**应用内行内输入框**(web / 桌面都可靠、不依赖 webview 原生对话框):
+
+- `Tasks.tsx` NavGroup(Projects / Habits 新建):点「+ 新建」就地展开输入框,Enter 建、Esc / 失焦取消(沿用 QuickCreate 惯例)。`handleCreateProject/Habit` 改为接收 name 参数、不再 prompt。
+- `TemplateEditor.tsx` 新建 / 复制模板:页面级 `pendingCreate` 状态 + 一个共享的 `TemplateNameInput` 行内输入条(预填默认名 + 全选,Enter 一键接受),tabs 的「+ 新建模板」和 TopBar 的「复制」都打开它。
+
+**前向约束**:桌面端 webview 里**禁用 `window.prompt`**;需要文字输入一律走应用内输入(行内框 / Radix Dialog)。`alert` / `confirm` 可继续用(wry 已实现),但长期看用应用内组件更可控、跨端一致。
+
 ***
 
 > 本文档是 DayRail 设计讨论的起点，不是终点。所有决策都可以被推翻。
