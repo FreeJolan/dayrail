@@ -4728,6 +4728,21 @@ Two independent but semantically-aligned desktop UX rules: **the app foregrounds
 | Post-update relaunch | env var `DAYRAIL_RESTART_REASON=update` (set by `relaunch_for_update` before `app.restart()`) | Force foreground |
 | Autostart + update relaunch (hypothetical overlap) | both | Foreground wins (explicit update intent) |
 
+### 15.9 The desktop webview doesn't support `window.prompt` (v0.12.6 correction)
+
+Dogfood surfaced: the Tasks page's Projects / Habits "+ 新建" buttons **did nothing** on desktop.
+
+Root cause: Tauri's webview (wry / WKWebView underneath) **does not implement `window.prompt`** (the `runJavaScriptTextInputPanel` hook is unwired) — calling it silently returns `null` with no dialog. The code's `const raw = window.prompt(...); if (raw == null) return;` then bails, so the button looks dead. **Web browsers are fine**, so only the desktop build is affected.
+
+**Key distinction**: `window.alert` / `window.confirm` **are** implemented in wry (both panels are wired), so they work on desktop — delete confirmations / alerts were never broken. **`window.prompt` (text input) is the only gap.**
+
+Fix (v0.12.6): replace all 4 `window.prompt` sites with **in-app inline inputs** (reliable on web and desktop, no dependency on the webview's native dialogs):
+
+- `Tasks.tsx` NavGroup (Projects / Habits create): clicking "+ 新建" reveals an inline input in place — Enter creates, Esc / blur cancels (matching the QuickCreate idiom). `handleCreateProject/Habit` now take a `name` argument instead of prompting.
+- `TemplateEditor.tsx` new / duplicate template: a page-level `pendingCreate` state + one shared `TemplateNameInput` inline bar (prefilled + selected so Enter accepts the default in one keypress), opened by both the tabs' "+ 新建模板" and the TopBar "复制".
+
+**Forward constraint**: do NOT use `window.prompt` in the desktop webview; any text entry goes through an in-app input (inline field / Radix Dialog). `alert` / `confirm` still work (wry implements them), but in-app components are more controllable and cross-platform-consistent long term.
+
 ---
 
 > This document is the starting point of DayRail's design discussion, not the end. Any decision can be overturned.

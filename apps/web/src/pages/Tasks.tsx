@@ -147,40 +147,43 @@ export function Tasks() {
     return m;
   }, [habits, habitPhasesMap]);
 
-  const handleCreateProject = useCallback(() => {
-    // Minimal creation UX for chunk E — a full popover with color /
-    // planned-end pickers can land later; a name is all the store
-    // strictly needs.
-    const raw = window.prompt('新建 Project · 输入名称');
-    if (raw == null) return;
-    const name = raw.trim();
-    if (!name) return;
-    const id = freshId('line');
-    void createLine({
-      id,
-      name,
-      kind: 'project',
-      status: 'active',
-      createdAt: Date.now(),
-    });
-    setSelection({ kind: 'line', lineId: id });
-  }, [createLine, setSelection]);
+  // Name comes from the NavGroup's inline create input (not
+  // window.prompt — that's a silent no-op in the Tauri desktop webview,
+  // which doesn't implement runJavaScriptTextInputPanel). The inline
+  // input works identically on web and desktop.
+  const handleCreateProject = useCallback(
+    (rawName: string) => {
+      const name = rawName.trim();
+      if (!name) return;
+      const id = freshId('line');
+      void createLine({
+        id,
+        name,
+        kind: 'project',
+        status: 'active',
+        createdAt: Date.now(),
+      });
+      setSelection({ kind: 'line', lineId: id });
+    },
+    [createLine, setSelection],
+  );
 
-  const handleCreateHabit = useCallback(() => {
-    const raw = window.prompt('新建 Habit · 输入名称');
-    if (raw == null) return;
-    const name = raw.trim();
-    if (!name) return;
-    const id = freshId('line');
-    void createLine({
-      id,
-      name,
-      kind: 'habit',
-      status: 'active',
-      createdAt: Date.now(),
-    });
-    setSelection({ kind: 'line', lineId: id });
-  }, [createLine, setSelection]);
+  const handleCreateHabit = useCallback(
+    (rawName: string) => {
+      const name = rawName.trim();
+      if (!name) return;
+      const id = freshId('line');
+      void createLine({
+        id,
+        name,
+        kind: 'habit',
+        status: 'active',
+        createdAt: Date.now(),
+      });
+      setSelection({ kind: 'line', lineId: id });
+    },
+    [createLine, setSelection],
+  );
 
   return (
     <div className="flex min-h-screen w-full">
@@ -221,8 +224,8 @@ function NavTree({
   projects: Line[];
   habits: Line[];
   currentPhaseByHabitId: Record<string, string | undefined>;
-  onCreateProject: () => void;
-  onCreateHabit: () => void;
+  onCreateProject: (name: string) => void;
+  onCreateHabit: (name: string) => void;
 }) {
   return (
     <aside className="sticky top-0 flex h-screen w-[256px] shrink-0 flex-col border-r border-hairline/40 bg-surface-0 px-3 py-6">
@@ -242,7 +245,12 @@ function NavTree({
         />
       )}
 
-      <NavGroup label="Projects" actionLabel="+ 新建" onAction={onCreateProject}>
+      <NavGroup
+        label="Projects"
+        actionLabel="+ 新建"
+        onCreate={onCreateProject}
+        createPlaceholder="新建 Project · 名称后回车"
+      >
         {projects.length === 0 ? (
           <p className="px-3 py-1.5 text-xs text-ink-tertiary">
             还没有 Project
@@ -260,7 +268,12 @@ function NavTree({
         )}
       </NavGroup>
 
-      <NavGroup label="Habits" actionLabel="+ 新建" onAction={onCreateHabit}>
+      <NavGroup
+        label="Habits"
+        actionLabel="+ 新建"
+        onCreate={onCreateHabit}
+        createPlaceholder="新建 Habit · 名称后回车"
+      >
         {habits.length === 0 ? (
           <p className="px-3 py-1.5 text-xs text-ink-tertiary">
             还没有 Habit
@@ -304,24 +317,47 @@ function NavTree({
 function NavGroup({
   label,
   actionLabel,
-  onAction,
+  onCreate,
+  createPlaceholder,
   children,
 }: {
   label: string;
   actionLabel?: string;
-  onAction?: () => void;
+  /** Called with the typed name when the user submits the inline
+   *  create input. Replaces the old `window.prompt`-based flow (which
+   *  is a silent no-op in the Tauri desktop webview). */
+  onCreate?: (name: string) => void;
+  createPlaceholder?: string;
   children: React.ReactNode;
 }) {
+  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState('');
+  const ime = useIme();
+
+  const submit = () => {
+    const name = draft.trim();
+    if (name) onCreate?.(name);
+    setDraft('');
+    setCreating(false);
+  };
+  // Blur / Esc discard (don't create on click-away) — matches the
+  // QuickCreate idiom; only Enter commits.
+  const cancel = () => {
+    setDraft('');
+    setCreating(false);
+  };
+
   return (
     <div className="mt-5 flex flex-col gap-0.5">
       <div className="flex items-baseline justify-between px-3 pb-1">
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
           {label}
         </span>
-        {actionLabel && onAction && (
+        {actionLabel && onCreate && (
           <button
             type="button"
-            onClick={onAction}
+            onClick={() => setCreating((v) => !v)}
+            aria-expanded={creating}
             className="inline-flex items-center gap-1 font-mono text-2xs uppercase tracking-widest text-ink-tertiary transition hover:text-ink-primary"
           >
             <Plus className="h-2.5 w-2.5" strokeWidth={1.8} />
@@ -329,6 +365,28 @@ function NavGroup({
           </button>
         )}
       </div>
+      {creating && onCreate && (
+        <input
+          type="text"
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={cancel}
+          placeholder={createPlaceholder ?? '名称后回车'}
+          onCompositionStart={ime.onCompositionStart}
+          onCompositionEnd={ime.onCompositionEnd}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !ime.isComposing(e)) {
+              e.preventDefault();
+              submit();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              cancel();
+            }
+          }}
+          className="mx-3 mb-1 h-7 rounded-sm border border-hairline/60 bg-surface-0 px-2 text-sm text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+        />
+      )}
       {children}
     </div>
   );

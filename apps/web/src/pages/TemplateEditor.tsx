@@ -24,6 +24,7 @@ import {
 } from '@/data/sampleTemplate';
 import { FirstRunBanner } from '@/components/FirstRunBanner';
 import { EditSessionIndicator } from '@/components/EditSessionIndicator';
+import { useIme } from '@/lib/ime';
 import { RailColorPopover } from '@/components/RailColorPopover';
 import { TemplateTabs } from '@/components/TemplateTabs';
 import { SummaryStrip } from '@/components/SummaryStrip';
@@ -163,6 +164,14 @@ export function TemplateEditor() {
   );
 
   const [focusRailId, setFocusRailId] = useState<string | undefined>();
+  // Inline name-input bar for new/duplicate template (replaces
+  // window.prompt, which is a silent no-op in the Tauri desktop
+  // webview). Both the tabs' "+ 新建模板" and the TopBar "复制" open it,
+  // prefilled with a default name.
+  const [pendingCreate, setPendingCreate] = useState<{
+    kind: 'blank' | 'duplicate';
+    defaultName: string;
+  } | null>(null);
   useEffect(() => {
     if (!focusRailId && sortedEditable[0]) {
       setFocusRailId(sortedEditable[0].id);
@@ -238,10 +247,8 @@ export function TemplateEditor() {
     window.alert('重置到默认 —— v0.3 衔接。当前走 ⤺ 撤销本次编辑 回到 session baseline。');
   };
 
-  const createBlankTemplate = async () => {
-    const proposedName = window.prompt('新模板名字？', '新模板');
-    if (!proposedName) return;
-    const name = proposedName.trim();
+  const createBlankTemplate = async (rawName: string) => {
+    const name = rawName.trim();
     if (!name) return;
     const existingKeys = new Set(templates.map((t) => t.key));
     const newKey = uniqueTemplateKey(name, existingKeys);
@@ -253,13 +260,8 @@ export function TemplateEditor() {
     navigate(`/templates/${newKey}`);
   };
 
-  const duplicateTemplate = async () => {
-    const proposedName = window.prompt(
-      `复制「${currentTemplate.label}」到新模板，名字？`,
-      `${currentTemplate.label} · 副本`,
-    );
-    if (!proposedName) return;
-    const name = proposedName.trim();
+  const duplicateTemplate = async (rawName: string) => {
+    const name = rawName.trim();
     if (!name) return;
     const existingKeys = new Set(templates.map((t) => t.key));
     const newKey = uniqueTemplateKey(name, existingKeys);
@@ -388,7 +390,12 @@ export function TemplateEditor() {
         template={currentTemplate}
         onUndoSession={undoSession}
         onReset={resetToDefault}
-        onDuplicate={duplicateTemplate}
+        onDuplicate={() =>
+          setPendingCreate({
+            kind: 'duplicate',
+            defaultName: `${currentTemplate.label} · 副本`,
+          })
+        }
         onDelete={deleteTemplate}
         onChangeColor={changeTemplateColor}
       />
@@ -397,8 +404,25 @@ export function TemplateEditor() {
         templates={templatesForTabs}
         active={activeKey}
         onSelect={setActiveKey}
-        onNew={() => void createBlankTemplate()}
+        onNew={() => setPendingCreate({ kind: 'blank', defaultName: '新模板' })}
       />
+
+      {pendingCreate && (
+        <TemplateNameInput
+          key={`${pendingCreate.kind}|${pendingCreate.defaultName}`}
+          defaultName={pendingCreate.defaultName}
+          label={pendingCreate.kind === 'duplicate' ? '复制为新模板' : '新建模板'}
+          onSubmit={(name) => {
+            const pc = pendingCreate;
+            setPendingCreate(null);
+            const trimmed = name.trim();
+            if (!trimmed) return;
+            if (pc.kind === 'blank') void createBlankTemplate(trimmed);
+            else void duplicateTemplate(trimmed);
+          }}
+          onCancel={() => setPendingCreate(null)}
+        />
+      )}
 
       <SummaryStrip rails={sortedEditable} />
 
@@ -507,6 +531,53 @@ function GapRow(props: {
         onFill={props.onFill}
       />
     </>
+  );
+}
+
+// Inline name input for new / duplicate template. Replaces
+// window.prompt (a silent no-op in the Tauri desktop webview). Opens
+// prefilled + selected so Enter accepts the default name in one keypress;
+// Esc / blur discard. IME-safe so Chinese names commit on the right Enter.
+function TemplateNameInput({
+  defaultName,
+  label,
+  onSubmit,
+  onCancel,
+}: {
+  defaultName: string;
+  label: string;
+  onSubmit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(defaultName);
+  const ime = useIme();
+  return (
+    <div className="flex items-center gap-2 pt-3">
+      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+        {label}
+      </span>
+      <input
+        type="text"
+        autoFocus
+        value={draft}
+        onFocus={(e) => e.currentTarget.select()}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={onCancel}
+        onCompositionStart={ime.onCompositionStart}
+        onCompositionEnd={ime.onCompositionEnd}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !ime.isComposing(e)) {
+            e.preventDefault();
+            onSubmit(draft);
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        placeholder="模板名后回车"
+        className="h-8 w-64 rounded-md border border-hairline/60 bg-surface-0 px-2.5 text-sm text-ink-primary outline-none placeholder:text-ink-tertiary focus:border-ink-secondary"
+      />
+    </div>
   );
 }
 
