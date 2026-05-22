@@ -3569,6 +3569,24 @@ v0.12.3 给添加框加一条轻量识别：输入**纯整数且 ≤ 100**（即
 
 这是「数字 = 进度」+ 范围校验兜底：合法 percent 一步到位，非法值优雅退回 label。想给某步起纯数字名字的逃生口仍在——留空建好后在行内 label 框里输入即可。`addTaskOccurrence` 的 `percent` 入参会触发既有的 legacy-slot 转换（§10.6 边界规则），与手填 percent 行为一致。
 
+#### v0.12.4 修正纪要 · Tasks 页按派生状态分组
+
+dogfood 暴露：一个 occurrence-managed 任务（切分 1/4）出现在 Tasks 页的「已完成」组里，跟本节「occurrences 非空时 Task.status 完全派生」明显矛盾。
+
+根因——又是「实装 surface 偏离本节 spec」（同 v0.11.4 / v0.11.5）：
+
+- **Task.status 从不被回写**。`completeTaskOccurrence` 等只改 occurrence 自身的 status，**从不**把派生结果落回 `task.status`（本节明文 status 是「读时派生、不落库」）。于是 occurrence-managed 任务的 raw `task.status` 是陈旧值，跟 rollup 脱节。
+- **Tasks 页列表却按 raw `task.status` 分组 / 过滤 / 渲染**：已完成/未完成分组、overdue 过滤、行内勾选图标 + 删除线、里程碑徽标、PageHeader 的 `N/total` 计数与进度条，全读 raw 字段。于是 raw 'done'（建任务时勾过、后加切分）→ 错进已完成；raw 'pending'（建时没勾、切分全做完）→ 错留未完成。`countTasks` / `selectProjectProgress` 选择器倒是早就调了 `deriveTaskStatus`，唯独 Tasks 页列表漏了。
+
+修法（v0.12.4）——Tasks 页凡判完成/进度处统一改走 `deriveTaskStatus` / `deriveTaskProgress`（对无 occurrence 的旧任务，二者原样返回 raw 值，故 legacy 行为不变）：
+
+1. 已完成/未完成分组：`doneTasks = 派生===done`，`openTasks = 派生!==done`（用「非 done」而非显式枚举，避免「全切分归档」这种派生 archived 边界从两组都消失）。
+2. overdue 过滤、PageHeader 计数 + 进度条：按派生状态/进度。
+3. 行内：勾选图标 / 删除线 / 里程碑徽标读派生值。
+4. **切分任务的行内勾选圈改为只读**——完成由切分驱动，task 级勾选会写被忽略的 raw status、看起来「点了没反应」；故对 occurrence-managed 行禁用 task 级 toggle，引导去详情逐条完成（沿用 v0.11.5 禁用 task 级排期入口的同一手法）。
+
+**明确不做**：不把 status「物化」回写 `task.status`。那会违背本节「派生、不落库」，并制造可漂移的双真源（正是元数据-数据生命周期漂移那类反模式）。正确解是读侧统一用派生函数。
+
 ***
 
 ## 11. 开放问题（待讨论）

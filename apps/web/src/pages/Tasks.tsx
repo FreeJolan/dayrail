@@ -25,6 +25,8 @@ import {
   X,
 } from 'lucide-react';
 import {
+  deriveTaskProgress,
+  deriveTaskStatus,
   INBOX_LINE_ID,
   isOccurrenceManaged,
   railAtDate,
@@ -483,6 +485,7 @@ function MainPanel({
   );
 
   const tasksMap = useStore((s) => s.tasks);
+  const taskOccurrencesMap = useStore((s) => s.taskOccurrences);
   const adhocEventsMap = useStore((s) => s.adhocEvents);
   const linesMap = useStore((s) => s.lines);
   const railsMap = useStore((s) => s.rails);
@@ -530,6 +533,35 @@ function MainPanel({
     }
   }, [tasksMap, selection]);
 
+  // ERD §10.6 — completion status is DERIVED for occurrence-managed
+  // tasks (the rollup over occurrences), not the raw `task.status`
+  // field (which the store never materializes back). The 已完成/未完成
+  // grouping + overdue filter below must use this derived status, or an
+  // occurrence-managed task lands in the wrong group (e.g. raw status
+  // stale `done` while only 1/4 occurrences are done). For tasks with
+  // no occurrences `deriveTaskStatus` returns `task.status` verbatim, so
+  // legacy rows are unaffected.
+  const effectiveStatusById = useMemo(() => {
+    const m = new Map<string, Task['status']>();
+    for (const t of tasksInScope) {
+      m.set(
+        t.id,
+        deriveTaskStatus(
+          t,
+          selectOccurrencesForTask(
+            { taskOccurrences: taskOccurrencesMap },
+            t.id,
+          ),
+        ),
+      );
+    }
+    return m;
+  }, [tasksInScope, taskOccurrencesMap]);
+  const effectiveStatusOf = useCallback(
+    (t: Task): Task['status'] => effectiveStatusById.get(t.id) ?? t.status,
+    [effectiveStatusById],
+  );
+
   // Map taskId → active AdhocEvent's date. Used by the schedule
   // filter to tell "scheduled via free-time mode" apart from "slot-
   // bound". Only one active adhoc per task in v0.2+ (§5.5.2 mutual-
@@ -574,7 +606,7 @@ function MainPanel({
             return (
               scheduledDate != null &&
               scheduledDate < today &&
-              t.status !== 'done'
+              effectiveStatusOf(t) !== 'done'
             );
           default:
             return true;
@@ -588,26 +620,25 @@ function MainPanel({
         );
       })
       .sort((a, b) => a.order - b.order);
-  }, [tasksInScope, filters, adhocDateByTaskId, today, thisWeekRange]);
+  }, [tasksInScope, filters, adhocDateByTaskId, today, thisWeekRange, effectiveStatusOf]);
 
   // Split into the two collapsible groups for inbox / line views.
   // Archived / trash don't split — they're status-scoped lists already.
   // `deferred` is "still awaiting a decision" (§5.7 Pending semantics)
   // — it belongs in 未完成 next to pending / in-progress, not silently
   // dropped between the two buckets.
+  // "open" = anything not derived-done. Within inbox/line scope the raw
+  // archived/deleted tasks are already excluded by `tasksInScope`, so the
+  // remainder is pending / in-progress / deferred (and the rare
+  // occurrence-managed "all occurrences archived" edge, which belongs in
+  // 未完成 — it isn't done and isn't in the archived view).
   const openTasks = useMemo(
-    () =>
-      filteredTasks.filter(
-        (t) =>
-          t.status === 'pending' ||
-          t.status === 'in-progress' ||
-          t.status === 'deferred',
-      ),
-    [filteredTasks],
+    () => filteredTasks.filter((t) => effectiveStatusOf(t) !== 'done'),
+    [filteredTasks, effectiveStatusOf],
   );
   const doneTasks = useMemo(
-    () => filteredTasks.filter((t) => t.status === 'done'),
-    [filteredTasks],
+    () => filteredTasks.filter((t) => effectiveStatusOf(t) === 'done'),
+    [filteredTasks, effectiveStatusOf],
   );
 
   const handleCreate = useCallback(
@@ -935,6 +966,7 @@ function PageHeader({
   hideTaskCount?: boolean;
 }) {
   const tasksMap = useStore((s) => s.tasks);
+  const taskOccurrencesMap = useStore((s) => s.taskOccurrences);
   const [isRenaming, setIsRenaming] = useState(false);
   const [draftName, setDraftName] = useState(title);
   const ime = useIme();
@@ -978,20 +1010,30 @@ function PageHeader({
     let hasMilestone = false;
     for (const t of Object.values(tasksMap)) {
       if (t.lineId !== lineId) continue;
-      if (t.status === 'archived' || t.status === 'deleted') continue;
+      // ERD §10.6 — count by DERIVED status/progress so occurrence-managed
+      // tasks roll up correctly (raw `task.status` / `milestonePercent`
+      // are stale once occurrences drive completion). Mirrors the
+      // `countTasks` / `selectProjectProgress` selectors.
+      const occs = selectOccurrencesForTask(
+        { taskOccurrences: taskOccurrencesMap },
+        t.id,
+      );
+      const status = deriveTaskStatus(t, occs);
+      if (status === 'archived' || status === 'deleted') continue;
       total++;
-      if (t.status === 'done') {
+      const taskProgress = deriveTaskProgress(t, occs);
+      if (status === 'done') {
         done++;
-        if (t.milestonePercent != null) {
+        if (taskProgress != null) {
           hasMilestone = true;
-          if (t.milestonePercent > progress) progress = t.milestonePercent;
+          if (taskProgress > progress) progress = taskProgress;
         }
-      } else if (t.milestonePercent != null) {
+      } else if (taskProgress != null) {
         hasMilestone = true;
       }
     }
     return { done, total, progress, hasMilestone };
-  }, [tasksMap, selection]);
+  }, [tasksMap, taskOccurrencesMap, selection]);
 
   return (
     <header className="flex flex-col gap-3">
@@ -2629,19 +2671,21 @@ function TaskRow({
   isTrash: boolean;
   isArchived: boolean;
 }) {
-  const isDone = task.status === 'done';
-  // ERD §10.6 v0.11.5 — hide the row's task-level Schedule shortcut
-  // when the Task is occurrence-managed (Task.slot is ignored in that
-  // mode). The user reaches per-occurrence scheduling via the detail
-  // drawer's 切分 section.
+  // ERD §10.6 — derive status/progress from occurrences. For an
+  // occurrence-managed task the raw `task.status` / `milestonePercent`
+  // are stale (the store never writes them back), so done-ness,
+  // strikethrough, and the milestone badge must all read the rollup.
+  // `taskIsManaged` also drives v0.11.5's task-level Schedule hiding.
   const taskOccurrencesMap = useStore((s) => s.taskOccurrences);
-  const taskIsManaged = useMemo(
+  const occs = useMemo(
     () =>
-      isOccurrenceManaged(
-        selectOccurrencesForTask({ taskOccurrences: taskOccurrencesMap }, task.id),
-      ),
+      selectOccurrencesForTask({ taskOccurrences: taskOccurrencesMap }, task.id),
     [taskOccurrencesMap, task.id],
   );
+  const taskIsManaged = isOccurrenceManaged(occs);
+  const effectiveStatus = deriveTaskStatus(task, occs);
+  const effectiveProgress = deriveTaskProgress(task, occs);
+  const isDone = effectiveStatus === 'done';
   // §5.5.3 archived / trash rows drop the leftmost circle entirely —
   // the circle reads as a checkbox-like affordance ("click to check /
   // multi-select"), which is wrong here: the view context already
@@ -2655,16 +2699,31 @@ function TaskRow({
         (isDone || isArchived || isTrash) && 'opacity-80',
       )}
     >
-      {showStatusToggle && (
-        <button
-          type="button"
-          onClick={onToggleDone}
-          aria-label={isDone ? 'Mark as open' : 'Mark as done'}
-          className="shrink-0 transition hover:text-ink-primary"
-        >
-          <StatusIcon status={task.status} />
-        </button>
-      )}
+      {showStatusToggle &&
+        (taskIsManaged ? (
+          // ERD §10.6 — completion of an occurrence-managed task is
+          // derived from its occurrences; a task-level toggle would
+          // write the (ignored) raw status and appear to do nothing.
+          // Show the derived status read-only and route completion to
+          // the detail drawer's 切分 section (mirrors v0.11.5 disabling
+          // the task-level Schedule entry).
+          <span
+            aria-label="已切分 · 在任务详情里逐条完成"
+            title="已切分 · 在任务详情里逐条完成"
+            className="shrink-0 text-ink-tertiary"
+          >
+            <StatusIcon status={effectiveStatus} />
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={onToggleDone}
+            aria-label={isDone ? 'Mark as open' : 'Mark as done'}
+            className="shrink-0 transition hover:text-ink-primary"
+          >
+            <StatusIcon status={effectiveStatus} />
+          </button>
+        ))}
 
       <button
         type="button"
@@ -2689,16 +2748,16 @@ function TaskRow({
         <div className="flex flex-wrap items-center gap-2 text-xs text-ink-tertiary">
           <ScheduleInfo task={task} />
           {line && <ProjectPill line={line} />}
-          {task.milestonePercent != null && (
+          {effectiveProgress != null && (
             <span className="font-mono text-2xs tabular-nums text-ink-secondary">
-              · milestone {task.milestonePercent}%
+              · milestone {effectiveProgress}%
             </span>
           )}
           <TaskOccurrenceCountBadge taskId={task.id} />
           {/* Legacy `task.subItems` count removed — occurrences are the
               v0.11+ source of truth. The migration auto-maps subItems
               into occurrences at hydrate, so historical data is reflected. */}
-          {tags.length > 0 && (isDone || isArchived || task.status === 'deferred') && (
+          {tags.length > 0 && (isDone || isArchived || effectiveStatus === 'deferred') && (
             <span className="flex items-center gap-1">
               {tags.map((tag) => (
                 <span
