@@ -16,7 +16,10 @@ import {
 } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { useStore } from '@dayrail/core';
-import { currentCycleEditSessionRef } from './lib/dndContext';
+import {
+  currentCycleEditSessionRef,
+  OFF_RAIL_RAIL_ID,
+} from './lib/dndContext';
 import {
   DragMirrorProvider,
   useDragMirror,
@@ -370,6 +373,17 @@ function Shell() {
       const finalKey = finalMirror.activeCellKey;
       const finalMeta = finalMirror.cellMeta[finalKey];
       if (!finalMeta) return;
+      // The off-rail row's pills are sortable (so they register as
+      // droppables) but the row is NOT a real schedule destination —
+      // its `railId` is the synthetic OFF_RAIL_RAIL_ID. If the drag
+      // ends there (e.g. an off-rail pill dropped back onto itself or a
+      // sibling), bail without writing: scheduleTaskTo* would otherwise
+      // persist `railId: '__offrail__'` onto the slot, destroying the
+      // task's real rail association (and it stays masked because the
+      // task keeps bucketing off-rail). Clearing the mirror above
+      // already reverted the visual. See the off-rail comment in
+      // CycleSection / the OFF_RAIL_RAIL_ID definition.
+      if (finalMeta.railId === OFF_RAIL_RAIL_ID) return;
       const taskId = String(active.id);
       const overData = (over.data.current ?? {}) as Record<string, unknown>;
       const overResolved = resolveOver(overData);

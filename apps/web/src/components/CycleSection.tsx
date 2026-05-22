@@ -23,6 +23,7 @@ import {
 import type { RailColor } from '@/data/sample';
 import { RAIL_COLOR_HEX } from './railColors';
 import { CycleCell } from './CycleCell';
+import { OFF_RAIL_RAIL_ID } from '@/lib/dndContext';
 import { useDragMirror } from '@/lib/dragMirror';
 import {
   Popover,
@@ -307,7 +308,7 @@ export function CycleSection({
                   <OffRailRowLabel />
                 </th>
                 {days.map((d) => {
-                  const offRailCellKey = `__offrail__|${d.date}`;
+                  const offRailCellKey = `${OFF_RAIL_RAIL_ID}|${d.date}`;
                   const rawOffRailTasks = sectionOffRail.get(d.date) ?? [];
                   // Off-rail rows participate in the same mirror so
                   // pills dragged out of an off-rail cell visually
@@ -354,7 +355,7 @@ export function CycleSection({
                           date={d.date}
                           cellKey={offRailCellKey}
                           cycleId={`cycle-${d.date}`}
-                          railId="__offrail__"
+                          railId={OFF_RAIL_RAIL_ID}
                           railName="未归属"
                           slotTaskIds={offRailTaskIds}
                           {...(onClearSlot && { onClearTask: onClearSlot })}
