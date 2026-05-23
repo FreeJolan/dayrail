@@ -13,6 +13,7 @@ import type {
   TaskOccurrence,
 } from '@dayrail/core';
 import {
+  deriveTaskStatus,
   isOccurrenceManaged,
   railsActiveOn,
   resolveTemplateForDate,
@@ -483,10 +484,21 @@ export function selectBacklogItems(
   };
   const items: BacklogItem[] = [];
   for (const t of Object.values(state.tasks)) {
-    if (t.status === 'deleted' || t.status === 'archived' || t.status === 'done') {
+    const occs = selectOccurrencesForTask(state, t.id);
+    // ERD §10.6 / §10.1 — gate on the DERIVED status, not the raw
+    // `task.status`. For an occurrence-managed task the raw field is
+    // stale (the store never materializes it back), so a task whose raw
+    // status is a leftover `done`/`archived` while it still has pending
+    // occurrences would otherwise be skipped here and its unscheduled
+    // pieces vanish from the Backlog. `deriveTaskStatus` returns
+    // `task.status` verbatim for occurrence-free tasks (legacy
+    // unchanged) and short-circuits `deleted` so trashed tasks stay
+    // hidden. Same drift class as the v0.12.4 Tasks-page fix, which
+    // didn't cover this selector.
+    const derived = deriveTaskStatus(t, occs);
+    if (derived === 'deleted' || derived === 'archived' || derived === 'done') {
       continue;
     }
-    const occs = selectOccurrencesForTask(state, t.id);
     if (isOccurrenceManaged(occs)) {
       // Occurrence-managed: one row per pending unscheduled occurrence.
       // Parent Task itself never surfaces (it's "fully split"); even if
