@@ -236,6 +236,19 @@ function SyncIndicator({ collapsed }: { collapsed: boolean }) {
   );
 }
 
+/** Pull-failure hover copy (#5). Distinct wording from
+ *  `formatDurationLong` (which is push-framed "传不上去") — this is
+ *  about not reaching the cloud to confirm currency. */
+function formatStaleFor(durationMs: number): string {
+  if (!Number.isFinite(durationMs)) return '一直没能连上云端';
+  const m = Math.floor(durationMs / 60000);
+  if (m < 60) return `已 ${m} 分钟没成功连上`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `已 ${h} 小时没成功连上`;
+  const d = Math.floor(h / 24);
+  return `已 ${d} 天没成功连上`;
+}
+
 function describeSyncStatus(
   status: ReturnType<typeof useSyncStatus>,
   classification: SyncStatusClassification,
@@ -257,60 +270,55 @@ function describeSyncStatus(
   if (status.phase.kind === 'offline') {
     return { dot: 'bg-warn/70', label: '离线', tone: 'warn' };
   }
-  // Duration-aware warn (v0.12 §7.10.5). Long-failure ladder + pending pile
-  // override the legacy "未同步" / "同步失败" labels with copy that
-  // carries the duration.
-  if (classification.kind === 'long-failure') {
-    return {
-      dot: 'bg-warn',
-      label:
-        classification.severity === 'heavy'
-          ? '同步断开 · 已 > 3 天'
-          : classification.severity === 'distinct'
-            ? '同步断开 · 多天'
-            : '同步断开',
-      tone: 'warn',
-      hoverTitle: `${formatDurationLong(classification.durationMs)} · 点击进入同步设置`,
-    };
+  // ERD §7.10.5 v0.12.7 — two-axis classification (#4–#8). The old
+  // "同步断开" (driven purely by time-since-push) is retired into
+  // honest, failure-specific states; an idle-but-consistent device now
+  // correctly reads "已同步" instead of false-alarming "断开".
+  switch (classification.kind) {
+    case 'push-failure':
+      // #4 — your changes can't get up. The high-stakes one; duration
+      // ladder lives in the hover (§7.10.5 "duration in hover, not label").
+      return {
+        dot: 'bg-warn',
+        label: `${classification.count} 个改动没传上去`,
+        tone: 'warn',
+        hoverTitle: `${formatDurationLong(classification.durationMs)} · 点击进入同步设置`,
+      };
+    case 'pull-failure':
+      // #5 — can't reach the cloud to confirm we're current.
+      return {
+        dot: 'bg-warn',
+        label: '连不上云端',
+        tone: 'warn',
+        hoverTitle: `${formatStaleFor(classification.durationMs)} · 点击排查`,
+      };
+    case 'queued':
+      // #6 — changes queued, not failing. Transient.
+      return {
+        dot: 'bg-warn/70',
+        label: `未同步 · ${classification.count}`,
+        tone: 'warn',
+      };
+    case 'synced': {
+      // #7 — honest "已同步". Hover spells out recency so currency is
+      // visible (we never pretend to be millisecond-live).
+      const anchor =
+        classification.lastSuccessPullIso ?? getLastSuccessAt('push');
+      return {
+        dot: 'bg-ink-secondary/70',
+        label: '已同步',
+        tone: 'ok',
+        ...(anchor && {
+          hoverTitle: `刚同步过 · ${formatDurationAgo(anchor, Date.now())}`,
+        }),
+      };
+    }
+    case 'checking':
+      // #8 — nothing pending, nothing failing, currency not yet
+      // confirmed this session (just relaunched / first sync pending).
+      // Non-alarming on purpose.
+      return { dot: 'bg-ink-tertiary/40', label: '检查中', tone: 'idle' };
   }
-  if (classification.kind === 'pending-pile') {
-    return {
-      dot: 'bg-warn/70',
-      label: `${classification.count} 个改动还没传`,
-      tone: 'warn',
-      hoverTitle: `${classification.count} 个改动还在本机 · ${formatDurationLong(classification.durationMs)}`,
-    };
-  }
-  if (status.phase.kind === 'error') {
-    return { dot: 'bg-warn', label: '同步失败', tone: 'warn' };
-  }
-  if (status.dirtyCount > 0) {
-    return {
-      dot: 'bg-warn/70',
-      label: `未同步 · ${status.dirtyCount}`,
-      tone: 'warn',
-    };
-  }
-  // ERD §7.9 #5: only claim "已同步" once the current session has
-  // had a successful round-trip. `lastSync` alone can carry a stale
-  // value across a wipe — showing "已同步" on top of an empty UI was
-  // exactly the v0.10.x false-OK symptom this rewrites away.
-  if (status.sessionRoundTripDone) {
-    const lastPush = getLastSuccessAt('push');
-    const detail = lastPush
-      ? `刚同步过 · ${formatDurationAgo(lastPush, Date.now())}`
-      : undefined;
-    return {
-      dot: 'bg-ink-secondary/70',
-      label: '已同步',
-      tone: 'ok',
-      hoverTitle: detail,
-    };
-  }
-  if (status.lastSync) {
-    return { dot: 'bg-ink-tertiary/40', label: '未确认', tone: 'idle' };
-  }
-  return { dot: 'bg-ink-tertiary/40', label: '已连接', tone: 'idle' };
 }
 
 // ---------- sub-parts ----------

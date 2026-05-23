@@ -1,5 +1,5 @@
-// Tests for the duration-aware sync status helpers
-// (packages/core/src/syncStatus.ts · ERD §7.10.5).
+// Tests for the sync status helpers (packages/core/src/syncStatus.ts ·
+// ERD §7.10.5 · two-axis model since v0.12.7).
 
 import { describe, expect, it } from 'vitest';
 import {
@@ -16,12 +16,17 @@ function iso(offsetMs: number): string {
   return new Date(NOW + offsetMs).toISOString();
 }
 
+// Default = healthy/synced baseline: nothing pending, recent push +
+// pull, no errors, round-trip confirmed this session.
 function inputs(over: Partial<SyncStatusInputs> = {}): SyncStatusInputs {
   return {
     nowMs: NOW,
-    lastSuccessPushIso: iso(-5 * 60 * 1000),
     pendingCount: 0,
-    dismissPendingPileUntilIso: null,
+    lastSuccessPushIso: iso(-5 * 60 * 1000),
+    lastSuccessPullIso: iso(-2 * 60 * 1000),
+    pushErroring: false,
+    pullErroring: false,
+    sessionRoundTripDone: true,
     ...over,
   };
 }
@@ -76,141 +81,147 @@ describe('formatDurationLong (warn state copy)', () => {
   });
 });
 
-describe('classifySyncStatus · healthy branch', () => {
-  it('returns healthy when last push is recent (< 1h)', () => {
-    expect(classifySyncStatus(inputs())).toEqual({ kind: 'healthy' });
+describe('classifySyncStatus · #7 synced', () => {
+  it('synced when nothing pending + round-trip done + pull not erroring', () => {
+    expect(classifySyncStatus(inputs())).toEqual({
+      kind: 'synced',
+      lastSuccessPullIso: iso(-2 * 60 * 1000),
+    });
   });
 
-  it('returns healthy when never pushed AND no pending writes', () => {
-    expect(
-      classifySyncStatus(inputs({ lastSuccessPushIso: null, pendingCount: 0 })),
-    ).toEqual({ kind: 'healthy' });
+  // The core regression: an idle-but-consistent device whose last PUSH
+  // is ancient (no changes → nothing to push) must NOT false-alarm. The
+  // old model returned long-failure ("同步断开") here.
+  it('synced even when last push is 5 days ago (idle, nothing to push)', () => {
+    const res = classifySyncStatus(
+      inputs({ lastSuccessPushIso: iso(-5 * 24 * 60 * 60 * 1000) }),
+    );
+    expect(res.kind).toBe('synced');
   });
 
-  it('returns healthy when lastSuccessPushIso is garbage', () => {
-    expect(
-      classifySyncStatus(
-        inputs({ lastSuccessPushIso: 'corrupted-not-an-iso' }),
-      ),
-    ).toEqual({ kind: 'healthy' });
+  it('synced even when this device never pushed (pull-only, 0 pending)', () => {
+    const res = classifySyncStatus(
+      inputs({ lastSuccessPushIso: null, pendingCount: 0 }),
+    );
+    expect(res.kind).toBe('synced');
   });
 });
 
-describe('classifySyncStatus · long-failure ladder', () => {
-  it('mild for 1-24h since success', () => {
+describe('classifySyncStatus · #8 checking', () => {
+  it('checking when round-trip not yet confirmed this session', () => {
+    expect(classifySyncStatus(inputs({ sessionRoundTripDone: false }))).toEqual({
+      kind: 'checking',
+    });
+  });
+
+  it('checking on a recent pull blip (erroring but within freshness window)', () => {
+    // pull erroring, but last successful pull was 2 min ago (< 10 min) →
+    // not yet "can't reach cloud"; with 0 pending → checking, not synced.
     const res = classifySyncStatus(
-      inputs({ lastSuccessPushIso: iso(-3 * 60 * 60 * 1000) }),
+      inputs({ pullErroring: true, lastSuccessPullIso: iso(-2 * 60 * 1000) }),
+    );
+    expect(res.kind).toBe('checking');
+  });
+});
+
+describe('classifySyncStatus · #6 queued', () => {
+  it('queued when pending > 0 and push not erroring', () => {
+    expect(classifySyncStatus(inputs({ pendingCount: 3 }))).toEqual({
+      kind: 'queued',
+      count: 3,
+    });
+  });
+});
+
+describe('classifySyncStatus · #4 push-failure (data at risk)', () => {
+  it('fires when pending > 0 AND push erroring · severity by push age', () => {
+    const res = classifySyncStatus(
+      inputs({
+        pendingCount: 4,
+        pushErroring: true,
+        lastSuccessPushIso: iso(-3 * 60 * 60 * 1000),
+      }),
     );
     expect(res).toEqual({
-      kind: 'long-failure',
+      kind: 'push-failure',
       severity: 'mild',
+      count: 4,
       durationMs: 3 * 60 * 60 * 1000,
     });
   });
 
-  it('distinct for 1-3 days since success', () => {
-    const res = classifySyncStatus(
+  it('distinct / heavy ladder by push age', () => {
+    const distinct = classifySyncStatus(
       inputs({
-        lastSuccessPushIso: iso(-(2 * 24 + 5) * 60 * 60 * 1000),
+        pendingCount: 1,
+        pushErroring: true,
+        lastSuccessPushIso: iso(-2 * 24 * 60 * 60 * 1000),
       }),
     );
-    expect(res.kind).toBe('long-failure');
-    if (res.kind === 'long-failure') {
-      expect(res.severity).toBe('distinct');
-    }
-  });
-
-  it('heavy for > 3 days since success', () => {
-    const res = classifySyncStatus(
-      inputs({ lastSuccessPushIso: iso(-5 * 24 * 60 * 60 * 1000) }),
+    expect(distinct.kind === 'push-failure' && distinct.severity).toBe(
+      'distinct',
     );
-    expect(res.kind).toBe('long-failure');
-    if (res.kind === 'long-failure') {
-      expect(res.severity).toBe('heavy');
-    }
+    const heavy = classifySyncStatus(
+      inputs({
+        pendingCount: 1,
+        pushErroring: true,
+        lastSuccessPushIso: iso(-5 * 24 * 60 * 60 * 1000),
+      }),
+    );
+    expect(heavy.kind === 'push-failure' && heavy.severity).toBe('heavy');
   });
 
-  it('heavy when never-pushed + many pending', () => {
+  it('does NOT fire when pending > 0 but push not erroring (→ queued)', () => {
     const res = classifySyncStatus(
-      inputs({ lastSuccessPushIso: null, pendingCount: 50 }),
+      inputs({ pendingCount: 4, pushErroring: false }),
+    );
+    expect(res.kind).toBe('queued');
+  });
+
+  it('heavy when never-pushed + a pile of pending writes', () => {
+    const res = classifySyncStatus(
+      inputs({
+        lastSuccessPushIso: null,
+        pendingCount: PENDING_PILE_THRESHOLD + 30,
+      }),
     );
     expect(res).toEqual({
-      kind: 'long-failure',
+      kind: 'push-failure',
       severity: 'heavy',
+      count: PENDING_PILE_THRESHOLD + 30,
       durationMs: Number.POSITIVE_INFINITY,
     });
   });
 });
 
-describe('classifySyncStatus · pending-pile', () => {
-  it('fires when pending > threshold + 1-24h since push', () => {
+describe("classifySyncStatus · #5 pull-failure (can't reach cloud)", () => {
+  it('fires when pull erroring AND stale past the freshness window', () => {
     const res = classifySyncStatus(
       inputs({
-        lastSuccessPushIso: iso(-90 * 60 * 1000),
-        pendingCount: PENDING_PILE_THRESHOLD + 1,
+        pullErroring: true,
+        lastSuccessPullIso: iso(-2 * 60 * 60 * 1000), // 2h ago > 10min window
       }),
     );
-    expect(res.kind).toBe('pending-pile');
-    if (res.kind === 'pending-pile') {
-      expect(res.count).toBe(PENDING_PILE_THRESHOLD + 1);
-    }
+    expect(res.kind).toBe('pull-failure');
+    if (res.kind === 'pull-failure') expect(res.severity).toBe('mild');
   });
 
-  it('does NOT fire when pending == threshold (strictly greater)', () => {
+  it('does NOT fire within the freshness window (transient blip)', () => {
     const res = classifySyncStatus(
-      inputs({
-        lastSuccessPushIso: iso(-90 * 60 * 1000),
-        pendingCount: PENDING_PILE_THRESHOLD,
-      }),
+      inputs({ pullErroring: true, lastSuccessPullIso: iso(-3 * 60 * 1000) }),
     );
-    expect(res.kind).toBe('long-failure');
+    expect(res.kind).not.toBe('pull-failure');
   });
 
-  it('does NOT fire when suppressed via dismissPendingPileUntil', () => {
+  it('push-failure takes priority over pull-failure (data at risk first)', () => {
     const res = classifySyncStatus(
       inputs({
-        lastSuccessPushIso: iso(-90 * 60 * 1000),
-        pendingCount: PENDING_PILE_THRESHOLD + 5,
-        dismissPendingPileUntilIso: iso(12 * 60 * 60 * 1000),
+        pendingCount: 2,
+        pushErroring: true,
+        pullErroring: true,
+        lastSuccessPullIso: iso(-2 * 60 * 60 * 1000),
       }),
     );
-    expect(res.kind).toBe('long-failure');
-  });
-
-  it('fires when dismiss has expired', () => {
-    const res = classifySyncStatus(
-      inputs({
-        lastSuccessPushIso: iso(-90 * 60 * 1000),
-        pendingCount: PENDING_PILE_THRESHOLD + 5,
-        dismissPendingPileUntilIso: iso(-1 * 60 * 1000),
-      }),
-    );
-    expect(res.kind).toBe('pending-pile');
-  });
-
-  it('long-failure heavy trumps pending-pile suppression', () => {
-    // > 3 days since push · suppression in effect · still heavy
-    const res = classifySyncStatus(
-      inputs({
-        lastSuccessPushIso: iso(-5 * 24 * 60 * 60 * 1000),
-        pendingCount: PENDING_PILE_THRESHOLD + 5,
-        dismissPendingPileUntilIso: iso(12 * 60 * 60 * 1000),
-      }),
-    );
-    expect(res.kind).toBe('long-failure');
-    if (res.kind === 'long-failure') {
-      expect(res.severity).toBe('heavy');
-    }
-  });
-
-  it('long-failure distinct trumps pending-pile (1-3 day range wins)', () => {
-    const res = classifySyncStatus(
-      inputs({
-        lastSuccessPushIso: iso(-2 * 24 * 60 * 60 * 1000),
-        pendingCount: PENDING_PILE_THRESHOLD + 5,
-        dismissPendingPileUntilIso: null,
-      }),
-    );
-    expect(res.kind).toBe('long-failure');
+    expect(res.kind).toBe('push-failure');
   });
 });

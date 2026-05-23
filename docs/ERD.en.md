@@ -2327,6 +2327,46 @@ Color thresholds:
 
 Grey-tier design principle: don't force the user to back up immediately, but each launch gently "asks once" until the issue is resolved.
 
+**v0.12.x design correction · failure judgment moves from "push age" to a two-axis model (product spec locked · pending approval to implement)**
+
+> The duration ladder above (duration visible / never blocking) **stays**; only its **judgment input** is flawed. Fixed below; the ladder re-attaches to *real* failures.
+
+**Flaw surfaced by dogfood**: `classifySyncStatus` keys solely off `lastSuccessPushIso` (time since last successful **push**). But push only fires when there are **changes** (8s debounce / lifecycle / manual) — there is **no idle periodic push** (the heartbeat only rides on a successful push). Consequences:
+
+- **Local fully consistent with remote, but idle >1h** (especially right after an upgrade relaunch with no edits yet) → `lastSuccessPushIso` goes stale → **false "同步断开 (sync disconnected)"**, despite 0 pending and nothing wrong.
+- Conversely, the **real** risk — **push fresh but the pull probe silently failing so we're behind remote** — is **not** flagged (the push timestamp is fresh).
+- I.e. it cries when it shouldn't and stays quiet when it should cry.
+
+**Reframe — a false "disconnected" is itself a false signal**: §7.10's thesis is "sync is a trust problem." Repeatedly false-alarming "disconnected" trains the user to *ignore* the indicator, so when a real disconnect happens nobody believes it — destroying the very trust this safety net exists to protect. So alarm words ("disconnected / failed") are reserved for *real* failures and must never be triggered by *idleness*.
+
+**Two-axis model** — the badge answers only the two things the user actually cares about:
+
+| Axis | User's question | Signal |
+|---|---|---|
+| Push | Did my changes **get saved** remotely? | `pendingCount` + whether push is **erroring** |
+| Pull | Am I seeing the **latest**? | recent **successful pull/probe** + whether pull is erroring |
+
+**Corrected state machine** (badge takes the first match):
+
+| # | State | Trigger | Label | Tone |
+|---|---|---|---|---|
+| 1 | Not connected | `!connected` | 本地 (Local) | grey |
+| 2 | Syncing | a push/pull in flight | 同步中 | neutral |
+| 3 | Offline | no network | 离线 | warn-soft |
+| 4 | Changes not pushed | `pending>0` AND push persistently erroring | {N} 个改动没传上去 (hover: duration) | warn-strong |
+| 5 | Can't reach cloud | pull/probe persistently failing | 连不上云端 (hover: duration) | warn |
+| 6 | Queued | `pending>0`, push not erroring | 未同步 · {N} | warn-soft |
+| 7 | Synced | `pending==0` AND recent successful pull AND `sessionRoundTripDone` | 已同步 (hover: synced N min ago) | ok |
+| 8 | Checking | `pending==0` but pull-freshness unconfirmed (just relaunched / probe not back) | 检查中 | grey-soft |
+
+**"同步断开" retired**, split into three precise states: #4 changes-not-pushed (data genuinely at risk) / #5 can't-reach-cloud (real connectivity failure) / #8 checking (the brief post-relaunch unconfirmed window · **non-alarming**). The duration ladder (1 day / 3 days) is preserved, re-attached to #4/#5.
+
+**"Synced" gate tightened = stronger false-OK protection**: claiming "已同步" now requires `pending==0` (mine are all up) + a recent successful pull (not behind remote) + `sessionRoundTripDone` (this session actually synced once — guards the wipe / empty-DB false-OK). The old code implied OK whenever push was fresh; now it also needs pull-freshness backing — **more** false-OK-proof than before. #7's hover spells out "synced N min ago" so currency is honestly visible (no pretense of millisecond-live).
+
+**Default dials** (tunable): pull-freshness window = 10 min (2× the probe interval · tolerates one missed probe); failure-ladder thresholds keep 1 day / 3 days.
+
+**Scope**: display layer only — change `classifySyncStatus` (`packages/core/src/syncStatus.ts`) + `describeSyncStatus` (`SideNav.tsx`), wiring the **already-present-but-unused** `lastSuccessAt.pull` + `recentAttempts` (the schema above) into the classification inputs. No schema / `.dryj` change. Settings' "已连接" (the consent flag) stays untouched — it should remain separate from "health".
+
 ---
 
 #### 7.10.6 Mode regression guard · data-layer inconsistency doesn't silently downgrade
