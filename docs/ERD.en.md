@@ -4125,6 +4125,33 @@ stored" and create a drift-prone dual source of truth (exactly the
 metadata-vs-data lifecycle anti-pattern). The correct fix is to make
 the read sites use the derived functions.
 
+#### v0.12.8 correction · the Backlog selector also reads derived status
+
+v0.12.4 fixed the Tasks page but **missed the Backlog**. Real dogfood
+data (2026-05-23 snapshot) surfaced it: an occurrence-managed task
+"NNG" had a stale raw status of `done` while still carrying 5 pending,
+unscheduled occurrences — and all 5 **vanished from the Backlog**.
+`selectBacklogItems` (`apps/web/src/pages/cycleFromStore.ts`) gates each
+task *before* walking its occurrences with `if (t.status === 'deleted' |
+'archived' | 'done') continue` — still the **raw `task.status`** — so
+the whole task was skipped and its unscheduled pieces never reached the
+backlog. Same drift class as v0.12.4.
+
+Fix (v0.12.8): that gate now uses `deriveTaskStatus(t, occs)`:
+- raw `done`/`archived` but with pending occurrences → derives to
+  `in-progress` → not skipped → unscheduled pieces return to the
+  backlog.
+- `deleted` → derivation short-circuits to `deleted` → still hidden
+  (trash semantics, correct); occurrence-free tasks get `task.status`
+  verbatim (legacy unchanged).
+
+**Known leftover (not in this change)**: deleting a task does not
+cascade-clean its occurrences → a deleted task leaves "orphan" pending
+occurrences (in this snapshot, deleted tasks NNG Game / 11111 each
+stranded a few). They shouldn't show in the backlog anyway (trash
+semantics), so this doesn't affect the fix; cascading occurrence
+cleanup on task delete/archive is left as a follow-up data-hygiene item.
+
 ---
 
 ## 11. Open Questions

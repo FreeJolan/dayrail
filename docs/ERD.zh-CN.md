@@ -3629,6 +3629,16 @@ dogfood 暴露：一个 occurrence-managed 任务（切分 1/4）出现在 Tasks
 
 **明确不做**：不把 status「物化」回写 `task.status`。那会违背本节「派生、不落库」，并制造可漂移的双真源（正是元数据-数据生命周期漂移那类反模式）。正确解是读侧统一用派生函数。
 
+#### v0.12.8 修正纪要 · Backlog 选择器也按派生状态
+
+v0.12.4 只修了 Tasks 页,**漏了 Backlog**。dogfood 真数据(2026-05-23 备份)暴露:一个 occurrence-managed 任务 "NNG" raw 状态是陈旧的 `done`、但还挂着 5 条 pending + 未排期的切分,这 5 条**全部从 Backlog 消失**——因为 `selectBacklogItems`(`apps/web/src/pages/cycleFromStore.ts`)在遍历切分**之前**有一道闸:`if (t.status === 'deleted' | 'archived' | 'done') continue`,用的还是 **raw `task.status`**,于是整任务被跳过、它的待排期碎片没机会进 backlog。同 v0.12.4 漂移类。
+
+修(v0.12.8):那道闸改用 `deriveTaskStatus(t, occs)`:
+- raw `done`/`archived` 但有 pending 切分 → 派生 `in-progress` → 不跳过 → 待排期切分回到 backlog。
+- `deleted` → 派生短路保持 `deleted` → 仍隐藏(回收站语义,正确);无 occurrence 的旧任务 `deriveTaskStatus` 原样返回 raw 值,legacy 行为不变。
+
+**已知遗留(本次不做)**:删任务不级联清理它的切分 → 删除的任务下会留"孤儿"pending 切分(本次真数据里 NNG Game / 11111 两个 deleted 任务各留了几条)。它们按回收站语义本就不该在 backlog 显示,所以不影响本修;但作为数据卫生,删/归档任务时级联处理切分留作后续。
+
 ***
 
 ## 11. 开放问题（待讨论）
