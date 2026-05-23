@@ -62,79 +62,137 @@ export function formatDurationLong(durationMs: number): string {
 
 // ============ classification ============
 
+/** Pull-freshness window (ERD §7.10.5 · v0.12.7). A pull failure
+ *  within this window of the last successful pull is a transient blip,
+ *  not yet "can't reach cloud". 10 min = 2× the periodic-probe interval
+ *  so a single missed probe doesn't alarm. Tunable. */
+export const PULL_FRESHNESS_MS = 10 * MIN_MS;
+
 export interface SyncStatusInputs {
   /** Wall clock at the moment of classification, epoch ms. */
   nowMs: number;
-  /** ISO timestamp of the most recent successful push. null when
-   *  this device has never had a successful push (fresh install /
-   *  first connect not yet attempted). */
-  lastSuccessPushIso: string | null;
   /** How many local writes since the last successful push. */
   pendingCount: number;
-  /** ISO timestamp until which pending-pile alert is suppressed
-   *  (user pressed "先关掉"). null = no suppression. */
-  dismissPendingPileUntilIso: string | null;
+  /** ISO of the most recent successful push · null = never pushed. */
+  lastSuccessPushIso: string | null;
+  /** ISO of the most recent successful pull/probe · null = never pulled. */
+  lastSuccessPullIso: string | null;
+  /** The most recent PUSH attempt failed (we're in a push-failing state). */
+  pushErroring: boolean;
+  /** The most recent PULL/probe attempt failed. */
+  pullErroring: boolean;
+  /** This session has had ≥1 successful sync round-trip (push OR pull).
+   *  §7.9 false-OK guard: never claim "已同步" before we've actually
+   *  reached remote once this session (guards the wipe / empty-DB case). */
+  sessionRoundTripDone: boolean;
 }
 
+/** ERD §7.10.5 · v0.12.7 two-axis model. The old single "time since
+ *  push" axis is gone — it false-alarmed on idle-but-consistent devices
+ *  (no changes → no push → stale timestamp → fake "同步断开") and missed
+ *  the real pull-stale risk. Alarm states now require an actual failed
+ *  attempt, never mere idleness. */
 export type SyncStatusClassification =
-  | { kind: 'healthy' }
+  /** #7 — local matches remote: nothing pending, a round-trip confirmed
+   *  this session, pull not erroring. The honest "已同步". */
+  | { kind: 'synced'; lastSuccessPullIso: string | null }
+  /** #8 — nothing pending and nothing failing, but no round-trip is
+   *  confirmed yet this session (just relaunched / first sync pending,
+   *  or a recent pull blip within the freshness window). "检查中". */
+  | { kind: 'checking' }
+  /** #6 — local changes queued, push not (yet) failing. Transient. */
+  | { kind: 'queued'; count: number }
+  /** #4 — pending changes the push can't deliver (data at risk).
+   *  durationMs = time since last successful push. */
   | {
-      kind: 'long-failure';
-      /** Mild = 1-24h · distinct = 1-3 days · heavy = > 3 days. */
+      kind: 'push-failure';
+      /** Mild < 1 day · distinct 1-3 days · heavy > 3 days. */
       severity: 'mild' | 'distinct' | 'heavy';
+      count: number;
       durationMs: number;
     }
+  /** #5 — can't reach the cloud (pull/probe failing past the freshness
+   *  window). durationMs = time since last successful pull. */
   | {
-      kind: 'pending-pile';
-      count: number;
+      kind: 'pull-failure';
+      severity: 'mild' | 'distinct' | 'heavy';
       durationMs: number;
     };
 
-/** Walk the §7.10.5 escalation ladder + pending-pile threshold.
- *  Pure function — no IO, no time, no state. */
+function severityFor(durationMs: number): 'mild' | 'distinct' | 'heavy' {
+  if (durationMs >= 3 * DAY_MS) return 'heavy';
+  if (durationMs >= DAY_MS) return 'distinct';
+  return 'mild';
+}
+
+/** Age of an ISO timestamp in ms, or +Infinity when null/unparseable
+ *  (treated as "forever ago" so the ladder shows its heaviest copy). */
+function ageMsOrInfinity(iso: string | null, nowMs: number): number {
+  if (iso === null) return Number.POSITIVE_INFINITY;
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, nowMs - ms);
+}
+
+/** Two-axis sync health (ERD §7.10.5 · v0.12.7). Pure function — no IO,
+ *  no time, no state. Priority order: data-at-risk → can't-reach-cloud
+ *  → queued → synced → checking. */
 export function classifySyncStatus(
   inp: SyncStatusInputs,
 ): SyncStatusClassification {
-  // Never successfully pushed on this device.
-  if (inp.lastSuccessPushIso === null) {
-    if (inp.pendingCount > PENDING_PILE_THRESHOLD) {
-      // Local writes exist but no push has ever confirmed. Worst
-      // case for the "I thought I was syncing but wasn't" framing
-      // — flag as heavy long-failure with infinite duration so the
-      // banner shows.
-      return {
-        kind: 'long-failure',
-        severity: 'heavy',
-        durationMs: Number.POSITIVE_INFINITY,
-      };
-    }
-    return { kind: 'healthy' };
-  }
-
-  const lastMs = Date.parse(inp.lastSuccessPushIso);
-  if (Number.isNaN(lastMs)) return { kind: 'healthy' };
-  const durationMs = Math.max(0, inp.nowMs - lastMs);
-
-  if (durationMs >= 3 * DAY_MS) {
-    return { kind: 'long-failure', severity: 'heavy', durationMs };
-  }
-  if (durationMs >= DAY_MS) {
-    return { kind: 'long-failure', severity: 'distinct', durationMs };
-  }
-  if (durationMs < HOUR_MS) {
-    return { kind: 'healthy' };
-  }
-
-  // 1-24h zone — pending-pile vs mild long-failure.
-  const pileSuppressed =
-    inp.dismissPendingPileUntilIso !== null &&
-    Date.parse(inp.dismissPendingPileUntilIso) > inp.nowMs;
-  if (inp.pendingCount > PENDING_PILE_THRESHOLD && !pileSuppressed) {
+  // #4 — changes at risk: pending writes the push can't deliver.
+  //   (a) push actively erroring while changes are pending, or
+  //   (b) never confirmed a push on this device + a pile of writes
+  //       (worst case for the "thought I was syncing but wasn't" framing).
+  if (inp.pendingCount > 0 && inp.pushErroring) {
+    const durationMs = ageMsOrInfinity(inp.lastSuccessPushIso, inp.nowMs);
     return {
-      kind: 'pending-pile',
+      kind: 'push-failure',
+      severity: severityFor(durationMs),
       count: inp.pendingCount,
       durationMs,
     };
   }
-  return { kind: 'long-failure', severity: 'mild', durationMs };
+  if (
+    inp.lastSuccessPushIso === null &&
+    inp.pendingCount > PENDING_PILE_THRESHOLD
+  ) {
+    return {
+      kind: 'push-failure',
+      severity: 'heavy',
+      count: inp.pendingCount,
+      durationMs: Number.POSITIVE_INFINITY,
+    };
+  }
+
+  // #5 — can't reach cloud: pull/probe failing AND stale past the
+  //   freshness window (a single recent blip isn't alarmed).
+  if (inp.pullErroring) {
+    const durationMs = ageMsOrInfinity(inp.lastSuccessPullIso, inp.nowMs);
+    if (durationMs >= PULL_FRESHNESS_MS) {
+      return {
+        kind: 'pull-failure',
+        severity: severityFor(durationMs),
+        durationMs,
+      };
+    }
+  }
+
+  // #6 — queued: pending changes, no active push failure (debounce /
+  //   in-between). Transient, non-alarming.
+  if (inp.pendingCount > 0) {
+    return { kind: 'queued', count: inp.pendingCount };
+  }
+
+  // pending == 0 below.
+  // #7 — synced: a round-trip is confirmed this session AND pull isn't
+  //   erroring. Idle time since last push is IRRELEVANT (nothing to
+  //   push ≠ broken). This is the fix for the false "同步断开".
+  if (inp.sessionRoundTripDone && !inp.pullErroring) {
+    return { kind: 'synced', lastSuccessPullIso: inp.lastSuccessPullIso };
+  }
+
+  // #8 — checking: nothing pending, nothing failing, but currency not
+  //   yet confirmed this session. Non-alarming (NOT "断开").
+  return { kind: 'checking' };
 }
