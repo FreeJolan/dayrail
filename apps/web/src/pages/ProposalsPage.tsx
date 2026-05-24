@@ -102,8 +102,15 @@ export function ProposalsPage() {
     setError(null);
     try {
       const drafts = await parseIntentsFromText(text, aiConfig.config);
-      const add = useStagingStore.getState().addProposal;
-      for (const draft of drafts) add({ draft, source: 'paste' });
+      const store = useStagingStore.getState();
+      // Paste is a scratch you iterate on: re-parsing REPLACES the prior
+      // paste batch rather than piling up failed attempts. MCP-dropped
+      // proposals (source: 'mcp') accumulate and are left untouched.
+      // (Committed proposals already left the tray, so they're safe.)
+      for (const [id, p] of Object.entries(store.proposals)) {
+        if (p.source === 'paste') store.discardProposal(id);
+      }
+      for (const draft of drafts) store.addProposal({ draft, source: 'paste' });
       setPasteText('');
       if (drafts.length === 0) {
         setError({ message: 'AI 没从这段文字里读出可建的待办 —— 换种说法试试?' });
