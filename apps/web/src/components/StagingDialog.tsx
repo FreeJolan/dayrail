@@ -19,6 +19,7 @@ import {
 } from '@dayrail/core';
 import { getAiApiKey, subscribeAiApiKey } from '@/lib/aiApiKey';
 import { useIme } from '@/lib/ime';
+import { MarkdownField } from './MarkdownField';
 
 // ERD §6.7 — the AI "待确认提案" review surface. A modal (NOT a docked
 // drawer): the flow is transient — paste → review → confirm/discard →
@@ -125,7 +126,6 @@ function StagingContent({ onClose }: { onClose: () => void }) {
   useEffect(() => subscribeAiApiKey(setApiKey), []);
   const aiConfig = useMemo(() => buildParseConfig(userProfile, apiKey), [userProfile, apiKey]);
 
-  const ime = useIme();
   const [pasteText, setPasteText] = useState('');
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState<{ message: string; bodyExcerpt?: string } | null>(null);
@@ -202,17 +202,15 @@ function StagingContent({ onClose }: { onClose: () => void }) {
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 pb-5">
         {aiConfig.ok ? (
           <div>
-            <textarea
-              value={pasteText}
-              onChange={(e) => setPasteText(e.target.value)}
-              onCompositionStart={ime.onCompositionStart}
-              onCompositionEnd={ime.onCompositionEnd}
-              rows={3}
-              placeholder="把和 AI 聊出来的待办贴进来,我来拆成提案…"
-              className="w-full resize-y rounded-md border border-hairline/60 bg-surface-1 px-2.5 py-2 text-sm text-ink-primary outline-none transition placeholder:text-ink-tertiary focus:border-ink-secondary"
+            <MarkdownField
+              value={pasteText || undefined}
+              onCommit={(v) => setPasteText(v ?? '')}
+              placeholder="把和 AI 聊出来的待办贴进来 · 纯自然语言 / Markdown"
+              dialogTitle="AI 提案输入"
+              ariaLabel="AI 提案自然语言输入"
             />
             <div className="mt-2 flex items-center justify-between gap-2">
-              <span className="text-2xs text-ink-tertiary">纯自然语言即可,无需任何格式</span>
+              <span className="text-2xs text-ink-tertiary">贴完点一下别处,再「解析」</span>
               <button
                 type="button"
                 onClick={handleParse}
