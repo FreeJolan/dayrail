@@ -19,13 +19,19 @@ const MINUTES_IN_DAY = 24 * 60;
 // What the model fills — one entry per intended item. Closed schema; the
 // AI proposes NEW rail times for habits (it can't know existing rail
 // ids), and the user can switch a slot to an existing rail in the card.
+const taskStepSchema = z.object({
+  label: z.string().min(1),
+  /** 0–100 milestone position this step reaches on the parent task. */
+  percent: z.number().int().min(0).max(100).optional(),
+});
+
 const taskProposalSchema = z.object({
   kind: z.literal('task'),
   title: z.string().min(1),
   note: z.string().optional(),
   priority: z.enum(['P0', 'P1', 'P2']).optional(),
-  /** Discrete steps (切分), each a TaskOccurrence label. */
-  steps: z.array(z.string()).optional(),
+  /** Discrete steps (切分) — each a TaskOccurrence { label, optional percent }. */
+  steps: z.array(taskStepSchema).optional(),
 });
 
 const habitSlotProposalSchema = z.object({
@@ -59,8 +65,7 @@ export function toProposalDraft(p: ParseResult['proposals'][number]): ProposalDr
       ...(p.note ? { note: p.note } : {}),
       ...(p.priority ? { priority: p.priority } : {}),
       lineId: INBOX_LINE_ID,
-      // AI lists step labels; the user adds milestone % in the card.
-      steps: (p.steps ?? []).map((label) => ({ label })),
+      steps: p.steps ?? [],
     };
   }
   return {
@@ -89,7 +94,9 @@ export const PARSE_SYSTEM_PROMPT = [
   "You convert a user's free-form notes into a structured list of planner items by",
   'calling the tool emit_proposals. Each item is either:',
   '- kind:"task" — a one-off / bounded to-do. Fields: title, optional note, optional',
-  '  priority (P0/P1/P2), optional steps[] (sub-steps). Do NOT add times to tasks.',
+  '  priority (P0/P1/P2), optional steps[] where each step is { label, optional',
+  "  percent (0-100 milestone) }. Set a step's percent ONLY when the user marks it as",
+  '  a milestone / N% (e.g. "draft = 20%"). Do NOT add times to tasks.',
   '- kind:"habit" — a recurring activity. Fields: name, optional note, slots[] where each',
   '  slot has startMinutes (minutes from local midnight, 07:00=420), optional',
   '  durationMinutes, optional weekdays (0=Sun..6=Sat).',

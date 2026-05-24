@@ -19,7 +19,7 @@ const VALID: ParseResult = {
         { startMinutes: 1350 },
       ],
     },
-    { kind: 'task', title: '写季度总结初稿', priority: 'P1', steps: ['提纲'] },
+    { kind: 'task', title: '写季度总结初稿', priority: 'P1', steps: [{ label: '提纲', percent: 20 }] },
   ],
 };
 
@@ -50,6 +50,22 @@ describe('parseResultSchema · closed contract', () => {
         .success,
     ).toBe(false);
   });
+
+  it('rejects a step percent above 100', () => {
+    expect(
+      parseResultSchema.safeParse({
+        proposals: [{ kind: 'task', title: 'x', steps: [{ label: 's', percent: 200 }] }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a step with a valid milestone percent', () => {
+    expect(
+      parseResultSchema.safeParse({
+        proposals: [{ kind: 'task', title: 'x', steps: [{ label: '初稿', percent: 20 }] }],
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe('toProposalDraft', () => {
@@ -74,7 +90,7 @@ describe('toProposalDraft', () => {
     const d = toProposalDraft(VALID.proposals[1]!);
     if (d.kind === 'task') {
       expect(d.priority).toBe('P1');
-      expect(d.steps).toEqual([{ label: '提纲' }]);
+      expect(d.steps).toEqual([{ label: '提纲', percent: 20 }]);
     }
   });
 });
