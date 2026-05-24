@@ -3,13 +3,17 @@
 // The paste path's internal AI turns a "DayRail-agnostic" blob of
 // natural language / Markdown into structured `IntentSpec`s + a
 // suggested shape per intent (the user can switch it in the review
-// surface, §6.7.2). Per §6.7.6 this uses the AI SDK's `generateObject`
-// + a small CLOSED Zod schema — NOT "extract JSON from prose" (the
-// v0.8.2 schema-drift trap). The model call is an injection seam so the
-// mapping logic stays unit-testable without a network round-trip.
+// surface, §6.7.2). Per §6.7.6 this is STRUCTURED output against a small
+// CLOSED Zod schema — NOT "extract JSON from prose" (the v0.8.2 drift
+// trap). Mechanism: a forced AI-SDK tool call carrying the schema, not
+// `generateObject` / `response_format` — the canonical bridge
+// (CLIProxyAPI → Claude) doesn't translate OpenAI structured outputs but
+// does translate function-calling to Claude tool use (see
+// `defaultGenerate`). The model call is an injection seam so the mapping
+// logic stays unit-testable without a network round-trip.
 
 import { z } from 'zod';
-import { mapToAiClientError } from './ai/client';
+import { AiClientError, mapToAiClientError } from './ai/client';
 import type { IntentSpec, ProposalShape } from './intentStaging';
 
 const MINUTES_IN_DAY = 24 * 60;
@@ -86,7 +90,7 @@ const defaultGenerate: IntentObjectGenerator = async (config, { system, prompt }
   const { baseUrl, apiKey, model, signal } = config;
   // Lazy import — keep the AI SDK off the cold-start path (mirrors
   // `callChatCompletion`).
-  const [{ generateObject, APICallError }, { createOpenAICompatible }] = await Promise.all([
+  const [{ generateText, tool, APICallError }, { createOpenAICompatible }] = await Promise.all([
     import('ai'),
     import('@ai-sdk/openai-compatible'),
   ]);
@@ -96,14 +100,34 @@ const defaultGenerate: IntentObjectGenerator = async (config, { system, prompt }
     apiKey,
   });
   try {
-    const { object } = await generateObject({
+    // Structured output via a FORCED tool call — NOT `generateObject` /
+    // `response_format` json_schema. The canonical bridge (CLIProxyAPI →
+    // Claude) doesn't translate OpenAI structured outputs (it warns
+    // "responseFormat is not supported" and the model replies in prose →
+    // JSON parse fails), but it DOES translate OpenAI function-calling to
+    // Claude's native tool use. The proposals come back as the tool's
+    // Zod-validated input. Still structured, still the closed schema
+    // (§6.7.6) — just through the mechanism the bridge supports.
+    const result = await generateText({
       model: provider(model),
-      schema: parseResultSchema,
       system,
       prompt,
+      tools: {
+        emit_proposals: tool({
+          description: 'Emit the planner proposals extracted from the user text.',
+          inputSchema: parseResultSchema,
+        }),
+      },
+      toolChoice: 'required',
       ...(signal ? { abortSignal: signal } : {}),
     });
-    return object;
+    const call = result.toolCalls.find((c) => c.toolName === 'emit_proposals');
+    if (!call) {
+      throw new AiClientError('parse-error', 'AI 没有按预期返回结构化结果。', {
+        ...(result.text ? { bodyExcerpt: result.text.slice(0, 500) } : {}),
+      });
+    }
+    return parseResultSchema.parse(call.input);
   } catch (err) {
     throw mapToAiClientError(err, APICallError);
   }
