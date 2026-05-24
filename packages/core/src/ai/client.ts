@@ -124,7 +124,7 @@ export async function callChatCompletion(
  *
  *  `APICallErrorCtor` is passed in (not statically imported) because
  *  the SDK is dynamically loaded — see `callChatCompletion`. */
-function mapToAiClientError(
+export function mapToAiClientError(
   err: unknown,
   APICallErrorCtor: typeof APICallErrorType,
 ): AiClientError {

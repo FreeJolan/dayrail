@@ -98,6 +98,7 @@ importers:
       typescript: 5.6.3
       vitest: '2'
       yjs: ^13.6.0
+      zod: ^4.4.3
       zustand: 5.0.2
     dependencies:
       '@ai-sdk/openai-compatible': 2.0.46_zod@4.4.3
@@ -105,7 +106,8 @@ importers:
       ai: 6.0.175_zod@4.4.3
       react: 18.3.1
       yjs: 13.6.30
-      zustand: 5.0.2_ryhct6r6jz2fex4xfo2quarxhi
+      zod: 4.4.3
+      zustand: 5.0.2_@types+react@18.3.12
     devDependencies:
       '@types/react': 18.3.12
       typescript: 5.6.3
@@ -6627,7 +6629,7 @@ packages:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
     dev: false
 
-  /zustand/5.0.2_ryhct6r6jz2fex4xfo2quarxhi:
+  /zustand/5.0.2_@types+react@18.3.12:
     resolution: {integrity: sha512-8qNdnJVJlHlrKXi50LDqqUNmUbuBjoKLrYQBnoChIbVph7vni+sY+YpvdjXG9YLd/Bxr6scMcR+rm5H3aSqPaw==}
     engines: {node: '>=12.20.0'}
     peerDependencies:
@@ -6646,7 +6648,6 @@ packages:
         optional: true
     dependencies:
       '@types/react': 18.3.12
-      react: 18.3.1
     dev: false
 
   /zwitch/2.0.4:
