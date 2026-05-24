@@ -19,8 +19,10 @@ import { AiClientError, mapToAiClientError } from './ai/client';
 import { INBOX_LINE_ID } from './types';
 import type {
   HabitSlotDraft,
+  OccurrenceScheduleDraft,
   ProposalDraft,
   TaskScheduleDraft,
+  TaskStep,
 } from './intentStaging';
 
 const MINUTES_IN_DAY = 24 * 60;
@@ -34,24 +36,34 @@ const weekdaysSchema = z.array(z.number().int().min(0).max(6));
 // `toScheduleDraft` sanitizes it (non-ISO → dropped → defaults to today).
 const dateSchema = z.string();
 
+// §6.7.8 — schedule a single occurrence (a 切分 step). Occurrences sit on
+// a RAIL slot only (no free-time for occurrences).
+const occurrenceScheduleSchema = z.object({
+  railId: z.string().min(1),
+  date: dateSchema.optional(),
+});
+
 const taskStepSchema = z.object({
   label: z.string().min(1),
   /** 0–100 milestone position this step reaches on the parent task. */
   percent: z.number().int().min(0).max(100).optional(),
+  /** Schedule this occurrence onto a rail (when the task has steps, the
+   *  STEPS are what get scheduled, not the parent task). */
+  schedule: occurrenceScheduleSchema.optional(),
 });
 
-// §6.7.8 — optional scheduling of a task onto a rail. Usually existing.
+// §6.7.8 — whole-task scheduling. No new-rail: a one-off task either
+// binds an existing rail or takes a free-time block (time + duration).
 const taskScheduleSchema = z.discriminatedUnion('bind', [
   z.object({
-    bind: z.literal('existing'),
+    bind: z.literal('rail'),
     railId: z.string().min(1),
     date: dateSchema.optional(),
   }),
   z.object({
-    bind: z.literal('new'),
+    bind: z.literal('free'),
     startMinutes: minutesOfDay,
     durationMinutes: positiveMinutes.optional(),
-    templateKey: z.string().optional(),
     date: dateSchema.optional(),
   }),
 ]);
@@ -61,9 +73,10 @@ const taskProposalSchema = z.object({
   title: z.string().min(1),
   note: z.string().optional(),
   priority: z.enum(['P0', 'P1', 'P2']).optional(),
-  /** Discrete steps (切分) — each a TaskOccurrence { label, optional percent }. */
+  /** Discrete steps (切分) — each a TaskOccurrence { label, optional
+   *  percent, optional rail schedule }. */
   steps: z.array(taskStepSchema).optional(),
-  /** Optional rail scheduling (§6.7.8). */
+  /** Whole-task scheduling (§6.7.8) — only honored when there are no steps. */
   schedule: taskScheduleSchema.optional(),
 });
 
@@ -155,17 +168,30 @@ function toSlotDraft(s: z.infer<typeof habitSlotProposalSchema>): HabitSlotDraft
   };
 }
 
+function isoDateOpt(date: string | undefined): { date?: string } {
+  return date && ISO_DATE_RE.test(date) ? { date } : {};
+}
+
 function toScheduleDraft(s: z.infer<typeof taskScheduleSchema>): TaskScheduleDraft {
-  const date = s.date && ISO_DATE_RE.test(s.date) ? { date: s.date } : {};
-  if (s.bind === 'existing') {
-    return { mode: 'existing', railId: s.railId, ...date };
+  if (s.bind === 'rail') {
+    return { mode: 'rail', railId: s.railId, ...isoDateOpt(s.date) };
   }
   return {
-    mode: 'new',
+    mode: 'free',
     startMinutes: s.startMinutes,
     ...(s.durationMinutes !== undefined ? { durationMinutes: s.durationMinutes } : {}),
-    ...(s.templateKey ? { templateKey: s.templateKey } : {}),
-    ...date,
+    ...isoDateOpt(s.date),
+  };
+}
+
+function toStepDraft(s: z.infer<typeof taskStepSchema>): TaskStep {
+  const occ: OccurrenceScheduleDraft | undefined = s.schedule
+    ? { railId: s.schedule.railId, ...isoDateOpt(s.schedule.date) }
+    : undefined;
+  return {
+    label: s.label,
+    ...(s.percent !== undefined ? { percent: s.percent } : {}),
+    ...(occ ? { schedule: occ } : {}),
   };
 }
 
@@ -179,7 +205,7 @@ export function toProposalDraft(p: ParseResult['proposals'][number]): ProposalDr
       ...(p.note ? { note: p.note } : {}),
       ...(p.priority ? { priority: p.priority } : {}),
       lineId: INBOX_LINE_ID,
-      steps: p.steps ?? [],
+      steps: (p.steps ?? []).map(toStepDraft),
       ...(p.schedule ? { schedule: toScheduleDraft(p.schedule) } : {}),
     };
   }
@@ -213,12 +239,18 @@ export const PARSE_SYSTEM_PROMPT = [
   '',
   'Each item is either:',
   '- kind:"task" — a one-off / bounded to-do. Fields: title, optional note, optional',
-  '  priority (P0/P1/P2), optional steps[] (each { label, optional percent 0-100',
-  '  milestone — set ONLY when the user marks it, e.g. "draft = 20%" }), optional',
-  '  schedule. A task is usually UNSCHEDULED — omit schedule. Add it only when the user',
-  '  wants the task at a specific time: schedule.bind="existing" { railId (from Current',
-  '  setup), optional date "YYYY-MM-DD" } is the common case; schedule.bind="new"',
-  '  { startMinutes, optional durationMinutes, optional templateKey, optional date } is rare.',
+  '  priority (P0/P1/P2), optional steps[], optional schedule. A task is usually',
+  '  UNSCHEDULED — omit schedule.',
+  '  STEPS (切分): each is { label, optional percent (0-100 milestone — set ONLY when the',
+  '  user marks it, e.g. "draft = 20%"), optional schedule { railId (from Current setup),',
+  '  optional date "YYYY-MM-DD" } }.',
+  '  SCHEDULING A TASK — never create a new rail for a task:',
+  '    · If the task HAS steps, schedule the STEPS (each step.schedule binds a rail) and',
+  '      leave the task-level schedule OUT — the task is occurrence-managed.',
+  '    · If the task has NO steps, you may set task-level schedule:',
+  '        schedule.bind="rail" { railId (from Current setup), optional date }, OR',
+  '        schedule.bind="free" { startMinutes, optional durationMinutes, optional date }',
+  '        for a specific time block not tied to a rail.',
   '- kind:"habit" — a recurring activity. Fields: name, optional note, slots[]. Each slot',
   '  is one time-of-day, either bind="existing" { railId (from Current setup), optional',
   '  weekdays } or bind="new" { startMinutes (minutes from local midnight, 07:00=420),',

@@ -1443,11 +1443,11 @@ v0.8.2's lesson was that "having the model emit canonical JSON inside prose and 
      - `weekdays` (0–6) only when the user restricts specific weekdays.
    `commitDraft` (new habit slot) does `createRail` + bind per target template, expanding "every day" from the store's full template-key set (`CommitOptions.allTemplateKeys`).
 
-3. **Task → schedulable onto a Rail**: `TaskDraft` gains an optional `schedule` —
-   - omitted ⇒ unscheduled (Inbox), as before.
-   - bind existing: `{ railId, date? }` (the common case; `date` defaults to today unless the text implies one).
-   - new rail: `{ startMinutes, durationMinutes?, templateKey?, date? }` (rare; a task is one date → one template, so a single templateKey).
-   `commitDraft` (task): createTask → (if scheduled) (createRail if new) → set slot `{cycleId, date, railId}` via `scheduleTaskToRail`.
+3. **Task scheduling (no new rail)**: a one-off task **never creates a rail** — it either binds an existing Rail or takes a free-time block (a specific time + duration). And, aligned with §10.6: **with 切分 present, schedule the steps; only with no steps do we schedule the whole task.**
+   - `TaskDraft.schedule` (whole-task, honored **only when there are no steps**): `{mode:'rail', railId, date?}` to bind an existing Rail, or `{mode:'free', startMinutes, durationMinutes?, date?}` for a free-time block (an `adhocEvent`).
+   - `TaskStep.schedule` (each step → occurrence): `{railId, date?}` — an occurrence can **only** sit on a Rail (§10.6 `occurrence.slot` is rail-based, no free-time).
+   - **Edges**: AI gave steps but I deleted them all → fall back to whole-task scheduling; AI gave none and I added steps → switch to scheduling the steps, not the whole task (commit decides by "are there non-empty steps").
+   - `commitDraft`: with steps → per step `addOccurrence` (returns occId) + `scheduleTaskOccurrence`; with none → `scheduleTaskToRail` or `scheduleTaskFreeTime`. The latter gained an optional `sessionId` so the adhoc write lands in the same Edit Session (one-click undo).
 
 4. **Review UI**: the habit slot keeps the new/existing toggle — **new** gains a template picker (multi-select, default "every day / all"), **existing** uses the RailPicker; the task gains an optional "schedule" row (RailPicker + date). Rail / template are native concepts (the Habit detail page already lists rails grouped by template), so this isn't leaking the tech model into the UI.
 

@@ -1363,11 +1363,11 @@ v0.8.2 的教训是"让模型在散文里吐 canonical JSON、再正则抠出来
      - `weekdays`（0–6）只在用户限定特定星期几时给。
    `commitDraft`（新习惯 slot）按目标模板逐个 `createRail` + 绑定。`commitDraft` 从 store 拿全部模板 key（`CommitOptions.allTemplateKeys`）来展开「每天」。
 
-3. **任务 → 可排到 Rail**：`TaskDraft` 增可选 `schedule`——
-   - 省略 ⇒ 不排期（Inbox），同旧行为。
-   - 绑已有：`{ railId, date? }`（常见；`date` 默认今天，除非文本暗示日期）。
-   - 新建：`{ startMinutes, durationMinutes?, templateKey?, date? }`（少见；任务是单日 → 单模板，只取一个 templateKey）。
-   `commitDraft`（任务）：createTask →（若有 schedule）(新建则 createRail) → 置 slot `{cycleId, date, railId}`，接 `scheduleTaskToRail`。
+3. **任务排期（不新建 Rail）**：一次性任务**不新建 Rail** —— 要么绑已有 Rail，要么排到一个自由时间块（具体时间点 + 时长）。并与 §10.6 对齐：**有切分时排切分、无切分时才排整条任务**。
+   - `TaskDraft.schedule`（整条任务，**仅当无切分时**生效）：`{mode:'rail', railId, date?}` 绑已有 Rail，或 `{mode:'free', startMinutes, durationMinutes?, date?}` 自由时间块（落 `adhocEvent`）。
+   - `TaskStep.schedule`（每个切分 → occurrence）：`{railId, date?}` —— occurrence **只能排到 Rail**（§10.6 `occurrence.slot` 是 rail-based，没有自由时间）。
+   - **边界**：AI 给了切分但我全删了 → 回到整条任务排期；AI 没给切分、我加了切分 → 改成排切分、不再排整条任务（commit 按「是否存在非空切分」判定）。
+   - `commitDraft`：有切分 → 逐个 `addOccurrence`（拿回 occId）+ `scheduleTaskOccurrence`；无切分 → `scheduleTaskToRail` 或 `scheduleTaskFreeTime`。后者新增可选 `sessionId`，让 adhoc 写入落在同一 Edit Session（一键撤销）。
 
 4. **review UI**：习惯 slot 保留新/已有切换 —— **新建**加模板选择器（多选，默认「每天 / 全部」），**已有**用 RailPicker；任务加可选「排期」行（RailPicker + 日期）。Rail / 模板是原生概念（习惯详情页本就按模板分组列 Rail），不算把技术模型泄漏进 UI。
 

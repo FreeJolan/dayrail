@@ -253,6 +253,9 @@ export interface DayRailActions {
   scheduleTaskFreeTime: (
     taskId: string,
     opts: { date: string; startMinutes: number; durationMinutes: number },
+    /** When set, the adhoc-event write rides this Edit Session so it
+     *  undoes atomically with the rest of a batch (e.g. staging commit). */
+    sessionId?: string,
   ) => Promise<void>;
   unscheduleTask: (taskId: string, sessionId?: string) => Promise<void>;
   overrideCycleDay: (
@@ -2373,7 +2376,7 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
   // Legacy: store.ts:2173. Switches a task to free-time scheduling:
   // creates or updates an Ad-hoc event keyed to this task, clears any
   // Rail slot the task previously had.
-  scheduleTaskFreeTime: async (taskId, opts) => {
+  scheduleTaskFreeTime: async (taskId, opts, sessionId) => {
     const doc = getYDoc();
     const priorState = useStore.getState();
     const priorTask = priorState.tasks[taskId];
@@ -2428,7 +2431,7 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
           deferredAt: undefined,
         });
       }
-    }, 'scheduleTaskFreeTime');
+    }, sessionId ?? 'scheduleTaskFreeTime');
 
     const decision = detectReschedule({
       priorSlot,

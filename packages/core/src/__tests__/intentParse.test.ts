@@ -92,17 +92,26 @@ describe('parseResultSchema · closed contract', () => {
       }).success,
     ).toBe(true);
   });
-  it('accepts a task scheduled onto an existing rail', () => {
+  it('accepts a whole-task rail schedule', () => {
     expect(
       parseResultSchema.safeParse({
-        proposals: [{ kind: 'task', title: 'x', schedule: { bind: 'existing', railId: 'rail-a' } }],
+        proposals: [{ kind: 'task', title: 'x', schedule: { bind: 'rail', railId: 'rail-a' } }],
       }).success,
     ).toBe(true);
   });
-  it('accepts a task scheduled onto a new rail', () => {
+  it('accepts a whole-task free-time schedule', () => {
     expect(
       parseResultSchema.safeParse({
-        proposals: [{ kind: 'task', title: 'x', schedule: { bind: 'new', startMinutes: 540 } }],
+        proposals: [{ kind: 'task', title: 'x', schedule: { bind: 'free', startMinutes: 540 } }],
+      }).success,
+    ).toBe(true);
+  });
+  it('accepts a step with an occurrence rail schedule', () => {
+    expect(
+      parseResultSchema.safeParse({
+        proposals: [
+          { kind: 'task', title: 'x', steps: [{ label: '初稿', schedule: { railId: 'rail-a' } }] },
+        ],
       }).success,
     ).toBe(true);
   });
@@ -163,26 +172,36 @@ describe('toProposalDraft', () => {
       expect(d.steps).toEqual([{ label: '提纲', percent: 20 }]);
     }
   });
-  it('maps an existing-rail task schedule', () => {
+  it('maps a whole-task rail schedule', () => {
     const d = toProposalDraft({
       kind: 'task',
       title: 'x',
-      schedule: { bind: 'existing', railId: 'rail-a', date: '2026-05-25' },
+      schedule: { bind: 'rail', railId: 'rail-a', date: '2026-05-25' },
     });
     if (d.kind === 'task') {
-      expect(d.schedule).toEqual({ mode: 'existing', railId: 'rail-a', date: '2026-05-25' });
+      expect(d.schedule).toEqual({ mode: 'rail', railId: 'rail-a', date: '2026-05-25' });
     }
   });
-  it('maps a new-rail task schedule and drops a non-ISO date', () => {
+  it('maps a whole-task free schedule and drops a non-ISO date', () => {
     const d = toProposalDraft({
       kind: 'task',
       title: 'x',
-      schedule: { bind: 'new', startMinutes: 540, templateKey: 'workday', date: 'tomorrow' },
+      schedule: { bind: 'free', startMinutes: 540, durationMinutes: 45, date: 'tomorrow' },
     });
-    if (d.kind === 'task' && d.schedule?.mode === 'new') {
+    if (d.kind === 'task' && d.schedule?.mode === 'free') {
       expect(d.schedule.startMinutes).toBe(540);
-      expect(d.schedule.templateKey).toBe('workday');
+      expect(d.schedule.durationMinutes).toBe(45);
       expect(d.schedule.date).toBeUndefined(); // 'tomorrow' isn't ISO → dropped
+    }
+  });
+  it('maps a step occurrence rail schedule', () => {
+    const d = toProposalDraft({
+      kind: 'task',
+      title: 'x',
+      steps: [{ label: '初稿', schedule: { railId: 'rail-a', date: '2026-05-25' } }],
+    });
+    if (d.kind === 'task') {
+      expect(d.steps[0]?.schedule).toEqual({ railId: 'rail-a', date: '2026-05-25' });
     }
   });
 });
