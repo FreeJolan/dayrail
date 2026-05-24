@@ -193,3 +193,104 @@ function projectTask(intent: IntentSpec, genId: (prefix: string) => string): Pro
 
   return { shape: 'task', task, rails: [], bindings: [], occurrences, summary };
 }
+
+// ── Commit engine (ERD §6.7.4) ──────────────────────────────────────
+//
+// `commitPlan` is the deterministic, ADD-ONLY commit: it opens ONE Edit
+// Session and rides every write on that session's id, so a single
+// `undoEditSession` rolls back the whole bundle (the post-confirm "Undo"
+// toast). It only ever creates — never updates or deletes (§6.7.4). The
+// `StagingWriters` seam keeps this unit-testable without a live Y.Doc:
+// tests pass mock writers; the app passes `storeStagingWriters(...)`.
+
+/** The minimal write surface `commitPlan` drives. Each call rides the
+ *  Edit Session's `sessionId` so the batch undoes as one. */
+export interface StagingWriters {
+  openSession(surface: string): Promise<{ id: string }>;
+  closeSession(sessionId: string): Promise<void>;
+  createLine(line: Line, sessionId: string): Promise<void>;
+  createRail(rail: Rail, sessionId: string): Promise<void>;
+  bindHabit(
+    opts: { habitId: string; railId: string; weekdays?: number[] },
+    sessionId: string,
+  ): Promise<void>;
+  createTask(task: Task, sessionId: string): Promise<void>;
+  addOccurrence(
+    taskId: string,
+    occ: { label?: string; percent?: number },
+    sessionId: string,
+  ): Promise<void>;
+}
+
+/** ERD §6.7.4. Apply a projected plan as one Edit Session. Writes in
+ *  dependency order (line → rails → bindings, or task → occurrences) so
+ *  intra-plan references resolve, and returns the `sessionId` so the UI
+ *  can offer a one-click undo of the whole bundle. Add-only: no writer
+ *  here updates or deletes. */
+export async function commitPlan(plan: ProjectedPlan, w: StagingWriters): Promise<string> {
+  const { id: sessionId } = await w.openSession('staging-commit');
+
+  if (plan.line) {
+    await w.createLine(plan.line, sessionId);
+  }
+  for (const rail of plan.rails) {
+    await w.createRail(rail, sessionId);
+  }
+  for (const b of plan.bindings) {
+    await w.bindHabit(
+      { habitId: b.habitId, railId: b.railId, ...(b.weekdays ? { weekdays: b.weekdays } : {}) },
+      sessionId,
+    );
+  }
+  if (plan.task) {
+    await w.createTask(plan.task, sessionId);
+    for (const occ of plan.occurrences) {
+      await w.addOccurrence(
+        plan.task.id,
+        {
+          ...(occ.label !== undefined ? { label: occ.label } : {}),
+          ...(occ.percent !== undefined ? { percent: occ.percent } : {}),
+        },
+        sessionId,
+      );
+    }
+  }
+
+  await w.closeSession(sessionId);
+  return sessionId;
+}
+
+/** The DayRail store-action subset `storeStagingWriters` adapts — a
+ *  structural type so this module needs no import of the store itself.
+ *  `useStore.getState()` satisfies it. */
+export interface StoreStagingActions {
+  openEditSession(surface: string): Promise<{ id: string }>;
+  closeEditSession(sessionId: string): Promise<void>;
+  createLine(line: Line, sessionId?: string): Promise<void>;
+  createRail(rail: Rail, sessionId?: string, effectiveFrom?: string): Promise<void>;
+  upsertHabitBinding(
+    opts: { id?: string; habitId: string; railId: string; weekdays?: number[]; effectiveFrom?: string },
+    sessionId?: string,
+  ): Promise<string>;
+  createTask(task: Task, sessionId?: string): Promise<void>;
+  addTaskOccurrence(
+    taskId: string,
+    partial?: { label?: string; percent?: number },
+    sessionId?: string,
+  ): Promise<string>;
+}
+
+/** Bind `commitPlan`'s writers to the live store. The app calls
+ *  `commitPlan(plan, storeStagingWriters(useStore.getState()))`. */
+export function storeStagingWriters(a: StoreStagingActions): StagingWriters {
+  return {
+    openSession: (surface) => a.openEditSession(surface),
+    closeSession: (sessionId) => a.closeEditSession(sessionId),
+    createLine: (line, sessionId) => a.createLine(line, sessionId),
+    createRail: (rail, sessionId) => a.createRail(rail, sessionId),
+    bindHabit: (opts, sessionId) => a.upsertHabitBinding(opts, sessionId).then(() => undefined),
+    createTask: (task, sessionId) => a.createTask(task, sessionId),
+    addOccurrence: (taskId, occ, sessionId) =>
+      a.addTaskOccurrence(taskId, occ, sessionId).then(() => undefined),
+  };
+}

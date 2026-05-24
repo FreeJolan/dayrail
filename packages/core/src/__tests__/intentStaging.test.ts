@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_BLOCK_MINUTES, projectIntent, type IntentSpec } from '../intentStaging';
+import {
+  commitPlan,
+  DEFAULT_BLOCK_MINUTES,
+  projectIntent,
+  type IntentSpec,
+  type StagingWriters,
+} from '../intentStaging';
 import { INBOX_LINE_ID } from '../types';
 
 // Deterministic id minter so tests can assert intra-plan references
@@ -148,5 +154,140 @@ describe('projectIntent · shape switch is deterministic re-projection', () => {
     const withNote: IntentSpec = { ...MEDITATION, note: '深呼吸' };
     expect(projectIntent(withNote, 'habit', { genId: counterGen() }).line?.note).toBe('深呼吸');
     expect(projectIntent(withNote, 'task', { genId: counterGen() }).task?.note).toBe('深呼吸');
+  });
+});
+
+interface Call {
+  op: string;
+  sessionId?: string;
+  arg?: unknown;
+}
+
+// Recording mock writers: commitPlan only ever calls create/bind/add
+// methods (add-only is structural — there is no update/delete writer),
+// so we can assert ordering, session grouping, and ref wiring without a
+// live Y.Doc.
+function recordingWriters(): { writers: StagingWriters; calls: Call[] } {
+  const calls: Call[] = [];
+  let counter = 0;
+  const writers: StagingWriters = {
+    openSession: async (surface) => {
+      counter += 1;
+      calls.push({ op: 'open', arg: surface });
+      return { id: `sess-${counter}` };
+    },
+    closeSession: async (sessionId) => {
+      calls.push({ op: 'close', sessionId });
+    },
+    createLine: async (line, sessionId) => {
+      calls.push({ op: 'createLine', sessionId, arg: line });
+    },
+    createRail: async (rail, sessionId) => {
+      calls.push({ op: 'createRail', sessionId, arg: rail });
+    },
+    bindHabit: async (opts, sessionId) => {
+      calls.push({ op: 'bindHabit', sessionId, arg: opts });
+    },
+    createTask: async (task, sessionId) => {
+      calls.push({ op: 'createTask', sessionId, arg: task });
+    },
+    addOccurrence: async (taskId, occ, sessionId) => {
+      calls.push({ op: 'addOccurrence', sessionId, arg: { taskId, occ } });
+    },
+  };
+  return { writers, calls };
+}
+
+describe('commitPlan · add-only commit as one Edit Session', () => {
+  it('commits a habit plan: open → line → rails → bindings → close', async () => {
+    const plan = projectIntent(MEDITATION, 'habit', { genId: counterGen(), now: 0 });
+    const { writers, calls } = recordingWriters();
+    const sessionId = await commitPlan(plan, writers);
+
+    expect(calls.map((c) => c.op)).toEqual([
+      'open',
+      'createLine',
+      'createRail',
+      'createRail',
+      'bindHabit',
+      'bindHabit',
+      'close',
+    ]);
+    expect(calls[0]).toMatchObject({ op: 'open', arg: 'staging-commit' });
+    expect(sessionId).toBe('sess-1');
+  });
+
+  it('rides every write on the one session id, and closes it', async () => {
+    const plan = projectIntent(MEDITATION, 'habit', { genId: counterGen() });
+    const { writers, calls } = recordingWriters();
+    const sessionId = await commitPlan(plan, writers);
+    for (const c of calls.slice(1, -1)) {
+      expect(c.sessionId).toBe(sessionId);
+    }
+    expect(calls.at(-1)).toMatchObject({ op: 'close', sessionId });
+  });
+
+  it('is add-only — never calls an update / delete / remove writer', async () => {
+    const plan = projectIntent(MEDITATION, 'habit', { genId: counterGen() });
+    const { writers, calls } = recordingWriters();
+    await commitPlan(plan, writers);
+    expect(calls.every((c) => !/update|delete|remove/i.test(c.op))).toBe(true);
+  });
+
+  it('wires bindings to the created line + rails at commit time', async () => {
+    const plan = projectIntent(MEDITATION, 'habit', { genId: counterGen() });
+    const { writers, calls } = recordingWriters();
+    await commitPlan(plan, writers);
+    const binds = calls
+      .filter((c) => c.op === 'bindHabit')
+      .map((c) => c.arg as { habitId: string; railId: string });
+    for (const b of binds) {
+      expect(b.habitId).toBe(plan.line?.id);
+    }
+    expect(binds.map((b) => b.railId)).toEqual(plan.rails.map((r) => r.id));
+  });
+
+  it('passes a per-time weekday filter through to bindHabit', async () => {
+    const plan = projectIntent(
+      { title: 'run', frequency: 'weekly', times: [{ startMinutes: 360, weekdays: [1, 3, 5] }] },
+      'habit',
+      { genId: counterGen() },
+    );
+    const { writers, calls } = recordingWriters();
+    await commitPlan(plan, writers);
+    const bind = calls.find((c) => c.op === 'bindHabit')?.arg as { weekdays?: number[] };
+    expect(bind.weekdays).toEqual([1, 3, 5]);
+  });
+
+  it('commits a task plan: open → task → occurrences → close', async () => {
+    const plan = projectIntent(MEDITATION, 'task', { genId: counterGen() });
+    const { writers, calls } = recordingWriters();
+    await commitPlan(plan, writers);
+
+    expect(calls.map((c) => c.op)).toEqual([
+      'open',
+      'createTask',
+      'addOccurrence',
+      'addOccurrence',
+      'close',
+    ]);
+    const occs = calls
+      .filter((c) => c.op === 'addOccurrence')
+      .map((c) => c.arg as { taskId: string; occ: { label?: string } });
+    for (const o of occs) {
+      expect(o.taskId).toBe(plan.task?.id);
+    }
+    expect(occs.map((o) => o.occ.label)).toEqual(['晨间', '晚间']);
+  });
+
+  it('a bare task plan commits just the task, no occurrences', async () => {
+    const plan = projectIntent(
+      { title: '打电话给牙医', frequency: 'once', times: [] },
+      'task',
+      { genId: counterGen() },
+    );
+    const { writers, calls } = recordingWriters();
+    await commitPlan(plan, writers);
+    expect(calls.map((c) => c.op)).toEqual(['open', 'createTask', 'close']);
   });
 });
