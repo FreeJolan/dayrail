@@ -14,10 +14,13 @@ import {
   type ParseIntentsConfig,
   type ProposalDraft,
   type ProposalShape,
+  type Rail,
   type StagingProposal,
   type TaskDraft,
   type TaskPriority,
+  type TaskScheduleDraft,
   type TaskStep,
+  type Template,
   type UserProfile,
 } from '@dayrail/core';
 import { getAiApiKey, subscribeAiApiKey } from '@/lib/aiApiKey';
@@ -128,7 +131,20 @@ export function StagingModal({ open, onClose }: { open: boolean; onClose: () => 
     setParsing(true);
     setError(null);
     try {
-      const drafts = await parseIntentsFromText(text, aiConfig.config);
+      // §6.7.8 — ground the model in the user's current setup so it can
+      // bind existing rails / place new ones in the right template.
+      const s = useStore.getState();
+      const context = {
+        templates: Object.values(s.templates).map((t) => ({ key: t.key, name: t.name })),
+        rails: Object.values(s.rails).map((r) => ({
+          id: r.id,
+          name: r.name,
+          templateKey: r.templateKey,
+          startMinutes: r.startMinutes,
+          durationMinutes: r.durationMinutes,
+        })),
+      };
+      const drafts = await parseIntentsFromText(text, aiConfig.config, context);
       const store = useStagingStore.getState();
       // Re-parse replaces the previous batch — paste is a scratch you
       // iterate on. The input text is intentionally NOT cleared.
@@ -149,7 +165,12 @@ export function StagingModal({ open, onClose }: { open: boolean; onClose: () => 
   };
 
   const handleCommit = async (proposal: StagingProposal) => {
-    const sessionId = await commitDraft(proposal.draft, storeStagingWriters(useStore.getState()));
+    // §6.7.8 — allTemplateKeys lets a habit "every day" slot expand to a
+    // rail in every template.
+    const state = useStore.getState();
+    const sessionId = await commitDraft(proposal.draft, storeStagingWriters(state), {
+      allTemplateKeys: Object.keys(state.templates),
+    });
     useStagingStore.getState().discardProposal(proposal.id);
     setLastCommit({ sessionId, label: draftLabel(proposal.draft) });
   };
@@ -517,6 +538,13 @@ function NoteField({
 
 function TaskFields({ draft, setDraft }: { draft: TaskDraft; setDraft: (d: ProposalDraft) => void }) {
   const linesMap = useStore((s) => s.lines);
+  const railsMap = useStore((s) => s.rails);
+  const templatesMap = useStore((s) => s.templates);
+  const rails = useMemo(() => Object.values(railsMap), [railsMap]);
+  const templateList = useMemo(
+    () => Object.values(templatesMap).map((t) => ({ key: t.key, name: t.name })),
+    [templatesMap],
+  );
   const projectLines = useMemo(
     () =>
       Object.values(linesMap)
@@ -621,6 +649,14 @@ function TaskFields({ draft, setDraft }: { draft: TaskDraft; setDraft: (d: Propo
         </button>
       </div>
 
+      <TaskScheduleField
+        draft={draft}
+        setDraft={setDraft}
+        rails={rails}
+        templatesMap={templatesMap}
+        templateList={templateList}
+      />
+
       <NoteField value={draft.note} onChange={(v) => setDraft({ ...draft, note: v })} />
     </>
   );
@@ -635,6 +671,10 @@ function HabitFields({ draft, setDraft }: { draft: HabitDraft; setDraft: (d: Pro
   const railsMap = useStore((s) => s.rails);
   const templatesMap = useStore((s) => s.templates);
   const rails = useMemo(() => Object.values(railsMap), [railsMap]);
+  const templateList = useMemo(
+    () => Object.values(templatesMap).map((t) => ({ key: t.key, name: t.name })),
+    [templatesMap],
+  );
   const [effValue, setEffValue] = useState<EffectiveFromValue>({ mode: 'today' });
 
   const setSlots = (slots: HabitSlotDraft[]) => setDraft({ ...draft, slots });
@@ -722,6 +762,23 @@ function HabitFields({ draft, setDraft }: { draft: HabitDraft; setDraft: (d: Pro
                 <X className="h-3.5 w-3.5" strokeWidth={1.7} />
               </button>
             </div>
+            {slot.mode === 'new' && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">适用</span>
+                <TemplateScopePicker
+                  templates={templateList}
+                  value={slot.templateKeys}
+                  onChange={(keys) =>
+                    patchSlot(
+                      i,
+                      keys && keys.length > 0
+                        ? { ...slot, templateKeys: keys }
+                        : stripTemplateKeys(slot),
+                    )
+                  }
+                />
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">星期</span>
               <WeekdayPicker
@@ -758,4 +815,148 @@ function HabitFields({ draft, setDraft }: { draft: HabitDraft; setDraft: (d: Pro
 function stripWeekdays(slot: HabitSlotDraft): HabitSlotDraft {
   const { weekdays: _w, ...rest } = slot;
   return rest;
+}
+
+function stripTemplateKeys(slot: Extract<HabitSlotDraft, { mode: 'new' }>): HabitSlotDraft {
+  const { templateKeys: _t, ...rest } = slot;
+  return rest;
+}
+
+// Habit new-rail template scope (§6.7.8). No selection = every day (a rail
+// in every template); selecting templates narrows it. Shown with native
+// template names, so it reads as a day-scope rather than raw keys.
+function TemplateScopePicker({
+  templates,
+  value,
+  onChange,
+}: {
+  templates: { key: string; name: string }[];
+  value: string[] | undefined;
+  onChange: (keys: string[] | undefined) => void;
+}) {
+  const selected = new Set(value ?? []);
+  const everyday = selected.size === 0;
+  const toggle = (key: string) => {
+    const next = new Set(selected);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    onChange(next.size === 0 ? undefined : [...next]);
+  };
+  const chip = (active: boolean) =>
+    clsx(
+      'rounded-sm px-2 py-0.5 text-2xs transition',
+      active ? 'bg-cta text-cta-foreground' : 'bg-surface-2 text-ink-secondary hover:text-ink-primary',
+    );
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <button type="button" onClick={() => onChange(undefined)} className={chip(everyday)}>
+        每天
+      </button>
+      {templates.map((t) => (
+        <button
+          key={t.key}
+          type="button"
+          onClick={() => toggle(t.key)}
+          className={chip(selected.has(t.key))}
+        >
+          {t.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function omitSchedule(draft: TaskDraft): TaskDraft {
+  const { schedule: _s, ...rest } = draft;
+  return rest;
+}
+
+// Task scheduling onto a Rail (§6.7.8). Default unscheduled; usually bind
+// an existing rail; new-rail is the rare path. A task is one date.
+function TaskScheduleField({
+  draft,
+  setDraft,
+  rails,
+  templatesMap,
+  templateList,
+}: {
+  draft: TaskDraft;
+  setDraft: (d: ProposalDraft) => void;
+  rails: Rail[];
+  templatesMap: Record<string, Template>;
+  templateList: { key: string; name: string }[];
+}) {
+  const sched = draft.schedule;
+  const mode: 'none' | 'existing' | 'new' = sched?.mode ?? 'none';
+  const setSchedule = (schedule: TaskScheduleDraft | undefined) =>
+    setDraft(schedule ? { ...draft, schedule } : omitSchedule(draft));
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">排期(选填)</span>
+      <SegToggle
+        value={mode}
+        options={[
+          { key: 'none', label: '不排期' },
+          { key: 'existing', label: '绑 Rail' },
+          { key: 'new', label: '新建 Rail' },
+        ]}
+        onChange={(m) => {
+          if (m === mode) return;
+          if (m === 'none') setSchedule(undefined);
+          else if (m === 'existing') setSchedule({ mode: 'existing', railId: rails[0]?.id ?? '' });
+          else setSchedule({ mode: 'new', startMinutes: 9 * 60 });
+        }}
+      />
+      {sched?.mode === 'existing' && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div className="min-w-[160px] flex-1">
+            <RailPicker
+              rails={rails}
+              templates={templatesMap}
+              value={sched.railId}
+              onChange={(railId) => setSchedule({ ...sched, railId })}
+              placeholder="选一条 Rail…"
+            />
+          </div>
+          <input
+            type="date"
+            value={sched.date ?? ''}
+            onChange={(e) => setSchedule({ ...sched, date: e.target.value || undefined })}
+            className={clsx(fieldCls, 'tabular-nums')}
+          />
+        </div>
+      )}
+      {sched?.mode === 'new' && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <input
+            type="time"
+            value={minutesToHHMM(sched.startMinutes)}
+            onChange={(e) => {
+              const m = hhmmToMinutes(e.target.value);
+              if (m != null) setSchedule({ ...sched, startMinutes: m });
+            }}
+            className={clsx(fieldCls, 'tabular-nums')}
+          />
+          <select
+            value={sched.templateKey ?? templateList[0]?.key ?? ''}
+            onChange={(e) => setSchedule({ ...sched, templateKey: e.target.value })}
+            className={fieldCls}
+          >
+            {templateList.map((t) => (
+              <option key={t.key} value={t.key}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          <input
+            type="date"
+            value={sched.date ?? ''}
+            onChange={(e) => setSchedule({ ...sched, date: e.target.value || undefined })}
+            className={clsx(fieldCls, 'tabular-nums')}
+          />
+        </div>
+      )}
+    </div>
+  );
 }

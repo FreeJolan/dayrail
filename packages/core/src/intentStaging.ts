@@ -20,6 +20,8 @@ import {
   type TaskPriority,
   type TemplateKey,
 } from './types';
+import { cycleIdOf } from './autoTask';
+import { toIsoDate } from './today';
 
 export type ProposalShape = 'task' | 'habit';
 
@@ -31,6 +33,20 @@ export interface TaskStep {
   percent?: number;
 }
 
+/** Optional scheduling of a task onto a Rail (§6.7.8). Omitted ⇒ the
+ *  task stays unscheduled in its line / Inbox. Usually binds an existing
+ *  Rail; new-rail is rare. A task is one date → one template, so the new
+ *  variant takes a single `templateKey`. `date` defaults to today. */
+export type TaskScheduleDraft =
+  | { mode: 'existing'; railId: string; date?: string }
+  | {
+      mode: 'new';
+      startMinutes: number;
+      durationMinutes?: number;
+      templateKey?: TemplateKey;
+      date?: string;
+    };
+
 export interface TaskDraft {
   kind: 'task';
   title: string;
@@ -40,13 +56,26 @@ export interface TaskDraft {
   lineId: string;
   /** §10.6 切分 steps — each becomes a TaskOccurrence. */
   steps: TaskStep[];
+  /** §6.7.8 — optional Rail scheduling (sets the task's slot). */
+  schedule?: TaskScheduleDraft;
 }
 
 /** One time-slot of a habit: bind an EXISTING rail, or create a NEW one
  *  (ERD §6.7 — user choice per slot; binding to existing is exactly how
- *  habits are set up natively). */
+ *  habits are set up natively).
+ *
+ *  A Rail lives in ONE day-template, so a "new" slot can target one or
+ *  more templates. `templateKeys` omitted/empty ⇒ a rail in EVERY
+ *  template = the habit fires every day (§6.7.8); `['workday']` /
+ *  `['restday']` narrows it. */
 export type HabitSlotDraft =
-  | { mode: 'new'; startMinutes: number; durationMinutes?: number; weekdays?: number[] }
+  | {
+      mode: 'new';
+      startMinutes: number;
+      durationMinutes?: number;
+      templateKeys?: TemplateKey[];
+      weekdays?: number[];
+    }
   | { mode: 'existing'; railId: string; weekdays?: number[] };
 
 /** A habit proposal in the user's native habit-setup fields. */
@@ -111,6 +140,11 @@ export interface StagingWriters {
     occ: { label?: string; percent?: number },
     sessionId: string,
   ): Promise<void>;
+  scheduleTask(
+    taskId: string,
+    slot: { cycleId: string; date: string; railId: string },
+    sessionId: string,
+  ): Promise<void>;
 }
 
 export interface CommitOptions {
@@ -118,6 +152,12 @@ export interface CommitOptions {
   genId?: (prefix: string) => string;
   /** Wall clock for `createdAt` (epoch ms); injectable for tests. */
   now?: number;
+  /** All template keys (§6.7.8) — a habit "new" slot with no explicit
+   *  template restriction expands to a rail in EVERY one (= every day).
+   *  Omitted ⇒ falls back to the single default template. */
+  allTemplateKeys?: TemplateKey[];
+  /** ISO date used as the default for task scheduling; defaults to today. */
+  today?: string;
 }
 
 function defaultGenId(prefix: string): string {
@@ -135,6 +175,7 @@ export async function commitDraft(
 ): Promise<string> {
   const genId = opts.genId ?? defaultGenId;
   const now = opts.now ?? Date.now();
+  const today = opts.today ?? toIsoDate(new Date(now));
   const { id: sessionId } = await w.openSession('staging-commit');
 
   if (draft.kind === 'task') {
@@ -157,6 +198,37 @@ export async function commitDraft(
         sessionId,
       );
     }
+    // §6.7.8 — optional scheduling onto a Rail. Usually an existing rail;
+    // a new rail (rare) goes in one template (a task is a single date).
+    if (draft.schedule) {
+      const sched = draft.schedule;
+      const date = sched.date ?? today;
+      if (sched.mode === 'existing') {
+        if (sched.railId) {
+          await w.scheduleTask(
+            task.id,
+            { cycleId: cycleIdOf(date), date, railId: sched.railId },
+            sessionId,
+          );
+        }
+      } else {
+        const rail: Rail = {
+          id: genId('rail'),
+          templateKey: sched.templateKey ?? DEFAULT_TEMPLATE_KEY,
+          name: draft.title,
+          startMinutes: sched.startMinutes,
+          durationMinutes: sched.durationMinutes ?? DEFAULT_BLOCK_MINUTES,
+          color: DEFAULT_COLOR,
+          showInCheckin: true,
+        };
+        await w.createRail(rail, sessionId, date);
+        await w.scheduleTask(
+          task.id,
+          { cycleId: cycleIdOf(date), date, railId: rail.id },
+          sessionId,
+        );
+      }
+    }
   } else {
     const line: Line = {
       id: genId('line'),
@@ -170,14 +242,28 @@ export async function commitDraft(
     await w.createLine(line, sessionId);
     const ef = draft.effectiveFrom;
     for (const slot of draft.slots) {
-      let railId: string;
+      const weekdaysOpt =
+        slot.weekdays && slot.weekdays.length > 0 ? { weekdays: slot.weekdays } : {};
+      const efOpt = ef ? { effectiveFrom: ef } : {};
+
       if (slot.mode === 'existing') {
         if (!slot.railId) continue; // no rail chosen yet — skip defensively
-        railId = slot.railId;
-      } else {
+        await w.bindHabit({ habitId: line.id, railId: slot.railId, ...weekdaysOpt, ...efOpt }, sessionId);
+        continue;
+      }
+
+      // New rail per target template. No explicit template restriction ⇒
+      // a rail in EVERY template, so the habit fires every day (§6.7.8).
+      const targetTemplates =
+        slot.templateKeys && slot.templateKeys.length > 0
+          ? slot.templateKeys
+          : opts.allTemplateKeys && opts.allTemplateKeys.length > 0
+            ? opts.allTemplateKeys
+            : [DEFAULT_TEMPLATE_KEY];
+      for (const templateKey of targetTemplates) {
         const rail: Rail = {
           id: genId('rail'),
-          templateKey: DEFAULT_TEMPLATE_KEY,
+          templateKey,
           name: draft.name,
           startMinutes: slot.startMinutes,
           durationMinutes: slot.durationMinutes ?? DEFAULT_BLOCK_MINUTES,
@@ -185,17 +271,8 @@ export async function commitDraft(
           showInCheckin: true,
         };
         await w.createRail(rail, sessionId, ef);
-        railId = rail.id;
+        await w.bindHabit({ habitId: line.id, railId: rail.id, ...weekdaysOpt, ...efOpt }, sessionId);
       }
-      await w.bindHabit(
-        {
-          habitId: line.id,
-          railId,
-          ...(slot.weekdays && slot.weekdays.length > 0 ? { weekdays: slot.weekdays } : {}),
-          ...(ef ? { effectiveFrom: ef } : {}),
-        },
-        sessionId,
-      );
     }
   }
 
@@ -223,6 +300,11 @@ export interface StoreStagingActions {
     partial?: { label?: string; percent?: number },
     sessionId?: string,
   ): Promise<string>;
+  scheduleTaskToRail(
+    taskId: string,
+    slot: { cycleId: string; date: string; railId: string },
+    sessionId?: string,
+  ): Promise<void>;
 }
 
 /** Bind `commitDraft`'s writers to the live store. The app calls
@@ -237,5 +319,6 @@ export function storeStagingWriters(a: StoreStagingActions): StagingWriters {
     createTask: (task, sessionId) => a.createTask(task, sessionId),
     addOccurrence: (taskId, occ, sessionId) =>
       a.addTaskOccurrence(taskId, occ, sessionId).then(() => undefined),
+    scheduleTask: (taskId, slot, sessionId) => a.scheduleTaskToRail(taskId, slot, sessionId),
   };
 }

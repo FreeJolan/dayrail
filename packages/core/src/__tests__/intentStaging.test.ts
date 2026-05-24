@@ -44,6 +44,8 @@ function recordingWriters(): { writers: StagingWriters; calls: Call[] } {
       calls.push({ op: 'createTask', sessionId, arg: task }) as unknown as void,
     addOccurrence: async (taskId, occ, sessionId) =>
       calls.push({ op: 'addOccurrence', sessionId, arg: { taskId, occ } }) as unknown as void,
+    scheduleTask: async (taskId, slot, sessionId) =>
+      calls.push({ op: 'scheduleTask', sessionId, arg: { taskId, slot } }) as unknown as void,
   };
   return { writers, calls };
 }
@@ -151,6 +153,100 @@ describe('commitDraft · habit', () => {
       { genId: counterGen() },
     );
     expect(calls.map((c) => c.op)).toEqual(['open', 'createLine', 'close']);
+  });
+
+  it('every-day new slot (no templateKeys) → a rail + bind per template', async () => {
+    const { writers, calls } = recordingWriters();
+    await commitDraft(
+      { kind: 'habit', name: '冥想', slots: [{ mode: 'new', startMinutes: 420 }] },
+      writers,
+      { genId: counterGen(), allTemplateKeys: ['workday', 'restday'] },
+    );
+    const railTemplates = calls
+      .filter((c) => c.op === 'createRail')
+      .map((c) => (c.arg as { rail: { templateKey: string } }).rail.templateKey);
+    expect(railTemplates).toEqual(['workday', 'restday']);
+    expect(calls.filter((c) => c.op === 'bindHabit')).toHaveLength(2);
+  });
+
+  it('workday-only new slot → exactly one workday rail', async () => {
+    const { writers, calls } = recordingWriters();
+    await commitDraft(
+      {
+        kind: 'habit',
+        name: '冥想',
+        slots: [{ mode: 'new', startMinutes: 420, templateKeys: ['workday'] }],
+      },
+      writers,
+      { genId: counterGen(), allTemplateKeys: ['workday', 'restday'] },
+    );
+    const railTemplates = calls
+      .filter((c) => c.op === 'createRail')
+      .map((c) => (c.arg as { rail: { templateKey: string } }).rail.templateKey);
+    expect(railTemplates).toEqual(['workday']);
+    expect(calls.filter((c) => c.op === 'bindHabit')).toHaveLength(1);
+  });
+});
+
+describe('commitDraft · task scheduling', () => {
+  it('existing-rail schedule → scheduleTask with the chosen rail + date, no new rail', async () => {
+    const { writers, calls } = recordingWriters();
+    await commitDraft(
+      {
+        kind: 'task',
+        title: 'x',
+        lineId: 'line-inbox',
+        steps: [],
+        schedule: { mode: 'existing', railId: 'rail-am', date: '2026-05-25' },
+      },
+      writers,
+      { genId: counterGen() },
+    );
+    const sched = calls.find((c) => c.op === 'scheduleTask')?.arg as {
+      slot: { date: string; railId: string; cycleId: string };
+    };
+    expect(sched.slot.railId).toBe('rail-am');
+    expect(sched.slot.date).toBe('2026-05-25');
+    expect(typeof sched.slot.cycleId).toBe('string');
+    expect(calls.some((c) => c.op === 'createRail')).toBe(false);
+  });
+
+  it('new-rail schedule → createRail then scheduleTask onto it', async () => {
+    const { writers, calls } = recordingWriters();
+    await commitDraft(
+      {
+        kind: 'task',
+        title: 'x',
+        lineId: 'line-inbox',
+        steps: [],
+        schedule: { mode: 'new', startMinutes: 540, templateKey: 'workday', date: '2026-05-25' },
+      },
+      writers,
+      { genId: counterGen() },
+    );
+    const rail = calls.find((c) => c.op === 'createRail')?.arg as {
+      rail: { id: string; templateKey: string };
+    };
+    expect(rail.rail.templateKey).toBe('workday');
+    const sched = calls.find((c) => c.op === 'scheduleTask')?.arg as { slot: { railId: string } };
+    expect(sched.slot.railId).toBe(rail.rail.id);
+  });
+
+  it('defaults the schedule date to today when omitted', async () => {
+    const { writers, calls } = recordingWriters();
+    await commitDraft(
+      {
+        kind: 'task',
+        title: 'x',
+        lineId: 'line-inbox',
+        steps: [],
+        schedule: { mode: 'existing', railId: 'rail-am' },
+      },
+      writers,
+      { genId: counterGen(), today: '2026-05-25' },
+    );
+    const sched = calls.find((c) => c.op === 'scheduleTask')?.arg as { slot: { date: string } };
+    expect(sched.slot.date).toBe('2026-05-25');
   });
 });
 
