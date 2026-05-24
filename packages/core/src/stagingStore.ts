@@ -106,12 +106,27 @@ export interface StagingPersistence {
  *  Returns an unsubscribe fn. Subscribing happens AFTER hydrate, so the
  *  initial load doesn't trigger a redundant save. Save errors are
  *  swallowed (best-effort) so a write failure never breaks the UI. */
+/** A proposal is well-formed for the current model if it carries a draft
+ *  with a known kind. Guards against stale persisted blobs from an older
+ *  proposal shape (proposals are disposable — dropping a stale one is
+ *  fine; the user re-pastes). */
+function isValidProposal(p: unknown): p is StagingProposal {
+  const d = (p as StagingProposal | undefined)?.draft as { kind?: string } | undefined;
+  return !!d && (d.kind === 'task' || d.kind === 'habit');
+}
+
 export async function attachStagingPersistence(
   persistence: StagingPersistence,
   store: StagingStoreApi = useStagingStore,
 ): Promise<() => void> {
   const loaded = await persistence.load();
-  if (loaded) store.getState().setProposals(loaded);
+  if (loaded) {
+    const valid: Record<string, StagingProposal> = {};
+    for (const [id, p] of Object.entries(loaded)) {
+      if (isValidProposal(p)) valid[id] = p;
+    }
+    store.getState().setProposals(valid);
+  }
   return store.subscribe((state) => {
     void persistence.save(state.proposals).catch(() => undefined);
   });

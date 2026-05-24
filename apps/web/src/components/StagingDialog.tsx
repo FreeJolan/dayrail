@@ -399,6 +399,24 @@ function ProposalCard({
   const setDraft = (next: ProposalDraft) =>
     useStagingStore.getState().updateProposal(proposal.id, next);
 
+  // Defensive: a malformed draft (e.g. a stale blob that slipped past the
+  // hydrate sanitizer) must never white-screen the modal.
+  if (draft?.kind !== 'task' && draft?.kind !== 'habit') {
+    return (
+      <div className="flex items-center justify-between gap-2 rounded-md bg-surface-1 p-3 text-xs text-ink-tertiary ring-1 ring-hairline/40">
+        <span>这条旧提案无法识别</span>
+        <button
+          type="button"
+          onClick={onDiscard}
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          <Trash2 className="h-3.5 w-3.5" strokeWidth={1.7} />
+          丢弃
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-3 rounded-md bg-surface-1 p-3 ring-1 ring-hairline/40">
       <div className="flex items-center justify-between gap-2">
