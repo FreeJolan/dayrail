@@ -27,6 +27,7 @@ interface Call {
 function recordingWriters(): { writers: StagingWriters; calls: Call[] } {
   const calls: Call[] = [];
   let n = 0;
+  let occN = 0;
   const writers: StagingWriters = {
     openSession: async (surface) => {
       n += 1;
@@ -42,8 +43,18 @@ function recordingWriters(): { writers: StagingWriters; calls: Call[] } {
       calls.push({ op: 'bindHabit', sessionId, arg: opts }) as unknown as void,
     createTask: async (task, sessionId) =>
       calls.push({ op: 'createTask', sessionId, arg: task }) as unknown as void,
-    addOccurrence: async (taskId, occ, sessionId) =>
-      calls.push({ op: 'addOccurrence', sessionId, arg: { taskId, occ } }) as unknown as void,
+    addOccurrence: async (taskId, occ, sessionId) => {
+      occN += 1;
+      const occId = `occ-${occN}`;
+      calls.push({ op: 'addOccurrence', sessionId, arg: { taskId, occ, occId } });
+      return occId;
+    },
+    scheduleTask: async (taskId, slot, sessionId) =>
+      calls.push({ op: 'scheduleTask', sessionId, arg: { taskId, slot } }) as unknown as void,
+    scheduleTaskFreeTime: async (taskId, opts, sessionId) =>
+      calls.push({ op: 'scheduleTaskFreeTime', sessionId, arg: { taskId, opts } }) as unknown as void,
+    scheduleOccurrence: async (occurrenceId, slot, sessionId) =>
+      calls.push({ op: 'scheduleOccurrence', sessionId, arg: { occurrenceId, slot } }) as unknown as void,
   };
   return { writers, calls };
 }
@@ -151,6 +162,130 @@ describe('commitDraft · habit', () => {
       { genId: counterGen() },
     );
     expect(calls.map((c) => c.op)).toEqual(['open', 'createLine', 'close']);
+  });
+
+  it('every-day new slot (no templateKeys) → a rail + bind per template', async () => {
+    const { writers, calls } = recordingWriters();
+    await commitDraft(
+      { kind: 'habit', name: '冥想', slots: [{ mode: 'new', startMinutes: 420 }] },
+      writers,
+      { genId: counterGen(), allTemplateKeys: ['workday', 'restday'] },
+    );
+    const railTemplates = calls
+      .filter((c) => c.op === 'createRail')
+      .map((c) => (c.arg as { rail: { templateKey: string } }).rail.templateKey);
+    expect(railTemplates).toEqual(['workday', 'restday']);
+    expect(calls.filter((c) => c.op === 'bindHabit')).toHaveLength(2);
+  });
+
+  it('workday-only new slot → exactly one workday rail', async () => {
+    const { writers, calls } = recordingWriters();
+    await commitDraft(
+      {
+        kind: 'habit',
+        name: '冥想',
+        slots: [{ mode: 'new', startMinutes: 420, templateKeys: ['workday'] }],
+      },
+      writers,
+      { genId: counterGen(), allTemplateKeys: ['workday', 'restday'] },
+    );
+    const railTemplates = calls
+      .filter((c) => c.op === 'createRail')
+      .map((c) => (c.arg as { rail: { templateKey: string } }).rail.templateKey);
+    expect(railTemplates).toEqual(['workday']);
+    expect(calls.filter((c) => c.op === 'bindHabit')).toHaveLength(1);
+  });
+});
+
+describe('commitDraft · task scheduling (no steps)', () => {
+  it('rail schedule → scheduleTask with the chosen rail + date, never a new rail', async () => {
+    const { writers, calls } = recordingWriters();
+    await commitDraft(
+      {
+        kind: 'task',
+        title: 'x',
+        lineId: 'line-inbox',
+        steps: [],
+        schedule: { mode: 'rail', railId: 'rail-am', date: '2026-05-25' },
+      },
+      writers,
+      { genId: counterGen() },
+    );
+    const sched = calls.find((c) => c.op === 'scheduleTask')?.arg as {
+      slot: { date: string; railId: string; cycleId: string };
+    };
+    expect(sched.slot.railId).toBe('rail-am');
+    expect(sched.slot.date).toBe('2026-05-25');
+    expect(typeof sched.slot.cycleId).toBe('string');
+    expect(calls.some((c) => c.op === 'createRail')).toBe(false);
+  });
+
+  it('free schedule → scheduleTaskFreeTime block, no rail', async () => {
+    const { writers, calls } = recordingWriters();
+    await commitDraft(
+      {
+        kind: 'task',
+        title: 'x',
+        lineId: 'line-inbox',
+        steps: [],
+        schedule: { mode: 'free', startMinutes: 540, durationMinutes: 45, date: '2026-05-25' },
+      },
+      writers,
+      { genId: counterGen() },
+    );
+    const free = calls.find((c) => c.op === 'scheduleTaskFreeTime')?.arg as {
+      opts: { date: string; startMinutes: number; durationMinutes: number };
+    };
+    expect(free.opts).toMatchObject({ date: '2026-05-25', startMinutes: 540, durationMinutes: 45 });
+    expect(calls.some((c) => c.op === 'scheduleTask' || c.op === 'createRail')).toBe(false);
+  });
+
+  it('defaults the schedule date to today when omitted', async () => {
+    const { writers, calls } = recordingWriters();
+    await commitDraft(
+      {
+        kind: 'task',
+        title: 'x',
+        lineId: 'line-inbox',
+        steps: [],
+        schedule: { mode: 'rail', railId: 'rail-am' },
+      },
+      writers,
+      { genId: counterGen(), today: '2026-05-25' },
+    );
+    const sched = calls.find((c) => c.op === 'scheduleTask')?.arg as { slot: { date: string } };
+    expect(sched.slot.date).toBe('2026-05-25');
+  });
+});
+
+describe('commitDraft · task scheduling (with 切分)', () => {
+  it('schedules each step occurrence onto its rail; never the whole task', async () => {
+    const { writers, calls } = recordingWriters();
+    await commitDraft(
+      {
+        kind: 'task',
+        title: 'x',
+        lineId: 'line-inbox',
+        steps: [
+          { label: '初稿', percent: 50, schedule: { railId: 'rail-am', date: '2026-05-25' } },
+          { label: '定稿' }, // unscheduled occurrence
+        ],
+        // A stray whole-task schedule must be IGNORED when steps exist.
+        schedule: { mode: 'rail', railId: 'rail-pm' },
+      },
+      writers,
+      { genId: counterGen(), today: '2026-05-26' },
+    );
+    // two occurrences created, exactly one scheduled (the first)
+    expect(calls.filter((c) => c.op === 'addOccurrence')).toHaveLength(2);
+    const occSchedules = calls.filter((c) => c.op === 'scheduleOccurrence');
+    expect(occSchedules).toHaveLength(1);
+    const arg = occSchedules[0]!.arg as { occurrenceId: string; slot: { railId: string; date: string } };
+    expect(arg.occurrenceId).toBe('occ-1');
+    expect(arg.slot.railId).toBe('rail-am');
+    expect(arg.slot.date).toBe('2026-05-25');
+    // whole-task scheduling never happened
+    expect(calls.some((c) => c.op === 'scheduleTask' || c.op === 'scheduleTaskFreeTime')).toBe(false);
   });
 });
 

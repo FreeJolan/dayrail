@@ -8,10 +8,14 @@
 // once and then marked; subsequent calls skip it.
 //
 // We do NOT event-log a dense "occurrence" entity — we reuse Task.
-// Idempotent id = `task-auto-{habitId}-{date}` makes every trigger
-// safe to re-run. The (habitId, cycleId) marker stops the materializer
-// from re-visiting a cycle after the user has edited / deleted
-// auto-tasks in it (preventing undo-like side effects).
+// Idempotent id = `task-auto-{habitId}-{date}-{railId}` makes every
+// trigger safe to re-run. The railId segment (added v0.13.1) is what
+// lets one habit fire on TWO rails the same day: without it both
+// bindings built the same id and `upsertAutoTask`'s id-idempotency
+// dropped the second, so only the first rail materialized. Pre-v0.13.1
+// tasks used the rail-less `task-auto-{habitId}-{date}`; the
+// materializer special-cases those (see `legacyAutoTaskId`) so the
+// bump doesn't duplicate already-materialized occurrences.
 
 import { useStore, resolveTemplateForDate, type DayRailState } from './store';
 import { toIsoDate, toIsoDateTime } from './today';
@@ -99,6 +103,9 @@ export async function materializeAutoTasksImpl(
     | 'rails'
     | 'railRevisions'
     | 'railTombstones'
+    // `tasks` is read-only here — used solely for the pre-v0.13.1
+    // legacy-id back-compat guard below.
+    | 'tasks'
   >,
   upsert: (task: Task) => Promise<void>,
   range: MaterializeRange,
@@ -132,6 +139,17 @@ export async function materializeAutoTasksImpl(
       if (date < createdDate) continue;
 
       const rail = railFromRevision(rRev);
+
+      // Back-compat (pre-v0.13.1): an already-materialized auto-task
+      // used the rail-less id `task-auto-{habitId}-{date}`. If one
+      // exists for THIS rail (its slot carries the same railId), it
+      // already covers this occurrence — skip so the new rail-scoped id
+      // doesn't create a duplicate. Other rails of the same habit/day
+      // fall through and now materialize (the bug this fixes). The
+      // snapshot is fine: legacy tasks predate this run.
+      const legacy = state.tasks[legacyAutoTaskId(habit.id, date)];
+      if (legacy?.slot?.railId === rail.id) continue;
+
       const task: Task = buildAutoTask(habit.id, habit.name, rail, date);
       await upsert(task);
     }
@@ -147,8 +165,8 @@ export async function materializeAutoTasksImpl(
  * (no retroactive back-populate).
  *
  * Safe to call repeatedly: deterministic ids (`task-auto-{habitId}-
- * {date}`) + `upsertAutoTask` idempotency make this a no-op on an
- * already-materialized range.
+ * {date}-{railId}`) + `upsertAutoTask` idempotency make this a no-op on
+ * an already-materialized range.
  */
 export async function materializeAutoTasks(
   range: MaterializeRange,
@@ -169,7 +187,7 @@ function buildAutoTask(
   rail: Rail,
   date: string,
 ): Task {
-  const id = `task-auto-${habitId}-${date}`;
+  const id = autoTaskIdFor(habitId, date, rail.id);
   const plannedStart = toIsoDateTime(date, rail.startMinutes);
   const plannedEnd = toIsoDateTime(
     date,
@@ -225,7 +243,21 @@ export function isAutoTask(task: Task): boolean {
 
 export const AUTO_TASK_ID_PREFIX = 'task-auto-';
 
-export function autoTaskIdFor(habitId: string, dateIso: string): string {
+/** Deterministic id for a habit occurrence on a given rail/date. The
+ *  railId segment (v0.13.1) makes the id unique per rail so one habit
+ *  can fire on multiple rails the same day. */
+export function autoTaskIdFor(
+  habitId: string,
+  dateIso: string,
+  railId: string,
+): string {
+  return `${AUTO_TASK_ID_PREFIX}${habitId}-${dateIso}-${railId}`;
+}
+
+/** Pre-v0.13.1 rail-less id. Only the materializer's back-compat guard
+ *  uses it — to recognize an already-materialized occurrence so the new
+ *  rail-scoped scheme doesn't duplicate it. */
+export function legacyAutoTaskId(habitId: string, dateIso: string): string {
   return `${AUTO_TASK_ID_PREFIX}${habitId}-${dateIso}`;
 }
 

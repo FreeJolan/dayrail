@@ -1422,6 +1422,37 @@ v0.8.2's lesson was that "having the model emit canonical JSON inside prose and 
 - ❌ **Chasing "perfect decomposition of any arbitrary intent"** — target only DayRail's real shapes (habit / task+splits / adhoc); if the AI proposes something weird, I edit or discard it, no elaborate auto-repair.
 - ➖ **#1 daily review (§6.1 Observe / Review) stays as-is**, out of scope this round; it just benefits indirectly once §15.10's MCP read layer lets me chat about reflections with full context in Claude Code.
 
+#### 6.7.8 Rail-aware · grounded parsing (v0.13.1 · fixes "habit lands on workdays only")
+
+> Implementation wording correction: v0.13 landed directly on **native drafts** (task / habit draft) with no separate intent-spec layer; structured output goes through a **forced tool-call** (the bridge doesn't support `generateObject`'s `response_format`), not generateObject; the staging tray is an in-memory tool popup, not persisted, MCP not wired. This subsection describes the v0.13.1 actual shape.
+
+**Origin (bug)**: when the AI parsed a habit, every new Rail was hardcoded into the `workday` template (`commitDraft`'s `DEFAULT_TEMPLATE_KEY`), and the parse layer had no notion of "templates / Rails" at all. So a meditation habit meant to be "every day" only materialized on workdays — the restday template had no Rail, so it structurally could never fire daily. (Natively, a habit firing every day *is* "one Rail per day-template + a binding each" — precisely the manual stretch §6.7.1 means to remove.)
+
+**Core concept alignment**: a Rail = a time segment inside a day-template; both habits and tasks are organized around Rails. Hand that concept to the internal AI (**grounding**) so its output can "point at an existing Rail" or "request a new one (with template)" instead of blindly minting a workday Rail.
+
+1. **Grounding**: before parsing, inject a compact snapshot of the current setup into the parse prompt —
+   - Templates: `[{key, name}]` (workday / restday / custom).
+   - Rails: `[{id, name, templateKey, HH:MM, durationMin}]` (active rails).
+   The AI can thus reference an existing Rail, place a new one in the right template, and know which templates "every day" covers. Small payload (a user has a handful of rails); the review card stays the final confirm gate — AI matches can be wrong.
+
+2. **Habit slot → rail-aware**: each time-slot is one of —
+   - bind existing: `{ railId, weekdays? }`.
+   - new rail: `{ startMinutes, durationMinutes?, templateKeys?, weekdays? }`:
+     - `templateKeys` **omitted ⇒ every day = a Rail in every template** (the fix).
+     - explicit workday / restday ⇒ `['workday']` / `['restday']`.
+     - `weekdays` (0–6) only when the user restricts specific weekdays.
+   `commitDraft` (new habit slot) does `createRail` + bind per target template, expanding "every day" from the store's full template-key set (`CommitOptions.allTemplateKeys`).
+
+3. **Task scheduling (no new rail)**: a one-off task **never creates a rail** — it either binds an existing Rail or takes a free-time block (a specific time + duration). And, aligned with §10.6: **with 切分 present, schedule the steps; only with no steps do we schedule the whole task.**
+   - `TaskDraft.schedule` (whole-task, honored **only when there are no steps**): `{mode:'rail', railId, date?}` to bind an existing Rail, or `{mode:'free', startMinutes, durationMinutes?, date?}` for a free-time block (an `adhocEvent`).
+   - `TaskStep.schedule` (each step → occurrence): `{railId, date?}` — an occurrence can **only** sit on a Rail (§10.6 `occurrence.slot` is rail-based, no free-time).
+   - **Edges**: AI gave steps but I deleted them all → fall back to whole-task scheduling; AI gave none and I added steps → switch to scheduling the steps, not the whole task (commit decides by "are there non-empty steps").
+   - `commitDraft`: with steps → per step `addOccurrence` (returns occId) + `scheduleTaskOccurrence`; with none → `scheduleTaskToRail` or `scheduleTaskFreeTime`. The latter gained an optional `sessionId` so the adhoc write lands in the same Edit Session (one-click undo).
+
+4. **Review UI**: the habit slot keeps the new/existing toggle — **new** gains a template picker (multi-select, default "every day / all"), **existing** uses the RailPicker; the task gains an optional "schedule" row (RailPicker + date). Rail / template are native concepts (the Habit detail page already lists rails grouped by template), so this isn't leaking the tech model into the UI.
+
+5. **Parse prompt**: teach the model — a Rail is a time segment inside a day-template; prefer binding an existing Rail when one fits, create new only when none does; a new habit Rail defaults to **every day (all templates)**, narrowing only on an explicit workday / restday / weekday mention; tasks usually bind an existing Rail.
+
 ---
 
 ## 7. Sync & Storage

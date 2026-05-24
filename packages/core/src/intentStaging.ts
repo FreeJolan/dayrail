@@ -20,16 +20,34 @@ import {
   type TaskPriority,
   type TemplateKey,
 } from './types';
+import { cycleIdOf } from './autoTask';
+import { toIsoDate } from './today';
 
 export type ProposalShape = 'task' | 'habit';
 
-/** A task proposal in the user's native task fields. */
-/** A 切分 step → a TaskOccurrence (label + optional milestone %). */
+/** Scheduling a single occurrence (a 切分 step → a TaskOccurrence).
+ *  Occurrences can only sit on a RAIL slot (§10.6 — no free-time for
+ *  occurrences), so this is rail-only. `date` defaults to today. */
+export type OccurrenceScheduleDraft = { railId: string; date?: string };
+
+/** A 切分 step → a TaskOccurrence (label + optional milestone % + optional
+ *  rail scheduling). When a task has steps, the STEPS get scheduled
+ *  (occurrence-managed, §10.6), not the parent task. */
 export interface TaskStep {
   label: string;
   /** 0–100 milestone position on the parent task (§10.6). */
   percent?: number;
+  /** §6.7.8 — schedule this occurrence onto a Rail. */
+  schedule?: OccurrenceScheduleDraft;
 }
+
+/** Scheduling a whole task (§6.7.8). Used ONLY when the task has no
+ *  steps. No new-rail — a one-off task either binds an existing Rail or
+ *  takes a free-time block (a specific time + duration). `date` defaults
+ *  to today. */
+export type TaskScheduleDraft =
+  | { mode: 'rail'; railId: string; date?: string }
+  | { mode: 'free'; startMinutes: number; durationMinutes?: number; date?: string };
 
 export interface TaskDraft {
   kind: 'task';
@@ -40,13 +58,27 @@ export interface TaskDraft {
   lineId: string;
   /** §10.6 切分 steps — each becomes a TaskOccurrence. */
   steps: TaskStep[];
+  /** §6.7.8 — whole-task scheduling. Applied ONLY when `steps` is empty;
+   *  with steps present, per-step `schedule` is used instead. */
+  schedule?: TaskScheduleDraft;
 }
 
 /** One time-slot of a habit: bind an EXISTING rail, or create a NEW one
  *  (ERD §6.7 — user choice per slot; binding to existing is exactly how
- *  habits are set up natively). */
+ *  habits are set up natively).
+ *
+ *  A Rail lives in ONE day-template, so a "new" slot can target one or
+ *  more templates. `templateKeys` omitted/empty ⇒ a rail in EVERY
+ *  template = the habit fires every day (§6.7.8); `['workday']` /
+ *  `['restday']` narrows it. */
 export type HabitSlotDraft =
-  | { mode: 'new'; startMinutes: number; durationMinutes?: number; weekdays?: number[] }
+  | {
+      mode: 'new';
+      startMinutes: number;
+      durationMinutes?: number;
+      templateKeys?: TemplateKey[];
+      weekdays?: number[];
+    }
   | { mode: 'existing'; railId: string; weekdays?: number[] };
 
 /** A habit proposal in the user's native habit-setup fields. */
@@ -106,9 +138,28 @@ export interface StagingWriters {
     sessionId: string,
   ): Promise<void>;
   createTask(task: Task, sessionId: string): Promise<void>;
+  /** Returns the new occurrence id so the caller can schedule it. */
   addOccurrence(
     taskId: string,
     occ: { label?: string; percent?: number },
+    sessionId: string,
+  ): Promise<string>;
+  /** Whole-task → a Rail slot. */
+  scheduleTask(
+    taskId: string,
+    slot: { cycleId: string; date: string; railId: string },
+    sessionId: string,
+  ): Promise<void>;
+  /** Whole-task → a free-time block (adhoc event). */
+  scheduleTaskFreeTime(
+    taskId: string,
+    opts: { date: string; startMinutes: number; durationMinutes: number },
+    sessionId: string,
+  ): Promise<void>;
+  /** A single occurrence → a Rail slot. */
+  scheduleOccurrence(
+    occurrenceId: string,
+    slot: { cycleId: string; date: string; railId: string },
     sessionId: string,
   ): Promise<void>;
 }
@@ -118,6 +169,12 @@ export interface CommitOptions {
   genId?: (prefix: string) => string;
   /** Wall clock for `createdAt` (epoch ms); injectable for tests. */
   now?: number;
+  /** All template keys (§6.7.8) — a habit "new" slot with no explicit
+   *  template restriction expands to a rail in EVERY one (= every day).
+   *  Omitted ⇒ falls back to the single default template. */
+  allTemplateKeys?: TemplateKey[];
+  /** ISO date used as the default for task scheduling; defaults to today. */
+  today?: string;
 }
 
 function defaultGenId(prefix: string): string {
@@ -135,6 +192,7 @@ export async function commitDraft(
 ): Promise<string> {
   const genId = opts.genId ?? defaultGenId;
   const now = opts.now ?? Date.now();
+  const today = opts.today ?? toIsoDate(new Date(now));
   const { id: sessionId } = await w.openSession('staging-commit');
 
   if (draft.kind === 'task') {
@@ -148,14 +206,51 @@ export async function commitDraft(
       ...(draft.priority ? { priority: draft.priority } : {}),
     };
     await w.createTask(task, sessionId);
-    for (const step of draft.steps) {
-      const label = step.label.trim();
-      if (!label) continue;
-      await w.addOccurrence(
-        task.id,
-        { label, ...(step.percent !== undefined ? { percent: step.percent } : {}) },
-        sessionId,
-      );
+
+    // §6.7.8 — with steps present the task is occurrence-managed: schedule
+    // the STEPS (each onto a Rail), never the parent. With no steps, the
+    // whole task can take a Rail slot or a free-time block.
+    const hasSteps = draft.steps.some((s) => s.label.trim().length > 0);
+    if (hasSteps) {
+      for (const step of draft.steps) {
+        const label = step.label.trim();
+        if (!label) continue;
+        const occId = await w.addOccurrence(
+          task.id,
+          { label, ...(step.percent !== undefined ? { percent: step.percent } : {}) },
+          sessionId,
+        );
+        if (step.schedule?.railId) {
+          const date = step.schedule.date ?? today;
+          await w.scheduleOccurrence(
+            occId,
+            { cycleId: cycleIdOf(date), date, railId: step.schedule.railId },
+            sessionId,
+          );
+        }
+      }
+    } else if (draft.schedule) {
+      const sched = draft.schedule;
+      const date = sched.date ?? today;
+      if (sched.mode === 'rail') {
+        if (sched.railId) {
+          await w.scheduleTask(
+            task.id,
+            { cycleId: cycleIdOf(date), date, railId: sched.railId },
+            sessionId,
+          );
+        }
+      } else {
+        await w.scheduleTaskFreeTime(
+          task.id,
+          {
+            date,
+            startMinutes: sched.startMinutes,
+            durationMinutes: sched.durationMinutes ?? DEFAULT_BLOCK_MINUTES,
+          },
+          sessionId,
+        );
+      }
     }
   } else {
     const line: Line = {
@@ -170,14 +265,28 @@ export async function commitDraft(
     await w.createLine(line, sessionId);
     const ef = draft.effectiveFrom;
     for (const slot of draft.slots) {
-      let railId: string;
+      const weekdaysOpt =
+        slot.weekdays && slot.weekdays.length > 0 ? { weekdays: slot.weekdays } : {};
+      const efOpt = ef ? { effectiveFrom: ef } : {};
+
       if (slot.mode === 'existing') {
         if (!slot.railId) continue; // no rail chosen yet — skip defensively
-        railId = slot.railId;
-      } else {
+        await w.bindHabit({ habitId: line.id, railId: slot.railId, ...weekdaysOpt, ...efOpt }, sessionId);
+        continue;
+      }
+
+      // New rail per target template. No explicit template restriction ⇒
+      // a rail in EVERY template, so the habit fires every day (§6.7.8).
+      const targetTemplates =
+        slot.templateKeys && slot.templateKeys.length > 0
+          ? slot.templateKeys
+          : opts.allTemplateKeys && opts.allTemplateKeys.length > 0
+            ? opts.allTemplateKeys
+            : [DEFAULT_TEMPLATE_KEY];
+      for (const templateKey of targetTemplates) {
         const rail: Rail = {
           id: genId('rail'),
-          templateKey: DEFAULT_TEMPLATE_KEY,
+          templateKey,
           name: draft.name,
           startMinutes: slot.startMinutes,
           durationMinutes: slot.durationMinutes ?? DEFAULT_BLOCK_MINUTES,
@@ -185,17 +294,8 @@ export async function commitDraft(
           showInCheckin: true,
         };
         await w.createRail(rail, sessionId, ef);
-        railId = rail.id;
+        await w.bindHabit({ habitId: line.id, railId: rail.id, ...weekdaysOpt, ...efOpt }, sessionId);
       }
-      await w.bindHabit(
-        {
-          habitId: line.id,
-          railId,
-          ...(slot.weekdays && slot.weekdays.length > 0 ? { weekdays: slot.weekdays } : {}),
-          ...(ef ? { effectiveFrom: ef } : {}),
-        },
-        sessionId,
-      );
     }
   }
 
@@ -223,6 +323,21 @@ export interface StoreStagingActions {
     partial?: { label?: string; percent?: number },
     sessionId?: string,
   ): Promise<string>;
+  scheduleTaskToRail(
+    taskId: string,
+    slot: { cycleId: string; date: string; railId: string },
+    sessionId?: string,
+  ): Promise<void>;
+  scheduleTaskFreeTime(
+    taskId: string,
+    opts: { date: string; startMinutes: number; durationMinutes: number },
+    sessionId?: string,
+  ): Promise<void>;
+  scheduleTaskOccurrence(
+    occurrenceId: string,
+    slot: { cycleId: string; date: string; railId: string } | null,
+    sessionId?: string,
+  ): Promise<void>;
 }
 
 /** Bind `commitDraft`'s writers to the live store. The app calls
@@ -235,7 +350,11 @@ export function storeStagingWriters(a: StoreStagingActions): StagingWriters {
     createRail: (rail, sessionId, effectiveFrom) => a.createRail(rail, sessionId, effectiveFrom),
     bindHabit: (opts, sessionId) => a.upsertHabitBinding(opts, sessionId).then(() => undefined),
     createTask: (task, sessionId) => a.createTask(task, sessionId),
-    addOccurrence: (taskId, occ, sessionId) =>
-      a.addTaskOccurrence(taskId, occ, sessionId).then(() => undefined),
+    addOccurrence: (taskId, occ, sessionId) => a.addTaskOccurrence(taskId, occ, sessionId),
+    scheduleTask: (taskId, slot, sessionId) => a.scheduleTaskToRail(taskId, slot, sessionId),
+    scheduleTaskFreeTime: (taskId, opts, sessionId) =>
+      a.scheduleTaskFreeTime(taskId, opts, sessionId),
+    scheduleOccurrence: (occId, slot, sessionId) =>
+      a.scheduleTaskOccurrence(occId, slot, sessionId),
   };
 }

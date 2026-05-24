@@ -86,6 +86,7 @@ function withRevisions<
     rails?: Record<string, Rail>;
     calendarRules?: Record<string, CalendarRule>;
     habitBindings?: Record<string, HabitBinding>;
+    tasks?: Record<string, Task>;
   },
 >(
   state: S,
@@ -96,6 +97,8 @@ function withRevisions<
   calendarRuleTombstones: Record<string, never>;
   habitBindingRevisions: Record<string, HabitBindingRevision[]>;
   habitBindingTombstones: Record<string, never>;
+  // `tasks` feeds the materializer's pre-v0.13.1 legacy-id guard.
+  tasks: Record<string, Task>;
 } {
   const railRevs: Record<string, RailRevision[]> = {};
   for (const r of Object.values(state.rails ?? {})) {
@@ -151,6 +154,7 @@ function withRevisions<
     calendarRuleTombstones: {},
     habitBindingRevisions: bindingRevs,
     habitBindingTombstones: {},
+    tasks: state.tasks ?? {},
   };
 }
 
@@ -161,9 +165,15 @@ interface Recorder {
 
 function makeRecorder(): Recorder {
   const calls: Task[] = [];
+  // Mirror the real `upsertAutoTask`: idempotent on id (skip if seen).
+  // Without this the recorder would mask the very collision this
+  // module's bug was about — two same-day rails sharing one id.
+  const seen = new Set<string>();
   return {
     calls,
     upsert: async (task) => {
+      if (seen.has(task.id)) return;
+      seen.add(task.id);
       calls.push(task);
     },
   };
@@ -188,9 +198,9 @@ describe('materializeAutoTasksImpl', () => {
     expect(rec.calls.every((t) => t.source === 'auto-habit')).toBe(true);
     expect(rec.calls.every((t) => t.lineId === 'h1')).toBe(true);
     expect(rec.calls.every((t) => t.slot?.railId === 'rA')).toBe(true);
-    // Deterministic id scheme.
+    // Deterministic id scheme — rail-scoped (v0.13.1).
     for (const task of rec.calls) {
-      expect(task.id).toBe(`task-auto-h1-${task.slot!.date}`);
+      expect(task.id).toBe(`task-auto-h1-${task.slot!.date}-rA`);
     }
   });
 
@@ -334,6 +344,75 @@ describe('materializeAutoTasksImpl', () => {
     }
     expect(byRail.get('morning')).toBe(5);
     expect(byRail.get('weekend')).toBe(2);
+  });
+
+  it('materializes BOTH rails when a habit is bound to two rails on the SAME day', async () => {
+    // Regression (v0.13.1): rail-less ids `task-auto-{habitId}-{date}`
+    // collided, so the second binding's upsert was dropped and only the
+    // first rail materialized. Here both rails share the workday
+    // template, so both fire every Mon–Fri.
+    const state = {
+      templates: byKey([makeTemplate('workday')]),
+      rails: mapById([
+        makeRail({ id: 'morning', templateKey: 'workday', startMinutes: 7 * 60 }),
+        makeRail({ id: 'evening', templateKey: 'workday', startMinutes: 21 * 60 }),
+      ]),
+      lines: mapById([makeHabit({ id: 'h1' })]),
+      habitBindings: mapById([
+        makeBinding({ id: 'b1', habitId: 'h1', railId: 'morning' }),
+        makeBinding({ id: 'b2', habitId: 'h1', railId: 'evening' }),
+      ]),
+      calendarRules: mapById([weekdayRule('workday', [1, 2, 3, 4, 5])]),
+    };
+    const rec = makeRecorder();
+    await materializeAutoTasksImpl(withRevisions(state), rec.upsert, {
+      startDate: MON,
+      endDate: SUN,
+    });
+    // 5 workdays × 2 rails = 10 tasks, all with distinct rail-scoped ids
+    // (pre-fix this collapsed to 5 — one rail dropped per day).
+    expect(rec.calls).toHaveLength(10);
+    expect(new Set(rec.calls.map((t) => t.id)).size).toBe(10);
+    // Wednesday carries both rails.
+    const wed = rec.calls.filter((t) => t.slot!.date === '2026-04-15');
+    expect(wed.map((t) => t.slot!.railId).sort()).toEqual(['evening', 'morning']);
+  });
+
+  it('does not duplicate a pre-v0.13.1 rail-less auto-task, but still adds the other rail', async () => {
+    // A legacy task for (h1, Wed 04-15, morning) under the OLD id. The
+    // morning rail must NOT be re-materialized (no dup); the newly-bound
+    // evening rail — previously dropped by the collision — must appear.
+    const legacy: Task = {
+      id: 'task-auto-h1-2026-04-15',
+      lineId: 'h1',
+      title: 'h1',
+      order: 0,
+      status: 'pending',
+      slot: { cycleId: 'cycle-2026-04-13', date: '2026-04-15', railId: 'morning' },
+      source: 'auto-habit',
+    };
+    const state = {
+      templates: byKey([makeTemplate('workday')]),
+      rails: mapById([
+        makeRail({ id: 'morning', templateKey: 'workday', startMinutes: 7 * 60 }),
+        makeRail({ id: 'evening', templateKey: 'workday', startMinutes: 21 * 60 }),
+      ]),
+      lines: mapById([makeHabit({ id: 'h1' })]),
+      habitBindings: mapById([
+        makeBinding({ id: 'b1', habitId: 'h1', railId: 'morning' }),
+        makeBinding({ id: 'b2', habitId: 'h1', railId: 'evening' }),
+      ]),
+      calendarRules: mapById([weekdayRule('workday', [1, 2, 3, 4, 5])]),
+      tasks: mapById([legacy]),
+    };
+    const rec = makeRecorder();
+    await materializeAutoTasksImpl(withRevisions(state), rec.upsert, {
+      startDate: '2026-04-15', // just Wed
+      endDate: '2026-04-15',
+    });
+    expect(rec.calls).toHaveLength(1);
+    expect(rec.calls[0]!.slot!.railId).toBe('evening');
+    expect(rec.calls[0]!.id).toBe('task-auto-h1-2026-04-15-evening');
   });
 
   it('no-ops when there are zero bindings', async () => {
@@ -511,6 +590,7 @@ describe('materializer · revision-frozen past', () => {
         ],
       },
       habitBindingTombstones: {},
+      tasks: {},
     };
     const rec = makeRecorder();
     await materializeAutoTasksImpl(state, rec.upsert, {

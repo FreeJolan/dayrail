@@ -1,6 +1,6 @@
 import { clsx } from 'clsx';
 import { Check, Plus, RotateCcw, Sparkles, Trash2, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   commitDraft,
@@ -11,13 +11,17 @@ import {
   useStore,
   type HabitDraft,
   type HabitSlotDraft,
+  type OccurrenceScheduleDraft,
   type ParseIntentsConfig,
   type ProposalDraft,
   type ProposalShape,
+  type Rail,
   type StagingProposal,
   type TaskDraft,
   type TaskPriority,
+  type TaskScheduleDraft,
   type TaskStep,
+  type Template,
   type UserProfile,
 } from '@dayrail/core';
 import { getAiApiKey, subscribeAiApiKey } from '@/lib/aiApiKey';
@@ -86,6 +90,10 @@ export function StagingModal({ open, onClose }: { open: boolean; onClose: () => 
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState<{ message: string; bodyExcerpt?: string } | null>(null);
   const [lastCommit, setLastCommit] = useState<{ sessionId: string; label: string } | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  // Backdrop-dismiss gesture state — see `onBackdropMouseDown`.
+  const pressOnBackdropRef = useRef(false);
+  const deferCloseRef = useRef(false);
 
   useEffect(() => {
     if (!lastCommit) return;
@@ -109,6 +117,38 @@ export function StagingModal({ open, onClose }: { open: boolean; onClose: () => 
     doClose();
   };
 
+  // Gesture-anchored, two-stage backdrop dismiss. Two problems to dodge:
+  //   1) A press that STARTS inside the card must never close — even if
+  //      the paste box collapses on blur and the card shrinks so the
+  //      release lands on the now-exposed backdrop (which would otherwise
+  //      resolve the click onto the overlay). So we only dismiss when the
+  //      press *began* on the backdrop itself.
+  //   2) When a field is focused, the first genuine backdrop click should
+  //      only defocus it (it commits on blur); a second click closes.
+  // Focus is read at mousedown — by `click` the field has already blurred.
+  const onBackdropMouseDown = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const onBackdrop = e.target === e.currentTarget;
+    pressOnBackdropRef.current = onBackdrop;
+    const el = document.activeElement;
+    deferCloseRef.current =
+      onBackdrop &&
+      el instanceof HTMLElement &&
+      !!cardRef.current?.contains(el) &&
+      (el.tagName === 'INPUT' ||
+        el.tagName === 'TEXTAREA' ||
+        el.tagName === 'SELECT' ||
+        el.isContentEditable);
+  };
+  const onBackdropClick = () => {
+    if (!pressOnBackdropRef.current) return; // gesture began inside the card
+    pressOnBackdropRef.current = false;
+    if (deferCloseRef.current) {
+      deferCloseRef.current = false; // first backdrop click only defocused
+      return;
+    }
+    requestClose();
+  };
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -128,7 +168,20 @@ export function StagingModal({ open, onClose }: { open: boolean; onClose: () => 
     setParsing(true);
     setError(null);
     try {
-      const drafts = await parseIntentsFromText(text, aiConfig.config);
+      // §6.7.8 — ground the model in the user's current setup so it can
+      // bind existing rails / place new ones in the right template.
+      const s = useStore.getState();
+      const context = {
+        templates: Object.values(s.templates).map((t) => ({ key: t.key, name: t.name })),
+        rails: Object.values(s.rails).map((r) => ({
+          id: r.id,
+          name: r.name,
+          templateKey: r.templateKey,
+          startMinutes: r.startMinutes,
+          durationMinutes: r.durationMinutes,
+        })),
+      };
+      const drafts = await parseIntentsFromText(text, aiConfig.config, context);
       const store = useStagingStore.getState();
       // Re-parse replaces the previous batch — paste is a scratch you
       // iterate on. The input text is intentionally NOT cleared.
@@ -149,7 +202,12 @@ export function StagingModal({ open, onClose }: { open: boolean; onClose: () => 
   };
 
   const handleCommit = async (proposal: StagingProposal) => {
-    const sessionId = await commitDraft(proposal.draft, storeStagingWriters(useStore.getState()));
+    // §6.7.8 — allTemplateKeys lets a habit "every day" slot expand to a
+    // rail in every template.
+    const state = useStore.getState();
+    const sessionId = await commitDraft(proposal.draft, storeStagingWriters(state), {
+      allTemplateKeys: Object.keys(state.templates),
+    });
     useStagingStore.getState().discardProposal(proposal.id);
     setLastCommit({ sessionId, label: draftLabel(proposal.draft) });
   };
@@ -165,10 +223,12 @@ export function StagingModal({ open, onClose }: { open: boolean; onClose: () => 
       role="dialog"
       aria-modal
       aria-label="Proposals"
-      onClick={requestClose}
+      onMouseDown={onBackdropMouseDown}
+      onClick={onBackdropClick}
       className="fixed inset-0 z-[200] flex items-start justify-center overflow-y-auto bg-ink-primary/40 px-6 py-10 backdrop-blur-sm"
     >
       <div
+        ref={cardRef}
         onClick={(e) => e.stopPropagation()}
         className="flex max-h-[80vh] w-full max-w-xl flex-col rounded-md bg-surface-0 shadow-xl"
       >
@@ -517,6 +577,10 @@ function NoteField({
 
 function TaskFields({ draft, setDraft }: { draft: TaskDraft; setDraft: (d: ProposalDraft) => void }) {
   const linesMap = useStore((s) => s.lines);
+  const railsMap = useStore((s) => s.rails);
+  const templatesMap = useStore((s) => s.templates);
+  const rails = useMemo(() => Object.values(railsMap), [railsMap]);
+  const hasSteps = draft.steps.length > 0;
   const projectLines = useMemo(
     () =>
       Object.values(linesMap)
@@ -571,44 +635,54 @@ function TaskFields({ draft, setDraft }: { draft: TaskDraft; setDraft: (d: Propo
           <span className="text-2xs text-ink-tertiary">无切分 —— 作为单条任务创建</span>
         )}
         {draft.steps.map((step, i) => (
-          <div key={i} className="flex items-center gap-1.5">
-            <input
-              type="text"
-              value={step.label}
-              placeholder="步骤名"
-              onChange={(e) => setStep(i, { ...step, label: e.target.value })}
-              className={clsx(fieldCls, 'flex-1')}
-            />
-            <span className="flex items-center gap-1">
+          <div key={i} className="flex flex-col gap-1.5 rounded-sm bg-surface-0 p-2">
+            <div className="flex items-center gap-1.5">
               <input
-                type="number"
-                min={0}
-                max={100}
-                value={step.percent ?? ''}
-                placeholder="里程碑"
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v === '') {
-                    setStep(i, { label: step.label });
-                  } else {
-                    const n = Number(v);
-                    if (Number.isFinite(n)) {
-                      setStep(i, { label: step.label, percent: Math.max(0, Math.min(100, n)) });
-                    }
-                  }
-                }}
-                className={clsx(fieldCls, 'w-16 tabular-nums')}
+                type="text"
+                value={step.label}
+                placeholder="步骤名"
+                onChange={(e) => setStep(i, { ...step, label: e.target.value })}
+                className={clsx(fieldCls, 'flex-1')}
               />
-              <span className="text-2xs text-ink-tertiary">%</span>
-            </span>
-            <button
-              type="button"
-              onClick={() => removeStep(i)}
-              aria-label="删除步骤"
-              className="inline-flex h-5 w-5 items-center justify-center rounded-sm text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
-            >
-              <X className="h-3.5 w-3.5" strokeWidth={1.7} />
-            </button>
+              <span className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={step.percent ?? ''}
+                  placeholder="里程碑"
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === '') {
+                      setStep(i, { ...step, percent: undefined });
+                    } else {
+                      const n = Number(v);
+                      if (Number.isFinite(n)) {
+                        setStep(i, { ...step, percent: Math.max(0, Math.min(100, n)) });
+                      }
+                    }
+                  }}
+                  className={clsx(fieldCls, 'w-16 tabular-nums')}
+                />
+                <span className="text-2xs text-ink-tertiary">%</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => removeStep(i)}
+                aria-label="删除步骤"
+                className="inline-flex h-5 w-5 items-center justify-center rounded-sm text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+              >
+                <X className="h-3.5 w-3.5" strokeWidth={1.7} />
+              </button>
+            </div>
+            <StepScheduleControl
+              rails={rails}
+              templatesMap={templatesMap}
+              value={step.schedule}
+              onChange={(sched) =>
+                setStep(i, sched ? { ...step, schedule: sched } : stripStepSchedule(step))
+              }
+            />
           </div>
         ))}
         <button
@@ -620,6 +694,12 @@ function TaskFields({ draft, setDraft }: { draft: TaskDraft; setDraft: (d: Propo
           添加切分
         </button>
       </div>
+
+      {/* §6.7.8 — whole-task scheduling only when there are no 切分; with
+          steps, each step schedules itself (above). */}
+      {!hasSteps && (
+        <TaskScheduleField draft={draft} setDraft={setDraft} rails={rails} templatesMap={templatesMap} />
+      )}
 
       <NoteField value={draft.note} onChange={(v) => setDraft({ ...draft, note: v })} />
     </>
@@ -635,6 +715,10 @@ function HabitFields({ draft, setDraft }: { draft: HabitDraft; setDraft: (d: Pro
   const railsMap = useStore((s) => s.rails);
   const templatesMap = useStore((s) => s.templates);
   const rails = useMemo(() => Object.values(railsMap), [railsMap]);
+  const templateList = useMemo(
+    () => Object.values(templatesMap).map((t) => ({ key: t.key, name: t.name })),
+    [templatesMap],
+  );
   const [effValue, setEffValue] = useState<EffectiveFromValue>({ mode: 'today' });
 
   const setSlots = (slots: HabitSlotDraft[]) => setDraft({ ...draft, slots });
@@ -722,6 +806,23 @@ function HabitFields({ draft, setDraft }: { draft: HabitDraft; setDraft: (d: Pro
                 <X className="h-3.5 w-3.5" strokeWidth={1.7} />
               </button>
             </div>
+            {slot.mode === 'new' && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">适用</span>
+                <TemplateScopePicker
+                  templates={templateList}
+                  value={slot.templateKeys}
+                  onChange={(keys) =>
+                    patchSlot(
+                      i,
+                      keys && keys.length > 0
+                        ? { ...slot, templateKeys: keys }
+                        : stripTemplateKeys(slot),
+                    )
+                  }
+                />
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">星期</span>
               <WeekdayPicker
@@ -758,4 +859,204 @@ function HabitFields({ draft, setDraft }: { draft: HabitDraft; setDraft: (d: Pro
 function stripWeekdays(slot: HabitSlotDraft): HabitSlotDraft {
   const { weekdays: _w, ...rest } = slot;
   return rest;
+}
+
+function stripTemplateKeys(slot: Extract<HabitSlotDraft, { mode: 'new' }>): HabitSlotDraft {
+  const { templateKeys: _t, ...rest } = slot;
+  return rest;
+}
+
+// Habit new-rail template scope (§6.7.8). No selection = every day (a rail
+// in every template); selecting templates narrows it. Shown with native
+// template names, so it reads as a day-scope rather than raw keys.
+function TemplateScopePicker({
+  templates,
+  value,
+  onChange,
+}: {
+  templates: { key: string; name: string }[];
+  value: string[] | undefined;
+  onChange: (keys: string[] | undefined) => void;
+}) {
+  const selected = new Set(value ?? []);
+  const everyday = selected.size === 0;
+  const toggle = (key: string) => {
+    const next = new Set(selected);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    onChange(next.size === 0 ? undefined : [...next]);
+  };
+  const chip = (active: boolean) =>
+    clsx(
+      'rounded-sm px-2 py-0.5 text-2xs transition',
+      active ? 'bg-cta text-cta-foreground' : 'bg-surface-2 text-ink-secondary hover:text-ink-primary',
+    );
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <button type="button" onClick={() => onChange(undefined)} className={chip(everyday)}>
+        每天
+      </button>
+      {templates.map((t) => (
+        <button
+          key={t.key}
+          type="button"
+          onClick={() => toggle(t.key)}
+          className={chip(selected.has(t.key))}
+        >
+          {t.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function omitSchedule(draft: TaskDraft): TaskDraft {
+  const { schedule: _s, ...rest } = draft;
+  return rest;
+}
+
+function stripStepSchedule(step: TaskStep): TaskStep {
+  const { schedule: _s, ...rest } = step;
+  return rest;
+}
+
+// Whole-task scheduling (§6.7.8) — only rendered when the task has no
+// 切分. No new-rail: a one-off task binds an existing Rail or takes a
+// free-time block (a specific time + duration).
+function TaskScheduleField({
+  draft,
+  setDraft,
+  rails,
+  templatesMap,
+}: {
+  draft: TaskDraft;
+  setDraft: (d: ProposalDraft) => void;
+  rails: Rail[];
+  templatesMap: Record<string, Template>;
+}) {
+  const sched = draft.schedule;
+  const mode: 'none' | 'rail' | 'free' = sched?.mode ?? 'none';
+  const setSchedule = (schedule: TaskScheduleDraft | undefined) =>
+    setDraft(schedule ? { ...draft, schedule } : omitSchedule(draft));
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">排期(选填)</span>
+      <SegToggle
+        value={mode}
+        options={[
+          { key: 'none', label: '不排期' },
+          { key: 'rail', label: '绑 Rail' },
+          { key: 'free', label: '指定时间' },
+        ]}
+        onChange={(m) => {
+          if (m === mode) return;
+          if (m === 'none') setSchedule(undefined);
+          else if (m === 'rail') setSchedule({ mode: 'rail', railId: rails[0]?.id ?? '' });
+          else setSchedule({ mode: 'free', startMinutes: 9 * 60 });
+        }}
+      />
+      {sched?.mode === 'rail' && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div className="min-w-[160px] flex-1">
+            <RailPicker
+              rails={rails}
+              templates={templatesMap}
+              value={sched.railId}
+              onChange={(railId) => setSchedule({ ...sched, railId })}
+              placeholder="选一条 Rail…"
+            />
+          </div>
+          <input
+            type="date"
+            value={sched.date ?? ''}
+            onChange={(e) => setSchedule({ ...sched, date: e.target.value || undefined })}
+            className={clsx(fieldCls, 'tabular-nums')}
+          />
+        </div>
+      )}
+      {sched?.mode === 'free' && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <input
+            type="time"
+            value={minutesToHHMM(sched.startMinutes)}
+            onChange={(e) => {
+              const m = hhmmToMinutes(e.target.value);
+              if (m != null) setSchedule({ ...sched, startMinutes: m });
+            }}
+            className={clsx(fieldCls, 'tabular-nums')}
+          />
+          <span className="flex items-center gap-1">
+            <input
+              type="number"
+              min={1}
+              value={sched.durationMinutes ?? 30}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                if (Number.isFinite(v) && v > 0) setSchedule({ ...sched, durationMinutes: v });
+              }}
+              className={clsx(fieldCls, 'w-14 tabular-nums')}
+            />
+            <span className="text-2xs text-ink-tertiary">分钟</span>
+          </span>
+          <input
+            type="date"
+            value={sched.date ?? ''}
+            onChange={(e) => setSchedule({ ...sched, date: e.target.value || undefined })}
+            className={clsx(fieldCls, 'tabular-nums')}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Per-occurrence (切分) scheduling — rail only (§10.6 occurrences have no
+// free-time slot). Off by default.
+function StepScheduleControl({
+  rails,
+  templatesMap,
+  value,
+  onChange,
+}: {
+  rails: Rail[];
+  templatesMap: Record<string, Template>;
+  value: OccurrenceScheduleDraft | undefined;
+  onChange: (v: OccurrenceScheduleDraft | undefined) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">排期</span>
+      <SegToggle
+        value={value ? 'rail' : 'none'}
+        options={[
+          { key: 'none', label: '不排' },
+          { key: 'rail', label: '绑 Rail' },
+        ]}
+        onChange={(m) => {
+          if (m === 'rail' && !value) onChange({ railId: rails[0]?.id ?? '' });
+          else if (m === 'none' && value) onChange(undefined);
+        }}
+      />
+      {value && (
+        <>
+          <div className="min-w-[140px] flex-1">
+            <RailPicker
+              rails={rails}
+              templates={templatesMap}
+              value={value.railId}
+              onChange={(railId) => onChange({ ...value, railId })}
+              placeholder="选一条 Rail…"
+            />
+          </div>
+          <input
+            type="date"
+            value={value.date ?? ''}
+            onChange={(e) => onChange({ ...value, date: e.target.value || undefined })}
+            className={clsx(fieldCls, 'tabular-nums')}
+          />
+        </>
+      )}
+    </div>
+  );
 }

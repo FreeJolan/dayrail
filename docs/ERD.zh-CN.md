@@ -1342,6 +1342,37 @@ v0.8.2 的教训是"让模型在散文里吐 canonical JSON、再正则抠出来
 - ❌ **追求"任意意图都完美拆解"** —— 只对准 DayRail 真实的形态（habit / task+切分 / adhoc）；AI 提了奇怪的东西，我改或丢弃，不做复杂自动纠错。
 - ➖ **#1 日常点评（§6.1 Observe / Review）保持原样**，不在本轮 scope；只是 §15.10 的 MCP 读层铺好后，我可以直接在 Claude Code 里带上下文聊反思，它顺带受益。
 
+#### 6.7.8 Rail-aware · grounded 解析（v0.13.1 · 修「习惯只落工作日」）
+
+> 实装措辞校正：v0.13 落地直接用**原生 draft**（task / habit draft），没有单独的 intent-spec 中间层；结构化输出走**强制 tool-call**（桥不支持 `generateObject` 的 `response_format`），不是 generateObject；暂存区是内存态的小工具浮窗、未做持久化、未接 MCP。本小节描述 v0.13.1 的实际形态。
+
+**起因（bug）**：AI 解析习惯时，每条新建 Rail 都被写死进 `workday` 模板（`commitDraft` 的 `DEFAULT_TEMPLATE_KEY`），且解析层完全不知道「模板 / Rail」存在。于是一个本该「每天」的冥想习惯只在工作日物化，休息日模板没有任何 Rail —— 结构上就不可能每天触发（一个习惯每天触发，原生做法本就是「每个日模板各一条 Rail + 各自绑定」，正是 §6.7.1 要替用户省掉的那串手工活）。
+
+**核心概念对齐**：Rail = 某个日模板（day-template）里的一段时间区段；习惯与任务都围绕 Rail 组织。把这个概念交给内部 AI（**接地 grounding**），让它的产出能「指定一条已有 Rail」或「要求新建（带模板）」，而不是盲建一条 workday Rail。
+
+1. **接地**：解析前把当前 setup 的紧凑快照注入解析 prompt——
+   - 模板：`[{key, name}]`（workday / restday / 自定义）。
+   - Rail：`[{id, name, templateKey, HH:MM, durationMin}]`（活跃 Rail）。
+   AI 因此能引用已有 Rail、把新 Rail 放进对的模板、知道「每天」覆盖哪几个模板。体量小（用户就几条 Rail）；review 卡片仍是最终确认关 —— AI 的匹配可能错。
+
+2. **习惯 slot → rail-aware**：每个时段二选一——
+   - 绑已有：`{ railId, weekdays? }`。
+   - 新建：`{ startMinutes, durationMinutes?, templateKeys?, weekdays? }`：
+     - `templateKeys` **省略 ⇒ 每天 = 在每个模板各建一条 Rail**（本次修复点）。
+     - 显式工作日 / 休息日 ⇒ `['workday']` / `['restday']`。
+     - `weekdays`（0–6）只在用户限定特定星期几时给。
+   `commitDraft`（新习惯 slot）按目标模板逐个 `createRail` + 绑定。`commitDraft` 从 store 拿全部模板 key（`CommitOptions.allTemplateKeys`）来展开「每天」。
+
+3. **任务排期（不新建 Rail）**：一次性任务**不新建 Rail** —— 要么绑已有 Rail，要么排到一个自由时间块（具体时间点 + 时长）。并与 §10.6 对齐：**有切分时排切分、无切分时才排整条任务**。
+   - `TaskDraft.schedule`（整条任务，**仅当无切分时**生效）：`{mode:'rail', railId, date?}` 绑已有 Rail，或 `{mode:'free', startMinutes, durationMinutes?, date?}` 自由时间块（落 `adhocEvent`）。
+   - `TaskStep.schedule`（每个切分 → occurrence）：`{railId, date?}` —— occurrence **只能排到 Rail**（§10.6 `occurrence.slot` 是 rail-based，没有自由时间）。
+   - **边界**：AI 给了切分但我全删了 → 回到整条任务排期；AI 没给切分、我加了切分 → 改成排切分、不再排整条任务（commit 按「是否存在非空切分」判定）。
+   - `commitDraft`：有切分 → 逐个 `addOccurrence`（拿回 occId）+ `scheduleTaskOccurrence`；无切分 → `scheduleTaskToRail` 或 `scheduleTaskFreeTime`。后者新增可选 `sessionId`，让 adhoc 写入落在同一 Edit Session（一键撤销）。
+
+4. **review UI**：习惯 slot 保留新/已有切换 —— **新建**加模板选择器（多选，默认「每天 / 全部」），**已有**用 RailPicker；任务加可选「排期」行（RailPicker + 日期）。Rail / 模板是原生概念（习惯详情页本就按模板分组列 Rail），不算把技术模型泄漏进 UI。
+
+5. **解析 prompt**：教模型 —— Rail 是日模板里的时间区段；能匹配上已有 Rail 时优先绑定，没有合适的才新建；新习惯 Rail 默认**每天（全部模板）**，只在显式工作日 / 休息日 / 星期几时收窄；任务通常绑已有 Rail。
+
 ***
 
 ## 7. 同步与存储
