@@ -10,3 +10,7 @@ export * from './dryj';
 export * from './yjs';
 export * from './yjsPersistence';
 export * from './yDocStore';
+// Generic OPFS JSON store — backs local-only blobs kept out of the
+// Y.Doc sync stream (e.g. the AI staging tray, ERD §6.7.3). No
+// top-level side effects, so a static export is safe for all consumers.
+export { OpfsJsonStore } from './opfsYDocStore';

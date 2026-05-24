@@ -21,3 +21,4 @@ export * from './modeRegression';
 export * from './heartbeatStatus';
 export * from './syncMode';
 export * from './intentStaging';
+export * from './stagingStore';
