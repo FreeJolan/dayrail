@@ -225,7 +225,7 @@ export interface DayRailActions {
   recordShift: (shift: Shift) => Promise<void>;
   setShiftTags: (shiftId: string, tags: string[]) => Promise<void>;
   ackShiftPrompt: (shiftId: string) => void;
-  createLine: (line: Line) => Promise<void>;
+  createLine: (line: Line, sessionId?: string) => Promise<void>;
   updateLine: (id: string, patch: Partial<Line>) => Promise<void>;
   deleteLine: (id: string) => Promise<void>;
   restoreLine: (id: string) => Promise<void>;
@@ -1497,11 +1497,11 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
   // ============ Lines ============
 
   // Legacy: store.ts:1953
-  createLine: async (line) => {
+  createLine: async (line, sessionId) => {
     const doc = getYDoc();
     doc.transact(() => {
       upsertEntity(doc, 'lines', line.id, { ...line });
-    }, 'createLine');
+    }, sessionId ?? 'createLine');
   },
 
   // Legacy: store.ts:1963

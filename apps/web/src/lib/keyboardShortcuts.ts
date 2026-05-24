@@ -10,7 +10,7 @@ import { useNavigate } from 'react-router-dom';
 
 export type Shortcut =
   | { keys: string; label: string; path: string }
-  | { keys: string; label: string; action: 'toggle-backlog' };
+  | { keys: string; label: string; action: 'toggle-backlog' | 'open-proposals' };
 
 export const SHORTCUTS: Shortcut[] = [
   { keys: 'g t', label: 'Today Track', path: '/' },
@@ -18,6 +18,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: 'g l', label: 'Tasks', path: '/tasks' },
   { keys: 'g k', label: 'Calendar', path: '/calendar' },
   { keys: 'g p', label: 'Pending', path: '/pending' },
+  { keys: 'g a', label: 'Proposals', action: 'open-proposals' },
   { keys: 'g r', label: 'Review', path: '/review' },
   { keys: 'g e', label: 'Template Editor', path: '/templates' },
   { keys: 'g s', label: 'Settings', path: '/settings' },
@@ -56,6 +57,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 export function useGlobalShortcuts(
   onOpenCheatsheet: () => void,
   onToggleBacklog: () => void,
+  onOpenStaging: () => void,
 ): void {
   const navigate = useNavigate();
 
@@ -90,6 +92,7 @@ export function useGlobalShortcuts(
           e.preventDefault();
           if ('path' in match) navigate(match.path);
           else if (match.action === 'toggle-backlog') onToggleBacklog();
+          else if (match.action === 'open-proposals') onOpenStaging();
         }
         return;
       }
@@ -105,7 +108,7 @@ export function useGlobalShortcuts(
       window.removeEventListener('keydown', onKey);
       clearLeader();
     };
-  }, [navigate, onOpenCheatsheet, onToggleBacklog]);
+  }, [navigate, onOpenCheatsheet, onToggleBacklog, onOpenStaging]);
 }
 
 export function useCheatsheetToggle(): {

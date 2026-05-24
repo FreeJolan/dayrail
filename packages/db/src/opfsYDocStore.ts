@@ -142,6 +142,37 @@ function makeSerialQueue(): (task: () => Promise<void>) => Promise<void> {
   };
 }
 
+/** Generic OPFS-backed JSON store for a small, self-contained blob that
+ *  must NOT live in the Y.Doc sync stream — e.g. the AI intent staging
+ *  tray (ERD §6.7.3). Atomic write + per-store serial queue, same
+ *  posture as `OpfsYDocStore`. The blob is read/written whole, so its
+ *  lifecycle never drifts from itself (the §7.9 lesson). */
+export class OpfsJsonStore<T> {
+  private readonly queue = makeSerialQueue();
+  private readonly name: string;
+  private readonly tmpName: string;
+
+  constructor(name: string, tmpName?: string) {
+    this.name = name;
+    this.tmpName = tmpName ?? `${name}.tmp`;
+  }
+
+  async load(): Promise<T | null> {
+    const bytes = await loadBinaryFile(this.name);
+    if (!bytes) return null;
+    try {
+      return JSON.parse(new TextDecoder().decode(bytes)) as T;
+    } catch {
+      // Corrupt / partial blob — treat as empty rather than crash boot.
+      return null;
+    }
+  }
+
+  async save(value: T): Promise<void> {
+    await this.queue(() => atomicWriteText(this.name, this.tmpName, JSON.stringify(value)));
+  }
+}
+
 export class OpfsYDocStore implements YDocStore {
   private stateQueue = makeSerialQueue();
   private lastPulledQueue = makeSerialQueue();
