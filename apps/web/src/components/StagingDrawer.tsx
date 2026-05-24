@@ -21,7 +21,7 @@ import {
   type StagingProposal,
   type UserProfile,
 } from '@dayrail/core';
-import { getAiApiKey } from '@/lib/aiApiKey';
+import { getAiApiKey, subscribeAiApiKey } from '@/lib/aiApiKey';
 import { useIme } from '@/lib/ime';
 
 // ERD §6.7 — the AI "待确认提案" staging tray. Mirrors the Backlog
@@ -54,14 +54,14 @@ type ParseConfigResult =
   | { ok: true; config: ParseIntentsConfig }
   | { ok: false; reason: string };
 
-function buildParseConfig(profile: UserProfile | null): ParseConfigResult {
+function buildParseConfig(profile: UserProfile | null, apiKey: string): ParseConfigResult {
   if (profile?.aiEnabled !== true) return { ok: false, reason: 'AI 还没启用' };
-  const apiKey = getAiApiKey();
+  const key = apiKey.trim();
   const baseUrl = (profile.aiBaseUrl || AI_BASE_URL_DEFAULT).trim();
   const model = (profile.aiModel ?? '').trim();
-  if (!apiKey) return { ok: false, reason: '还没填 API key' };
+  if (!key) return { ok: false, reason: '还没填 API key' };
   if (!model) return { ok: false, reason: '还没选模型' };
-  return { ok: true, config: { baseUrl, apiKey, model } };
+  return { ok: true, config: { baseUrl, apiKey: key, model } };
 }
 
 interface Props {
@@ -79,7 +79,15 @@ export function StagingDrawer({ open, onToggle }: Props) {
     [proposalsMap],
   );
   const userProfile = useStore((s) => s.userProfile);
-  const aiConfig = useMemo(() => buildParseConfig(userProfile), [userProfile]);
+  // The API key lives in localStorage (not userProfile — it's local-only
+  // by §6.6 policy), so subscribe to it directly; otherwise the config
+  // memo never re-reads the key when it's set in Settings.
+  const [apiKey, setApiKey] = useState(getAiApiKey);
+  useEffect(() => subscribeAiApiKey(setApiKey), []);
+  const aiConfig = useMemo(
+    () => buildParseConfig(userProfile, apiKey),
+    [userProfile, apiKey],
+  );
 
   const ime = useIme();
   const [pasteText, setPasteText] = useState('');
