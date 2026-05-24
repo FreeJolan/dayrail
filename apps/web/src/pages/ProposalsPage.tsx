@@ -71,8 +71,11 @@ function draftLabel(draft: ProposalDraft): string {
 export function ProposalsPage() {
   const navigate = useNavigate();
   const proposalsMap = useStagingStore((s) => s.proposals);
+  // Newest first: a fresh paste / the latest MCP drop surfaces at the
+  // top, so "what I just made" is immediately in view (story G), while
+  // older pending proposals (incl. earlier MCP drops, story F) sit below.
   const proposals = useMemo(
-    () => Object.values(proposalsMap).sort((a, b) => a.createdAt - b.createdAt),
+    () => Object.values(proposalsMap).sort((a, b) => b.createdAt - a.createdAt),
     [proposalsMap],
   );
   const userProfile = useStore((s) => s.userProfile);
@@ -130,13 +133,27 @@ export function ProposalsPage() {
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-3 px-6 py-8">
-      <header className="flex items-baseline gap-2">
-        <Sparkles className="h-4 w-4 self-center text-ink-secondary" strokeWidth={1.6} aria-hidden />
+      <header className="flex items-center gap-2">
+        <Sparkles className="h-4 w-4 text-ink-secondary" strokeWidth={1.6} aria-hidden />
         <h1 className="font-mono text-2xs uppercase tracking-widest text-ink-primary">Proposals</h1>
         {proposals.length > 0 && (
           <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
             {proposals.length}
           </span>
+        )}
+        {proposals.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm(`清空全部 ${proposals.length} 条待确认提案?`)) {
+                useStagingStore.getState().clear();
+              }
+            }}
+            className="ml-auto inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+          >
+            <Trash2 className="h-3 w-3" strokeWidth={1.7} />
+            清空
+          </button>
         )}
       </header>
       <p className="text-xs leading-relaxed text-ink-tertiary">
