@@ -462,7 +462,10 @@ function Shell() {
     <div className="flex min-h-screen w-full bg-surface-0">
       <DevModeIndicator />
       <UpdateBanner />
-      <SideNav onOpenStaging={() => setStagingOpen(true)} />
+      <SideNav
+        onOpenStaging={() => setStagingOpen(true)}
+        onToggleBacklog={backlog.toggle}
+      />
       <main className="min-w-0 flex-1">
         <PendingDepartureBanner />
         <ModeUpgradeToast />

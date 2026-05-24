@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
+  ArrowUpRight,
+  Boxes,
   Calendar,
-  ChevronsLeft,
-  ChevronsRight,
   FileText,
   Inbox,
   Layers,
   LineChart,
   ListChecks,
+  PanelLeftClose,
+  PanelLeftOpen,
   Settings,
   Sparkles,
   Wand2,
@@ -24,9 +26,20 @@ import {
 } from '@dayrail/core';
 import { getLastSuccessAt } from '@/lib/sync/identity';
 
-// Left sticky rail nav. Default expanded (labels visible) to teach
-// first-time users what each icon means; collapsible to icon-only for
-// power users who know the map. Preference persisted in localStorage.
+// Left sticky rail nav. Redesigned per Claude Design handoff
+// (variant C · "action cards"): the central thesis is "views go
+// somewhere, tools do something". Three signals separate the two so a
+// user never reads Proposals/Backlog as another page to switch to:
+//   1. mono uppercase SECTION LABELS (PLAN / TASKS / REVIEW / ACTIONS
+//      / CONFIG) name each band — they're signs, not buttons.
+//   2. views are flat rows that take an active state (sand-2 fill +
+//      3px terracotta edge marker + terracotta icon); TOOLS are
+//      two-line cards (tile icon + ↗ + hint + keystroke) and NEVER go
+//      active.
+//   3. collapsed (icon-only) keeps the tell: tool icons sit in a
+//      tinted sand-2 tile, view icons sit on transparent.
+// Default expanded to teach the icon→label map; collapse preference
+// persisted in localStorage.
 
 export type NavKey =
   | 'today'
@@ -49,45 +62,57 @@ interface Item {
   prefix?: string;
 }
 
-// SideNav used to carry a Backlog entry that toggled the right drawer.
-// It was removed because "active = drawer is open" collided with every
-// other NavItem's "active = route matches" grammar and read as "you're
-// on the Backlog page", which it isn't. The drawer is still reachable
-// via its own collapsed handle on the right and via the `g b`
-// keyboard shortcut (wired up in App.tsx, independent of this file).
 interface SideNavProps {
   /** Opens the Proposals modal (ERD §6.7 — a tool, not a route). */
   onOpenStaging: () => void;
+  /** Toggles the right-docked Backlog drawer (a tool, not a route). */
+  onToggleBacklog: () => void;
 }
 
-// Three primary groups separated by mode of use, then config below
-// after a wider gap. Splitting the primary items makes the rail read
-// in three distinct mental modes — plan forward (time views) → act on
-// tasks → reflect — instead of mixing them in a flat list. Unresolved
-// sits next to Tasks (it's the attention-driven counterpart) rather
-// than at the bottom where its badge dot is easy to miss.
-const PLANNING_ITEMS: Item[] = [
-  { key: 'today', label: 'Today', icon: Sparkles, path: '/' },
-  { key: 'cycle', label: 'Cycle', icon: Layers, path: '/cycle' },
-  { key: 'calendar', label: 'Calendar', icon: Calendar, path: '/calendar' },
+// View-nav, grouped by mode of use. Splitting the rows into labeled
+// bands makes the rail read in distinct mental modes — plan forward →
+// act on tasks → reflect — instead of one flat list. Unresolved sits
+// in TASKS (it's the attention-driven counterpart) and carries a count.
+const VIEW_GROUPS: { label: string; items: Item[] }[] = [
+  {
+    label: 'Plan',
+    items: [
+      { key: 'today', label: 'Today', icon: Sparkles, path: '/' },
+      { key: 'cycle', label: 'Cycle', icon: Layers, path: '/cycle' },
+      { key: 'calendar', label: 'Calendar', icon: Calendar, path: '/calendar' },
+    ],
+  },
+  {
+    label: 'Tasks',
+    items: [
+      { key: 'tasks', label: 'Tasks', icon: ListChecks, path: '/tasks/inbox', prefix: '/tasks' },
+      { key: 'pending', label: 'Unresolved', icon: Inbox, path: '/pending' },
+    ],
+  },
+  {
+    label: 'Review',
+    items: [{ key: 'review', label: 'Review', icon: LineChart, path: '/review' }],
+  },
 ];
 
-const TASK_ITEMS: Item[] = [
-  { key: 'tasks', label: 'Tasks', icon: ListChecks, path: '/tasks/inbox', prefix: '/tasks' },
-  { key: 'pending', label: 'Unresolved', icon: Inbox, path: '/pending' },
-];
-
-
-const REFLECTION_ITEMS: Item[] = [
-  { key: 'review', label: 'Review', icon: LineChart, path: '/review' },
-];
-
-const PRIMARY_GROUPS: Item[][] = [PLANNING_ITEMS, TASK_ITEMS, REFLECTION_ITEMS];
-
-const SECONDARY_ITEMS: Item[] = [
+// CONFIG — secondary identity, demoted to the bottom and rendered in a
+// retracted ink tier (config, not daily flow). Still takes an active
+// state when its route is open.
+const CONFIG_ITEMS: Item[] = [
   { key: 'template', label: 'Template', icon: FileText, path: '/templates', prefix: '/templates' },
   { key: 'settings', label: 'Settings', icon: Settings, path: '/settings', prefix: '/settings' },
 ];
+
+interface Tool {
+  key: string;
+  name: string;
+  icon: typeof Calendar;
+  /** One-line "what this opens" copy under the name. */
+  hint: string;
+  /** Real DayRail bigraph shortcut (the design's ⌘P/⌘B placeholders
+   *  map to our `g`-leader scheme). */
+  kbd: string;
+}
 
 const COLLAPSE_KEY = 'dayrail.sidenav.collapsed';
 
@@ -97,7 +122,7 @@ function isActive(pathname: string, item: Item): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
-export function SideNav({ onOpenStaging }: SideNavProps) {
+export function SideNav({ onOpenStaging, onToggleBacklog }: SideNavProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -128,113 +153,294 @@ export function SideNav({ onOpenStaging }: SideNavProps) {
     [tasks, taskOccurrences, railRevisions, railTombstones],
   );
 
+  // Tools open overlays, not routes — so their click handlers come from
+  // the shell (modal / drawer) rather than `navigate`.
+  const tools: (Tool & { onClick: () => void })[] = [
+    { key: 'proposals', name: 'Proposals', icon: Wand2, hint: 'Paste · parse', kbd: 'g a', onClick: onOpenStaging },
+    { key: 'backlog', name: 'Backlog', icon: Boxes, hint: 'Unscheduled', kbd: 'g b', onClick: onToggleBacklog },
+  ];
+
   return (
     <aside
       className={clsx(
-        'sticky top-0 flex h-screen shrink-0 flex-col items-stretch bg-surface-0 py-6 transition-[width] duration-200',
+        'sticky top-0 flex h-screen shrink-0 flex-col items-stretch bg-surface-0 transition-[width] duration-200',
         collapsed ? 'w-[72px]' : 'w-[208px]',
       )}
     >
       <BrandHeader collapsed={collapsed} />
 
-      <nav className="mt-8 flex flex-1 flex-col gap-0.5 px-3">
-        {PRIMARY_GROUPS.map((group, gi) => (
-          <div key={gi} className={clsx('flex flex-col gap-0.5', gi > 0 && 'mt-3')}>
-            {group.map((it) => (
+      <nav
+        className={clsx(
+          'flex flex-1 flex-col overflow-hidden pb-1.5 pt-0.5',
+          collapsed ? 'px-1.5' : 'px-2.5',
+        )}
+      >
+        {VIEW_GROUPS.map((group, gi) => (
+          <div key={group.label} className="flex flex-col gap-px pb-1.5">
+            {collapsed ? (
+              gi > 0 && <div aria-hidden className="h-2" />
+            ) : (
+              <SectionLabel>{group.label}</SectionLabel>
+            )}
+            {group.items.map((it) => (
               <NavItem
                 key={it.key}
                 item={it}
                 active={isActive(location.pathname, it)}
                 onClick={() => navigate(it.path)}
                 collapsed={collapsed}
-                badgeDot={it.key === 'pending' && pendingCount > 0}
-                badgeTooltip={
-                  it.key === 'pending' && pendingCount > 0 ? `${pendingCount} unmarked` : undefined
-                }
+                count={it.key === 'pending' ? pendingCount : undefined}
               />
             ))}
           </div>
         ))}
-        {/* Proposals is a TOOL, not a view — set apart from the nav rows
-            by a divider + a dashed "action" button so it reads as a
-            quick utility, not a route to switch to. */}
-        <div className="mt-3 px-3">
-          <div aria-hidden className="mb-3 border-t border-hairline/50" />
-          <ProposalsToolButton collapsed={collapsed} onClick={onOpenStaging} />
+
+        {/* ACTIONS — tools, never a route. Two-line cards expanded;
+            tinted icon tiles collapsed (separated by a hairline since
+            the section label is gone). */}
+        <div className="flex flex-col gap-0.5 pt-0.5">
+          {collapsed ? (
+            <div aria-hidden className="mx-1.5 mb-1.5 mt-1 h-px bg-hairline" />
+          ) : (
+            <SectionLabel>Actions</SectionLabel>
+          )}
+          {tools.map((t) =>
+            collapsed ? (
+              <ToolTile key={t.key} tool={t} />
+            ) : (
+              <ToolCard key={t.key} tool={t} />
+            ),
+          )}
         </div>
-        <div aria-hidden className="mt-4" />
-        {SECONDARY_ITEMS.map((it) => (
-          <NavItem
-            key={it.key}
-            item={it}
-            active={isActive(location.pathname, it)}
-            onClick={() => navigate(it.path)}
-            collapsed={collapsed}
-            badgeDot={false}
-            tier="secondary"
-          />
-        ))}
+
+        {/* spacer — pushes CONFIG to the bottom of the scroll area */}
+        <div aria-hidden className="min-h-[8px] flex-1" />
+
+        <div className="flex flex-col gap-px">
+          {collapsed ? (
+            <div aria-hidden className="h-2" />
+          ) : (
+            <SectionLabel>Config</SectionLabel>
+          )}
+          {CONFIG_ITEMS.map((it) => (
+            <NavItem
+              key={it.key}
+              item={it}
+              active={isActive(location.pathname, it)}
+              onClick={() => navigate(it.path)}
+              collapsed={collapsed}
+              demoted
+            />
+          ))}
+        </div>
       </nav>
 
-      <div
-        className={clsx(
-          'flex px-3 pb-0 pt-2',
-          collapsed ? 'justify-center' : 'justify-end',
-        )}
-      >
-        <button
-          type="button"
-          onClick={() => setCollapsed((v) => !v)}
-          aria-label={collapsed ? 'Expand nav' : 'Collapse nav'}
-          title={collapsed ? 'Expand nav' : 'Collapse nav'}
-          className={clsx(
-            'inline-flex items-center gap-1.5 rounded-md text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary',
-            collapsed ? 'h-8 w-8 justify-center' : 'h-8 px-2',
-          )}
-        >
-          {collapsed ? (
-            <ChevronsRight className="h-4 w-4" strokeWidth={1.8} />
-          ) : (
-            <>
-              <ChevronsLeft className="h-4 w-4" strokeWidth={1.8} />
-              <span className="font-mono text-2xs uppercase tracking-widest">
-                收起
-              </span>
-            </>
-          )}
-        </button>
-      </div>
-
-      <SyncIndicator collapsed={collapsed} />
-      <BrandFooter collapsed={collapsed} />
+      <BottomDock
+        collapsed={collapsed}
+        onToggleCollapsed={() => setCollapsed((v) => !v)}
+      />
     </aside>
   );
 }
 
-// ERD §6.7 — Proposals tool button. Deliberately NOT a NavItem: a
-// dashed "action" affordance (same language as the app's "+ add" empty
-// states) so it reads as a quick tool you trigger, never as a view to
-// switch to. Clicking opens the AI parse modal.
-function ProposalsToolButton({
-  collapsed,
+// ---------- section label ----------
+
+// Mono uppercase band heading. A sign, not a button — same visual
+// weight as a hairline, no chrome. JetBrains Mono, tracking-widest
+// (0.18em), ink-tertiary.
+function SectionLabel({ children }: { children: ReactNode }) {
+  return (
+    <div className="px-2.5 pb-1 pt-2 font-mono text-[10px] font-medium uppercase tracking-widest text-ink-tertiary">
+      {children}
+    </div>
+  );
+}
+
+// ---------- view item ----------
+
+function NavItem({
+  item,
+  active,
   onClick,
+  collapsed,
+  demoted = false,
+  count,
 }: {
-  collapsed: boolean;
+  item: Item;
+  active: boolean;
   onClick: () => void;
+  collapsed: boolean;
+  demoted?: boolean;
+  /** Unresolved gets a count: a sand-3 chip expanded, a terracotta pip
+   *  collapsed. Undefined / 0 renders nothing. */
+  count?: number;
 }) {
+  const Icon = item.icon;
+  const hasCount = count != null && count > 0;
   return (
     <button
       type="button"
       onClick={onClick}
-      title={collapsed ? 'Proposals · AI 解析 · g a' : 'AI 解析待办 · g a'}
-      aria-label="Proposals · AI 解析"
+      title={collapsed ? item.label : undefined}
       className={clsx(
-        'flex w-full items-center rounded-md border border-dashed border-hairline/70 text-ink-tertiary transition hover:border-ink-secondary hover:bg-surface-1 hover:text-ink-secondary',
-        collapsed ? 'h-9 justify-center' : 'h-9 justify-start gap-2 px-3',
+        'group relative flex items-center rounded-md transition',
+        collapsed ? 'mx-auto h-[38px] w-11 justify-center' : 'h-8 gap-2.5 px-2.5',
+        active
+          ? 'bg-surface-2 text-ink-primary'
+          : demoted
+            ? 'text-ink-tertiary hover:bg-surface-1 hover:text-ink-primary'
+            : 'text-ink-secondary hover:bg-surface-1 hover:text-ink-primary',
       )}
     >
-      <Wand2 className="h-4 w-4" strokeWidth={1.5} />
-      {!collapsed && <span className="text-xs">Proposals</span>}
+      <Icon
+        className={clsx('h-[18px] w-[18px] shrink-0', active && 'text-cta')}
+        strokeWidth={1.6}
+      />
+      {!collapsed && (
+        <span className="flex-1 truncate text-left text-[13px]">{item.label}</span>
+      )}
+      {!collapsed && hasCount && (
+        <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-surface-3 px-1.5 font-mono text-[10px] font-medium text-ink-primary">
+          {count}
+        </span>
+      )}
+      {collapsed && hasCount && (
+        <span
+          aria-hidden
+          className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-cta ring-2 ring-surface-0"
+        />
+      )}
+      {active && (
+        <span
+          aria-hidden
+          className={clsx(
+            'absolute top-1/2 w-[3px] -translate-y-1/2 rounded-r-sm bg-cta',
+            collapsed ? 'left-[-6px] h-[22px]' : 'left-[-10px] h-[18px]',
+          )}
+        />
+      )}
+      {collapsed && <CollapsedTip label={item.label} />}
+    </button>
+  );
+}
+
+// ---------- tool: expanded action card ----------
+
+// Two-line card: tile icon + name + ↗ (opens-an-overlay tell) over a
+// hint line + keystroke. Reads as "a thing you trigger", never a route.
+function ToolCard({ tool }: { tool: Tool & { onClick: () => void } }) {
+  const Icon = tool.icon;
+  return (
+    <button
+      type="button"
+      onClick={tool.onClick}
+      title={`${tool.name} · ${tool.kbd}`}
+      className="group flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition hover:bg-surface-1"
+    >
+      <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-sm bg-surface-2 text-ink-primary transition group-hover:bg-surface-3">
+        <Icon className="h-[17px] w-[17px]" strokeWidth={1.6} />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-px">
+        <span className="flex items-center gap-1.5 text-[13px] font-medium text-ink-primary">
+          {tool.name}
+          <ArrowUpRight
+            className="h-[11px] w-[11px] text-ink-tertiary transition group-hover:-translate-y-px group-hover:translate-x-px group-hover:text-cta"
+            strokeWidth={1.9}
+          />
+        </span>
+        <span className="flex items-center gap-2 text-[10.5px] text-ink-tertiary">
+          <span className="truncate">{tool.hint}</span>
+          <span className="font-mono text-[10px] tracking-wide">{tool.kbd}</span>
+        </span>
+      </span>
+    </button>
+  );
+}
+
+// ---------- tool: collapsed icon tile ----------
+
+// Collapsed tell: the tool icon sits inside a tinted sand-2 tile, so it
+// reads as a "button" against the transparent view icons above it.
+function ToolTile({ tool }: { tool: Tool & { onClick: () => void } }) {
+  const Icon = tool.icon;
+  return (
+    <button
+      type="button"
+      onClick={tool.onClick}
+      title={`${tool.name} · ${tool.kbd}`}
+      className="group relative mx-auto flex h-[38px] w-11 items-center justify-center"
+    >
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-surface-2 text-ink-primary transition group-hover:bg-surface-3">
+        <Icon className="h-[18px] w-[18px]" strokeWidth={1.6} />
+      </span>
+      <CollapsedTip label={`${tool.name} · ${tool.kbd}`} />
+    </button>
+  );
+}
+
+// Shared collapsed hover tooltip (label spills to the right of the rail).
+function CollapsedTip({ label }: { label: string }) {
+  return (
+    <span className="pointer-events-none absolute left-full z-20 ml-3 hidden whitespace-nowrap rounded-md bg-ink-primary px-2 py-1 font-mono text-2xs uppercase tracking-widest text-surface-0 group-hover:block">
+      {label}
+    </span>
+  );
+}
+
+// ---------- bottom dock (sync + collapse + footer) ----------
+
+function BottomDock({
+  collapsed,
+  onToggleCollapsed,
+}: {
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}) {
+  return (
+    <div
+      className={clsx(
+        'mt-1 border-t border-hairline pt-2.5',
+        collapsed ? 'px-1.5 pb-3' : 'px-2.5 pb-3',
+      )}
+    >
+      {collapsed ? (
+        <div className="flex flex-col items-center gap-1.5">
+          <SyncIndicator collapsed />
+          <CollapseButton collapsed onToggle={onToggleCollapsed} />
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center gap-1.5">
+            <SyncIndicator collapsed={false} />
+            <CollapseButton collapsed={false} onToggle={onToggleCollapsed} />
+          </div>
+          <BrandFooter />
+        </>
+      )}
+    </div>
+  );
+}
+
+function CollapseButton({
+  collapsed,
+  onToggle,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={collapsed ? 'Expand nav' : 'Collapse nav'}
+      title={collapsed ? 'Expand nav' : 'Collapse nav'}
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-ink-secondary transition hover:bg-surface-1 hover:text-ink-primary"
+    >
+      {collapsed ? (
+        <PanelLeftOpen className="h-[15px] w-[15px]" strokeWidth={1.7} />
+      ) : (
+        <PanelLeftClose className="h-[15px] w-[15px]" strokeWidth={1.7} />
+      )}
     </button>
   );
 }
@@ -253,24 +459,30 @@ function SyncIndicator({ collapsed }: { collapsed: boolean }) {
       onClick={() => navigate('/settings/sync')}
       title={hoverTitle ?? (collapsed ? label : undefined)}
       className={clsx(
-        'group relative flex h-7 items-center rounded-md text-ink-tertiary transition hover:bg-surface-1 hover:text-ink-secondary',
-        collapsed ? 'mx-3 justify-center' : 'mx-3 gap-2 px-2',
+        'flex h-7 items-center rounded-sm text-ink-secondary transition hover:bg-surface-1 hover:text-ink-primary',
+        collapsed ? 'w-7 justify-center' : 'min-w-0 flex-1 gap-2 px-2',
       )}
     >
       <span
         aria-hidden
         className={clsx(
-          'inline-block h-1.5 w-1.5 shrink-0 rounded-full',
+          'inline-block h-[7px] w-[7px] shrink-0 rounded-full',
           dot,
           tone === 'syncing' && 'animate-pulse',
         )}
       />
-      {!collapsed && (
-        <span className="truncate text-2xs uppercase tracking-widest">
-          {label}
-        </span>
-      )}
+      {!collapsed && <span className="truncate text-[11.5px]">{label}</span>}
     </button>
+  );
+}
+
+function BrandFooter() {
+  return (
+    <div className="px-2 pt-2">
+      <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-ink-tertiary/80">
+        Stay on the Rail
+      </span>
+    </div>
   );
 }
 
@@ -359,14 +571,14 @@ function describeSyncStatus(
   }
 }
 
-// ---------- sub-parts ----------
+// ---------- brand ----------
 
 function BrandHeader({ collapsed }: { collapsed: boolean }) {
   return (
     <div
       className={clsx(
         'flex items-center',
-        collapsed ? 'h-10 justify-center' : 'h-10 gap-2.5 px-4',
+        collapsed ? 'h-12 justify-center' : 'h-12 gap-2.5 px-4',
       )}
     >
       <DayRailMark />
@@ -376,117 +588,6 @@ function BrandHeader({ collapsed }: { collapsed: boolean }) {
         </span>
       )}
     </div>
-  );
-}
-
-function BrandFooter({ collapsed }: { collapsed: boolean }) {
-  if (collapsed) {
-    return (
-      <div className="flex flex-col items-center gap-1 pt-2">
-        <span className="font-mono text-[9px] tracking-widest text-ink-tertiary">
-          STAY
-        </span>
-        <span className="font-mono text-[9px] tracking-widest text-ink-tertiary">
-          ON
-        </span>
-        <span className="font-mono text-[9px] tracking-widest text-ink-tertiary">
-          THE RAIL
-        </span>
-      </div>
-    );
-  }
-  return (
-    <div className="px-4 pt-2">
-      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-        Stay on the Rail
-      </span>
-    </div>
-  );
-}
-
-function NavItem({
-  item,
-  active,
-  onClick,
-  collapsed,
-  badgeDot,
-  badgeTooltip,
-  tier = 'primary',
-}: {
-  item: Item;
-  active: boolean;
-  onClick: () => void;
-  collapsed: boolean;
-  badgeDot: boolean;
-  badgeTooltip?: string;
-  tier?: 'primary' | 'secondary';
-}) {
-  const Icon = item.icon;
-  const isSecondary = tier === 'secondary';
-
-  // Color + stroke per tier. Secondary state is slightly retracted so
-  // Template / Settings read as "config, not daily flow" without being
-  // actively de-emphasized when selected.
-  const tierText = active
-    ? 'text-ink-primary'
-    : isSecondary
-      ? 'text-ink-tertiary/80 hover:text-ink-secondary'
-      : 'text-ink-tertiary hover:text-ink-primary';
-
-  const iconClass = isSecondary ? 'h-[16px] w-[16px]' : 'h-[18px] w-[18px]';
-  const iconStroke = isSecondary ? 1.35 : 1.6;
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={collapsed ? (badgeTooltip ?? item.label) : badgeTooltip}
-      className={clsx(
-        'group relative flex h-10 w-full items-center rounded-md transition',
-        collapsed ? 'justify-center' : 'justify-start gap-3 px-3',
-        active
-          ? 'bg-surface-2'
-          : 'hover:bg-surface-1',
-        tierText,
-      )}
-    >
-      <Icon className={iconClass} strokeWidth={iconStroke} />
-      {!collapsed && (
-        <span
-          className={clsx(
-            'flex-1 text-left text-sm transition-opacity',
-            active
-              ? 'font-medium'
-              : isSecondary
-                ? 'font-normal'
-                : 'font-normal',
-          )}
-        >
-          {item.label}
-        </span>
-      )}
-      {badgeDot && (
-        <span
-          aria-hidden
-          className={clsx(
-            'h-1.5 w-1.5 rounded-full bg-cta',
-            collapsed ? 'absolute right-2 top-2' : 'mr-1',
-          )}
-        />
-      )}
-      {active && (
-        <span
-          aria-hidden
-          className="absolute left-[-12px] h-5 w-[3px] rounded-r bg-ink-primary"
-        />
-      )}
-      {/* Tooltip only when collapsed — expanded state already shows the label inline */}
-      {collapsed && (
-        <span className="pointer-events-none absolute left-full z-20 ml-3 hidden whitespace-nowrap rounded-md bg-ink-primary px-2 py-1 font-mono text-2xs uppercase tracking-widest text-surface-0 group-hover:block">
-          {item.label}
-        </span>
-      )}
-    </button>
   );
 }
 
