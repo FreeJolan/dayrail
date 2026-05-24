@@ -14,7 +14,7 @@ import {
   Wand2,
 } from 'lucide-react';
 import { clsx } from 'clsx';
-import { selectPendingQueue, useStagingStore, useStore } from '@dayrail/core';
+import { selectPendingQueue, useStore } from '@dayrail/core';
 import { useSyncStatus } from '@/lib/sync/syncStore';
 import { useSyncClassification } from '@/lib/sync/useSyncClassification';
 import {
@@ -56,7 +56,10 @@ interface Item {
 // on the Backlog page", which it isn't. The drawer is still reachable
 // via its own collapsed handle on the right and via the `g b`
 // keyboard shortcut (wired up in App.tsx, independent of this file).
-interface SideNavProps {}
+interface SideNavProps {
+  /** Opens the Proposals modal (ERD §6.7 — a tool, not a route). */
+  onOpenStaging: () => void;
+}
 
 // Three primary groups separated by mode of use, then config below
 // after a wider gap. Splitting the primary items makes the rail read
@@ -73,10 +76,11 @@ const PLANNING_ITEMS: Item[] = [
 const TASK_ITEMS: Item[] = [
   { key: 'tasks', label: 'Tasks', icon: ListChecks, path: '/tasks/inbox', prefix: '/tasks' },
   { key: 'pending', label: 'Unresolved', icon: Inbox, path: '/pending' },
-  // ERD §6.7 — the AI Proposals inbox. A real view (like Unresolved):
-  // proposals arrive, you review → confirm/discard → clear.
-  { key: 'proposals', label: 'Proposals', icon: Wand2, path: '/proposals', prefix: '/proposals' },
 ];
+
+// ERD §6.7 — Proposals is a TOOL (button → modal), not a route. `path`
+// is unused; clicking opens the AI parse modal (never reads as active).
+const PROPOSALS_TOOL_ITEM: Item = { key: 'proposals', label: 'Proposals', icon: Wand2, path: '' };
 
 const REFLECTION_ITEMS: Item[] = [
   { key: 'review', label: 'Review', icon: LineChart, path: '/review' },
@@ -97,7 +101,7 @@ function isActive(pathname: string, item: Item): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
-export function SideNav(_props: SideNavProps) {
+export function SideNav({ onOpenStaging }: SideNavProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -127,7 +131,6 @@ export function SideNav(_props: SideNavProps) {
       }).length,
     [tasks, taskOccurrences, railRevisions, railTombstones],
   );
-  const stagingCount = useStagingStore((s) => Object.keys(s.proposals).length);
 
   return (
     <aside
@@ -148,21 +151,24 @@ export function SideNav(_props: SideNavProps) {
                 active={isActive(location.pathname, it)}
                 onClick={() => navigate(it.path)}
                 collapsed={collapsed}
-                badgeDot={
-                  (it.key === 'pending' && pendingCount > 0) ||
-                  (it.key === 'proposals' && stagingCount > 0)
-                }
+                badgeDot={it.key === 'pending' && pendingCount > 0}
                 badgeTooltip={
-                  it.key === 'pending' && pendingCount > 0
-                    ? `${pendingCount} unmarked`
-                    : it.key === 'proposals' && stagingCount > 0
-                      ? `${stagingCount} 条待确认`
-                      : undefined
+                  it.key === 'pending' && pendingCount > 0 ? `${pendingCount} unmarked` : undefined
                 }
               />
             ))}
           </div>
         ))}
+        <div className="mt-3">
+          <NavItem
+            item={PROPOSALS_TOOL_ITEM}
+            active={false}
+            onClick={onOpenStaging}
+            collapsed={collapsed}
+            badgeDot={false}
+            badgeTooltip="Proposals · g a"
+          />
+        </div>
         <div aria-hidden className="mt-4" />
         {SECONDARY_ITEMS.map((it) => (
           <NavItem

@@ -22,19 +22,21 @@ import {
 } from '@dayrail/core';
 import { getAiApiKey, subscribeAiApiKey } from '@/lib/aiApiKey';
 import { useIme } from '@/lib/ime';
-import { MarkdownField } from '@/components/MarkdownField';
-import { RailPicker } from '@/components/RailPicker';
+import { MarkdownField } from './MarkdownField';
+import { RailPicker } from './RailPicker';
 import {
   EffectiveFromPicker,
   resolveEffectiveFromValue,
   type EffectiveFromValue,
-} from '@/components/EffectiveFromPicker';
+} from './EffectiveFromPicker';
 
-// ERD §6.7 — "Proposals": the inbox of AI-proposed items. A persistent
-// VIEW (route /proposals), reached from the SideNav like Unresolved —
-// proposals arrive (paste / future MCP) and you review → confirm/discard
-// → clear. Each proposal is edited with the app's NATIVE create-task /
-// create-habit fields, pre-filled by the AI (no invented vocabulary).
+// ERD §6.7 — "Proposals": a small global TOOL (not a view). A SideNav
+// button / `g a` opens this modal; you paste text → 解析 → review the
+// parsed task/habit proposals with native fields → confirm each (creates
+// it) or discard. It's a transient working session: re-parsing replaces
+// the previous batch, the input text is kept across parses (so you can
+// tweak a sentence and re-parse), and closing prompts before discarding
+// any not-yet-created proposals. No persistence, no MCP, no inbox.
 
 const AI_BASE_URL_DEFAULT = 'https://openrouter.ai/api/v1';
 const COMMIT_TOAST_MS = 8000;
@@ -68,12 +70,9 @@ function draftLabel(draft: ProposalDraft): string {
   return draft.kind === 'task' ? draft.title : draft.name;
 }
 
-export function ProposalsPage() {
+export function StagingModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const navigate = useNavigate();
   const proposalsMap = useStagingStore((s) => s.proposals);
-  // Newest first: a fresh paste / the latest MCP drop surfaces at the
-  // top, so "what I just made" is immediately in view (story G), while
-  // older pending proposals (incl. earlier MCP drops, story F) sit below.
   const proposals = useMemo(
     () => Object.values(proposalsMap).sort((a, b) => b.createdAt - a.createdAt),
     [proposalsMap],
@@ -94,6 +93,34 @@ export function ProposalsPage() {
     return () => window.clearTimeout(t);
   }, [lastCommit]);
 
+  // Close = discard not-yet-created proposals (with a confirm) + reset.
+  const doClose = () => {
+    useStagingStore.getState().clear();
+    setPasteText('');
+    setError(null);
+    setLastCommit(null);
+    onClose();
+  };
+  const requestClose = () => {
+    const pending = Object.keys(useStagingStore.getState().proposals).length;
+    if (pending > 0 && !window.confirm(`退出会丢弃 ${pending} 条尚未创建的提案,确定退出?`)) {
+      return;
+    }
+    doClose();
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') requestClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  if (!open) return null;
+
   const handleParse = async () => {
     if (!aiConfig.ok) return;
     const text = pasteText.trim();
@@ -103,15 +130,10 @@ export function ProposalsPage() {
     try {
       const drafts = await parseIntentsFromText(text, aiConfig.config);
       const store = useStagingStore.getState();
-      // Paste is a scratch you iterate on: re-parsing REPLACES the prior
-      // paste batch rather than piling up failed attempts. MCP-dropped
-      // proposals (source: 'mcp') accumulate and are left untouched.
-      // (Committed proposals already left the tray, so they're safe.)
-      for (const [id, p] of Object.entries(store.proposals)) {
-        if (p.source === 'paste') store.discardProposal(id);
-      }
+      // Re-parse replaces the previous batch — paste is a scratch you
+      // iterate on. The input text is intentionally NOT cleared.
+      store.clear();
       for (const draft of drafts) store.addProposal({ draft, source: 'paste' });
-      setPasteText('');
       if (drafts.length === 0) {
         setError({ message: 'AI 没从这段文字里读出可建的待办 —— 换种说法试试?' });
       }
@@ -139,119 +161,128 @@ export function ProposalsPage() {
   };
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-3 px-6 py-8">
-      <header className="flex items-center gap-2">
-        <Sparkles className="h-4 w-4 text-ink-secondary" strokeWidth={1.6} aria-hidden />
-        <h1 className="font-mono text-2xs uppercase tracking-widest text-ink-primary">Proposals</h1>
-        {proposals.length > 0 && (
-          <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
-            {proposals.length}
+    <div
+      role="dialog"
+      aria-modal
+      aria-label="Proposals"
+      onClick={requestClose}
+      className="fixed inset-0 z-[200] flex items-start justify-center overflow-y-auto bg-ink-primary/40 px-6 py-10 backdrop-blur-sm"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="flex max-h-[80vh] w-full max-w-xl flex-col rounded-md bg-surface-0 shadow-xl"
+      >
+        <div className="flex items-center gap-2 px-5 py-4">
+          <Sparkles className="h-4 w-4 text-ink-secondary" strokeWidth={1.6} aria-hidden />
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-primary">
+            Proposals
           </span>
-        )}
-        {proposals.length > 0 && (
+          {proposals.length > 0 && (
+            <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
+              {proposals.length}
+            </span>
+          )}
           <button
             type="button"
-            onClick={() => {
-              if (window.confirm(`清空全部 ${proposals.length} 条待确认提案?`)) {
-                useStagingStore.getState().clear();
-              }
-            }}
-            className="ml-auto inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+            onClick={requestClose}
+            aria-label="关闭"
+            className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
           >
-            <Trash2 className="h-3 w-3" strokeWidth={1.7} />
-            清空
+            <X className="h-4 w-4" strokeWidth={1.7} />
           </button>
-        )}
-      </header>
-      <p className="text-xs leading-relaxed text-ink-tertiary">
-        把和 AI 聊出来的待办贴进来,拆成提案;你 review、改好,再落库成任务或习惯。
-      </p>
-
-      {aiConfig.ok ? (
-        <div>
-          <MarkdownField
-            value={pasteText || undefined}
-            onCommit={(v) => setPasteText(v ?? '')}
-            placeholder="把和 AI 聊出来的待办贴进来 · 纯自然语言 / Markdown"
-            dialogTitle="Proposals 输入"
-            ariaLabel="Proposals 自然语言输入"
-          />
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <span className="text-2xs text-ink-tertiary">贴完点一下别处,再「解析」</span>
-            <button
-              type="button"
-              onClick={handleParse}
-              disabled={parsing || pasteText.trim().length === 0}
-              className="inline-flex items-center gap-1 rounded-md bg-cta px-2.5 py-1 text-xs text-cta-foreground transition enabled:hover:bg-cta-hover disabled:opacity-40"
-            >
-              <Sparkles className="h-3 w-3" strokeWidth={1.8} />
-              {parsing ? '解析中…' : '解析'}
-            </button>
-          </div>
         </div>
-      ) : (
-        <div className="rounded-md bg-surface-1 px-3 py-2.5 text-xs leading-relaxed text-ink-secondary">
-          {aiConfig.reason} ——{' '}
-          <button
-            type="button"
-            onClick={() => navigate('/settings/ai')}
-            className="text-ink-primary underline-offset-2 hover:underline"
-          >
-            去 Settings → AI 配置
-          </button>
-          ,配好就能把聊出来的待办贴进来解析。
-        </div>
-      )}
 
-      {error && (
-        <div className="rounded-md bg-warn-soft px-3 py-2 text-xs text-ink-primary">
-          {error.message}
-          {error.bodyExcerpt && (
-            <details className="mt-1">
-              <summary className="cursor-pointer text-2xs text-ink-tertiary">
-                看看具体怎么了 ⌄
-              </summary>
-              <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all text-[10px] leading-snug text-ink-tertiary">
-                {error.bodyExcerpt}
-              </pre>
-            </details>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 pb-5">
+          {aiConfig.ok ? (
+            <div>
+              <MarkdownField
+                value={pasteText || undefined}
+                onCommit={(v) => setPasteText(v ?? '')}
+                placeholder="把和 AI 聊出来的待办贴进来 · 纯自然语言 / Markdown"
+                dialogTitle="Proposals 输入"
+                ariaLabel="Proposals 自然语言输入"
+              />
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <span className="text-2xs text-ink-tertiary">
+                  贴完点一下别处再「解析」· 解析后文本保留,可改了再解析
+                </span>
+                <button
+                  type="button"
+                  onClick={handleParse}
+                  disabled={parsing || pasteText.trim().length === 0}
+                  className="inline-flex items-center gap-1 rounded-md bg-cta px-2.5 py-1 text-xs text-cta-foreground transition enabled:hover:bg-cta-hover disabled:opacity-40"
+                >
+                  <Sparkles className="h-3 w-3" strokeWidth={1.8} />
+                  {parsing ? '解析中…' : '解析'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-md bg-surface-1 px-3 py-2.5 text-xs leading-relaxed text-ink-secondary">
+              {aiConfig.reason} ——{' '}
+              <button
+                type="button"
+                onClick={() => {
+                  navigate('/settings/ai');
+                  doClose();
+                }}
+                className="text-ink-primary underline-offset-2 hover:underline"
+              >
+                去 Settings → AI 配置
+              </button>
+              ,配好就能把聊出来的待办贴进来解析。
+            </div>
+          )}
+
+          {error && (
+            <div className="rounded-md bg-warn-soft px-3 py-2 text-xs text-ink-primary">
+              {error.message}
+              {error.bodyExcerpt && (
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-2xs text-ink-tertiary">
+                    看看具体怎么了 ⌄
+                  </summary>
+                  <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all text-[10px] leading-snug text-ink-tertiary">
+                    {error.bodyExcerpt}
+                  </pre>
+                </details>
+              )}
+            </div>
+          )}
+
+          {lastCommit && (
+            <div className="flex items-center justify-between gap-2 rounded-md bg-surface-1 px-3 py-2 text-xs">
+              <span className="min-w-0 truncate text-ink-secondary">已创建「{lastCommit.label}」</span>
+              <button
+                type="button"
+                onClick={handleUndoCommit}
+                className="inline-flex shrink-0 items-center gap-1 text-ink-primary transition hover:text-cta"
+              >
+                <RotateCcw className="h-3 w-3" strokeWidth={1.8} />
+                撤销
+              </button>
+            </div>
+          )}
+
+          {proposals.length === 0 ? (
+            <div className="py-8 text-center text-sm leading-relaxed text-ink-tertiary">
+              {aiConfig.ok ? '贴一段文字,点「解析」试试。' : '配好 AI 后即可粘贴解析。'}
+            </div>
+          ) : (
+            <ul className="flex flex-col gap-2.5">
+              {proposals.map((p) => (
+                <li key={p.id}>
+                  <ProposalCard
+                    proposal={p}
+                    onCommit={() => handleCommit(p)}
+                    onDiscard={() => useStagingStore.getState().discardProposal(p.id)}
+                  />
+                </li>
+              ))}
+            </ul>
           )}
         </div>
-      )}
-
-      {lastCommit && (
-        <div className="flex items-center justify-between gap-2 rounded-md bg-surface-1 px-3 py-2 text-xs">
-          <span className="min-w-0 truncate text-ink-secondary">已创建「{lastCommit.label}」</span>
-          <button
-            type="button"
-            onClick={handleUndoCommit}
-            className="inline-flex shrink-0 items-center gap-1 text-ink-primary transition hover:text-cta"
-          >
-            <RotateCcw className="h-3 w-3" strokeWidth={1.8} />
-            撤销
-          </button>
-        </div>
-      )}
-
-      {proposals.length === 0 ? (
-        <div className="py-10 text-center text-sm leading-relaxed text-ink-tertiary">
-          {aiConfig.ok
-            ? '还没有提案 —— 贴一段上面解析,或者让 Claude Code 直接塞进来(MCP,稍后支持)。'
-            : '配好 AI 后,把聊出来的待办贴进来就能在这里 review。'}
-        </div>
-      ) : (
-        <ul className="flex flex-col gap-2.5">
-          {proposals.map((p) => (
-            <li key={p.id}>
-              <ProposalCard
-                proposal={p}
-                onCommit={() => handleCommit(p)}
-                onDiscard={() => useStagingStore.getState().discardProposal(p.id)}
-              />
-            </li>
-          ))}
-        </ul>
-      )}
+      </div>
     </div>
   );
 }
@@ -366,7 +397,7 @@ function ProposalCard({
   if (draft?.kind !== 'task' && draft?.kind !== 'habit') {
     return (
       <div className="flex items-center justify-between gap-2 rounded-md bg-surface-1 p-3 text-xs text-ink-tertiary ring-1 ring-hairline/40">
-        <span>这条旧提案无法识别</span>
+        <span>这条提案无法识别</span>
         <button
           type="button"
           onClick={onDiscard}
@@ -389,11 +420,6 @@ function ProposalCard({
             if (k !== draft.kind) setDraft(toggleDraftKind(draft));
           }}
         />
-        {proposal.source === 'mcp' && (
-          <span className="font-mono text-[9px] uppercase tracking-widest text-ink-tertiary">
-            Claude Code
-          </span>
-        )}
       </div>
 
       {draft.kind === 'task' ? (
