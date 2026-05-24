@@ -10,6 +10,7 @@
 // in boot() for the data-loss incident that drove this.
 
 import {
+  attachStagingPersistence,
   INBOX_LINE_ID,
   materializeAutoTasksForToday,
   setHolidayDatasets,
@@ -17,7 +18,9 @@ import {
   useStore,
   type HolidayDataset,
   type Line,
+  type StagingProposal,
 } from '@dayrail/core';
+import { OpfsJsonStore } from '@dayrail/db';
 import { saveYDocBytes } from '@dayrail/db/yjsPersistence';
 import { setYDocStoreDevMode } from '@dayrail/db/yDocStore';
 // ERD §14.2 — bundled holiday data sets. Each new region drops in a
@@ -86,6 +89,18 @@ export async function boot(): Promise<void> {
   // 1. Hydrate from OPFS — load the .dryj if present, build the
   //    Y.Doc, derive flat state into the zustand store.
   await useStore.getState().hydrate();
+
+  // 1.5. Wire the local AI staging tray (ERD §6.7.3) to its own OPFS
+  //      JSON file — deliberately NOT the Y.Doc sync stream. Best-effort
+  //      and fire-and-forget: a staging-persistence failure must never
+  //      block boot, and the drawer reads the store reactively so it
+  //      fills in once hydrate resolves. Dev/prod isolated by suffix,
+  //      same as the Y.Doc store.
+  void attachStagingPersistence(
+    new OpfsJsonStore<Record<string, StagingProposal>>(
+      `dayrail-staging${import.meta.env.DEV ? '-dev' : ''}.json`,
+    ),
+  ).catch(() => undefined);
 
   // 2. First-run setup — only the bare minimum that's needed for the
   //    rest of the app to function. Specifically: the Inbox line, so

@@ -10,7 +10,7 @@ import { useNavigate } from 'react-router-dom';
 
 export type Shortcut =
   | { keys: string; label: string; path: string }
-  | { keys: string; label: string; action: 'toggle-backlog' };
+  | { keys: string; label: string; action: 'toggle-backlog' | 'toggle-staging' };
 
 export const SHORTCUTS: Shortcut[] = [
   { keys: 'g t', label: 'Today Track', path: '/' },
@@ -22,6 +22,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: 'g e', label: 'Template Editor', path: '/templates' },
   { keys: 'g s', label: 'Settings', path: '/settings' },
   { keys: 'g b', label: 'Toggle Backlog', action: 'toggle-backlog' },
+  { keys: 'g a', label: 'Toggle AI 暂存区', action: 'toggle-staging' },
 ];
 
 /** Page-local shortcuts · purely for cheatsheet display. The actual
@@ -56,6 +57,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 export function useGlobalShortcuts(
   onOpenCheatsheet: () => void,
   onToggleBacklog: () => void,
+  onToggleStaging: () => void,
 ): void {
   const navigate = useNavigate();
 
@@ -90,6 +92,7 @@ export function useGlobalShortcuts(
           e.preventDefault();
           if ('path' in match) navigate(match.path);
           else if (match.action === 'toggle-backlog') onToggleBacklog();
+          else if (match.action === 'toggle-staging') onToggleStaging();
         }
         return;
       }
@@ -105,7 +108,7 @@ export function useGlobalShortcuts(
       window.removeEventListener('keydown', onKey);
       clearLeader();
     };
-  }, [navigate, onOpenCheatsheet, onToggleBacklog]);
+  }, [navigate, onOpenCheatsheet, onToggleBacklog, onToggleStaging]);
 }
 
 export function useCheatsheetToggle(): {

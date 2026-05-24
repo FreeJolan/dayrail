@@ -35,6 +35,7 @@ import { Pending } from './pages/Pending';
 import { Settings } from './pages/Settings';
 import { Calendar } from './pages/Calendar';
 import { BacklogDrawer } from './components/BacklogDrawer';
+import { StagingDrawer } from './components/StagingDrawer';
 import { DevModeIndicator } from './components/DevModeIndicator';
 import { ImportSuccessToast } from './components/ImportSuccessToast';
 import { ReasonToast } from './components/ReasonToast';
@@ -152,7 +153,8 @@ function TaskDragPreview({ taskId: id }: { taskId: string }) {
 function Shell() {
   const cheatsheet = useCheatsheetToggle();
   const backlog = useBacklogDrawerState();
-  useGlobalShortcuts(cheatsheet.show, backlog.toggle);
+  const staging = useStagingDrawerState();
+  useGlobalShortcuts(cheatsheet.show, backlog.toggle, staging.toggle);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const { mirror, setMirror } = useDragMirror();
 
@@ -486,6 +488,7 @@ function Shell() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+      <StagingDrawer open={staging.open} onToggle={staging.toggle} />
       <BacklogDrawer open={backlog.open} onToggle={backlog.toggle} />
       <ShortcutCheatsheet open={cheatsheet.open} onClose={cheatsheet.hide} />
       <ReasonToast
@@ -519,6 +522,23 @@ function useBacklogDrawerState(): { open: boolean; toggle: () => void } {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(BACKLOG_OPEN_KEY, open ? '1' : '0');
+  }, [open]);
+  return { open, toggle: () => setOpen((v) => !v) };
+}
+
+const STAGING_OPEN_KEY = 'dayrail.staging.open';
+
+// ERD §6.7 — AI staging tray drawer state. Mirrors the Backlog drawer
+// (right-docked, default closed, localStorage-persisted, reachable via
+// its collapsed handle + the `g a` shortcut).
+function useStagingDrawerState(): { open: boolean; toggle: () => void } {
+  const [open, setOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(STAGING_OPEN_KEY) === '1';
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(STAGING_OPEN_KEY, open ? '1' : '0');
   }, [open]);
   return { open, toggle: () => setOpen((v) => !v) };
 }
