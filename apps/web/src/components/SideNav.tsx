@@ -36,8 +36,7 @@ export type NavKey =
   | 'review'
   | 'calendar'
   | 'pending'
-  | 'settings'
-  | 'proposals';
+  | 'settings';
 
 interface Item {
   key: NavKey;
@@ -78,9 +77,6 @@ const TASK_ITEMS: Item[] = [
   { key: 'pending', label: 'Unresolved', icon: Inbox, path: '/pending' },
 ];
 
-// ERD §6.7 — Proposals is a TOOL (button → modal), not a route. `path`
-// is unused; clicking opens the AI parse modal (never reads as active).
-const PROPOSALS_TOOL_ITEM: Item = { key: 'proposals', label: 'Proposals', icon: Wand2, path: '' };
 
 const REFLECTION_ITEMS: Item[] = [
   { key: 'review', label: 'Review', icon: LineChart, path: '/review' },
@@ -159,15 +155,12 @@ export function SideNav({ onOpenStaging }: SideNavProps) {
             ))}
           </div>
         ))}
-        <div className="mt-3">
-          <NavItem
-            item={PROPOSALS_TOOL_ITEM}
-            active={false}
-            onClick={onOpenStaging}
-            collapsed={collapsed}
-            badgeDot={false}
-            badgeTooltip="Proposals · g a"
-          />
+        {/* Proposals is a TOOL, not a view — set apart from the nav rows
+            by a divider + a dashed "action" button so it reads as a
+            quick utility, not a route to switch to. */}
+        <div className="mt-3 px-3">
+          <div aria-hidden className="mb-3 border-t border-hairline/50" />
+          <ProposalsToolButton collapsed={collapsed} onClick={onOpenStaging} />
         </div>
         <div aria-hidden className="mt-4" />
         {SECONDARY_ITEMS.map((it) => (
@@ -215,6 +208,34 @@ export function SideNav({ onOpenStaging }: SideNavProps) {
       <SyncIndicator collapsed={collapsed} />
       <BrandFooter collapsed={collapsed} />
     </aside>
+  );
+}
+
+// ERD §6.7 — Proposals tool button. Deliberately NOT a NavItem: a
+// dashed "action" affordance (same language as the app's "+ add" empty
+// states) so it reads as a quick tool you trigger, never as a view to
+// switch to. Clicking opens the AI parse modal.
+function ProposalsToolButton({
+  collapsed,
+  onClick,
+}: {
+  collapsed: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={collapsed ? 'Proposals · AI 解析 · g a' : 'AI 解析待办 · g a'}
+      aria-label="Proposals · AI 解析"
+      className={clsx(
+        'flex w-full items-center rounded-md border border-dashed border-hairline/70 text-ink-tertiary transition hover:border-ink-secondary hover:bg-surface-1 hover:text-ink-secondary',
+        collapsed ? 'h-9 justify-center' : 'h-9 justify-start gap-2 px-3',
+      )}
+    >
+      <Wand2 className="h-4 w-4" strokeWidth={1.5} />
+      {!collapsed && <span className="text-xs">Proposals</span>}
+    </button>
   );
 }
 
