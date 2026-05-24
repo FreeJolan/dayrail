@@ -1,83 +1,101 @@
 // Paste → AI parse (ERD §6.7.5 / §6.7.6).
 //
 // The paste path's internal AI turns a "DayRail-agnostic" blob of
-// natural language / Markdown into structured `IntentSpec`s + a
-// suggested shape per intent (the user can switch it in the review
-// surface, §6.7.2). Per §6.7.6 this is STRUCTURED output against a small
-// CLOSED Zod schema — NOT "extract JSON from prose" (the v0.8.2 drift
-// trap). Mechanism: a forced AI-SDK tool call carrying the schema, not
-// `generateObject` / `response_format` — the canonical bridge
-// (CLIProxyAPI → Claude) doesn't translate OpenAI structured outputs but
-// does translate function-calling to Claude tool use (see
-// `defaultGenerate`). The model call is an injection seam so the mapping
-// logic stays unit-testable without a network round-trip.
+// natural language / Markdown into PROPOSAL DRAFTS in the app's native
+// shape — a task draft or a habit draft — which the review card edits
+// with native fields. Structured output via a FORCED tool call carrying
+// a small CLOSED Zod schema (the canonical bridge CLIProxyAPI → Claude
+// doesn't translate OpenAI `response_format` json_schema, but does
+// translate function-calling to Claude tool use — see `defaultGenerate`).
+// The model call is an injection seam so the mapping stays unit-testable.
 
 import { z } from 'zod';
 import { AiClientError, mapToAiClientError } from './ai/client';
-import type { IntentSpec, ProposalShape } from './intentStaging';
+import { INBOX_LINE_ID } from './types';
+import type { ProposalDraft } from './intentStaging';
 
 const MINUTES_IN_DAY = 24 * 60;
 
-const intentTimeSchema = z.object({
+// What the model fills — one entry per intended item. Closed schema; the
+// AI proposes NEW rail times for habits (it can't know existing rail
+// ids), and the user can switch a slot to an existing rail in the card.
+const taskProposalSchema = z.object({
+  kind: z.literal('task'),
+  title: z.string().min(1),
+  note: z.string().optional(),
+  priority: z.enum(['P0', 'P1', 'P2']).optional(),
+  /** Discrete steps (切分), each a TaskOccurrence label. */
+  steps: z.array(z.string()).optional(),
+});
+
+const habitSlotProposalSchema = z.object({
   /** Minutes from local midnight (07:00 = 420). */
   startMinutes: z.number().int().min(0).max(MINUTES_IN_DAY - 1),
   durationMinutes: z.number().int().positive().optional(),
-  label: z.string().optional(),
   weekdays: z.array(z.number().int().min(0).max(6)).optional(),
 });
 
-const intentSpecSchema = z.object({
-  title: z.string().min(1),
+const habitProposalSchema = z.object({
+  kind: z.literal('habit'),
+  name: z.string().min(1),
   note: z.string().optional(),
-  perOccurrenceDurationMinutes: z.number().int().positive().optional(),
-  times: z.array(intentTimeSchema),
-  frequency: z.enum(['once', 'daily', 'weekly']),
-  dates: z.array(z.string()).optional(),
-  // `color` is intentionally NOT in the parse schema — the model
-  // shouldn't pick brand colors; the projector defaults it and the user
-  // can recolor in the review surface.
+  slots: z.array(habitSlotProposalSchema),
 });
 
-const parsedProposalSchema = z.object({
-  intent: intentSpecSchema,
-  suggestedShape: z.enum(['habit', 'task']),
-});
-
-/** The closed schema `generateObject` enforces (§6.7.6). Exported so the
- *  contract can be unit-tested directly. */
+/** The closed schema `generateText`'s forced tool call enforces. */
 export const parseResultSchema = z.object({
-  proposals: z.array(parsedProposalSchema),
+  proposals: z.array(z.discriminatedUnion('kind', [taskProposalSchema, habitProposalSchema])),
 });
 
 export type ParseResult = z.infer<typeof parseResultSchema>;
 
+/** Map a model proposal → internal native draft, filling defaults the
+ *  AI shouldn't have to (Inbox line, slot mode='new', empty steps). */
+export function toProposalDraft(p: ParseResult['proposals'][number]): ProposalDraft {
+  if (p.kind === 'task') {
+    return {
+      kind: 'task',
+      title: p.title,
+      ...(p.note ? { note: p.note } : {}),
+      ...(p.priority ? { priority: p.priority } : {}),
+      lineId: INBOX_LINE_ID,
+      steps: p.steps ?? [],
+    };
+  }
+  return {
+    kind: 'habit',
+    name: p.name,
+    ...(p.note ? { note: p.note } : {}),
+    slots: p.slots.map((s) => ({
+      mode: 'new' as const,
+      startMinutes: s.startMinutes,
+      ...(s.durationMinutes !== undefined ? { durationMinutes: s.durationMinutes } : {}),
+      ...(s.weekdays ? { weekdays: s.weekdays } : {}),
+    })),
+  };
+}
+
 export interface ParseIntentsConfig {
-  /** OpenAI-compatible API root, e.g. the user's Claude proxy. */
   baseUrl: string;
   apiKey: string;
   model: string;
   signal?: AbortSignal;
 }
 
-export interface ParsedProposal {
-  intent: IntentSpec;
-  shape: ProposalShape;
-}
-
-/** Parse-pass system prompt — small + extraction-focused, distinct from
- *  the prose-review prompts in `ai/prompts.ts`. */
+/** Parse-pass system prompt — extraction-focused, distinct from the
+ *  prose-review prompts in `ai/prompts.ts`. */
 export const PARSE_SYSTEM_PROMPT = [
-  "You convert a user's free-form notes into a structured list of intended",
-  'activities for a personal planner. Extract one proposal per distinct',
-  'activity or task the user wants to start or do.',
+  "You convert a user's free-form notes into a structured list of planner items by",
+  'calling the tool emit_proposals. Each item is either:',
+  '- kind:"task" — a one-off / bounded to-do. Fields: title, optional note, optional',
+  '  priority (P0/P1/P2), optional steps[] (sub-steps). Do NOT add times to tasks.',
+  '- kind:"habit" — a recurring activity. Fields: name, optional note, slots[] where each',
+  '  slot has startMinutes (minutes from local midnight, 07:00=420), optional',
+  '  durationMinutes, optional weekdays (0=Sun..6=Sat).',
   '',
-  'times[].startMinutes is minutes from local midnight (07:00 = 420). Only',
-  'include a time when the user implies one; otherwise leave times empty.',
-  '',
-  'suggestedShape: "habit" for a recurring rhythm (daily / weekly, anchored',
-  'to a time of day); "task" for a one-off or a bounded effort.',
-  '',
-  'Do not invent details the user did not imply. If unsure of a time, omit it.',
+  'Group the same recurring activity at multiple times of day into ONE habit with',
+  'multiple slots. Only include a time/slot when the user implies one. Do not invent',
+  'details the user did not imply.',
 ].join('\n');
 
 /** Injection seam for tests; defaults to the real AI SDK call. */
@@ -88,8 +106,7 @@ export type IntentObjectGenerator = (
 
 const defaultGenerate: IntentObjectGenerator = async (config, { system, prompt }) => {
   const { baseUrl, apiKey, model, signal } = config;
-  // Lazy import — keep the AI SDK off the cold-start path (mirrors
-  // `callChatCompletion`).
+  // Lazy import — keep the AI SDK off the cold-start path.
   const [{ generateText, tool, APICallError }, { createOpenAICompatible }] = await Promise.all([
     import('ai'),
     import('@ai-sdk/openai-compatible'),
@@ -100,14 +117,9 @@ const defaultGenerate: IntentObjectGenerator = async (config, { system, prompt }
     apiKey,
   });
   try {
-    // Structured output via a FORCED tool call — NOT `generateObject` /
-    // `response_format` json_schema. The canonical bridge (CLIProxyAPI →
-    // Claude) doesn't translate OpenAI structured outputs (it warns
-    // "responseFormat is not supported" and the model replies in prose →
-    // JSON parse fails), but it DOES translate OpenAI function-calling to
-    // Claude's native tool use. The proposals come back as the tool's
-    // Zod-validated input. Still structured, still the closed schema
-    // (§6.7.6) — just through the mechanism the bridge supports.
+    // Forced tool call (not generateObject / response_format — the
+    // bridge doesn't translate those). Proposals come back as the
+    // tool's Zod-validated input.
     const result = await generateText({
       model: provider(model),
       system,
@@ -133,17 +145,16 @@ const defaultGenerate: IntentObjectGenerator = async (config, { system, prompt }
   }
 };
 
-/** ERD §6.7.5. Parse a free-form blob into structured proposals (intent
- *  + a suggested shape) for the staging tray. Empty input → no proposals.
- *  Throws `AiClientError` on any provider failure (surfaced with a
- *  `bodyExcerpt` so the review UI can show what the endpoint returned). */
+/** ERD §6.7.5. Parse a free-form blob into native proposal drafts for
+ *  the staging tray. Empty input → no proposals. Throws `AiClientError`
+ *  on any provider failure (with a `bodyExcerpt` the UI can surface). */
 export async function parseIntentsFromText(
   text: string,
   config: ParseIntentsConfig,
   generate: IntentObjectGenerator = defaultGenerate,
-): Promise<ParsedProposal[]> {
+): Promise<ProposalDraft[]> {
   const trimmed = text.trim();
   if (!trimmed) return [];
   const result = await generate(config, { system: PARSE_SYSTEM_PROMPT, prompt: trimmed });
-  return result.proposals.map((p) => ({ intent: p.intent, shape: p.suggestedShape }));
+  return result.proposals.map(toProposalDraft);
 }

@@ -5,21 +5,17 @@ import {
   type StagingPersistence,
   type StagingProposal,
 } from '../stagingStore';
-import type { IntentSpec } from '../intentStaging';
+import type { ProposalDraft } from '../intentStaging';
 
-const INTENT: IntentSpec = {
-  title: '冥想',
-  frequency: 'daily',
-  times: [{ startMinutes: 7 * 60 }],
-};
+const DRAFT: ProposalDraft = { kind: 'task', title: '冥想', lineId: 'line-inbox', steps: [] };
 
 describe('staging store · CRUD', () => {
   it('adds a proposal with a minted id + defaults', () => {
     const store = createStagingStore();
-    const id = store.getState().addProposal({ intent: INTENT, shape: 'habit' });
+    const id = store.getState().addProposal({ draft: DRAFT });
     const p = store.getState().proposals[id];
-    expect(p).toMatchObject({ shape: 'habit', source: 'manual' });
-    expect(p?.intent.title).toBe('冥想');
+    expect(p).toMatchObject({ source: 'manual' });
+    expect(p?.draft.kind).toBe('task');
     expect(typeof p?.createdAt).toBe('number');
   });
 
@@ -27,44 +23,36 @@ describe('staging store · CRUD', () => {
     const store = createStagingStore();
     const id = store
       .getState()
-      .addProposal({ intent: INTENT, shape: 'task', id: 'prop-x', source: 'mcp', createdAt: 5 });
+      .addProposal({ draft: DRAFT, id: 'prop-x', source: 'mcp', createdAt: 5 });
     expect(id).toBe('prop-x');
     expect(store.getState().proposals['prop-x']).toMatchObject({ source: 'mcp', createdAt: 5 });
   });
 
-  it('switches shape without touching intent (shape switch)', () => {
+  it('updateProposal replaces the draft (e.g. shape switch)', () => {
     const store = createStagingStore();
-    const id = store.getState().addProposal({ intent: INTENT, shape: 'habit' });
-    store.getState().updateProposal(id, { shape: 'task' });
-    expect(store.getState().proposals[id]?.shape).toBe('task');
-    expect(store.getState().proposals[id]?.intent).toBe(INTENT);
-  });
-
-  it('edits intent (re-projection is derived by the UI, not stored)', () => {
-    const store = createStagingStore();
-    const id = store.getState().addProposal({ intent: INTENT, shape: 'habit' });
-    const edited: IntentSpec = { ...INTENT, times: [{ startMinutes: 6 * 60 }] };
-    store.getState().updateProposal(id, { intent: edited });
-    expect(store.getState().proposals[id]?.intent.times[0]?.startMinutes).toBe(360);
+    const id = store.getState().addProposal({ draft: DRAFT });
+    const next: ProposalDraft = { kind: 'habit', name: '冥想', slots: [] };
+    store.getState().updateProposal(id, next);
+    expect(store.getState().proposals[id]?.draft.kind).toBe('habit');
   });
 
   it('updateProposal on a missing id is a no-op', () => {
     const store = createStagingStore();
-    store.getState().updateProposal('nope', { shape: 'task' });
+    store.getState().updateProposal('nope', DRAFT);
     expect(store.getState().proposals).toEqual({});
   });
 
   it('discards a proposal', () => {
     const store = createStagingStore();
-    const id = store.getState().addProposal({ intent: INTENT, shape: 'habit' });
+    const id = store.getState().addProposal({ draft: DRAFT });
     store.getState().discardProposal(id);
     expect(store.getState().proposals[id]).toBeUndefined();
   });
 
   it('clear empties the tray', () => {
     const store = createStagingStore();
-    store.getState().addProposal({ intent: INTENT, shape: 'habit' });
-    store.getState().addProposal({ intent: INTENT, shape: 'task' });
+    store.getState().addProposal({ draft: DRAFT });
+    store.getState().addProposal({ draft: DRAFT });
     store.getState().clear();
     expect(Object.keys(store.getState().proposals)).toHaveLength(0);
   });
@@ -87,8 +75,7 @@ function memPersistence(seed?: Record<string, StagingProposal>) {
 
 const seedProposal: StagingProposal = {
   id: 'prop-1',
-  intent: INTENT,
-  shape: 'habit',
+  draft: DRAFT,
   source: 'mcp',
   createdAt: 1,
 };
@@ -101,7 +88,7 @@ describe('staging store · persistence seam', () => {
     expect(store.getState().proposals['prop-1']).toMatchObject({ source: 'mcp' });
   });
 
-  it('does not save during the initial hydrate — only on later changes', async () => {
+  it('does not save during the initial hydrate', async () => {
     const store = createStagingStore();
     const mem = memPersistence({ 'prop-1': seedProposal });
     await attachStagingPersistence(mem.persistence, store);
@@ -112,7 +99,7 @@ describe('staging store · persistence seam', () => {
     const store = createStagingStore();
     const mem = memPersistence();
     await attachStagingPersistence(mem.persistence, store);
-    const id = store.getState().addProposal({ intent: INTENT, shape: 'habit' });
+    const id = store.getState().addProposal({ draft: DRAFT });
     await Promise.resolve();
     expect(mem.save).toHaveBeenCalled();
     expect(mem.saved?.[id]).toBeDefined();
@@ -123,7 +110,7 @@ describe('staging store · persistence seam', () => {
     const mem = memPersistence();
     const unsub = await attachStagingPersistence(mem.persistence, store);
     unsub();
-    store.getState().addProposal({ intent: INTENT, shape: 'habit' });
+    store.getState().addProposal({ draft: DRAFT });
     await Promise.resolve();
     expect(mem.save).not.toHaveBeenCalled();
   });

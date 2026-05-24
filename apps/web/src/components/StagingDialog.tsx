@@ -3,55 +3,55 @@ import { Check, Plus, RotateCcw, Sparkles, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  commitPlan,
+  commitDraft,
   parseIntentsFromText,
-  projectIntent,
   storeStagingWriters,
+  toggleDraftKind,
   useStagingStore,
   useStore,
-  type IntentFrequency,
-  type IntentSpec,
-  type IntentTime,
+  type HabitDraft,
+  type HabitSlotDraft,
   type ParseIntentsConfig,
+  type ProposalDraft,
   type ProposalShape,
   type StagingProposal,
+  type TaskDraft,
+  type TaskPriority,
   type UserProfile,
 } from '@dayrail/core';
 import { getAiApiKey, subscribeAiApiKey } from '@/lib/aiApiKey';
 import { useIme } from '@/lib/ime';
 import { MarkdownField } from './MarkdownField';
+import { RailPicker } from './RailPicker';
+import {
+  EffectiveFromPicker,
+  resolveEffectiveFromValue,
+  type EffectiveFromValue,
+} from './EffectiveFromPicker';
 
-// ERD §6.7 — the AI "待确认提案" review surface. A modal (NOT a docked
-// drawer): the flow is transient — paste → review → confirm/discard →
-// clear — so it's invoked on demand (`g a`) and shows zero chrome when
-// idle; a quiet count pill (StagingIndicator) appears only while
-// proposals are pending. Per §6.7 + the "model isn't reliable, expose
-// every knob" principle, each card lets the user edit ALL of the
-// intent's parameters (shape-aware), so a wrong AI guess is a one-edit
-// fix rather than a re-prompt.
+// ERD §6.7 — the AI "待确认提案" review surface. A modal (transient
+// paste → review → confirm/discard → clear), invoked via the SideNav
+// 「AI 提案」entry / `g a` / a count pill. Each proposal is reviewed and
+// edited with the app's NATIVE create-task / create-habit fields,
+// pre-filled by the AI — no invented parameter vocabulary.
 
 const AI_BASE_URL_DEFAULT = 'https://openrouter.ai/api/v1';
 const COMMIT_TOAST_MS = 8000;
 const WEEKDAY_LABELS = ['日', '一', '二', '三', '四', '五', '六'];
 
 function minutesToHHMM(m: number): string {
-  const h = Math.floor(m / 60);
-  const mm = m % 60;
-  return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 }
-
 function hhmmToMinutes(s: string): number | null {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(s);
-  if (!match) return null;
-  const h = Number(match[1]);
-  const mm = Number(match[2]);
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mm = Number(m[2]);
   if (h > 23 || mm > 59) return null;
   return h * 60 + mm;
 }
 
-type ParseConfigResult =
-  | { ok: true; config: ParseIntentsConfig }
-  | { ok: false; reason: string };
+type ParseConfigResult = { ok: true; config: ParseIntentsConfig } | { ok: false; reason: string };
 
 function buildParseConfig(profile: UserProfile | null, apiKey: string): ParseConfigResult {
   if (profile?.aiEnabled !== true) return { ok: false, reason: 'AI 还没启用' };
@@ -63,10 +63,13 @@ function buildParseConfig(profile: UserProfile | null, apiKey: string): ParseCon
   return { ok: true, config: { baseUrl, apiKey: key, model } };
 }
 
+function draftLabel(draft: ProposalDraft): string {
+  return draft.kind === 'task' ? draft.title : draft.name;
+}
+
 // ── Quiet entry point: a count pill, shown only when proposals wait ──
 
 export function StagingIndicator({ onOpen }: { onOpen: () => void }) {
-  // Subscribe to a primitive (count), never a fresh object.
   const count = useStagingStore((s) => Object.keys(s.proposals).length);
   if (count === 0) return null;
   return (
@@ -95,7 +98,6 @@ export function StagingDialog({ open, onClose }: { open: boolean; onClose: () =>
   }, [open, onClose]);
 
   if (!open) return null;
-
   return (
     <div
       role="dialog"
@@ -129,9 +131,7 @@ function StagingContent({ onClose }: { onClose: () => void }) {
   const [pasteText, setPasteText] = useState('');
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState<{ message: string; bodyExcerpt?: string } | null>(null);
-  const [lastCommit, setLastCommit] = useState<{ sessionId: string; label: string } | null>(
-    null,
-  );
+  const [lastCommit, setLastCommit] = useState<{ sessionId: string; label: string } | null>(null);
 
   useEffect(() => {
     if (!lastCommit) return;
@@ -146,11 +146,11 @@ function StagingContent({ onClose }: { onClose: () => void }) {
     setParsing(true);
     setError(null);
     try {
-      const parsed = await parseIntentsFromText(text, aiConfig.config);
+      const drafts = await parseIntentsFromText(text, aiConfig.config);
       const add = useStagingStore.getState().addProposal;
-      for (const p of parsed) add({ intent: p.intent, shape: p.shape, source: 'paste' });
+      for (const draft of drafts) add({ draft, source: 'paste' });
       setPasteText('');
-      if (parsed.length === 0) {
+      if (drafts.length === 0) {
         setError({ message: 'AI 没从这段文字里读出可建的待办 —— 换种说法试试?' });
       }
     } catch (err) {
@@ -165,10 +165,9 @@ function StagingContent({ onClose }: { onClose: () => void }) {
   };
 
   const handleCommit = async (proposal: StagingProposal) => {
-    const plan = projectIntent(proposal.intent, proposal.shape);
-    const sessionId = await commitPlan(plan, storeStagingWriters(useStore.getState()));
+    const sessionId = await commitDraft(proposal.draft, storeStagingWriters(useStore.getState()));
     useStagingStore.getState().discardProposal(proposal.id);
-    setLastCommit({ sessionId, label: proposal.intent.title });
+    setLastCommit({ sessionId, label: draftLabel(proposal.draft) });
   };
 
   const handleUndoCommit = async () => {
@@ -257,9 +256,7 @@ function StagingContent({ onClose }: { onClose: () => void }) {
 
         {lastCommit && (
           <div className="flex items-center justify-between gap-2 rounded-md bg-surface-2 px-3 py-2 text-xs">
-            <span className="min-w-0 truncate text-ink-secondary">
-              已创建「{lastCommit.label}」
-            </span>
+            <span className="min-w-0 truncate text-ink-secondary">已创建「{lastCommit.label}」</span>
             <button
               type="button"
               onClick={handleUndoCommit}
@@ -295,7 +292,7 @@ function StagingContent({ onClose }: { onClose: () => void }) {
   );
 }
 
-// ── Small editable controls ────────────────────────────────────────
+// ── small controls ─────────────────────────────────────────────────
 
 function SegToggle<T extends string>({
   value,
@@ -366,15 +363,16 @@ function WeekdayPicker({
           </button>
         );
       })}
-      {set.size === 0 && <span className="ml-1 text-2xs text-ink-tertiary">每天</span>}
+      {set.size === 0 && <span className="ml-1 text-2xs text-ink-tertiary">不限(随 Rail)</span>}
     </div>
   );
 }
 
-const FREQ_OPTIONS: Array<{ key: IntentFrequency; label: string }> = [
-  { key: 'daily', label: '每天' },
-  { key: 'weekly', label: '每周' },
-  { key: 'once', label: '一次' },
+const PRIORITY_OPTIONS: Array<{ key: TaskPriority | 'none'; label: string }> = [
+  { key: 'none', label: '无' },
+  { key: 'P0', label: 'P0' },
+  { key: 'P1', label: 'P1' },
+  { key: 'P2', label: 'P2' },
 ];
 
 const SHAPE_OPTIONS: Array<{ key: ProposalShape; label: string }> = [
@@ -382,7 +380,10 @@ const SHAPE_OPTIONS: Array<{ key: ProposalShape; label: string }> = [
   { key: 'task', label: '临时任务' },
 ];
 
-// ── The full-parameter, shape-aware proposal card ──────────────────
+const fieldCls =
+  'rounded-sm border border-hairline/60 bg-surface-1 px-1.5 py-0.5 text-xs text-ink-primary outline-none transition focus:border-ink-secondary';
+
+// ── proposal card (native fields, shape-aware) ─────────────────────
 
 function ProposalCard({
   proposal,
@@ -393,42 +394,21 @@ function ProposalCard({
   onCommit: () => Promise<void>;
   onDiscard: () => void;
 }) {
-  const { intent, shape } = proposal;
-  const plan = useMemo(() => projectIntent(intent, shape), [intent, shape]);
+  const draft = proposal.draft;
   const [committing, setCommitting] = useState(false);
-  const ime = useIme();
-
-  const update = (patch: { intent?: IntentSpec; shape?: ProposalShape }) =>
-    useStagingStore.getState().updateProposal(proposal.id, patch);
-  const setIntent = (next: IntentSpec) => update({ intent: next });
-  const setTimes = (times: IntentTime[]) => setIntent({ ...intent, times });
-  const patchTime = (idx: number, patch: Partial<IntentTime>) =>
-    setTimes(intent.times.map((t, i) => (i === idx ? { ...t, ...patch } : t)));
-  const removeTime = (idx: number) => setTimes(intent.times.filter((_, i) => i !== idx));
-
-  // Title + note ride local state, synced to the store on blur (typing
-  // shouldn't write to the store / trigger an OPFS save per keystroke).
-  const [title, setTitle] = useState(intent.title);
-  const [note, setNote] = useState(intent.note ?? '');
-  const commitTitle = () => {
-    const next = title.trim();
-    if (next.length > 0 && next !== intent.title) setIntent({ ...intent, title: next });
-    else setTitle(intent.title);
-  };
-  const commitNote = () => {
-    const next = note.trim();
-    if (next !== (intent.note ?? '')) {
-      setIntent({ ...intent, ...(next ? { note: next } : { note: undefined }) });
-    }
-  };
-
-  const fieldCls =
-    'rounded-sm border border-hairline/60 bg-surface-1 px-1.5 py-0.5 text-xs text-ink-primary outline-none transition focus:border-ink-secondary';
+  const setDraft = (next: ProposalDraft) =>
+    useStagingStore.getState().updateProposal(proposal.id, next);
 
   return (
     <div className="flex flex-col gap-3 rounded-md bg-surface-1 p-3 ring-1 ring-hairline/40">
       <div className="flex items-center justify-between gap-2">
-        <SegToggle value={shape} options={SHAPE_OPTIONS} onChange={(s) => update({ shape: s })} />
+        <SegToggle
+          value={draft.kind}
+          options={SHAPE_OPTIONS}
+          onChange={(k) => {
+            if (k !== draft.kind) setDraft(toggleDraftKind(draft));
+          }}
+        />
         {proposal.source === 'mcp' && (
           <span className="font-mono text-[9px] uppercase tracking-widest text-ink-tertiary">
             Claude Code
@@ -436,173 +416,11 @@ function ProposalCard({
         )}
       </div>
 
-      <label className="flex flex-col gap-1">
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">标题</span>
-        <input
-          type="text"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onBlur={commitTitle}
-          onCompositionStart={ime.onCompositionStart}
-          onCompositionEnd={ime.onCompositionEnd}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !ime.isComposing(e)) e.currentTarget.blur();
-          }}
-          className="h-8 w-full rounded-md border border-hairline/60 bg-surface-0 px-2 text-sm font-medium text-ink-primary outline-none transition focus:border-ink-secondary"
-        />
-      </label>
-
-      {shape === 'habit' ? (
-        <>
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-              频率
-            </span>
-            <SegToggle
-              value={intent.frequency}
-              options={FREQ_OPTIONS}
-              onChange={(f) => setIntent({ ...intent, frequency: f })}
-            />
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-              时间点
-            </span>
-            {intent.times.length === 0 && (
-              <span className="text-2xs text-ink-tertiary">还没有时间点 —— 加一个</span>
-            )}
-            {intent.times.map((t, i) => {
-              const duration = t.durationMinutes ?? intent.perOccurrenceDurationMinutes ?? 30;
-              return (
-                <div key={i} className="flex flex-col gap-1.5 rounded-sm bg-surface-0 p-2">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <input
-                      type="text"
-                      value={t.label ?? ''}
-                      placeholder="小标题(选填)"
-                      onChange={(e) =>
-                        patchTime(i, e.target.value ? { label: e.target.value } : { label: undefined })
-                      }
-                      className={clsx(fieldCls, 'w-24')}
-                    />
-                    <input
-                      type="time"
-                      value={minutesToHHMM(t.startMinutes)}
-                      onChange={(e) => {
-                        const m = hhmmToMinutes(e.target.value);
-                        if (m != null) patchTime(i, { startMinutes: m });
-                      }}
-                      className={clsx(fieldCls, 'tabular-nums')}
-                    />
-                    <span className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        min={1}
-                        value={duration}
-                        onChange={(e) => {
-                          const v = Number(e.target.value);
-                          if (Number.isFinite(v) && v > 0) patchTime(i, { durationMinutes: v });
-                        }}
-                        className={clsx(fieldCls, 'w-14 tabular-nums')}
-                      />
-                      <span className="text-2xs text-ink-tertiary">分钟</span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => removeTime(i)}
-                      aria-label="删除这个时间点"
-                      className="ml-auto inline-flex h-5 w-5 items-center justify-center rounded-sm text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
-                    >
-                      <X className="h-3.5 w-3.5" strokeWidth={1.7} />
-                    </button>
-                  </div>
-                  {intent.frequency === 'weekly' && (
-                    <WeekdayPicker
-                      value={t.weekdays}
-                      onChange={(wd) => patchTime(i, wd ? { weekdays: wd } : { weekdays: undefined })}
-                    />
-                  )}
-                </div>
-              );
-            })}
-            <button
-              type="button"
-              onClick={() => setTimes([...intent.times, { startMinutes: 9 * 60 }])}
-              className="inline-flex w-fit items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-            >
-              <Plus className="h-3 w-3" strokeWidth={1.8} />
-              添加时间点
-            </button>
-          </div>
-        </>
+      {draft.kind === 'task' ? (
+        <TaskFields draft={draft} setDraft={setDraft} />
       ) : (
-        <div className="flex flex-col gap-2">
-          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-            切分步骤(选填)
-          </span>
-          {intent.times.filter((t) => t.label !== undefined).length === 0 && (
-            <span className="text-2xs text-ink-tertiary">无切分 —— 作为单条任务创建</span>
-          )}
-          {intent.times.map((t, i) =>
-            t.label !== undefined ? (
-              <div key={i} className="flex items-center gap-1.5">
-                <input
-                  type="text"
-                  value={t.label}
-                  placeholder="步骤名"
-                  onChange={(e) => patchTime(i, { label: e.target.value })}
-                  className={clsx(fieldCls, 'flex-1')}
-                />
-                <button
-                  type="button"
-                  onClick={() => removeTime(i)}
-                  aria-label="删除这个步骤"
-                  className="inline-flex h-5 w-5 items-center justify-center rounded-sm text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
-                >
-                  <X className="h-3.5 w-3.5" strokeWidth={1.7} />
-                </button>
-              </div>
-            ) : null,
-          )}
-          <button
-            type="button"
-            onClick={() => setTimes([...intent.times, { startMinutes: 0, label: '新步骤' }])}
-            className="inline-flex w-fit items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-          >
-            <Plus className="h-3 w-3" strokeWidth={1.8} />
-            添加步骤
-          </button>
-        </div>
+        <HabitFields draft={draft} setDraft={setDraft} />
       )}
-
-      <label className="flex flex-col gap-1">
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">备注</span>
-        <textarea
-          value={note}
-          rows={2}
-          placeholder="选填"
-          onChange={(e) => setNote(e.target.value)}
-          onBlur={commitNote}
-          onCompositionStart={ime.onCompositionStart}
-          onCompositionEnd={ime.onCompositionEnd}
-          className="w-full resize-y rounded-md border border-hairline/60 bg-surface-0 px-2 py-1.5 text-xs text-ink-primary outline-none transition placeholder:text-ink-tertiary focus:border-ink-secondary"
-        />
-      </label>
-
-      <div className="rounded-sm bg-surface-0 px-2.5 py-2">
-        <p className="mb-1 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-          将创建
-        </p>
-        <ul className="flex flex-col gap-0.5">
-          {plan.summary.map((line, i) => (
-            <li key={i} className="text-xs leading-snug text-ink-secondary">
-              · {line}
-            </li>
-          ))}
-        </ul>
-        <p className="mt-1.5 text-2xs text-ink-tertiary">从今天起生效 · 确认后可一键撤销</p>
-      </div>
 
       <div className="flex items-center justify-end gap-2">
         <button
@@ -632,4 +450,290 @@ function ProposalCard({
       </div>
     </div>
   );
+}
+
+function LabeledText({
+  label,
+  value,
+  onCommit,
+  className,
+}: {
+  label: string;
+  value: string;
+  onCommit: (next: string) => void;
+  className?: string;
+}) {
+  const ime = useIme();
+  const [text, setText] = useState(value);
+  // Resync if the underlying value changes (e.g. shape toggle).
+  useEffect(() => setText(value), [value]);
+  const commit = () => {
+    const next = text.trim();
+    if (next && next !== value) onCommit(next);
+    else if (!next) setText(value);
+  };
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">{label}</span>
+      <input
+        type="text"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onCompositionStart={ime.onCompositionStart}
+        onCompositionEnd={ime.onCompositionEnd}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !ime.isComposing(e)) e.currentTarget.blur();
+        }}
+        className={clsx(
+          'h-8 w-full rounded-md border border-hairline/60 bg-surface-0 px-2 text-sm font-medium text-ink-primary outline-none transition focus:border-ink-secondary',
+          className,
+        )}
+      />
+    </label>
+  );
+}
+
+function NoteField({ value, onChange }: { value: string | undefined; onChange: (v: string | undefined) => void }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">备注</span>
+      <MarkdownField
+        value={value}
+        onCommit={onChange}
+        placeholder="+ 备注 · Markdown"
+        dialogTitle="备注"
+        ariaLabel="提案备注"
+      />
+    </div>
+  );
+}
+
+function TaskFields({ draft, setDraft }: { draft: TaskDraft; setDraft: (d: ProposalDraft) => void }) {
+  const linesMap = useStore((s) => s.lines);
+  const projectLines = useMemo(
+    () =>
+      Object.values(linesMap)
+        .filter((l) => l.status === 'active' && (l.isDefault || l.kind === 'project'))
+        .sort((a, b) => {
+          if (a.isDefault && !b.isDefault) return -1;
+          if (!a.isDefault && b.isDefault) return 1;
+          return a.name.localeCompare(b.name);
+        }),
+    [linesMap],
+  );
+
+  const setStep = (idx: number, label: string) =>
+    setDraft({ ...draft, steps: draft.steps.map((s, i) => (i === idx ? label : s)) });
+  const removeStep = (idx: number) =>
+    setDraft({ ...draft, steps: draft.steps.filter((_, i) => i !== idx) });
+
+  return (
+    <>
+      <LabeledText label="标题" value={draft.title} onCommit={(t) => setDraft({ ...draft, title: t })} />
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <label className="flex items-center gap-2">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">所属</span>
+          <select
+            value={draft.lineId}
+            onChange={(e) => setDraft({ ...draft, lineId: e.target.value })}
+            className={fieldCls}
+          >
+            {projectLines.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">优先级</span>
+          <SegToggle
+            value={draft.priority ?? 'none'}
+            options={PRIORITY_OPTIONS}
+            onChange={(p) =>
+              setDraft(p === 'none' ? omitPriority(draft) : { ...draft, priority: p })
+            }
+          />
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">切分(选填)</span>
+        {draft.steps.length === 0 && (
+          <span className="text-2xs text-ink-tertiary">无切分 —— 作为单条任务创建</span>
+        )}
+        {draft.steps.map((step, i) => (
+          <div key={i} className="flex items-center gap-1.5">
+            <input
+              type="text"
+              value={step}
+              placeholder="步骤名"
+              onChange={(e) => setStep(i, e.target.value)}
+              className={clsx(fieldCls, 'flex-1')}
+            />
+            <button
+              type="button"
+              onClick={() => removeStep(i)}
+              aria-label="删除步骤"
+              className="inline-flex h-5 w-5 items-center justify-center rounded-sm text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+            >
+              <X className="h-3.5 w-3.5" strokeWidth={1.7} />
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() => setDraft({ ...draft, steps: [...draft.steps, '新步骤'] })}
+          className="inline-flex w-fit items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          <Plus className="h-3 w-3" strokeWidth={1.8} />
+          添加步骤
+        </button>
+      </div>
+
+      <NoteField value={draft.note} onChange={(v) => setDraft({ ...draft, note: v })} />
+    </>
+  );
+}
+
+function omitPriority(draft: TaskDraft): TaskDraft {
+  const { priority: _priority, ...rest } = draft;
+  return rest;
+}
+
+function HabitFields({ draft, setDraft }: { draft: HabitDraft; setDraft: (d: ProposalDraft) => void }) {
+  const railsMap = useStore((s) => s.rails);
+  const templatesMap = useStore((s) => s.templates);
+  const rails = useMemo(() => Object.values(railsMap), [railsMap]);
+  const [effValue, setEffValue] = useState<EffectiveFromValue>({ mode: 'today' });
+
+  const setSlots = (slots: HabitSlotDraft[]) => setDraft({ ...draft, slots });
+  const patchSlot = (idx: number, slot: HabitSlotDraft) =>
+    setSlots(draft.slots.map((s, i) => (i === idx ? slot : s)));
+  const removeSlot = (idx: number) => setSlots(draft.slots.filter((_, i) => i !== idx));
+
+  return (
+    <>
+      <LabeledText label="习惯名" value={draft.name} onCommit={(n) => setDraft({ ...draft, name: n })} />
+
+      <div className="flex flex-col gap-2">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">时段</span>
+        {draft.slots.length === 0 && (
+          <span className="text-2xs text-ink-tertiary">还没有时段 —— 加一个</span>
+        )}
+        {draft.slots.map((slot, i) => (
+          <div key={i} className="flex flex-col gap-1.5 rounded-sm bg-surface-0 p-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <SegToggle
+                value={slot.mode}
+                options={[
+                  { key: 'new', label: '新建' },
+                  { key: 'existing', label: '选已有' },
+                ]}
+                onChange={(mode) => {
+                  if (mode === slot.mode) return;
+                  if (mode === 'existing') {
+                    patchSlot(i, {
+                      mode: 'existing',
+                      railId: rails[0]?.id ?? '',
+                      ...(slot.weekdays ? { weekdays: slot.weekdays } : {}),
+                    });
+                  } else {
+                    patchSlot(i, {
+                      mode: 'new',
+                      startMinutes: 9 * 60,
+                      ...(slot.weekdays ? { weekdays: slot.weekdays } : {}),
+                    });
+                  }
+                }}
+              />
+              {slot.mode === 'new' ? (
+                <>
+                  <input
+                    type="time"
+                    value={minutesToHHMM(slot.startMinutes)}
+                    onChange={(e) => {
+                      const m = hhmmToMinutes(e.target.value);
+                      if (m != null) patchSlot(i, { ...slot, startMinutes: m });
+                    }}
+                    className={clsx(fieldCls, 'tabular-nums')}
+                  />
+                  <span className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={1}
+                      value={slot.durationMinutes ?? 30}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        if (Number.isFinite(v) && v > 0) patchSlot(i, { ...slot, durationMinutes: v });
+                      }}
+                      className={clsx(fieldCls, 'w-14 tabular-nums')}
+                    />
+                    <span className="text-2xs text-ink-tertiary">分钟</span>
+                  </span>
+                </>
+              ) : (
+                <div className="min-w-[160px] flex-1">
+                  <RailPicker
+                    rails={rails}
+                    templates={templatesMap}
+                    value={slot.railId}
+                    onChange={(railId) => patchSlot(i, { ...slot, railId })}
+                    placeholder="选一条 Rail…"
+                  />
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => removeSlot(i)}
+                aria-label="删除时段"
+                className="ml-auto inline-flex h-5 w-5 items-center justify-center rounded-sm text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
+              >
+                <X className="h-3.5 w-3.5" strokeWidth={1.7} />
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">星期</span>
+              <WeekdayPicker
+                value={slot.weekdays}
+                onChange={(wd) =>
+                  patchSlot(i, wd ? { ...slot, weekdays: wd } : stripWeekdays(slot))
+                }
+              />
+            </div>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() => setSlots([...draft.slots, { mode: 'new', startMinutes: 9 * 60 }])}
+          className="inline-flex w-fit items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          <Plus className="h-3 w-3" strokeWidth={1.8} />
+          添加时段
+        </button>
+      </div>
+
+      <EffectiveFromPicker
+        value={effValue}
+        onChange={(v) => {
+          setEffValue(v);
+          const iso = resolveEffectiveFromValue(v);
+          setDraft({ ...draft, ...(iso ? { effectiveFrom: iso } : {}) });
+        }}
+      />
+
+      <NoteField value={draft.note} onChange={(v) => setDraft({ ...draft, note: v })} />
+    </>
+  );
+}
+
+function stripWeekdays(slot: HabitSlotDraft): HabitSlotDraft {
+  if (slot.mode === 'new') {
+    const { weekdays: _w, ...rest } = slot;
+    return rest;
+  }
+  const { weekdays: _w, ...rest } = slot;
+  return rest;
 }
