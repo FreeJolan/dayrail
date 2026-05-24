@@ -17,23 +17,24 @@ import {
   type StagingProposal,
   type TaskDraft,
   type TaskPriority,
+  type TaskStep,
   type UserProfile,
 } from '@dayrail/core';
 import { getAiApiKey, subscribeAiApiKey } from '@/lib/aiApiKey';
 import { useIme } from '@/lib/ime';
-import { MarkdownField } from './MarkdownField';
-import { RailPicker } from './RailPicker';
+import { MarkdownField } from '@/components/MarkdownField';
+import { RailPicker } from '@/components/RailPicker';
 import {
   EffectiveFromPicker,
   resolveEffectiveFromValue,
   type EffectiveFromValue,
-} from './EffectiveFromPicker';
+} from '@/components/EffectiveFromPicker';
 
-// ERD §6.7 — the AI "待确认提案" review surface. A modal (transient
-// paste → review → confirm/discard → clear), invoked via the SideNav
-// 「AI 提案」entry / `g a` / a count pill. Each proposal is reviewed and
-// edited with the app's NATIVE create-task / create-habit fields,
-// pre-filled by the AI — no invented parameter vocabulary.
+// ERD §6.7 — "Proposals": the inbox of AI-proposed items. A persistent
+// VIEW (route /proposals), reached from the SideNav like Unresolved —
+// proposals arrive (paste / future MCP) and you review → confirm/discard
+// → clear. Each proposal is edited with the app's NATIVE create-task /
+// create-habit fields, pre-filled by the AI (no invented vocabulary).
 
 const AI_BASE_URL_DEFAULT = 'https://openrouter.ai/api/v1';
 const COMMIT_TOAST_MS = 8000;
@@ -67,56 +68,7 @@ function draftLabel(draft: ProposalDraft): string {
   return draft.kind === 'task' ? draft.title : draft.name;
 }
 
-// ── Quiet entry point: a count pill, shown only when proposals wait ──
-
-export function StagingIndicator({ onOpen }: { onOpen: () => void }) {
-  const count = useStagingStore((s) => Object.keys(s.proposals).length);
-  if (count === 0) return null;
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-1.5 rounded-full bg-cta px-3.5 py-2 text-sm text-cta-foreground shadow-lg transition hover:bg-cta-hover"
-      title="按 g a 也能打开"
-    >
-      <Sparkles className="h-4 w-4" strokeWidth={1.8} aria-hidden />
-      {count} 条 AI 提案待确认
-    </button>
-  );
-}
-
-// ── The modal ──────────────────────────────────────────────────────
-
-export function StagingDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-
-  if (!open) return null;
-  return (
-    <div
-      role="dialog"
-      aria-modal
-      aria-label="AI 提案"
-      onClick={onClose}
-      className="fixed inset-0 z-[200] flex items-start justify-center overflow-y-auto bg-ink-primary/40 px-6 py-10 backdrop-blur-sm"
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-xl rounded-md bg-surface-0 shadow-xl"
-      >
-        <StagingContent onClose={onClose} />
-      </div>
-    </div>
-  );
-}
-
-function StagingContent({ onClose }: { onClose: () => void }) {
+export function ProposalsPage() {
   const navigate = useNavigate();
   const proposalsMap = useStagingStore((s) => s.proposals);
   const proposals = useMemo(
@@ -177,117 +129,105 @@ function StagingContent({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="flex max-h-[80vh] flex-col">
-      <div className="flex items-center gap-2 px-5 py-4">
-        <Sparkles className="h-4 w-4 text-ink-secondary" strokeWidth={1.6} aria-hidden />
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-primary">
-          AI 提案
-        </span>
+    <div className="mx-auto flex max-w-2xl flex-col gap-3 px-6 py-8">
+      <header className="flex items-baseline gap-2">
+        <Sparkles className="h-4 w-4 self-center text-ink-secondary" strokeWidth={1.6} aria-hidden />
+        <h1 className="font-mono text-2xs uppercase tracking-widest text-ink-primary">Proposals</h1>
         {proposals.length > 0 && (
           <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
             {proposals.length}
           </span>
         )}
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="关闭"
-          className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-tertiary transition hover:bg-surface-2 hover:text-ink-primary"
-        >
-          <X className="h-4 w-4" strokeWidth={1.7} />
-        </button>
-      </div>
+      </header>
+      <p className="text-xs leading-relaxed text-ink-tertiary">
+        把和 AI 聊出来的待办贴进来,拆成提案;你 review、改好,再落库成任务或习惯。
+      </p>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 pb-5">
-        {aiConfig.ok ? (
-          <div>
-            <MarkdownField
-              value={pasteText || undefined}
-              onCommit={(v) => setPasteText(v ?? '')}
-              placeholder="把和 AI 聊出来的待办贴进来 · 纯自然语言 / Markdown"
-              dialogTitle="AI 提案输入"
-              ariaLabel="AI 提案自然语言输入"
-            />
-            <div className="mt-2 flex items-center justify-between gap-2">
-              <span className="text-2xs text-ink-tertiary">贴完点一下别处,再「解析」</span>
-              <button
-                type="button"
-                onClick={handleParse}
-                disabled={parsing || pasteText.trim().length === 0}
-                className="inline-flex items-center gap-1 rounded-md bg-cta px-2.5 py-1 text-xs text-cta-foreground transition enabled:hover:bg-cta-hover disabled:opacity-40"
-              >
-                <Sparkles className="h-3 w-3" strokeWidth={1.8} />
-                {parsing ? '解析中…' : '解析'}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="rounded-md bg-surface-2 px-3 py-2.5 text-xs leading-relaxed text-ink-secondary">
-            {aiConfig.reason} ——{' '}
+      {aiConfig.ok ? (
+        <div>
+          <MarkdownField
+            value={pasteText || undefined}
+            onCommit={(v) => setPasteText(v ?? '')}
+            placeholder="把和 AI 聊出来的待办贴进来 · 纯自然语言 / Markdown"
+            dialogTitle="Proposals 输入"
+            ariaLabel="Proposals 自然语言输入"
+          />
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <span className="text-2xs text-ink-tertiary">贴完点一下别处,再「解析」</span>
             <button
               type="button"
-              onClick={() => {
-                navigate('/settings/ai');
-                onClose();
-              }}
-              className="text-ink-primary underline-offset-2 hover:underline"
+              onClick={handleParse}
+              disabled={parsing || pasteText.trim().length === 0}
+              className="inline-flex items-center gap-1 rounded-md bg-cta px-2.5 py-1 text-xs text-cta-foreground transition enabled:hover:bg-cta-hover disabled:opacity-40"
             >
-              去 Settings → AI 配置
-            </button>
-            ,配好就能把聊出来的待办贴进来解析。
-          </div>
-        )}
-
-        {error && (
-          <div className="rounded-md bg-warn-soft px-3 py-2 text-xs text-ink-primary">
-            {error.message}
-            {error.bodyExcerpt && (
-              <details className="mt-1">
-                <summary className="cursor-pointer text-2xs text-ink-tertiary">
-                  看看具体怎么了 ⌄
-                </summary>
-                <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all text-[10px] leading-snug text-ink-tertiary">
-                  {error.bodyExcerpt}
-                </pre>
-              </details>
-            )}
-          </div>
-        )}
-
-        {lastCommit && (
-          <div className="flex items-center justify-between gap-2 rounded-md bg-surface-2 px-3 py-2 text-xs">
-            <span className="min-w-0 truncate text-ink-secondary">已创建「{lastCommit.label}」</span>
-            <button
-              type="button"
-              onClick={handleUndoCommit}
-              className="inline-flex shrink-0 items-center gap-1 text-ink-primary transition hover:text-cta"
-            >
-              <RotateCcw className="h-3 w-3" strokeWidth={1.8} />
-              撤销
+              <Sparkles className="h-3 w-3" strokeWidth={1.8} />
+              {parsing ? '解析中…' : '解析'}
             </button>
           </div>
-        )}
+        </div>
+      ) : (
+        <div className="rounded-md bg-surface-1 px-3 py-2.5 text-xs leading-relaxed text-ink-secondary">
+          {aiConfig.reason} ——{' '}
+          <button
+            type="button"
+            onClick={() => navigate('/settings/ai')}
+            className="text-ink-primary underline-offset-2 hover:underline"
+          >
+            去 Settings → AI 配置
+          </button>
+          ,配好就能把聊出来的待办贴进来解析。
+        </div>
+      )}
 
-        {proposals.length === 0 ? (
-          <div className="py-6 text-center text-sm leading-relaxed text-ink-tertiary">
-            {aiConfig.ok
-              ? '还没有提案 —— 贴一段上面解析,或者让 Claude Code 直接塞进来(MCP,稍后支持)。'
-              : '配好 AI 后,把聊出来的待办贴进来就能在这里 review。'}
-          </div>
-        ) : (
-          <ul className="flex flex-col gap-2.5">
-            {proposals.map((p) => (
-              <li key={p.id}>
-                <ProposalCard
-                  proposal={p}
-                  onCommit={() => handleCommit(p)}
-                  onDiscard={() => useStagingStore.getState().discardProposal(p.id)}
-                />
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {error && (
+        <div className="rounded-md bg-warn-soft px-3 py-2 text-xs text-ink-primary">
+          {error.message}
+          {error.bodyExcerpt && (
+            <details className="mt-1">
+              <summary className="cursor-pointer text-2xs text-ink-tertiary">
+                看看具体怎么了 ⌄
+              </summary>
+              <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all text-[10px] leading-snug text-ink-tertiary">
+                {error.bodyExcerpt}
+              </pre>
+            </details>
+          )}
+        </div>
+      )}
+
+      {lastCommit && (
+        <div className="flex items-center justify-between gap-2 rounded-md bg-surface-1 px-3 py-2 text-xs">
+          <span className="min-w-0 truncate text-ink-secondary">已创建「{lastCommit.label}」</span>
+          <button
+            type="button"
+            onClick={handleUndoCommit}
+            className="inline-flex shrink-0 items-center gap-1 text-ink-primary transition hover:text-cta"
+          >
+            <RotateCcw className="h-3 w-3" strokeWidth={1.8} />
+            撤销
+          </button>
+        </div>
+      )}
+
+      {proposals.length === 0 ? (
+        <div className="py-10 text-center text-sm leading-relaxed text-ink-tertiary">
+          {aiConfig.ok
+            ? '还没有提案 —— 贴一段上面解析,或者让 Claude Code 直接塞进来(MCP,稍后支持)。'
+            : '配好 AI 后,把聊出来的待办贴进来就能在这里 review。'}
+        </div>
+      ) : (
+        <ul className="flex flex-col gap-2.5">
+          {proposals.map((p) => (
+            <li key={p.id}>
+              <ProposalCard
+                proposal={p}
+                onCommit={() => handleCommit(p)}
+                onDiscard={() => useStagingStore.getState().discardProposal(p.id)}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -377,7 +317,7 @@ const PRIORITY_OPTIONS: Array<{ key: TaskPriority | 'none'; label: string }> = [
 
 const SHAPE_OPTIONS: Array<{ key: ProposalShape; label: string }> = [
   { key: 'habit', label: '习惯' },
-  { key: 'task', label: '临时任务' },
+  { key: 'task', label: '任务' },
 ];
 
 const fieldCls =
@@ -399,8 +339,6 @@ function ProposalCard({
   const setDraft = (next: ProposalDraft) =>
     useStagingStore.getState().updateProposal(proposal.id, next);
 
-  // Defensive: a malformed draft (e.g. a stale blob that slipped past the
-  // hydrate sanitizer) must never white-screen the modal.
   if (draft?.kind !== 'task' && draft?.kind !== 'habit') {
     return (
       <div className="flex items-center justify-between gap-2 rounded-md bg-surface-1 p-3 text-xs text-ink-tertiary ring-1 ring-hairline/40">
@@ -474,16 +412,13 @@ function LabeledText({
   label,
   value,
   onCommit,
-  className,
 }: {
   label: string;
   value: string;
   onCommit: (next: string) => void;
-  className?: string;
 }) {
   const ime = useIme();
   const [text, setText] = useState(value);
-  // Resync if the underlying value changes (e.g. shape toggle).
   useEffect(() => setText(value), [value]);
   const commit = () => {
     const next = text.trim();
@@ -503,16 +438,19 @@ function LabeledText({
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !ime.isComposing(e)) e.currentTarget.blur();
         }}
-        className={clsx(
-          'h-8 w-full rounded-md border border-hairline/60 bg-surface-0 px-2 text-sm font-medium text-ink-primary outline-none transition focus:border-ink-secondary',
-          className,
-        )}
+        className="h-8 w-full rounded-md border border-hairline/60 bg-surface-0 px-2 text-sm font-medium text-ink-primary outline-none transition focus:border-ink-secondary"
       />
     </label>
   );
 }
 
-function NoteField({ value, onChange }: { value: string | undefined; onChange: (v: string | undefined) => void }) {
+function NoteField({
+  value,
+  onChange,
+}: {
+  value: string | undefined;
+  onChange: (v: string | undefined) => void;
+}) {
   return (
     <div className="flex flex-col gap-1">
       <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">备注</span>
@@ -541,8 +479,8 @@ function TaskFields({ draft, setDraft }: { draft: TaskDraft; setDraft: (d: Propo
     [linesMap],
   );
 
-  const setStep = (idx: number, label: string) =>
-    setDraft({ ...draft, steps: draft.steps.map((s, i) => (i === idx ? label : s)) });
+  const setStep = (idx: number, step: TaskStep) =>
+    setDraft({ ...draft, steps: draft.steps.map((s, i) => (i === idx ? step : s)) });
   const removeStep = (idx: number) =>
     setDraft({ ...draft, steps: draft.steps.filter((_, i) => i !== idx) });
 
@@ -570,15 +508,15 @@ function TaskFields({ draft, setDraft }: { draft: TaskDraft; setDraft: (d: Propo
           <SegToggle
             value={draft.priority ?? 'none'}
             options={PRIORITY_OPTIONS}
-            onChange={(p) =>
-              setDraft(p === 'none' ? omitPriority(draft) : { ...draft, priority: p })
-            }
+            onChange={(p) => setDraft(p === 'none' ? omitPriority(draft) : { ...draft, priority: p })}
           />
         </div>
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">切分(选填)</span>
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          切分(选填 · 可填里程碑 %)
+        </span>
         {draft.steps.length === 0 && (
           <span className="text-2xs text-ink-tertiary">无切分 —— 作为单条任务创建</span>
         )}
@@ -586,11 +524,33 @@ function TaskFields({ draft, setDraft }: { draft: TaskDraft; setDraft: (d: Propo
           <div key={i} className="flex items-center gap-1.5">
             <input
               type="text"
-              value={step}
+              value={step.label}
               placeholder="步骤名"
-              onChange={(e) => setStep(i, e.target.value)}
+              onChange={(e) => setStep(i, { ...step, label: e.target.value })}
               className={clsx(fieldCls, 'flex-1')}
             />
+            <span className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={step.percent ?? ''}
+                placeholder="里程碑"
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === '') {
+                    setStep(i, { label: step.label });
+                  } else {
+                    const n = Number(v);
+                    if (Number.isFinite(n)) {
+                      setStep(i, { label: step.label, percent: Math.max(0, Math.min(100, n)) });
+                    }
+                  }
+                }}
+                className={clsx(fieldCls, 'w-16 tabular-nums')}
+              />
+              <span className="text-2xs text-ink-tertiary">%</span>
+            </span>
             <button
               type="button"
               onClick={() => removeStep(i)}
@@ -603,11 +563,11 @@ function TaskFields({ draft, setDraft }: { draft: TaskDraft; setDraft: (d: Propo
         ))}
         <button
           type="button"
-          onClick={() => setDraft({ ...draft, steps: [...draft.steps, '新步骤'] })}
+          onClick={() => setDraft({ ...draft, steps: [...draft.steps, { label: '新步骤' }] })}
           className="inline-flex w-fit items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
         >
           <Plus className="h-3 w-3" strokeWidth={1.8} />
-          添加步骤
+          添加切分
         </button>
       </div>
 
@@ -716,9 +676,7 @@ function HabitFields({ draft, setDraft }: { draft: HabitDraft; setDraft: (d: Pro
               <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">星期</span>
               <WeekdayPicker
                 value={slot.weekdays}
-                onChange={(wd) =>
-                  patchSlot(i, wd ? { ...slot, weekdays: wd } : stripWeekdays(slot))
-                }
+                onChange={(wd) => patchSlot(i, wd ? { ...slot, weekdays: wd } : stripWeekdays(slot))}
               />
             </div>
           </div>
@@ -748,10 +706,6 @@ function HabitFields({ draft, setDraft }: { draft: HabitDraft; setDraft: (d: Pro
 }
 
 function stripWeekdays(slot: HabitSlotDraft): HabitSlotDraft {
-  if (slot.mode === 'new') {
-    const { weekdays: _w, ...rest } = slot;
-    return rest;
-  }
   const { weekdays: _w, ...rest } = slot;
   return rest;
 }

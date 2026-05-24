@@ -24,6 +24,13 @@ import {
 export type ProposalShape = 'task' | 'habit';
 
 /** A task proposal in the user's native task fields. */
+/** A 切分 step → a TaskOccurrence (label + optional milestone %). */
+export interface TaskStep {
+  label: string;
+  /** 0–100 milestone position on the parent task (§10.6). */
+  percent?: number;
+}
+
 export interface TaskDraft {
   kind: 'task';
   title: string;
@@ -31,8 +38,8 @@ export interface TaskDraft {
   priority?: TaskPriority;
   /** Owning line; defaults to Inbox. */
   lineId: string;
-  /** §10.6 切分 steps — each becomes a TaskOccurrence label. */
-  steps: string[];
+  /** §10.6 切分 steps — each becomes a TaskOccurrence. */
+  steps: TaskStep[];
 }
 
 /** One time-slot of a habit: bind an EXISTING rail, or create a NEW one
@@ -141,9 +148,14 @@ export async function commitDraft(
       ...(draft.priority ? { priority: draft.priority } : {}),
     };
     await w.createTask(task, sessionId);
-    for (const label of draft.steps) {
-      const trimmed = label.trim();
-      if (trimmed) await w.addOccurrence(task.id, { label: trimmed }, sessionId);
+    for (const step of draft.steps) {
+      const label = step.label.trim();
+      if (!label) continue;
+      await w.addOccurrence(
+        task.id,
+        { label, ...(step.percent !== undefined ? { percent: step.percent } : {}) },
+        sessionId,
+      );
     }
   } else {
     const line: Line = {

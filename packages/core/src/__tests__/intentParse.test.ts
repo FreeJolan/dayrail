@@ -74,7 +74,7 @@ describe('toProposalDraft', () => {
     const d = toProposalDraft(VALID.proposals[1]!);
     if (d.kind === 'task') {
       expect(d.priority).toBe('P1');
-      expect(d.steps).toEqual(['提纲']);
+      expect(d.steps).toEqual([{ label: '提纲' }]);
     }
   });
 });

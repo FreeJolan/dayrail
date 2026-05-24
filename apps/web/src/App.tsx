@@ -35,7 +35,7 @@ import { Pending } from './pages/Pending';
 import { Settings } from './pages/Settings';
 import { Calendar } from './pages/Calendar';
 import { BacklogDrawer } from './components/BacklogDrawer';
-import { StagingDialog, StagingIndicator } from './components/StagingDialog';
+import { ProposalsPage } from './pages/ProposalsPage';
 import { DevModeIndicator } from './components/DevModeIndicator';
 import { ImportSuccessToast } from './components/ImportSuccessToast';
 import { ReasonToast } from './components/ReasonToast';
@@ -153,8 +153,7 @@ function TaskDragPreview({ taskId: id }: { taskId: string }) {
 function Shell() {
   const cheatsheet = useCheatsheetToggle();
   const backlog = useBacklogDrawerState();
-  const [stagingOpen, setStagingOpen] = useState(false);
-  useGlobalShortcuts(cheatsheet.show, backlog.toggle, () => setStagingOpen((o) => !o));
+  useGlobalShortcuts(cheatsheet.show, backlog.toggle);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const { mirror, setMirror } = useDragMirror();
 
@@ -462,7 +461,7 @@ function Shell() {
     <div className="flex min-h-screen w-full bg-surface-0">
       <DevModeIndicator />
       <UpdateBanner />
-      <SideNav onOpenStaging={() => setStagingOpen(true)} />
+      <SideNav />
       <main className="min-w-0 flex-1">
         <PendingDepartureBanner />
         <ModeUpgradeToast />
@@ -480,6 +479,7 @@ function Shell() {
           <Route path="/review/:scope" element={<Review />} />
           <Route path="/review/:scope/:anchor" element={<Review />} />
           <Route path="/pending" element={<Pending />} />
+          <Route path="/proposals" element={<ProposalsPage />} />
           <Route path="/calendar" element={<Calendar />} />
           <Route path="/templates" element={<TemplateEditor />} />
           <Route path="/templates/:templateKey" element={<TemplateEditor />} />
@@ -489,8 +489,6 @@ function Shell() {
         </Routes>
       </main>
       <BacklogDrawer open={backlog.open} onToggle={backlog.toggle} />
-      <StagingDialog open={stagingOpen} onClose={() => setStagingOpen(false)} />
-      <StagingIndicator onOpen={() => setStagingOpen(true)} />
       <ShortcutCheatsheet open={cheatsheet.open} onClose={cheatsheet.hide} />
       <ReasonToast
         state={shiftPrompt.toast}

@@ -54,7 +54,7 @@ const TASK: TaskDraft = {
   lineId: 'line-inbox',
   priority: 'P1',
   note: '先列提纲',
-  steps: ['提纲', '初稿'],
+  steps: [{ label: '提纲' }, { label: '初稿', percent: 50 }],
 };
 
 const HABIT: HabitDraft = {
@@ -86,10 +86,12 @@ describe('commitDraft · task', () => {
       note: '先列提纲',
       status: 'pending',
     });
-    const stepLabels = calls
+    const occs = calls
       .filter((c) => c.op === 'addOccurrence')
-      .map((c) => (c.arg as { occ: { label?: string } }).occ.label);
-    expect(stepLabels).toEqual(['提纲', '初稿']);
+      .map((c) => (c.arg as { occ: { label?: string; percent?: number } }).occ);
+    expect(occs.map((o) => o.label)).toEqual(['提纲', '初稿']);
+    expect(occs[0]?.percent).toBeUndefined();
+    expect(occs[1]?.percent).toBe(50); // milestone carried through
     for (const c of calls.slice(1, -1)) expect(c.sessionId).toBe(sid);
     expect(calls.every((c) => !/update|delete|remove/i.test(c.op))).toBe(true);
   });
@@ -97,7 +99,12 @@ describe('commitDraft · task', () => {
   it('skips blank steps', async () => {
     const { writers, calls } = recordingWriters();
     await commitDraft(
-      { kind: 'task', title: 'x', lineId: 'line-inbox', steps: ['', '  ', '真步骤'] },
+      {
+        kind: 'task',
+        title: 'x',
+        lineId: 'line-inbox',
+        steps: [{ label: '' }, { label: '  ' }, { label: '真步骤' }],
+      },
       writers,
       { genId: counterGen() },
     );

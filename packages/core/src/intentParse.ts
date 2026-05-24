@@ -59,7 +59,8 @@ export function toProposalDraft(p: ParseResult['proposals'][number]): ProposalDr
       ...(p.note ? { note: p.note } : {}),
       ...(p.priority ? { priority: p.priority } : {}),
       lineId: INBOX_LINE_ID,
-      steps: p.steps ?? [],
+      // AI lists step labels; the user adds milestone % in the card.
+      steps: (p.steps ?? []).map((label) => ({ label })),
     };
   }
   return {

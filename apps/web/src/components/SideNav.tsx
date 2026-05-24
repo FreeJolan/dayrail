@@ -37,7 +37,7 @@ export type NavKey =
   | 'calendar'
   | 'pending'
   | 'settings'
-  | 'ai-staging';
+  | 'proposals';
 
 interface Item {
   key: NavKey;
@@ -56,10 +56,7 @@ interface Item {
 // on the Backlog page", which it isn't. The drawer is still reachable
 // via its own collapsed handle on the right and via the `g b`
 // keyboard shortcut (wired up in App.tsx, independent of this file).
-interface SideNavProps {
-  /** Opens the AI 提案 modal (ERD §6.7). */
-  onOpenStaging: () => void;
-}
+interface SideNavProps {}
 
 // Three primary groups separated by mode of use, then config below
 // after a wider gap. Splitting the primary items makes the rail read
@@ -76,6 +73,9 @@ const PLANNING_ITEMS: Item[] = [
 const TASK_ITEMS: Item[] = [
   { key: 'tasks', label: 'Tasks', icon: ListChecks, path: '/tasks/inbox', prefix: '/tasks' },
   { key: 'pending', label: 'Unresolved', icon: Inbox, path: '/pending' },
+  // ERD §6.7 — the AI Proposals inbox. A real view (like Unresolved):
+  // proposals arrive, you review → confirm/discard → clear.
+  { key: 'proposals', label: 'Proposals', icon: Wand2, path: '/proposals', prefix: '/proposals' },
 ];
 
 const REFLECTION_ITEMS: Item[] = [
@@ -89,12 +89,6 @@ const SECONDARY_ITEMS: Item[] = [
   { key: 'settings', label: 'Settings', icon: Settings, path: '/settings', prefix: '/settings' },
 ];
 
-// ERD §6.7 — opens the AI 提案 modal. An ACTION item (click → modal),
-// not a route, so it never reads as "active" (the reason the old
-// Backlog toggle was removed from here doesn't apply). `path` is unused
-// by NavItem; badge = pending proposal count.
-const AI_STAGING_ITEM: Item = { key: 'ai-staging', label: 'AI 提案', icon: Wand2, path: '' };
-
 const COLLAPSE_KEY = 'dayrail.sidenav.collapsed';
 
 function isActive(pathname: string, item: Item): boolean {
@@ -103,7 +97,7 @@ function isActive(pathname: string, item: Item): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
-export function SideNav({ onOpenStaging }: SideNavProps) {
+export function SideNav(_props: SideNavProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -154,28 +148,21 @@ export function SideNav({ onOpenStaging }: SideNavProps) {
                 active={isActive(location.pathname, it)}
                 onClick={() => navigate(it.path)}
                 collapsed={collapsed}
-                badgeDot={it.key === 'pending' && pendingCount > 0}
+                badgeDot={
+                  (it.key === 'pending' && pendingCount > 0) ||
+                  (it.key === 'proposals' && stagingCount > 0)
+                }
                 badgeTooltip={
                   it.key === 'pending' && pendingCount > 0
                     ? `${pendingCount} unmarked`
-                    : undefined
+                    : it.key === 'proposals' && stagingCount > 0
+                      ? `${stagingCount} 条待确认`
+                      : undefined
                 }
               />
             ))}
           </div>
         ))}
-        <div className="mt-3">
-          <NavItem
-            item={AI_STAGING_ITEM}
-            active={false}
-            onClick={onOpenStaging}
-            collapsed={collapsed}
-            badgeDot={stagingCount > 0}
-            badgeTooltip={
-              stagingCount > 0 ? `${stagingCount} 条 AI 提案待确认 · g a` : 'AI 提案 · g a'
-            }
-          />
-        </div>
         <div aria-hidden className="mt-4" />
         {SECONDARY_ITEMS.map((it) => (
           <NavItem
