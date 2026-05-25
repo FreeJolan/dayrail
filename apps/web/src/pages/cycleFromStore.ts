@@ -255,11 +255,12 @@ export function deriveCycleFromStore(
     return priorityRank(a.priority) - priorityRank(b.priority);
   };
   for (const slot of slotsByKey.values()) {
-    // §4.1 v0.4.4 · if any task in the slot carries a user-defined
-    // `slotOrder`, the whole slot sorts by `slotOrder` asc (tasks
-    // without one fall to the bottom) — the user has explicitly
-    // arranged this slot, and we don't second-guess. Otherwise fall
-    // back to the derived state→priority sort.
+    // §4.1 v0.4.4 (occurrences: §10.6 v0.13) · if any pill in the slot
+    // carries a user-defined `slotOrder` — task OR 切分 (occurrence) —
+    // the whole slot sorts by `slotOrder` asc (pills without one fall
+    // to the bottom). The user has explicitly arranged this slot, and
+    // we don't second-guess. Otherwise fall back to the derived
+    // state→priority sort.
     const hasUserOrder = slot.tasks.some((t) => t.slotOrder != null);
     if (hasUserOrder) {
       slot.tasks.sort((a, b) => {
@@ -377,8 +378,12 @@ function buildOccurrenceSummary(
     subItemsTotal: 0,
     ...(milestone != null && { milestonePercent: milestone }),
     ...(task.priority != null && { priority: task.priority }),
-    // Occurrences use task-relative `order`; cycle-slot ordering for
-    // occurrence pills follows that order rather than `slotOrder`.
+    // §10.6 v0.13 — cycle-slot ordering for 切分 pills follows the
+    // occurrence's own slot-local `slotOrder` (set by drag-reorder),
+    // the same field the slot sort below reads for task pills. The
+    // task-relative `occ.order` drives the Task detail / Pending row
+    // order instead, and is intentionally NOT consulted here.
+    ...(occ.slotOrder != null && { slotOrder: occ.slotOrder }),
   };
 }
 

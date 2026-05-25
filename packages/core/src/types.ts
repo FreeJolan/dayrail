@@ -604,8 +604,19 @@ export interface TaskOccurrence {
   status: 'pending' | 'done' | 'archived';
   /** Sort key in discrete-step mode (Task detail / Pending row order).
    *  Unused in pure-percent mode. Migration from subItems uses array
-   *  index. */
+   *  index. TASK-RELATIVE: one sequence across all of a Task's
+   *  occurrences regardless of which slot each lands in. Distinct from
+   *  `slotOrder` below. */
   order?: number;
+  /** §4.1 / §10.6 v0.13 · per-SLOT user-defined ordering for the 切分
+   *  (occurrence) pill in the Cycle grid — the occurrence-side mirror
+   *  of `Task.slotOrder`. SLOT-LOCAL: ranks this occurrence against the
+   *  OTHER pills (tasks and/or occurrences) sharing its `(railId, date)`
+   *  cell, set when the user drags to reorder within a slot. Orthogonal
+   *  to `order` (task-relative). When no pill in a slot carries a
+   *  `slotOrder`, the derived state→priority sort applies, so untouched
+   *  slots keep their legacy ordering end-to-end. */
+  slotOrder?: number;
   doneAt?: string;
   archivedAt?: string;
   /** ERD §10.6 v0.12.2 — this occurrence's own Markdown note, rendered
