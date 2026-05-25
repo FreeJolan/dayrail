@@ -2030,7 +2030,6 @@ function OccurrenceRow({
           placeholder="%"
           className="h-6 w-12 rounded-sm bg-transparent px-1 text-right font-mono text-2xs tabular-nums text-ink-secondary outline-none transition focus:bg-surface-0 placeholder:text-ink-tertiary"
         />
-        {slotChip}
         <button
           type="button"
           onClick={() => setNoteOpen((v) => !v)}
@@ -2055,6 +2054,11 @@ function OccurrenceRow({
           <X className="h-3 w-3" strokeWidth={1.8} />
         </button>
       </div>
+      {/* Schedule pill on its own line, indented to align under the name
+          (pl matches the checkbox + gap = note-editor indent). Keeps the
+          name input at full flex-1 width so long slice labels stay legible
+          instead of being crushed by the date·rail chip. */}
+      <div className="pl-[1.375rem]">{slotChip}</div>
       {noteOpen && (
         <div className="pl-[1.375rem] pr-1">
           <MarkdownField
