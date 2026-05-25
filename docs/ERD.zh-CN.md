@@ -3221,6 +3221,11 @@ type TaskOccurrence = {
                                // 'deleted' 走宿主 Task 的删除路径（occurrence 自身不软删）
   order?: number;              // 离散步骤模式下的相对次序（Task 详情 / Pending 内排序）；
                                // percent 模式下不重要。新建不预填，老 subItems 迁移时取 array index。
+                               // **任务相对**：跨该 Task 全部 occurrence 的一条序列，与落在哪个 slot 无关。
+  slotOrder?: number;          // v0.13+ · 切分 pill 在 Cycle 格子里的**槽内**拖拽次序，是 Task.slotOrder 的
+                               // occurrence 侧镜像。**槽局部**：与同一 (railId, date) 格里其它 pill（task 和/或
+                               // occurrence）一起排，用户在 slot 内拖动重排时写入。与 order（任务相对）正交。
+                               // slot 内无任一 pill 带 slotOrder 时走派生 state→priority 排序，老数据零迁移。
   doneAt?: string;             // ISO 时间戳
   archivedAt?: string;
   note?: string;               // v0.12.2+ · 该切分自己的 Markdown 备注（按 §5.5.4 渲染，与 Task.note
@@ -3563,7 +3568,7 @@ v0.11 把"调度原子"从 `Task` 上剥离成独立实体 `TaskOccurrence`：�
 
 #### 实体定义
 
-完整 schema 在 §10.4 `TaskOccurrence`。关键字段：`taskId`（外键）/ `slot?`（与 Task.slot 同形）/ `label?`（步骤名）/ `percent?`（主 Task 的里程碑标记）/ `status` / `order?` / `note?`（该切分自己的 Markdown 备注 · v0.12.2 起 · 见本节末「v0.12.2」节）。
+完整 schema 在 §10.4 `TaskOccurrence`。关键字段：`taskId`（外键）/ `slot?`（与 Task.slot 同形）/ `label?`（步骤名）/ `percent?`（主 Task 的里程碑标记）/ `status` / `order?`（任务相对次序）/ `slotOrder?`（v0.13+ · 槽内拖拽次序 · 见本节末「v0.13」节）/ `note?`（该切分自己的 Markdown 备注 · v0.12.2 起 · 见本节末「v0.12.2」节）。
 
 #### 两种使用形态（彼此不互斥，可混搭）
 
@@ -3656,7 +3661,7 @@ Task.subItems[i] → TaskOccurrence{
 #### 现有交互 surface 改动一览
 
 - **Today Track**（§5.2）—— RailCard 行内的 Task 行改成展示 `occurrence.label ?? task.title`，percent 改读 occurrence。完成按钮作用于 occurrence。
-- **Cycle View**（§5.3）—— Slot 上的 task pill 改 occurrence pill；拖拽对象是 occurrence。Task 详情抽屉的"切分"区块同时管理已排 / 未排 occurrence。
+- **Cycle View**（§5.3）—— Slot 上的 task pill 改 occurrence pill；拖拽对象是 occurrence。跨 slot 拖拽 → `scheduleTaskOccurrence`；**同 slot 内拖拽重排 → 写 `occurrence.slotOrder`（v0.13，见本节末）**。Task 详情抽屉的"切分"区块同时管理已排 / 未排 occurrence。
 - **Tasks 视图**（§5.5）—— Task 列表沿用 Task 聚合；进度显示读 occurrence 的 max(percent)。Task 详情抽屉的旧"子任务"区块改名"切分"，统一管理 occurrence。
 - **Pending 队列**（§5.7）—— 行级单位从 Task 改为 occurrence。
 - **Review**（§5.8）—— heatmap cell 的 "shifted" / "completed" 计数源从 task 改为 occurrence；day-level 完成数同步细化。
@@ -3750,6 +3755,17 @@ v0.12.4 只修了 Tasks 页,**漏了 Backlog**。dogfood 真数据(2026-05-23 �
 - `deleted` → 派生短路保持 `deleted` → 仍隐藏(回收站语义,正确);无 occurrence 的旧任务 `deriveTaskStatus` 原样返回 raw 值,legacy 行为不变。
 
 **已知遗留(本次不做)**:删任务不级联清理它的切分 → 删除的任务下会留"孤儿"pending 切分(本次真数据里 NNG Game / 11111 两个 deleted 任务各留了几条)。它们按回收站语义本就不该在 backlog 显示,所以不影响本修;但作为数据卫生,删/归档任务时级联处理切分留作后续。
+
+#### v0.13 修正纪要 · 切分 pill 同 slot 内拖拽排序落地
+
+**Bug**:在 Cycle 格子里把同一 slot 内的切分(occurrence)pill 拖动重排,松手后顺序回弹、不生效。三处叠加断链:(1)`handleDragEnd`(`App.tsx`)的 occurrence 分支在同 slot 时直接 early-return,**走不到** `setSlotTaskOrder`;(2)`buildOccurrenceSummary`(`cycleFromStore.ts`)刻意不投影任何排序字段,注释称"切分跟随 task-relative 的 `order`";(3)但 slot 排序(`deriveCycleFromStore`)**只读 `slotOrder`、从不读 `order`**——纯切分 slot `hasUserOrder=false`,回退到 state→priority。于是拖拽的视觉重排(dnd-kit transform)在 drop 后被重新派生排序覆盖回原样。本质是**排序信息存放点漂移**(同 §10.5「元数据生命周期」类):task 顺序存 `slotOrder`,切分顺序按设计该存 `order`,但读路径压根没接 `order`,写、投影、读三处全断。
+
+**修(v0.13,路线 A · 对齐既有 task 模型)**:给 `TaskOccurrence` 加 occurrence 侧的 `slotOrder?`(槽局部,与 task-relative 的 `order` 正交)。
+- 写:`setSlotTaskOrder`(store)按 rowId 路由——task id 写 `tasks` map、occurrence id 写 `taskOccurrences` map,各自盖 `slotOrder`。混合 slot(task + 切分)与纯切分 slot 都能落地。`handleDragEnd` 的 occurrence 分支同 slot 时也调用它(跨 slot 仍先 `scheduleTaskOccurrence`)。
+- 投影:`buildOccurrenceSummary` 把 `occ.slotOrder` 投到 summary。
+- 读:slot 排序的 `slotOrder` 闸已同时覆盖 task 与切分,无需改判定逻辑。
+- **零迁移**:slotOrder 纯增量字段,老切分无此字段 → 仍走 state→priority,legacy 行为不变。materializer 的习惯自动任务是 `Task`(非 occurrence),不受影响、也不会回写覆盖。
+- **未改**:off-rail 行(`__offrail__`)与拖到格子空白 padding 仍是 no-op(无意义排序位 / 无插入索引),与 task 一致。`occ.order`(Task 详情 / Pending 排序)语义不动。
 
 ***
 

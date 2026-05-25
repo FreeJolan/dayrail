@@ -2354,21 +2354,37 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
   },
 
   // Legacy: store.ts:2161. Caller-supplied visual order; assigns
-  // slotOrder = 0..N-1, skipping tasks that are already at their
-  // target index.
+  // slotOrder = 0..N-1, skipping rows already at their target index.
+  //
+  // §10.6 v0.13 — a slot's pills are keyed by rowId: a Task id for
+  // legacy single-pill tasks, an occurrence id for 切分 (occurrence)
+  // pills. Route each id to its owning entity map and stamp `slotOrder`
+  // there, so mixed slots (some tasks + some occurrences) and
+  // pure-occurrence slots both persist drag-reorder. (`orderedTaskIds`
+  // keeps its legacy name but carries rowIds.)
   setSlotTaskOrder: async (slot, orderedTaskIds, sessionId) => {
     void slot;
     const doc = getYDoc();
     doc.transact(() => {
       const tasksMap = getEntityMap(doc, 'tasks');
+      const occMap = getEntityMap(doc, 'taskOccurrences');
       for (let i = 0; i < orderedTaskIds.length; i++) {
         const id = orderedTaskIds[i]!;
         const taskYMap = tasksMap.get(id);
-        if (!(taskYMap instanceof Y.Map)) continue;
-        const t = taskYMap as YMap<unknown>;
-        if (t.get('status') === 'deleted') continue;
-        if (t.get('slotOrder') === i) continue;
-        t.set('slotOrder', i);
+        if (taskYMap instanceof Y.Map) {
+          const t = taskYMap as YMap<unknown>;
+          if (t.get('status') === 'deleted') continue;
+          if (t.get('slotOrder') === i) continue;
+          t.set('slotOrder', i);
+          continue;
+        }
+        const occYMap = occMap.get(id);
+        if (occYMap instanceof Y.Map) {
+          const o = occYMap as YMap<unknown>;
+          if (o.get('status') === 'archived') continue;
+          if (o.get('slotOrder') === i) continue;
+          o.set('slotOrder', i);
+        }
       }
     }, sessionId ?? 'setSlotTaskOrder');
   },

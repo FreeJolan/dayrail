@@ -3410,6 +3410,14 @@ type TaskOccurrence = {
   order?: number;              // relative order in discrete-step mode (Task detail / Pending sorting);
                                // unimportant in percent-only mode. New occurrences leave this empty;
                                // legacy subItems migration takes the array index.
+                               // **TASK-RELATIVE**: one sequence across all of a Task's occurrences,
+                               // regardless of which slot each lands in.
+  slotOrder?: number;          // v0.13+ · per-SLOT drag order of the occurrence pill in the Cycle grid —
+                               // the occurrence-side mirror of Task.slotOrder. **SLOT-LOCAL**: ranks this
+                               // occurrence against the other pills (tasks and/or occurrences) sharing its
+                               // (railId, date) cell, set on same-slot drag-reorder. Orthogonal to `order`
+                               // (task-relative). When no pill in a slot carries slotOrder, the derived
+                               // state→priority sort applies — zero migration for legacy data.
   doneAt?: string;             // ISO timestamp
   archivedAt?: string;
   note?: string;               // v0.12.2+ · this occurrence's own Markdown note (rendered per §5.5.4
@@ -3823,8 +3831,10 @@ the identity unit; its status becomes derived (§10.1 exception).
 Full schema lives in §10.4 `TaskOccurrence`. Key fields: `taskId`
 (foreign key) / `slot?` (same shape as Task.slot) / `label?` (step
 name) / `percent?` (milestone marker on the parent Task) / `status`
-/ `order?` / `note?` (the occurrence's own Markdown note · since
-v0.12.2 · see the "v0.12.2" note at the end of this section).
+/ `order?` (task-relative order) / `slotOrder?` (v0.13+ · per-slot
+drag order · see the "v0.13" note at the end of this section) /
+`note?` (the occurrence's own Markdown note · since v0.12.2 · see the
+"v0.12.2" note at the end of this section).
 
 #### Two usage shapes (not mutually exclusive — they compose)
 
@@ -3993,8 +4003,10 @@ one", which the upgrade prompt addresses directly.
   ?? task.title`, percent reads from occurrence. Done button
   operates on the occurrence.
 - **Cycle View** (§5.3) — slot's task pills become occurrence pills;
-  drag target is the occurrence. Task detail drawer's "split" block
-  manages both scheduled and unscheduled occurrences.
+  drag target is the occurrence. Cross-slot drag → `scheduleTaskOccurrence`;
+  **same-slot drag-reorder → writes `occurrence.slotOrder` (v0.13, see
+  the note at the end of this section)**. Task detail drawer's "split"
+  block manages both scheduled and unscheduled occurrences.
 - **Tasks view** (§5.5) — Task list stays Task-aggregated; progress
   reads `max(occurrence.percent)`. The Task detail drawer's old
   "subItems" block renames to "split", unifying occurrence
@@ -4263,6 +4275,46 @@ occurrences (in this snapshot, deleted tasks NNG Game / 11111 each
 stranded a few). They shouldn't show in the backlog anyway (trash
 semantics), so this doesn't affect the fix; cascading occurrence
 cleanup on task delete/archive is left as a follow-up data-hygiene item.
+
+#### v0.13 correction · same-slot drag-reorder of occurrence pills now persists
+
+**Bug**: dragging occurrence ("split") pills to reorder them *within
+one slot* in the Cycle grid snapped back on release — no effect. Three
+compounding breaks: (1) the occurrence branch of `handleDragEnd`
+(`App.tsx`) early-returned on a same-slot drop, so it **never reached**
+`setSlotTaskOrder`; (2) `buildOccurrenceSummary` (`cycleFromStore.ts`)
+deliberately projected no ordering field, its comment claiming splits
+"follow the task-relative `order`"; (3) but the slot sort
+(`deriveCycleFromStore`) **only reads `slotOrder`, never `order`** — a
+pure-occurrence slot has `hasUserOrder=false` and falls back to
+state→priority. So the dnd-kit transform you saw during the drag was
+overwritten by the re-derived sort on drop. Root cause is **ordering
+info stored in the wrong place** (same class as the §10.5
+metadata-lifecycle anti-pattern): task order lives in `slotOrder`,
+occurrence order was meant to live in `order`, but the read path never
+consulted `order` — write, projection, and read were all severed.
+
+**Fix (v0.13, route A · align with the existing task model)**: give
+`TaskOccurrence` its own occurrence-side `slotOrder?` (slot-local,
+orthogonal to the task-relative `order`).
+- Write: `setSlotTaskOrder` (store) routes by rowId — task ids stamp
+  `slotOrder` on the `tasks` map, occurrence ids on the
+  `taskOccurrences` map. Mixed slots (tasks + splits) and
+  pure-occurrence slots both persist. The occurrence branch of
+  `handleDragEnd` now calls it on same-slot drops too (cross-slot still
+  fires `scheduleTaskOccurrence` first).
+- Projection: `buildOccurrenceSummary` projects `occ.slotOrder` into the
+  summary.
+- Read: the slot sort's `slotOrder` gate already covers tasks AND
+  splits — no change to the decision logic.
+- **Zero migration**: `slotOrder` is purely additive; legacy
+  occurrences without it still sort by state→priority. The
+  materializer's habit auto-tasks are `Task`s (not occurrences), so they
+  are unaffected and never overwrite it.
+- **Unchanged**: the off-rail row (`__offrail__`) and drops on empty
+  cell padding stay no-ops (no meaningful order slot / no insertion
+  index), matching task behavior. `occ.order` (Task detail / Pending
+  ordering) is left untouched.
 
 ---
 

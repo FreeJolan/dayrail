@@ -414,13 +414,15 @@ function Shell() {
       const store = useStore.getState();
       const sessionId = currentCycleEditSessionRef.current ?? undefined;
 
-      // ERD §10.6 v0.11 — when the dragged pill represents a
-      // TaskOccurrence (id matches an entry in taskOccurrences), route
-      // to scheduleTaskOccurrence instead of scheduleTaskToRail. Per-
-      // slot reorder via setSlotTaskOrder doesn't apply to occurrences
-      // in v0.11 (occurrence.order is task-relative, not slot-relative)
-      // and is skipped on this branch — visual ordering follows the
-      // occurrence.order set in the Task detail drawer.
+      // ERD §10.6 — when the dragged pill represents a TaskOccurrence
+      // (id matches an entry in taskOccurrences), route the cross-slot
+      // move to scheduleTaskOccurrence instead of scheduleTaskToRail.
+      // v0.13 — per-slot reorder of 切分 pills now persists too: the
+      // occurrence carries its own slot-local `slotOrder` (set by
+      // setSlotTaskOrder, which routes occurrence rowIds to the
+      // taskOccurrences map). finalOrder is keyed by rowId, so the
+      // occurrence id passes straight through. This is the
+      // occurrence-side mirror of the task branch below.
       const occ = store.taskOccurrences[taskId];
       if (occ) {
         const existingOccSlot = occ.slot;
@@ -428,9 +430,12 @@ function Shell() {
           !!existingOccSlot &&
           existingOccSlot.date === finalMeta.date &&
           existingOccSlot.railId === finalMeta.railId;
-        if (!sameOccSlot) {
-          void store.scheduleTaskOccurrence(occ.id, finalMeta, sessionId);
-        }
+        void (async () => {
+          if (!sameOccSlot) {
+            await store.scheduleTaskOccurrence(occ.id, finalMeta, sessionId);
+          }
+          await store.setSlotTaskOrder(finalMeta, finalOrder, sessionId);
+        })();
         return;
       }
 
