@@ -19,10 +19,18 @@ mod update_cleanup;
 
 use tauri::Manager;
 use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 const RESTART_REASON_ENV: &str = "DAYRAIL_RESTART_REASON";
 const RESTART_REASON_UPDATE: &str = "update";
 const AUTOSTART_ARG: &str = "--autostart";
+
+/// Window-geometry flags persisted + restored by tauri-plugin-window-state
+/// (ERD §15.11). Single source of truth so the save-before-restart in
+/// `relaunch_for_update` can't drift from the plugin registration.
+fn persisted_window_flags() -> StateFlags {
+    StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
+}
 
 /// Restart the app after an updater install, signalling the new
 /// process that it should foreground itself instead of inheriting
@@ -32,6 +40,13 @@ const AUTOSTART_ARG: &str = "--autostart";
 /// which `app.restart()` uses under the hood.
 #[tauri::command]
 fn relaunch_for_update(app: tauri::AppHandle) {
+    // ERD §15.11 — persist window geometry NOW. The plugin only writes
+    // to disk on WindowEvent::CloseRequested / RunEvent::Exit, and
+    // `app.restart()` below does NOT emit RunEvent::Exit — so without
+    // this explicit save the post-update window forgets its size /
+    // position and snaps back to the tauri.conf default. (Regression
+    // from when window-state landed in v0.14.0.)
+    let _ = app.save_window_state(persisted_window_flags());
     std::env::set_var(RESTART_REASON_ENV, RESTART_REASON_UPDATE);
     app.restart();
 }
@@ -49,12 +64,7 @@ pub fn run() {
         // the config default should always win.
         .plugin(
             tauri_plugin_window_state::Builder::new()
-                .with_state_flags(
-                    tauri_plugin_window_state::StateFlags::SIZE
-                        | tauri_plugin_window_state::StateFlags::POSITION
-                        | tauri_plugin_window_state::StateFlags::MAXIMIZED
-                        | tauri_plugin_window_state::StateFlags::FULLSCREEN,
-                )
+                .with_state_flags(persisted_window_flags())
                 .build(),
         )
         .plugin(tauri_plugin_shell::init())
