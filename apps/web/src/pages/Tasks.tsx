@@ -55,7 +55,7 @@ import {
 import { MarkdownField } from '@/components/MarkdownField';
 import { RailPicker } from '@/components/RailPicker';
 import { SchedulePopover } from '@/components/SchedulePopover';
-import { pickTemplateForDate } from '@/pages/cycleFromStore';
+import { useResolvedTemplateKey } from '@/lib/useResolvedTemplate';
 import { HabitDetail } from './HabitDetail';
 import { ReasonToast } from '@/components/ReasonToast';
 import {
@@ -2113,35 +2113,9 @@ function OccurrenceSlotPicker({
   const [railId, setRailId] = useState(occurrence.slot?.railId ?? '');
 
   const templatesMap = useStore((s) => s.templates);
-  const calendarRules = useStore((s) => s.calendarRules);
-  const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
-  const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
-  const userDayNotes = useStore((s) => s.userDayNotes);
-  const userProfile = useStore((s) => s.userProfile);
 
-  const resolvedTemplateKey = useMemo(
-    () =>
-      pickTemplateForDate(
-        {
-          templates: templatesMap,
-          calendarRules,
-          calendarRuleRevisions,
-          calendarRuleTombstones,
-          userDayNotes,
-          userProfile,
-        },
-        date,
-      ),
-    [
-      templatesMap,
-      calendarRules,
-      calendarRuleRevisions,
-      calendarRuleTombstones,
-      userDayNotes,
-      userProfile,
-      date,
-    ],
-  );
+  // ERD §6.7.9 — date decides the template; scope rails to it.
+  const resolvedTemplateKey = useResolvedTemplateKey(date);
 
   const allRails = useMemo(
     () =>
@@ -2150,6 +2124,18 @@ function OccurrenceSlotPicker({
       ),
     [railsMap],
   );
+  const railsInScope = useMemo(
+    () =>
+      resolvedTemplateKey
+        ? allRails.filter((r) => r.templateKey === resolvedTemplateKey)
+        : allRails,
+    [allRails, resolvedTemplateKey],
+  );
+  useEffect(() => {
+    if (!railId || !resolvedTemplateKey) return;
+    const r = railsMap[railId];
+    if (r && r.templateKey !== resolvedTemplateKey) setRailId('');
+  }, [resolvedTemplateKey, railId, railsMap]);
 
   const canApply = Boolean(date) && Boolean(railId);
 
@@ -2161,14 +2147,17 @@ function OccurrenceSlotPicker({
         onChange={(e) => setDate(e.target.value)}
         className="h-6 rounded-sm border border-hairline/60 bg-surface-0 px-1.5 text-2xs text-ink-primary outline-none focus:border-ink-secondary"
       />
+      {resolvedTemplateKey && (
+        <span className="text-2xs text-ink-tertiary">
+          {templatesMap[resolvedTemplateKey]?.name ?? resolvedTemplateKey}
+        </span>
+      )}
       <RailPicker
-        rails={allRails}
+        rails={railsInScope}
         templates={templatesMap}
         value={railId}
         onChange={setRailId}
-        {...(resolvedTemplateKey && {
-          activeTemplateKey: resolvedTemplateKey,
-        })}
+        flat={!!resolvedTemplateKey}
         usageDate={date}
         className="h-6 max-w-[200px] py-0 text-2xs"
       />

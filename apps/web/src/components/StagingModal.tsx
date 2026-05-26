@@ -26,6 +26,7 @@ import {
 } from '@dayrail/core';
 import { getAiApiKey, subscribeAiApiKey } from '@/lib/aiApiKey';
 import { useIme } from '@/lib/ime';
+import { useResolvedTemplateKey } from '@/lib/useResolvedTemplate';
 import { MarkdownField } from './MarkdownField';
 import { RailPicker } from './RailPicker';
 import {
@@ -1005,6 +1006,28 @@ function TaskScheduleField({
   const setSchedule = (schedule: TaskScheduleDraft | undefined) =>
     setDraft(schedule ? { ...draft, schedule } : omitSchedule(draft));
 
+  // ERD §6.7.9 — when a date is set it decides the template; scope the
+  // rail list to it. No date → all rails grouped (the picker's default).
+  const resolvedTemplateKey = useResolvedTemplateKey(sched?.date);
+  const railsInScope = useMemo(
+    () =>
+      resolvedTemplateKey
+        ? rails.filter((r) => r.templateKey === resolvedTemplateKey)
+        : rails,
+    [rails, resolvedTemplateKey],
+  );
+  // Drop a picked rail that no longer belongs to the date's template.
+  useEffect(() => {
+    if (sched?.mode !== 'rail' || !sched.railId || !resolvedTemplateKey) return;
+    const r = rails.find((x) => x.id === sched.railId);
+    if (r && r.templateKey !== resolvedTemplateKey) {
+      setSchedule({ ...sched, railId: '' });
+    }
+    // Only react to template changes; setSchedule/sched are stable enough
+    // for this guard (clearing railId makes the next run a no-op).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedTemplateKey]);
+
   return (
     <div className="flex flex-col gap-1.5">
       <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">排期(选填)</span>
@@ -1023,22 +1046,30 @@ function TaskScheduleField({
         }}
       />
       {sched?.mode === 'rail' && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <div className="min-w-[160px] flex-1">
-            <RailPicker
-              rails={rails}
-              templates={templatesMap}
-              value={sched.railId}
-              onChange={(railId) => setSchedule({ ...sched, railId })}
-              placeholder="选一条 Rail…"
+        <div className="flex flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <div className="min-w-[160px] flex-1">
+              <RailPicker
+                rails={railsInScope}
+                templates={templatesMap}
+                value={sched.railId}
+                onChange={(railId) => setSchedule({ ...sched, railId })}
+                flat={!!resolvedTemplateKey}
+                placeholder="选一条 Rail…"
+              />
+            </div>
+            <input
+              type="date"
+              value={sched.date ?? ''}
+              onChange={(e) => setSchedule({ ...sched, date: e.target.value || undefined })}
+              className={clsx(fieldCls, 'tabular-nums')}
             />
           </div>
-          <input
-            type="date"
-            value={sched.date ?? ''}
-            onChange={(e) => setSchedule({ ...sched, date: e.target.value || undefined })}
-            className={clsx(fieldCls, 'tabular-nums')}
-          />
+          {resolvedTemplateKey && (
+            <span className="text-2xs text-ink-tertiary">
+              模板 {templatesMap[resolvedTemplateKey]?.name ?? resolvedTemplateKey} · 由日期决定
+            </span>
+          )}
         </div>
       )}
       {sched?.mode === 'free' && (
@@ -1090,6 +1121,24 @@ function StepScheduleControl({
   value: OccurrenceScheduleDraft | undefined;
   onChange: (v: OccurrenceScheduleDraft | undefined) => void;
 }) {
+  // ERD §6.7.9 — date decides the template; scope rails to it.
+  const resolvedTemplateKey = useResolvedTemplateKey(value?.date);
+  const railsInScope = useMemo(
+    () =>
+      resolvedTemplateKey
+        ? rails.filter((r) => r.templateKey === resolvedTemplateKey)
+        : rails,
+    [rails, resolvedTemplateKey],
+  );
+  useEffect(() => {
+    if (!value?.railId || !resolvedTemplateKey) return;
+    const r = rails.find((x) => x.id === value.railId);
+    if (r && r.templateKey !== resolvedTemplateKey) {
+      onChange({ ...value, railId: '' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedTemplateKey]);
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">排期</span>
@@ -1108,10 +1157,11 @@ function StepScheduleControl({
         <>
           <div className="min-w-[140px] flex-1">
             <RailPicker
-              rails={rails}
+              rails={railsInScope}
               templates={templatesMap}
               value={value.railId}
               onChange={(railId) => onChange({ ...value, railId })}
+              flat={!!resolvedTemplateKey}
               placeholder="选一条 Rail…"
             />
           </div>
@@ -1121,6 +1171,11 @@ function StepScheduleControl({
             onChange={(e) => onChange({ ...value, date: e.target.value || undefined })}
             className={clsx(fieldCls, 'tabular-nums')}
           />
+          {resolvedTemplateKey && (
+            <span className="w-full text-2xs text-ink-tertiary">
+              模板 {templatesMap[resolvedTemplateKey]?.name ?? resolvedTemplateKey} · 由日期决定
+            </span>
+          )}
         </>
       )}
     </div>
