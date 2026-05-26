@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import { Check } from 'lucide-react';
 import { toIsoDate, useStore, type Rail, type Task } from '@dayrail/core';
-import { pickTemplateForDate } from '@/pages/cycleFromStore';
+import { useResolvedTemplateKey } from '@/lib/useResolvedTemplate';
 import {
   Popover,
   PopoverContent,
@@ -43,11 +43,6 @@ export function SchedulePopover({ task, children }: Props) {
 function Body({ task, onDone }: { task: Task; onDone: () => void }) {
   const railsMap = useStore((s) => s.rails);
   const templatesMap = useStore((s) => s.templates);
-  const calendarRules = useStore((s) => s.calendarRules);
-  const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
-  const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
-  const userDayNotes = useStore((s) => s.userDayNotes);
-  const userProfile = useStore((s) => s.userProfile);
   const adhocsMap = useStore((s) => s.adhocEvents);
   const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
   const scheduleTaskFreeTime = useStore((s) => s.scheduleTaskFreeTime);
@@ -75,29 +70,10 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
   const [startMin, setStartMin] = useState(initialStart);
   const [endMin, setEndMin] = useState(initialStart + initialDuration);
 
-  const resolvedTemplateKey = useMemo(
-    () =>
-      pickTemplateForDate(
-        {
-          templates: templatesMap,
-          calendarRules,
-          calendarRuleRevisions,
-          calendarRuleTombstones,
-          userDayNotes,
-          userProfile,
-        },
-        date,
-      ),
-    [
-      templatesMap,
-      calendarRules,
-      calendarRuleRevisions,
-      calendarRuleTombstones,
-      userDayNotes,
-      userProfile,
-      date,
-    ],
-  );
+  // ERD §6.7.9 — the date decides the template; the rail list is scoped
+  // to it (shown explicitly below). When no template resolves for the
+  // date we fall back to all rails grouped.
+  const resolvedTemplateKey = useResolvedTemplateKey(date);
 
   const allRails = useMemo(
     () =>
@@ -106,6 +82,22 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
       ),
     [railsMap],
   );
+  const railsInScope = useMemo(
+    () =>
+      resolvedTemplateKey
+        ? allRails.filter((r) => r.templateKey === resolvedTemplateKey)
+        : allRails,
+    [allRails, resolvedTemplateKey],
+  );
+
+  // If a date change moves the day to a different template, the
+  // previously-picked rail no longer belongs — clear it so the user
+  // can't confirm a rail that won't fire on that day.
+  useEffect(() => {
+    if (mode !== 'rail' || !railId || !resolvedTemplateKey) return;
+    const r = railsMap[railId];
+    if (r && r.templateKey !== resolvedTemplateKey) setRailId('');
+  }, [resolvedTemplateKey, railId, mode, railsMap]);
 
   const canConfirm =
     mode === 'rail'
@@ -170,20 +162,30 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
 
           {mode === 'rail' ? (
             <div className="mt-2 flex flex-col gap-2">
+              {resolvedTemplateKey && (
+                <p className="text-2xs text-ink-tertiary">
+                  模板{' '}
+                  <span className="text-ink-secondary">
+                    {templatesMap[resolvedTemplateKey]?.name ??
+                      resolvedTemplateKey}
+                  </span>{' '}
+                  · 由日期决定
+                </p>
+              )}
               <RailPicker
-                rails={allRails}
+                rails={railsInScope}
                 templates={templatesMap}
                 value={railId}
                 onChange={setRailId}
-                {...(resolvedTemplateKey && {
-                  activeTemplateKey: resolvedTemplateKey,
-                })}
+                flat={!!resolvedTemplateKey}
                 usageDate={date}
                 className="w-full"
               />
-              {allRails.length === 0 && (
+              {railsInScope.length === 0 && (
                 <p className="text-xs text-ink-tertiary">
-                  还没有 Rail。去 Template Editor 建一条，或改成"直接指定时间"。
+                  {resolvedTemplateKey
+                    ? '这个模板下还没有 Rail。去 Template Editor 建一条，或改成"直接指定时间"。'
+                    : '还没有 Rail。去 Template Editor 建一条，或改成"直接指定时间"。'}
                 </p>
               )}
               {railId && (
