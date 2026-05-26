@@ -14,6 +14,7 @@ import { encodeDryj } from '@dayrail/db/dryj';
 import { exportYDocAsUpdate } from '@dayrail/core';
 import { getDeviceId, getDeviceLabel } from './identity';
 import { isTauriRuntime } from '../versionUpdateContext';
+import { getBackupDir, getBackupMaxCount } from '../backupPrefs';
 
 export interface BackupEntry {
   filename: string;
@@ -26,7 +27,15 @@ export type BackupReason =
   | 'pre-update'
   | 'pre-import'
   | 'pre-force-push'
+  | 'pre-rollback'
   | 'manual';
+
+/** The configured backup dir as the Rust commands expect it: the
+ *  user's chosen folder, or `null` to let Rust use the default
+ *  `app_data_dir()/backups/`. */
+function configuredDir(): string | null {
+  return getBackupDir();
+}
 
 /** Encode the current Y.Doc state as a `.dryj` byte buffer ready to
  *  pass to `backup_save` or to write to a user-chosen path. */
@@ -66,6 +75,8 @@ export async function autoBackup(
       // Array. The Vec roundtrip cost is fine for a few-hundred-KB
       // snapshot taken at most a handful of times per session.
       bytes: Array.from(bytes),
+      dir: configuredDir(),
+      maxCount: getBackupMaxCount(),
     });
   } catch (err) {
     console.warn(`[backup] auto-backup (${reason}) failed:`, err);
@@ -76,7 +87,7 @@ export async function autoBackup(
 export async function listBackups(): Promise<BackupEntry[]> {
   if (!isTauriRuntime()) return [];
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<BackupEntry[]>('backup_list');
+  return invoke<BackupEntry[]>('backup_list', { dir: configuredDir() });
 }
 
 export async function readBackup(filename: string): Promise<Uint8Array> {
@@ -84,14 +95,25 @@ export async function readBackup(filename: string): Promise<Uint8Array> {
     throw new Error('readBackup is desktop-only');
   }
   const { invoke } = await import('@tauri-apps/api/core');
-  const bytes = await invoke<number[]>('backup_read', { filename });
+  const bytes = await invoke<number[]>('backup_read', {
+    filename,
+    dir: configuredDir(),
+  });
   return new Uint8Array(bytes);
 }
 
 export async function deleteBackup(filename: string): Promise<void> {
   if (!isTauriRuntime()) return;
   const { invoke } = await import('@tauri-apps/api/core');
-  await invoke<void>('backup_delete', { filename });
+  await invoke<void>('backup_delete', { filename, dir: configuredDir() });
+}
+
+/** Absolute path of the default backups dir (app_data_dir/backups),
+ *  for the Settings UI to show what "默认" resolves to. */
+export async function backupDefaultDir(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string>('backup_default_dir');
 }
 
 /** Open native save dialog and copy the backup file there. The user
@@ -112,6 +134,7 @@ export async function exportBackupToUserPath(
   await invoke<void>('backup_export_to', {
     filename: entry.filename,
     destPath: String(dest),
+    dir: configuredDir(),
   });
   return true;
 }
