@@ -60,6 +60,7 @@ function useWebVersionUpdateImpl(): VersionUpdateState {
   const [dismissed, setDismissed] = useState(false);
   const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null);
   const [status, setStatus] = useState<CheckStatus>('idle');
+  const [installing, setInstalling] = useState(false);
 
   const {
     needRefresh: [needRefresh, setNeedRefresh],
@@ -134,6 +135,10 @@ function useWebVersionUpdateImpl(): VersionUpdateState {
   }, [checkNow]);
 
   const update = useCallback(async () => {
+    // Raise the global blocking overlay. The SW reload is effectively
+    // instant (no measurable download) so progress stays indeterminate;
+    // the overlay just covers the brief skipWaiting + reload flash.
+    setInstalling(true);
     try {
       // vite-plugin-pwa's updateServiceWorker handles skipWaiting +
       // reload internally. As of 0.13.2+ the boolean arg is a no-op,
@@ -142,6 +147,7 @@ function useWebVersionUpdateImpl(): VersionUpdateState {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[sw] updateServiceWorker failed', err);
+      setInstalling(false);
     }
   }, [updateServiceWorker]);
 
@@ -161,6 +167,9 @@ function useWebVersionUpdateImpl(): VersionUpdateState {
     offlineReady,
     lastCheckedAt,
     status,
+    installing,
+    // Web SW reload has no measurable download — always indeterminate.
+    installProgress: null,
     update,
     dismiss,
     checkNow,
