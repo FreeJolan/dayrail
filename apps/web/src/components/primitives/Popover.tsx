@@ -23,7 +23,12 @@ export const PopoverContent = forwardRef<
       align={align}
       sideOffset={sideOffset}
       className={clsx(
-        'z-50 rounded-md bg-surface-1 p-3 text-ink-primary shadow-[0_0.5px_0_0_theme(colors.hairline),0_8px_24px_-12px_rgba(0,0,0,0.18)]',
+        // Floating-overlay tier sits ABOVE the modal stack (modals span
+        // z-[200]–[230]). Radix portals this to <body>, so it competes at
+        // the document root — at z-50 it rendered *behind* any modal that
+        // opened it (e.g. RailPicker inside StagingModal). z-[240] keeps
+        // popovers above every modal; mirror this in DropdownMenu/Tooltip.
+        'z-[240] rounded-md bg-surface-1 p-3 text-ink-primary shadow-[0_0.5px_0_0_theme(colors.hairline),0_8px_24px_-12px_rgba(0,0,0,0.18)]',
         'outline-none',
         'data-[state=open]:animate-[popoverIn_160ms_cubic-bezier(0.22,0.61,0.36,1)]',
         className,
