@@ -1,4 +1,4 @@
-// ERD §15.11 — sweep orphaned auto-update temp artifacts at launch.
+// ERD §15.13 — sweep orphaned auto-update temp artifacts at launch.
 //
 // tauri-plugin-updater downloads the new build (.app.tar.gz) into
 // memory and extracts it into temp directories under

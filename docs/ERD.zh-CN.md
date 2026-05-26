@@ -1373,6 +1373,23 @@ v0.8.2 的教训是"让模型在散文里吐 canonical JSON、再正则抠出来
 
 5. **解析 prompt**：教模型 —— Rail 是日模板里的时间区段；能匹配上已有 Rail 时优先绑定，没有合适的才新建；新习惯 Rail 默认**每天（全部模板）**，只在显式工作日 / 休息日 / 星期几时收窄；任务通常绑已有 Rail。
 
+#### 6.7.9 Rail 选择交互 · 先模板后 Rail（v0.14.0 · proposal 与原生统一）
+
+> §6.7.8 把「模板 / Rail」接地给了 AI；本节是其 UI 续作，并取代 §6.7.8 第 4 点里「已有用 RailPicker（按模板分组的单一下拉）」的旧形态。
+
+**起因**：原来选 Rail 用一个 `RailPicker`，所有模板的 Rail 堆在一个下拉里、模板只作分组标题。于是「绑定已有 Rail」时模板不是一个可选项，只是个标签 —— 用户感觉「没法指定模板」（窄弹层里那个分组还容易被 popover 漂移挡住）。proposal 一致性审计时发现**原生路径也有同样的毛病**，故 proposal + 原生一并改。
+
+**原则**：当选择存在层级（范围 → 范围内的项），把范围做成**用户先做的、外置的一等选择步骤**，再把项列表收窄到该范围；不要把范围塞成下游控件里的分组装饰。
+
+**两种形态**：
+
+- **习惯（无日期）**：模板是自由选择 —— 一个模板 `<select>`，再跟一个**收窄到该模板**的扁平 Rail 列表。切模板自动重置到该模板第一条 Rail。proposal「选已有」与原生 HabitDetail 绑定同款。
+- **任务 / occurrence（绑日期）**：模板**由日期决定**（日历解析，`pickTemplateForDate`）—— 以只读步骤显式展示「模板 X · 由日期决定」，再跟收窄到该模板的扁平 Rail 列表。改日期到别的模板时自动清空已选 Rail，避免提交一条当天不触发的 Rail。SchedulePopover / OccurrenceSlotPicker / proposal 任务排期同款。无解析出模板时回退到全部 Rail 分组列表，不卡住用户。
+
+**实装**：`RailPicker` 新增 `flat` 模式（调用方已按单一模板过滤 `rails` 时，渲染扁平列表、无分组标题、无「其它模板」折叠，保留用量 chip + 时间）。日期→模板解析抽成共享 hook `useResolvedTemplateKey(date)`。
+
+**有意移除**：任务排期此前可经 RailPicker 底部「其它模板的 Rail」fallback 跨模板选取；新模型下 Rail 必须属于当天模板（否则当天不触发），故移除该 fallback。
+
 ***
 
 ## 7. 同步与存储
@@ -4457,6 +4474,29 @@ dogfood 暴露:Tasks 页 Projects / Habits 的「+ 新建」在桌面端**点了
 - ❌ 读 / 写凭证（API key / OAuth token）的工具。
 - ❌ 远端 / 公网 MCP server —— 仅本机。
 - ❌ MCP 工具直接落库绕过暂存区 —— 落库永远经人工确认。
+
+### 15.11 窗口状态持久化（v0.14.0）
+
+接官方 `tauri-plugin-window-state`：启动恢复、退出保存窗口几何 —— 尺寸、位置（**落在哪个显示器即由位置决定**）、最大化、全屏。
+
+- **state flags**：`SIZE | POSITION | MAXIMIZED | FULLSCREEN`。**刻意排除 `VISIBLE`** —— §15.8 的 autostart 会在开机时隐藏窗口，若持久化可见性会让下次正常启动也隐藏。`DECORATIONS` 也排除（从不改，配置默认始终生效）。
+- **与 §15.8 协作**：插件在窗口创建时恢复几何，setup() 再按启动来源 show / hide / foreground，互不冲突。
+- **零迁移**：首次启动无状态文件 → 用 tauri.conf.json 默认（1280×800、非全屏）；状态文件是新增、附加的。
+
+### 15.12 自动备份 · 目录与保留数可配置（v0.14.0）
+
+§7.8 的本地自动备份（升级前 / 导入前 / 强制推送前 / 回滚前留一份 `.dryj`）此前写死 `app_data_dir/backups`、保留最新 10 份。v0.14.0 把目录与保留数做成可配置：
+
+- **前端持有设置**（`backupPrefs`，localStorage，沿用 `upgradePref` 写法）：`backupDir`（`null` = 默认 `app_data_dir/backups`）、`backupMaxCount`（默认 **20**，clamp 1–200）。Settings → 同步 → 本地数据 新增「备份目录」（原生文件夹选择器 + 恢复默认）与「最多保留备份数」两行。
+- **Rust 命令**：`backup_save / list / read / delete / export_to` 增加可选 `dir` / `max_count` 参数；`dir=None` → 默认目录（无配置的老安装零变化、历史备份照常可见）。新增 `backup_default_dir`。`list` / GC 仅匹配 `dayrail-*.dryj`，自定义目录里的其它 `.dryj` 不会被列出或删除。
+- **桌面端不再误落 Downloads**：此前升级前 / 回滚前的备份走了浏览器 `exportDryjSnapshot()`（下到 Downloads），与受管 app 目录备份重复。桌面端改为只走受管备份（升级前由 desktopUpdate 内部 `autoBackup('pre-update')`、回滚前 `autoBackup('pre-rollback')`）。其余下载入口（下载本地快照 / Drive 历史导出）本就用原生保存对话框。
+- **兼容**：改目录后旧备份留在原处（不自动搬迁，符合不做破坏性迁移）；降低保留数在下次备份时才 GC 生效。
+
+### 15.13 自动更新临时包清理（v0.14.0）
+
+`tauri-plugin-updater` 在 macOS 把 `.app.tar.gz` **下到内存**（无 `.tar.gz` 文件残留），解压到 `temp_dir()` 下：`tauri_updated_app*`（新 .app）、`tauri_current_app*`（交换期间作回滚的旧 .app）；Windows 为 `DayRail-<ver>-updater-*` / `-installer*`。干净安装走 RAII 自动清理，但**更新中断 / 被强制重启会遗留**，每个含完整 app bundle（数十 MB），逐次累积。
+
+`update_cleanup` 模块在 setup() 起后台线程扫描 `temp_dir()`，按 updater **专有命名前缀**删除残留（`is_updater_artifact` 只匹配 updater 自己生成的名字，不碰 temp 里的其它文件）。启动时运行 → 本会话尚未触发更新，只清往次遗留；刚装完那次的 relaunch 回到这段逻辑，顺带清掉。best-effort，失败忽略。
 
 ***
 

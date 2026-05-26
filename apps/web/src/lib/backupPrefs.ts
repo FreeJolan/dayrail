@@ -1,4 +1,4 @@
-// Local auto-backup preferences (v0.14.0, ERD §15.10). Desktop-only in
+// Local auto-backup preferences (v0.14.0, ERD §15.12). Desktop-only in
 // effect — the PWA has no managed backup store — but the getters are
 // safe to call anywhere. Mirrors the upgradePref.ts pattern: localStorage
 // + a module-scoped listener set, read on demand by the Settings rows and
