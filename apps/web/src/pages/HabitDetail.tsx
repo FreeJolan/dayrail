@@ -1065,8 +1065,27 @@ function NewBindingForm({
   onSubmit: (opts: { railId: string; weekdays?: number[] }) => void;
   onCancel: () => void;
 }) {
+  // ERD §6.7.9 — explicit two-step: pick a template, then a rail within
+  // it. Template options are the distinct templates that actually have
+  // rails, so every option yields a non-empty rail list.
+  const templateOptions = useMemo(() => {
+    const keys = Array.from(new Set(rails.map((r) => r.templateKey)));
+    return keys
+      .map((k) => ({ key: k, name: templates[k]?.name ?? k }))
+      .sort((a, b) => a.key.localeCompare(b.key));
+  }, [rails, templates]);
   const [railId, setRailId] = useState(rails[0]?.id ?? '');
+  const [tplKey, setTplKey] = useState<string>(
+    () =>
+      rails.find((r) => r.id === railId)?.templateKey ??
+      templateOptions[0]?.key ??
+      '',
+  );
   const [weekdays, setWeekdays] = useState<number[]>([]);
+  const railsInTpl = useMemo(
+    () => rails.filter((r) => r.templateKey === tplKey),
+    [rails, tplKey],
+  );
 
   const submit = useCallback(() => {
     if (!railId) return;
@@ -1080,13 +1099,36 @@ function NewBindingForm({
     <div className="flex flex-col gap-3 rounded-md bg-surface-1 px-3 py-3">
       <div className="flex items-center gap-2 text-xs text-ink-secondary">
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+          模板
+        </span>
+        <select
+          value={tplKey}
+          onChange={(e) => {
+            const next = e.target.value;
+            setTplKey(next);
+            // Re-seed the rail to the first one in the chosen template.
+            setRailId(rails.find((r) => r.templateKey === next)?.id ?? '');
+          }}
+          className="rounded-md border border-hairline/60 bg-surface-0 px-2 py-1 text-sm text-ink-primary outline-none transition focus:border-hairline"
+          aria-label="模板"
+        >
+          {templateOptions.map((t) => (
+            <option key={t.key} value={t.key}>
+              {t.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flex items-center gap-2 text-xs text-ink-secondary">
+        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
           选择 Rail
         </span>
         <RailPicker
-          rails={rails}
+          rails={railsInTpl}
           templates={templates}
           value={railId}
           onChange={setRailId}
+          flat
           className="flex-1"
         />
       </div>
