@@ -11,6 +11,7 @@ import {
   type UpgradePref,
 } from '@/lib/upgradePref';
 import { useVersionUpdate } from '@/lib/swRegistration';
+import { isTauriRuntime } from '@/lib/versionUpdateContext';
 import { BackupPromptDialog } from '@/components/BackupPromptDialog';
 
 // §13.8 — entry-point hook for the upgrade flow. Both the top
@@ -75,6 +76,17 @@ export function useUpgradeFlow(): UseUpgradeFlowResult {
 
   const runBackupThenUpdate = useCallback(async () => {
     setBusy(true);
+    // Desktop has a managed app-dir backup store, and `update()`
+    // (desktopUpdate) already takes a `pre-update` snapshot there before
+    // downloading. Dumping a second `.dryj` into the user's Downloads
+    // folder via the browser was pure clutter — skip it and hand
+    // straight off to update(). The global install overlay (PR #115)
+    // covers the progress; no toast needed.
+    if (isTauriRuntime()) {
+      setDialogOpen(false);
+      void update();
+      return;
+    }
     let filename: string;
     try {
       filename = exportDryjSnapshot(getDeviceId(), getDeviceLabel());

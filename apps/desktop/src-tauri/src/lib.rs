@@ -99,6 +99,7 @@ pub fn run() {
             backup::backup_read,
             backup::backup_delete,
             backup::backup_export_to,
+            backup::backup_default_dir,
             relaunch_for_update,
         ])
         .setup(|app| {

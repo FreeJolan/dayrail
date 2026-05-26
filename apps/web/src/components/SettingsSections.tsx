@@ -23,6 +23,16 @@ import { resetLocalData } from '@/lib/resetLocalData';
 import { exportLocalData } from '@/lib/exportData';
 import { importLocalData, importLocalDataFromBytes } from '@/lib/importData';
 import type { BackupEntry } from '@/lib/sync/backupController';
+import {
+  getBackupDir,
+  setBackupDir,
+  subscribeBackupDir,
+  getBackupMaxCount,
+  setBackupMaxCount,
+  subscribeBackupMaxCount,
+  MIN_MAX_BACKUPS,
+  MAX_MAX_BACKUPS,
+} from '@/lib/backupPrefs';
 import { useVersionUpdate } from '@/lib/swRegistration';
 import { isTauriRuntime } from '@/lib/versionUpdateContext';
 import { applyTheme, getThemePref, type ThemePref } from '@/lib/theme';
@@ -408,6 +418,7 @@ function SyncBackupTab({ connected }: { connected: boolean }) {
       </p>
       <DownloadSnapshotRow />
       <ImportSnapshotRow />
+      {isTauriRuntime() && <BackupConfigRows />}
       {isTauriRuntime() && <AutoBackupListRow />}
       {connected && (
         <div className="hairline-t mt-6 flex flex-col pt-4">
@@ -1806,6 +1817,116 @@ function ImportSnapshotRow() {
 // to have done a manual `.dryj` download earlier that day, which
 // was the only thing that saved the data. This component makes
 // that safety net automatic instead of "user remembered to back up".
+// ERD §15.10 — let the user point auto-backups at their own folder and
+// tune the retention count. Both persist to localStorage (backupPrefs)
+// and are read by backupController before each backup_* invoke.
+function BackupConfigRows() {
+  const [dir, setDir] = useState<string | null>(() => getBackupDir());
+  const [defaultDir, setDefaultDir] = useState<string | null>(null);
+  const [maxCount, setMaxCount] = useState<number>(() => getBackupMaxCount());
+  const [draftMax, setDraftMax] = useState<string>(() =>
+    String(getBackupMaxCount()),
+  );
+  const [picking, setPicking] = useState(false);
+
+  useEffect(() => subscribeBackupDir((next) => setDir(next)), []);
+  useEffect(
+    () =>
+      subscribeBackupMaxCount((next) => {
+        setMaxCount(next);
+        setDraftMax(String(next));
+      }),
+    [],
+  );
+  useEffect(() => {
+    void import('@/lib/sync/backupController')
+      .then((m) => m.backupDefaultDir())
+      .then((d) => setDefaultDir(d))
+      .catch(() => {});
+  }, []);
+
+  const pickDir = async () => {
+    setPicking(true);
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const chosen = await open({
+        title: '选择备份文件夹',
+        directory: true,
+        defaultPath: dir ?? defaultDir ?? undefined,
+      });
+      if (chosen) setBackupDir(String(chosen));
+    } catch {
+      // user cancelled / dialog unavailable — leave the current dir
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const commitMax = () => {
+    const n = Number.parseInt(draftMax, 10);
+    if (Number.isFinite(n)) {
+      setBackupMaxCount(n); // clamps + notifies → effect syncs draft
+    } else {
+      setDraftMax(String(maxCount));
+    }
+  };
+
+  const smallBtn =
+    'rounded-md bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary disabled:opacity-50';
+
+  return (
+    <>
+      <Row
+        label="备份目录"
+        description={
+          dir
+            ? `当前 · ${dir}`
+            : `默认 · 应用数据目录${defaultDir ? `（${defaultDir}）` : ''}`
+        }
+        control={
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => void pickDir()}
+              disabled={picking}
+              className={smallBtn}
+            >
+              {picking ? '…' : '更改…'}
+            </button>
+            {dir && (
+              <button
+                type="button"
+                onClick={() => setBackupDir(null)}
+                className={smallBtn}
+              >
+                恢复默认
+              </button>
+            )}
+          </div>
+        }
+      />
+      <Row
+        label="最多保留备份数"
+        description={`超过此数量时，最旧的自动备份会在下次备份时被删除（${MIN_MAX_BACKUPS}–${MAX_MAX_BACKUPS}）。`}
+        control={
+          <input
+            type="number"
+            min={MIN_MAX_BACKUPS}
+            max={MAX_MAX_BACKUPS}
+            value={draftMax}
+            onChange={(e) => setDraftMax(e.target.value)}
+            onBlur={commitMax}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            }}
+            className="w-20 rounded-md bg-surface-1 px-3 py-1.5 text-right text-sm tabular-nums text-ink-primary outline-none transition focus:bg-surface-2"
+          />
+        }
+      />
+    </>
+  );
+}
+
 function AutoBackupListRow() {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<BackupEntry[] | null>(null);
@@ -1885,7 +2006,7 @@ function AutoBackupListRow() {
   return (
     <Row
       label="自动备份"
-      description="升级前 / 导入快照前 / 强制推送前会自动留一份本地备份。最多保留 10 份；旧的自动 GC。位于系统应用数据目录，不在 Downloads。"
+      description="升级前 / 导入快照前 / 强制推送前 / 回滚前会自动留一份本地备份，写入上方「备份目录」（默认系统应用数据目录，不在 Downloads）；超出「最多保留备份数」的旧备份自动删除。"
       control={
         <div className="flex flex-col items-end gap-1">
           <button
@@ -2045,20 +2166,31 @@ function BackupHistoryItem({
     }
   };
   const onRollback = async () => {
-    // Auto-backup gate: dump current local to Downloads BEFORE
-    // replacing it, so the user can always recover whatever they
-    // had before this rollback. ERD §7.8 P5 ("回滚 + 反悔" gate).
+    // Auto-backup gate: snapshot current local BEFORE replacing it, so
+    // the user can always recover whatever they had before this
+    // rollback. ERD §7.8 P5 ("回滚 + 反悔" gate).
+    const desktop = isTauriRuntime();
+    const backupNote = desktop
+      ? '当前本地数据会先自动备份到应用数据目录（可在「自动备份」里查看 / 导出 · 之后可再导回）'
+      : '当前本地数据会先自动备份到 Downloads / 下载（dryj 文件 · 之后可以再导回）';
     if (
       !window.confirm(
-        `回滚到这份历史快照？\n\n- 当前本地数据会先自动备份到 Downloads / 下载（dryj 文件 · 之后可以再导回）\n- 然后本地被替换为这份快照的内容\n- 自动推送到 Drive · 替换云端 canonical\n\n继续？`,
+        `回滚到这份历史快照？\n\n- ${backupNote}\n- 然后本地被替换为这份快照的内容\n- 自动推送到 Drive · 替换云端 canonical\n\n继续？`,
       )
     )
       return;
     setBusy('rollback');
     setErr(null);
     try {
-      // (1) Auto-backup current local first.
-      exportDryjSnapshot(getDeviceId(), getDeviceLabel());
+      // (1) Auto-backup current local first. Desktop writes to the
+      // managed app-dir store (no Downloads clutter); the PWA has no
+      // store so it downloads a .dryj instead.
+      if (desktop) {
+        const { autoBackup } = await import('@/lib/sync/backupController');
+        await autoBackup('pre-rollback');
+      } else {
+        exportDryjSnapshot(getDeviceId(), getDeviceLabel());
+      }
       // (2) Download the history bytes and replace local.
       const bytes = await downloadDryjById(entry.fileId);
       decodeDryj(bytes); // validate
