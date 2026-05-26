@@ -74,6 +74,72 @@ export class AiClientError extends Error {
   }
 }
 
+// ── Cold-start 403 retry ───────────────────────────────────────────
+//
+// Some local OpenAI-compatible bridges return HTTP 403
+// `{"error":{"type":"forbidden","message":"Request not allowed"}}` for
+// the first few seconds after the bridge / upstream credential goes
+// cold (observed with CLIProxyAPI's Claude OAuth path: a few-second
+// warmup window after (re)start / idle, then it succeeds and stays
+// warm — the OAuth token is NOT refreshed, so it's a session/cloak
+// warmup, not auth expiry). The bridge's own retry fires sub-second,
+// inside that window, so it can't mask it. We retry with a multi-second
+// backoff that outlasts the warmup. Empirically the window was > 0.5s
+// and ≤ 6s after a cold start, so the schedule below lands attempts at
+// t=0, +2s, +6s. Scoped to 403 only — 401 (bad key) / 404 / 429
+// (rate-limit, must not hammer) / aborts propagate immediately.
+const COLD_START_403_BACKOFFS_MS = [2000, 4000];
+
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new AiClientError('aborted', 'Request aborted by caller'));
+      return;
+    }
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(new AiClientError('aborted', 'Request aborted by caller'));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** Run `attempt`; on an `AiClientError` with HTTP 403, wait and retry
+ *  per `COLD_START_403_BACKOFFS_MS`. `attempt` MUST map its failures to
+ *  `AiClientError` (so `.status` is readable). All non-403 errors and
+ *  aborts surface immediately. A 403 that happens before any output is
+ *  re-attempted cleanly; callers that stream should only emit output
+ *  after the first successful chunk (a 403 precedes the body). */
+export async function withColdStart403Retry<T>(
+  attempt: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  for (let i = 0; ; i++) {
+    try {
+      return await attempt();
+    } catch (err) {
+      const backoff = COLD_START_403_BACKOFFS_MS[i]; // undefined once exhausted
+      if (
+        backoff === undefined ||
+        !(err instanceof AiClientError) ||
+        err.status !== 403 ||
+        signal?.aborted
+      ) {
+        throw err;
+      }
+      await sleepAbortable(backoff, signal);
+    }
+  }
+}
+
 /** Issue one chat completion against an OpenAI-compatible endpoint
  *  with streaming on. Returns the assembled assistant content as a
  *  single string. Throws `AiClientError` on any failure path. */
@@ -99,22 +165,26 @@ export async function callChatCompletion(
     apiKey,
   });
 
-  const result = streamText({
-    model: provider(model),
-    messages,
-    ...(signal && { abortSignal: signal }),
-  });
+  // Wrap in the cold-start 403 retry: a 403 arrives before any stream
+  // body, so a re-attempt never double-emits via onChunk.
+  return withColdStart403Retry(async () => {
+    const result = streamText({
+      model: provider(model),
+      messages,
+      ...(signal && { abortSignal: signal }),
+    });
 
-  let assembled = '';
-  try {
-    for await (const delta of result.textStream) {
-      assembled += delta;
-      if (onChunk && delta.length > 0) onChunk(delta);
+    let assembled = '';
+    try {
+      for await (const delta of result.textStream) {
+        assembled += delta;
+        if (onChunk && delta.length > 0) onChunk(delta);
+      }
+      return assembled;
+    } catch (err) {
+      throw mapToAiClientError(err, APICallError);
     }
-    return assembled;
-  } catch (err) {
-    throw mapToAiClientError(err, APICallError);
-  }
+  }, signal);
 }
 
 /** Map any thrown error from the AI SDK / fetch layer onto our
