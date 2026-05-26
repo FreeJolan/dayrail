@@ -35,7 +35,10 @@ export const TooltipContent = forwardRef<
         // receive clicks/drags. Without this, hovering a CycleCell
         // pill to read its tooltip would briefly block dragging it
         // toward the right-side rails that the tooltip overlaps.
-        'pointer-events-none z-50 rounded-sm bg-ink-primary px-2 py-1 font-mono text-2xs uppercase tracking-widest text-surface-0 shadow-md',
+        // z-[240]: floating-overlay tier, above the modal stack (z-[200]–[230]).
+        // Portaled to <body>, so z-50 would render behind a triggering modal.
+        // Keep in sync with Popover/DropdownMenu.
+        'pointer-events-none z-[240] rounded-sm bg-ink-primary px-2 py-1 font-mono text-2xs uppercase tracking-widest text-surface-0 shadow-md',
         'data-[state=delayed-open]:animate-[tooltipIn_120ms_cubic-bezier(0.22,0.61,0.36,1)]',
         className,
       )}

@@ -19,7 +19,10 @@ export const DropdownMenuContent = forwardRef<
       ref={ref}
       sideOffset={sideOffset}
       className={clsx(
-        'z-50 min-w-[180px] overflow-hidden rounded-md bg-surface-1 py-1.5 text-ink-primary shadow-[0_0.5px_0_0_theme(colors.hairline),0_8px_24px_-12px_rgba(0,0,0,0.18)]',
+        // z-[240]: floating-overlay tier, above the modal stack (z-[200]–[230]).
+        // Portaled to <body>, so z-50 would render behind a triggering modal.
+        // Keep in sync with Popover/Tooltip.
+        'z-[240] min-w-[180px] overflow-hidden rounded-md bg-surface-1 py-1.5 text-ink-primary shadow-[0_0.5px_0_0_theme(colors.hairline),0_8px_24px_-12px_rgba(0,0,0,0.18)]',
         'outline-none',
         'data-[state=open]:animate-[popoverIn_160ms_cubic-bezier(0.22,0.61,0.36,1)]',
         className,
