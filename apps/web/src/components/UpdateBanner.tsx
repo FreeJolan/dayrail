@@ -2,6 +2,7 @@ import { ArrowUp, Check, X } from 'lucide-react';
 import { useEffect } from 'react';
 import { useVersionUpdate } from '@/lib/swRegistration';
 import { useUpgradeFlow } from '@/lib/useUpgradeFlow';
+import { UpdateInstallOverlay } from './UpdateInstallOverlay';
 
 // ------------------------------------------------------------------
 // Top-of-page banner that surfaces a pending SW update + a one-time
@@ -29,6 +30,7 @@ export function UpdateBanner() {
 
   return (
     <>
+      <UpdateInstallOverlay />
       {needsRefresh && (
         <div
           role="status"

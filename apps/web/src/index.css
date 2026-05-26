@@ -177,3 +177,25 @@
     transform: translateY(0);
   }
 }
+
+/* Full-screen update-install overlay backdrop fade-in. */
+@keyframes overlayIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Indeterminate progress bar — a short segment sweeping across the
+   track while the download length is unknown (web reload, desktop
+   pre-download backup phase, or missing Content-Length). */
+@keyframes indeterminateSlide {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}

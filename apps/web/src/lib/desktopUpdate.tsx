@@ -43,6 +43,8 @@ function useDesktopVersionUpdateImpl(): VersionUpdateState {
   const [dismissed, setDismissed] = useState(false);
   const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null);
   const [status, setStatus] = useState<CheckStatus>('idle');
+  const [installing, setInstalling] = useState(false);
+  const [installProgress, setInstallProgress] = useState<number | null>(null);
 
   // Track the latest detected version so we can re-open the banner if
   // a fresher one shows up after dismissal.
@@ -108,6 +110,12 @@ function useDesktopVersionUpdateImpl(): VersionUpdateState {
 
   const update = useCallback(async () => {
     if (!pendingUpdate) return;
+    // Raise the global blocking overlay for the whole commit. The
+    // pre-download phases (sync flush + local backup) have no
+    // measurable progress, so start indeterminate (null) and switch to
+    // a determinate fraction once the updater's download events arrive.
+    setInstalling(true);
+    setInstallProgress(null);
     try {
       // (1) Pre-update Drive flush — best-effort sync push so the
       // last 60s of local writes (still inside the schedulePush
@@ -148,11 +156,41 @@ function useDesktopVersionUpdateImpl(): VersionUpdateState {
       // foreground the window (macOS does not auto-promote relaunched
       // processes to foreground; without this step the new version
       // boots behind whatever window the user was looking at).
-      await pendingUpdate.downloadAndInstall();
+      // Stream download progress into the overlay. `contentLength` can
+      // be absent (chunked transfer / server omission) — fall back to
+      // the indeterminate bar (null) in that case rather than faking a
+      // denominator.
+      let total = 0;
+      let downloaded = 0;
+      await pendingUpdate.downloadAndInstall((event) => {
+        switch (event.event) {
+          case 'Started':
+            total = event.data.contentLength ?? 0;
+            setInstallProgress(total > 0 ? 0 : null);
+            break;
+          case 'Progress':
+            downloaded += event.data.chunkLength;
+            if (total > 0) {
+              // Cap below 1 so "100%" only shows on Finished, avoiding a
+              // full bar that then sits there during the install step.
+              setInstallProgress(Math.min(0.99, downloaded / total));
+            }
+            break;
+          case 'Finished':
+            setInstallProgress(total > 0 ? 1 : null);
+            break;
+        }
+      });
       await invoke('relaunch_for_update');
+      // On success the relaunch tears down this webview, so we never
+      // clear `installing` here — the overlay stays up until the new
+      // process paints, giving a seamless hand-off.
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[updater] install failed', err);
+      // Release the overlay so the user isn't trapped behind it.
+      setInstalling(false);
+      setInstallProgress(null);
     }
   }, [pendingUpdate]);
 
@@ -172,6 +210,8 @@ function useDesktopVersionUpdateImpl(): VersionUpdateState {
     offlineReady: false,
     lastCheckedAt,
     status,
+    installing,
+    installProgress,
     update,
     dismiss,
     checkNow,

@@ -23,6 +23,16 @@ export interface VersionUpdateState {
   /** Epoch ms of the last check resolution; `null` until first check. */
   lastCheckedAt: number | null;
   status: CheckStatus;
+  /** True from the moment `update()` begins committing until the page
+   *  reloads (web) / the app relaunches (desktop). Drives the global
+   *  blocking install overlay (`UpdateInstallOverlay`). Reset to false
+   *  only if the commit fails — on success the page tears down first. */
+  installing: boolean;
+  /** Download fraction in [0,1] while `installing`, or `null` for an
+   *  indeterminate bar: the web SW reload (no measurable download), the
+   *  desktop pre-download backup phase, or when the updater server omits
+   *  Content-Length. Only meaningful while `installing` is true. */
+  installProgress: number | null;
   /** Commit: install the new version + reload. On web this is
    *  skipWaiting + page reload; on desktop this is downloadAndInstall
    *  + app restart. */
