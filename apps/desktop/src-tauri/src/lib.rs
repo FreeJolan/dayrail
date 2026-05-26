@@ -38,6 +38,24 @@ fn relaunch_for_update(app: tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // ERD §15.9 — restore the window's last geometry on launch and
+        // save it on exit. Covers size, position (which monitor the
+        // window lands on is just its saved x/y), maximized, and
+        // fullscreen. VISIBLE is deliberately excluded: the autostart
+        // path (§15.8) hides the window at boot, and persisting that
+        // would make a subsequent normal launch start hidden too.
+        // DECORATIONS is excluded as well — we never toggle them, so
+        // the config default should always win.
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED
+                        | tauri_plugin_window_state::StateFlags::FULLSCREEN,
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_shell::init())
         // ERD §15.x — native file picker + filesystem read for `.dryj`
         // import. WKWebView's HTML5 file input silently drops the
