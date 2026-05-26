@@ -15,7 +15,11 @@
 // call is an injection seam so the mapping stays unit-testable.
 
 import { z } from 'zod';
-import { AiClientError, mapToAiClientError } from './ai/client';
+import {
+  AiClientError,
+  mapToAiClientError,
+  withColdStart403Retry,
+} from './ai/client';
 import { INBOX_LINE_ID } from './types';
 import type {
   HabitSlotDraft,
@@ -288,33 +292,40 @@ const defaultGenerate: IntentObjectGenerator = async (config, { system, prompt }
     baseURL: baseUrl.replace(/\/+$/, ''),
     apiKey,
   });
-  try {
-    // Forced tool call (not generateObject / response_format — the
-    // bridge doesn't translate those). Proposals come back as the
-    // tool's Zod-validated input.
-    const result = await generateText({
-      model: provider(model),
-      system,
-      prompt,
-      tools: {
-        emit_proposals: tool({
-          description: 'Emit the planner proposals extracted from the user text.',
-          inputSchema: parseResultSchema,
-        }),
-      },
-      toolChoice: 'required',
-      ...(signal ? { abortSignal: signal } : {}),
-    });
-    const call = result.toolCalls.find((c) => c.toolName === 'emit_proposals');
-    if (!call) {
-      throw new AiClientError('parse-error', 'AI 没有按预期返回结构化结果。', {
-        ...(result.text ? { bodyExcerpt: result.text.slice(0, 500) } : {}),
+  // Retry once-or-twice on a cold-start 403 (see withColdStart403Retry —
+  // CLIProxyAPI's Claude OAuth warmup returns "Request not allowed" for
+  // the first few seconds, then succeeds). Without this the user's first
+  // parse after the bridge goes cold always failed; the manual retry
+  // worked only because human reaction time outlasted the warmup.
+  return withColdStart403Retry(async () => {
+    try {
+      // Forced tool call (not generateObject / response_format — the
+      // bridge doesn't translate those). Proposals come back as the
+      // tool's Zod-validated input.
+      const result = await generateText({
+        model: provider(model),
+        system,
+        prompt,
+        tools: {
+          emit_proposals: tool({
+            description: 'Emit the planner proposals extracted from the user text.',
+            inputSchema: parseResultSchema,
+          }),
+        },
+        toolChoice: 'required',
+        ...(signal ? { abortSignal: signal } : {}),
       });
+      const call = result.toolCalls.find((c) => c.toolName === 'emit_proposals');
+      if (!call) {
+        throw new AiClientError('parse-error', 'AI 没有按预期返回结构化结果。', {
+          ...(result.text ? { bodyExcerpt: result.text.slice(0, 500) } : {}),
+        });
+      }
+      return parseResultSchema.parse(call.input);
+    } catch (err) {
+      throw mapToAiClientError(err, APICallError);
     }
-    return parseResultSchema.parse(call.input);
-  } catch (err) {
-    throw mapToAiClientError(err, APICallError);
-  }
+  }, signal);
 };
 
 /** ERD §6.7.5 / §6.7.8. Parse a free-form blob into native proposal
