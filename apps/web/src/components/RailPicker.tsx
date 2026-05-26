@@ -47,6 +47,12 @@ interface Props {
   placeholder?: string;
   /** Optional className for the trigger button so callers can size it. */
   className?: string;
+  /** Flat mode (ERD §6.7.9 — template is chosen by an external control
+   *  upstream, so the rail list must NOT re-introduce template grouping).
+   *  When true, `rails` is assumed already scoped to one template and is
+   *  rendered as a single flat list with no group headers / no
+   *  "其它模板" toggle. */
+  flat?: boolean;
 }
 
 export function RailPicker({
@@ -58,6 +64,7 @@ export function RailPicker({
   usageDate,
   placeholder = '选择 Rail…',
   className,
+  flat = false,
 }: Props) {
   const [open, setOpen] = useState(false);
 
@@ -145,7 +152,22 @@ export function RailPicker({
             还没有 Rail。去 Template Editor 建一条。
           </p>
         )}
-        {activeGroup && (
+        {flat && rails.length > 0 && (
+          <RailGroup
+            templateKey=""
+            list={[...rails].sort((a, b) => a.startMinutes - b.startMinutes)}
+            templates={templates}
+            value={value}
+            isActive={false}
+            hideHeader
+            usageByRail={usageByRail}
+            onPick={(id) => {
+              onChange(id);
+              setOpen(false);
+            }}
+          />
+        )}
+        {!flat && activeGroup && (
           <RailGroup
             templateKey={activeGroup.templateKey}
             list={activeGroup.list}
@@ -159,14 +181,14 @@ export function RailPicker({
             }}
           />
         )}
-        {activeGroup === null && otherGroups.length > 0 && (
+        {!flat && activeGroup === null && otherGroups.length > 0 && (
           // No template resolved for the picked date — hint at top so
           // the user understands why no "active" group is shown.
           <p className="px-3 pb-1 pt-2 text-xs text-ink-tertiary">
             当天没有解析出模板,可从下方任意模板挑一条 Rail。
           </p>
         )}
-        {otherGroups.length > 0 && activeGroup !== null && (
+        {!flat && otherGroups.length > 0 && activeGroup !== null && (
           <button
             type="button"
             onClick={() => setOthersExpanded((v) => !v)}
@@ -183,7 +205,8 @@ export function RailPicker({
             <span className="font-mono">其它模板的 Rail · {otherCount}</span>
           </button>
         )}
-        {effectiveOthersExpanded &&
+        {!flat &&
+          effectiveOthersExpanded &&
           otherGroups.map(([templateKey, list]) => (
             <RailGroup
               key={templateKey}
@@ -210,6 +233,7 @@ function RailGroup({
   templates,
   value,
   isActive,
+  hideHeader = false,
   usageByRail,
   onPick,
 }: {
@@ -218,22 +242,25 @@ function RailGroup({
   templates: Record<string, Template>;
   value: string;
   isActive: boolean;
+  hideHeader?: boolean;
   usageByRail: Map<string, RailUsage>;
   onPick: (railId: string) => void;
 }) {
   const tpl = templates[templateKey];
   return (
     <div className="flex flex-col">
-      <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-2">
-        <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary/80">
-          {tpl?.name ?? templateKey}
-        </span>
-        {isActive && (
-          <span className="font-mono text-2xs uppercase tracking-widest text-ink-primary">
-            · 当天模板
+      {!hideHeader && (
+        <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-2">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary/80">
+            {tpl?.name ?? templateKey}
           </span>
-        )}
-      </div>
+          {isActive && (
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-primary">
+              · 当天模板
+            </span>
+          )}
+        </div>
+      )}
       {list.map((r) => {
         const active = r.id === value;
         const usage = usageByRail.get(r.id);

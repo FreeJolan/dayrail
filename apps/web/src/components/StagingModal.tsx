@@ -711,6 +711,74 @@ function omitPriority(draft: TaskDraft): TaskDraft {
   return rest;
 }
 
+// ERD §6.7.9 — bind an existing rail via an EXPLICIT two-step choice:
+// pick a template first, then a rail within it. Replaces the old single
+// grouped RailPicker (where the template was only a dropdown-group
+// label). The slot stores just `railId`; the template is derived from
+// the chosen rail, and switching template re-seeds the rail to the
+// first one in that template.
+function ExistingRailSlotPicker({
+  rails,
+  templatesMap,
+  templateList,
+  railId,
+  onChange,
+}: {
+  rails: Rail[];
+  templatesMap: Record<string, Template>;
+  templateList: { key: string; name: string }[];
+  railId: string;
+  onChange: (railId: string) => void;
+}) {
+  const railTemplate = rails.find((r) => r.id === railId)?.templateKey;
+  const [tplKey, setTplKey] = useState<string>(
+    railTemplate ?? templateList[0]?.key ?? '',
+  );
+  // Resync when the selected rail's template changes from outside.
+  useEffect(() => {
+    if (railTemplate && railTemplate !== tplKey) setTplKey(railTemplate);
+  }, [railTemplate]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const railsInTpl = useMemo(
+    () => rails.filter((r) => r.templateKey === tplKey),
+    [rails, tplKey],
+  );
+
+  return (
+    <div className="flex min-w-[220px] flex-1 items-center gap-1.5">
+      <select
+        value={tplKey}
+        onChange={(e) => {
+          const next = e.target.value;
+          setTplKey(next);
+          // Re-seed the rail to the first one in the newly chosen
+          // template (or clear if that template has no rails yet).
+          onChange(rails.find((r) => r.templateKey === next)?.id ?? '');
+        }}
+        className={clsx(fieldCls, 'shrink-0')}
+        aria-label="模板"
+      >
+        {templateList.map((t) => (
+          <option key={t.key} value={t.key}>
+            {t.name}
+          </option>
+        ))}
+      </select>
+      <div className="min-w-0 flex-1">
+        <RailPicker
+          rails={railsInTpl}
+          templates={templatesMap}
+          value={railId}
+          onChange={onChange}
+          flat
+          placeholder="选 Rail…"
+          className="w-full"
+        />
+      </div>
+    </div>
+  );
+}
+
 function HabitFields({ draft, setDraft }: { draft: HabitDraft; setDraft: (d: ProposalDraft) => void }) {
   const railsMap = useStore((s) => s.rails);
   const templatesMap = useStore((s) => s.templates);
@@ -787,15 +855,13 @@ function HabitFields({ draft, setDraft }: { draft: HabitDraft; setDraft: (d: Pro
                   </span>
                 </>
               ) : (
-                <div className="min-w-[160px] flex-1">
-                  <RailPicker
-                    rails={rails}
-                    templates={templatesMap}
-                    value={slot.railId}
-                    onChange={(railId) => patchSlot(i, { ...slot, railId })}
-                    placeholder="选一条 Rail…"
-                  />
-                </div>
+                <ExistingRailSlotPicker
+                  rails={rails}
+                  templatesMap={templatesMap}
+                  templateList={templateList}
+                  railId={slot.railId}
+                  onChange={(railId) => patchSlot(i, { ...slot, railId })}
+                />
               )}
               <button
                 type="button"
