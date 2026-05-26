@@ -15,6 +15,7 @@
 mod backup;
 mod drive_auth;
 mod system_info;
+mod update_cleanup;
 
 use tauri::Manager;
 use tauri_plugin_autostart::MacosLauncher;
@@ -103,6 +104,12 @@ pub fn run() {
             relaunch_for_update,
         ])
         .setup(|app| {
+            // ERD §15.11 — clean up orphaned auto-update temp bundles
+            // from previous sessions (incl. the update we just applied,
+            // whose relaunch lands here). Background thread so a slow
+            // temp-dir scan never delays first paint.
+            std::thread::spawn(update_cleanup::sweep_stale_update_artifacts);
+
             // ERD §15.8 launch-source detection.
             //
             // Two independent signals; both checked because they can
