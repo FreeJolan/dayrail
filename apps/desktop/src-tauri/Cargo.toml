@@ -44,7 +44,7 @@ tauri-plugin-fs = "2"
 # to the registered launch entry — we use `--autostart` and check
 # argv in setup() to decide whether to hide the main window.
 tauri-plugin-autostart = "2"
-# ERD §15.9 — persist + restore window geometry across launches (size,
+# ERD §15.11 — persist + restore window geometry across launches (size,
 # position → which monitor, maximized, fullscreen). VISIBLE is excluded
 # from the persisted flags in lib.rs so the autostart "hide window"
 # path (§15.8) doesn't get baked into the saved state.

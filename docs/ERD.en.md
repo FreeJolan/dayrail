@@ -1453,6 +1453,23 @@ v0.8.2's lesson was that "having the model emit canonical JSON inside prose and 
 
 5. **Parse prompt**: teach the model — a Rail is a time segment inside a day-template; prefer binding an existing Rail when one fits, create new only when none does; a new habit Rail defaults to **every day (all templates)**, narrowing only on an explicit workday / restday / weekday mention; tasks usually bind an existing Rail.
 
+#### 6.7.9 Rail selection UX · template-first, then Rail (v0.14.0 · proposal + native unified)
+
+> §6.7.8 grounded "templates / Rails" for the AI; this is its UI sequel, and it supersedes §6.7.8 point 4's old shape ("existing uses the RailPicker" — a single dropdown grouped by template).
+
+**Origin**: rail selection used a single `RailPicker` with every template's rails in one dropdown, the template only a group header. So when "binding an existing Rail" the template wasn't a choice, just a label — users felt they "couldn't specify the template" (and that grouping was easy to miss in the narrow popover). The proposal-consistency audit found the **native paths had the same flaw**, so proposal + native are fixed together.
+
+**Principle**: when a selection has a hierarchy (scope → item within scope), make the scope an **explicit, external, first step the user takes**, then narrow the item list to it — don't bury the scope as grouping inside a downstream control.
+
+**Two forms**:
+
+- **Habit (no date)**: the template is a free choice — a template `<select>`, then a flat rail list **scoped to it**. Switching template re-seeds the rail to that template's first one. Same in the proposal "existing" mode and native HabitDetail binding.
+- **Task / occurrence (date-bound)**: the template is **decided by the date** (calendar resolution, `pickTemplateForDate`) — shown explicitly as a read-only step ("Template X · decided by the date"), then a flat rail list scoped to it. Changing the date to another template's day auto-clears the picked rail, so you can't commit a rail that won't fire that day. Same in SchedulePopover / OccurrenceSlotPicker / the proposal task schedule. When no template resolves, fall back to the all-rails grouped list so the user isn't stuck.
+
+**Implementation**: `RailPicker` gained a `flat` mode (when the caller already filtered `rails` to one template, render a flat list — no group headers, no "other templates" toggle — keeping usage chips + times). The date→template resolution is shared via the `useResolvedTemplateKey(date)` hook.
+
+**Deliberately removed**: task scheduling previously let you reach other templates' rails via the RailPicker's bottom "other templates" fallback; under the new model a rail must belong to the day's template (else it won't fire that day), so that fallback is gone.
+
 ---
 
 ## 7. Sync & Storage
@@ -5006,6 +5023,29 @@ The read tools are MCP's **core increment over paste**: with my real state in ha
 - ❌ Tools that read / write credentials (API keys / OAuth tokens).
 - ❌ A remote / public-internet MCP server — localhost only.
 - ❌ MCP tools committing directly, bypassing the staging tray — commits always go through manual confirmation.
+
+### 15.11 Window-state persistence (v0.14.0)
+
+Adopts the official `tauri-plugin-window-state`: restore on launch, save on exit — size, position (**which monitor the window lands on is just its saved x/y**), maximized, fullscreen.
+
+- **State flags**: `SIZE | POSITION | MAXIMIZED | FULLSCREEN`. **`VISIBLE` is deliberately excluded** — §15.8's autostart hides the window at boot, and persisting visibility would make a subsequent normal launch start hidden too. `DECORATIONS` is excluded as well (never toggled; the config default should always win).
+- **Cooperates with §15.8**: the plugin restores geometry on window creation, then setup() does show / hide / foreground by launch source — no conflict.
+- **Zero migration**: first launch has no state file → uses the tauri.conf.json defaults (1280×800, not fullscreen); the state file is new and additive.
+
+### 15.12 Auto-backup · configurable directory + retention (v0.14.0)
+
+§7.8's local auto-backups (a `.dryj` snapshot before update / import / force-push / rollback) used to hardcode `app_data_dir/backups` and keep the newest 10. v0.14.0 makes the directory and retention configurable:
+
+- **Frontend owns the settings** (`backupPrefs`, localStorage, mirroring `upgradePref`): `backupDir` (`null` = the default `app_data_dir/backups`), `backupMaxCount` (default **20**, clamped 1–200). Settings → Sync → Local data gains a "Backup directory" row (native folder picker + reset-to-default) and a "Max backups kept" row.
+- **Rust commands**: `backup_save / list / read / delete / export_to` gain optional `dir` / `max_count`; `dir=None` → the default dir (installs that never set one are unchanged and keep showing their history). Adds `backup_default_dir`. `list` / GC match only `dayrail-*.dryj`, so unrelated `.dryj` files in a custom dir are never listed or deleted.
+- **Desktop no longer leaks into Downloads**: pre-update / pre-rollback backups previously ran the browser `exportDryjSnapshot()` (download into Downloads), duplicating the managed app-dir backup. On desktop they now use only the managed store (pre-update via desktopUpdate's internal `autoBackup('pre-update')`, pre-rollback via `autoBackup('pre-rollback')`). The remaining download entry points (download local snapshot / Drive history export) already used the native save dialog.
+- **Compat**: after changing the directory, old backups stay where they were (no auto-migration, consistent with no-destructive-migration); a lowered retention count GCs on the next backup.
+
+### 15.13 Auto-update temp-package cleanup (v0.14.0)
+
+On macOS `tauri-plugin-updater` downloads the `.app.tar.gz` **into memory** (no `.tar.gz` file lingers) and extracts into `temp_dir()`: `tauri_updated_app*` (the new .app) and `tauri_current_app*` (the replaced old .app, kept as a rollback during the swap); on Windows, `DayRail-<ver>-updater-*` / `-installer*`. A clean install RAII-cleans these, but an **interrupted update / forced restart orphans them**, each holding a full app bundle (tens of MB) that accumulates.
+
+The `update_cleanup` module spawns a background thread from setup() that scans `temp_dir()` and removes leftovers by the updater's **own naming prefixes** (`is_updater_artifact` matches only names the updater generates — it never touches other files in temp). Running at launch means this session hasn't triggered an update yet, so it only clears previous-session leftovers; the just-applied update's relaunch lands back here and sweeps its own. Best-effort; failures ignored.
 
 ---
 

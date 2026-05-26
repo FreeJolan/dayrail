@@ -1817,7 +1817,7 @@ function ImportSnapshotRow() {
 // to have done a manual `.dryj` download earlier that day, which
 // was the only thing that saved the data. This component makes
 // that safety net automatic instead of "user remembered to back up".
-// ERD §15.10 — let the user point auto-backups at their own folder and
+// ERD §15.12 — let the user point auto-backups at their own folder and
 // tune the retention count. Both persist to localStorage (backupPrefs)
 // and are read by backupController before each backup_* invoke.
 function BackupConfigRows() {

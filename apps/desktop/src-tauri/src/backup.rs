@@ -6,7 +6,7 @@
 // Manual recovery + listing happens through Settings → 同步 → 本地数据
 // → 自动备份.
 //
-// v0.14.0 (ERD §15.10): the backup directory and retention count are
+// v0.14.0 (ERD §15.12): the backup directory and retention count are
 // configurable. The frontend owns the settings (localStorage, mirroring
 // upgradePref) and passes them as optional command args:
 //   - `dir`: Some(path) → write/list/GC there directly; None / empty →

@@ -39,7 +39,7 @@ fn relaunch_for_update(app: tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        // ERD §15.9 — restore the window's last geometry on launch and
+        // ERD §15.11 — restore the window's last geometry on launch and
         // save it on exit. Covers size, position (which monitor the
         // window lands on is just its saved x/y), maximized, and
         // fullscreen. VISIBLE is deliberately excluded: the autostart
@@ -104,7 +104,7 @@ pub fn run() {
             relaunch_for_update,
         ])
         .setup(|app| {
-            // ERD §15.11 — clean up orphaned auto-update temp bundles
+            // ERD §15.13 — clean up orphaned auto-update temp bundles
             // from previous sessions (incl. the update we just applied,
             // whose relaunch lands here). Background thread so a slow
             // temp-dir scan never delays first paint.
