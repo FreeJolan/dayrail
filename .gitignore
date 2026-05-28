@@ -25,3 +25,7 @@ coverage
 
 # Local agent state — Claude Code scheduled-tasks lock and the like
 .claude/
+
+# Codex per-user MCP config may contain local API keys.
+.codex/config.toml
+.codex/*.local.toml
