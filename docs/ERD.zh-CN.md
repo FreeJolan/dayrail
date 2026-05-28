@@ -446,6 +446,7 @@ sessionId   ──groups ───────▶ 一次规划会话中的 overr
 - **钉住（pin）**：抽屉内右上角一枚 📌 按钮 → 切换为**常驻侧栏**（主 grid 自动让出 320px，不再被覆盖）；再点一次 📌 解除。钉住状态持久化到本地 UI 设置（**不参与同步** —— 是设备个人偏好，不是规划数据）。
 - **响应式降级**：lg 及以下屏幕强制走抽屉形态、忽略钉住标记；xl 以上尊重用户钉住状态。
 - **抽屉内容**：Project / Task 列表（按 Project 分组、Task 可拖到 Slot），与 §5.5 的 Projects 独立视图互为补充（tab + 侧栏双入口）。
+- **行内操作**：hover / focus 单个 Task 或切分组 header 时露出回收站按钮，二次确认后走现有 `deleteTask` 软删除语义（移入 Tasks → 回收站，可恢复）。切分子行本身仍是拖拽源；点击子行打开父 Task 详情，并滚动 / 短暂高亮对应切分，方便直接编辑 label、进度、备注或排期。
 - **分组开关**（搜索框旁）：三档 segmented `None / Priority / Project`。`None` = 扁平列表（deferred 优先 · priority rank · order）。`Priority` = 分段为 `P0 / P1 / P2 / 未设`，空分段自动隐藏。`Project` = 按 Line 分段，Inbox 固定置顶，其余按名字。状态设备本地、不参与同步。加这个开关是为了让 §5.5 的 Task.priority hint 真正派上用场 —— 没有它，priority 就只是一个视觉 chip，不会影响用户的视线落点。
 
 #### 5.3.1 编辑会话（Edit Session）：通用的批量撤销机制
@@ -4501,4 +4502,3 @@ dogfood 暴露:Tasks 页 Projects / Habits 的「+ 新建」在桌面端**点了
 ***
 
 > 本文档是 DayRail 设计讨论的起点，不是终点。所有决策都可以被推翻。
-
