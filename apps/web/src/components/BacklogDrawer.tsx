@@ -10,6 +10,7 @@ import {
   PanelRightOpen,
   Plus,
   Search,
+  Trash2,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -58,6 +59,7 @@ export function BacklogDrawer({ open, onToggle }: Props) {
   const linesMap = useStore((s) => s.lines);
   const adhocEventsMap = useStore((s) => s.adhocEvents);
   const createTask = useStore((s) => s.createTask);
+  const deleteTask = useStore((s) => s.deleteTask);
   const [query, setQuery] = useState('');
   const [adding, setAdding] = useState(false);
   const [groupBy, setGroupBy] = useState<BacklogGroupBy>('none');
@@ -72,7 +74,12 @@ export function BacklogDrawer({ open, onToggle }: Props) {
   useEffect(() => {
     setCollapsed(new Set());
   }, [groupBy]);
-  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
+  const [detailTarget, setDetailTarget] = useState<{
+    taskId: string;
+    occurrenceId?: string;
+    requestId: number;
+  } | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<Task | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
   const onCyclePage = location.pathname === '/cycle';
@@ -92,6 +99,24 @@ export function BacklogDrawer({ open, onToggle }: Props) {
       status: 'pending',
     });
     setAdding(false);
+  };
+  const openDetail = (taskId: string, occurrenceId?: string) => {
+    setDetailTarget((prev) => ({
+      taskId,
+      ...(occurrenceId && { occurrenceId }),
+      requestId: (prev?.requestId ?? 0) + 1,
+    }));
+  };
+  const handleDeleteTask = (task: Task) => {
+    setDeleteCandidate(task);
+  };
+  const confirmDeleteTask = () => {
+    if (!deleteCandidate) return;
+    void deleteTask(deleteCandidate.id);
+    setDetailTarget((prev) =>
+      prev?.taskId === deleteCandidate.id ? null : prev,
+    );
+    setDeleteCandidate(null);
   };
 
   // ERD §10.6 v0.11 — items are a discriminated union: either a bare
@@ -363,7 +388,8 @@ export function BacklogDrawer({ open, onToggle }: Props) {
                       item={g.item}
                       projectName={linesMap[g.task.lineId]?.name}
                       projectColor={linesMap[g.task.lineId]?.color}
-                      onOpen={() => setDetailTaskId(g.task.id)}
+                      onOpen={() => openDetail(g.task.id)}
+                      onDelete={() => handleDeleteTask(g.task)}
                     />
                   ) : (
                     <BacklogTaskGroupCard
@@ -371,7 +397,11 @@ export function BacklogDrawer({ open, onToggle }: Props) {
                       occurrences={g.occurrences}
                       projectName={linesMap[g.task.lineId]?.name}
                       projectColor={linesMap[g.task.lineId]?.color}
-                      onOpen={() => setDetailTaskId(g.task.id)}
+                      onOpen={() => openDetail(g.task.id)}
+                      onOpenOccurrence={(occurrenceId) =>
+                        openDetail(g.task.id, occurrenceId)
+                      }
+                      onDelete={() => handleDeleteTask(g.task)}
                     />
                   )}
                 </li>
@@ -432,7 +462,8 @@ export function BacklogDrawer({ open, onToggle }: Props) {
                                 item={vg.item}
                                 projectName={linesMap[vg.task.lineId]?.name}
                                 projectColor={linesMap[vg.task.lineId]?.color}
-                                onOpen={() => setDetailTaskId(vg.task.id)}
+                                onOpen={() => openDetail(vg.task.id)}
+                                onDelete={() => handleDeleteTask(vg.task)}
                               />
                             ) : (
                               <BacklogTaskGroupCard
@@ -440,7 +471,11 @@ export function BacklogDrawer({ open, onToggle }: Props) {
                                 occurrences={vg.occurrences}
                                 projectName={linesMap[vg.task.lineId]?.name}
                                 projectColor={linesMap[vg.task.lineId]?.color}
-                                onOpen={() => setDetailTaskId(vg.task.id)}
+                                onOpen={() => openDetail(vg.task.id)}
+                                onOpenOccurrence={(occurrenceId) =>
+                                  openDetail(vg.task.id, occurrenceId)
+                                }
+                                onDelete={() => handleDeleteTask(vg.task)}
                               />
                             )}
                           </li>
@@ -491,17 +526,87 @@ export function BacklogDrawer({ open, onToggle }: Props) {
           `fixed / z-50` backdrop + panel inside that local layer
           (invisible/un-clickable). Portal resolves against the
           document root so the drawer lands where it should. */}
-      {detailTaskId &&
-        tasksMap[detailTaskId] &&
+      {detailTarget &&
+        tasksMap[detailTarget.taskId] &&
         createPortal(
           <TaskDetailDrawer
-            task={tasksMap[detailTaskId]!}
-            line={linesMap[tasksMap[detailTaskId]!.lineId]}
-            onClose={() => setDetailTaskId(null)}
+            task={tasksMap[detailTarget.taskId]!}
+            line={linesMap[tasksMap[detailTarget.taskId]!.lineId]}
+            highlightOccurrenceId={detailTarget.occurrenceId}
+            highlightRequestId={detailTarget.requestId}
+            onClose={() => setDetailTarget(null)}
+          />,
+          document.body,
+        )}
+      {deleteCandidate &&
+        createPortal(
+          <BacklogDeleteConfirm
+            task={deleteCandidate}
+            onCancel={() => setDeleteCandidate(null)}
+            onConfirm={confirmDeleteTask}
           />,
           document.body,
         )}
     </aside>
+  );
+}
+
+function BacklogDeleteConfirm({
+  task,
+  onCancel,
+  onConfirm,
+}: {
+  task: Task;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal
+      aria-label={`删除任务 · ${task.title}`}
+      className="fixed inset-0 z-[260] flex items-center justify-center bg-ink-primary/35 px-6 backdrop-blur-sm"
+    >
+      <div className="w-full max-w-sm rounded-md bg-surface-0 shadow-xl">
+        <div className="flex flex-col gap-4 px-5 py-5">
+          <div className="flex flex-col gap-2">
+            <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+              Backlog
+            </span>
+            <p className="text-base text-ink-primary">
+              删除「{task.title || '未命名任务'}」？
+            </p>
+            <p className="text-xs leading-relaxed text-ink-secondary">
+              会移到回收站，可以从 Tasks → 回收站恢复。
+            </p>
+          </div>
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded-md px-3 py-2 text-sm text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              className="rounded-md bg-ink-primary px-3 py-2 text-sm font-medium text-surface-0 transition hover:bg-red-500"
+            >
+              移到回收站
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -673,11 +778,13 @@ function BacklogCard({
   projectName,
   projectColor,
   onOpen,
+  onDelete,
 }: {
   item: BacklogItem;
   projectName: string | undefined;
   projectColor: string | undefined;
   onOpen?: () => void;
+  onDelete?: () => void;
 }) {
   const { task } = item;
   const accent = projectColor
@@ -817,6 +924,22 @@ function BacklogCard({
           )}
         </div>
       </div>
+      {onDelete && (
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          aria-label="删除任务"
+          title="移到回收站"
+          className="shrink-0 rounded-sm p-1 text-ink-tertiary opacity-0 transition hover:bg-surface-3 hover:text-red-500 group-hover:opacity-100 focus-visible:opacity-100"
+        >
+          <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} />
+        </button>
+      )}
     </div>
   );
 }
@@ -834,65 +957,86 @@ function BacklogTaskGroupCard({
   projectName,
   projectColor,
   onOpen,
+  onOpenOccurrence,
+  onDelete,
 }: {
   task: Task;
   occurrences: Array<Extract<BacklogItem, { kind: 'occurrence' }>>;
   projectName: string | undefined;
   projectColor: string | undefined;
   onOpen?: () => void;
+  onOpenOccurrence?: (occurrenceId: string) => void;
+  onDelete?: () => void;
 }) {
   const accent = projectColor
     ? RAIL_COLOR_HEX[projectColor as keyof typeof RAIL_COLOR_HEX]
     : undefined;
   return (
     <div className="overflow-hidden rounded-md bg-surface-1">
-      <button
-        type="button"
-        onClick={onOpen}
-        className="flex w-full items-start gap-2 px-2 py-2 text-left transition hover:bg-surface-2"
-        title="点击打开任务详情"
-      >
-        {accent && (
-          <span
-            aria-hidden
-            className="mt-0.5 h-3.5 w-[3px] shrink-0 rounded-sm"
-            style={{ background: accent }}
-          />
-        )}
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="truncate text-sm leading-snug text-ink-primary">
-            {task.title}
-          </span>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {task.priority && (
-              <span
-                className={clsx(
-                  'inline-flex h-3.5 min-w-[1.25rem] items-center justify-center rounded-sm px-1 font-mono text-[9px] font-medium uppercase tracking-wider text-white',
-                  task.priority === 'P0' && 'bg-red-500/90',
-                  task.priority === 'P1' && 'bg-amber-500/90',
-                  task.priority === 'P2' && 'bg-slate-400/80',
-                )}
-              >
-                {task.priority}
-              </span>
-            )}
-            {projectName && (
-              <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
-                {projectName}
-              </span>
-            )}
-            <span className="rounded-sm bg-surface-2 px-1 py-0.5 font-mono text-[10px] uppercase tracking-widest text-ink-tertiary">
-              切分 · {occurrences.length}
+      <div className="group/header flex items-start gap-1 px-2 py-2 transition hover:bg-surface-2">
+        <button
+          type="button"
+          onClick={onOpen}
+          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+          title="点击打开任务详情"
+        >
+          {accent && (
+            <span
+              aria-hidden
+              className="mt-0.5 h-3.5 w-[3px] shrink-0 rounded-sm"
+              style={{ background: accent }}
+            />
+          )}
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="truncate text-sm leading-snug text-ink-primary">
+              {task.title}
             </span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {task.priority && (
+                <span
+                  className={clsx(
+                    'inline-flex h-3.5 min-w-[1.25rem] items-center justify-center rounded-sm px-1 font-mono text-[9px] font-medium uppercase tracking-wider text-white',
+                    task.priority === 'P0' && 'bg-red-500/90',
+                    task.priority === 'P1' && 'bg-amber-500/90',
+                    task.priority === 'P2' && 'bg-slate-400/80',
+                  )}
+                >
+                  {task.priority}
+                </span>
+              )}
+              {projectName && (
+                <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                  {projectName}
+                </span>
+              )}
+              <span className="rounded-sm bg-surface-2 px-1 py-0.5 font-mono text-[10px] uppercase tracking-widest text-ink-tertiary">
+                切分 · {occurrences.length}
+              </span>
+            </div>
           </div>
-        </div>
-      </button>
+        </button>
+        {onDelete && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            aria-label="删除任务"
+            title="移到回收站"
+            className="shrink-0 rounded-sm p-1 text-ink-tertiary opacity-0 transition hover:bg-surface-3 hover:text-red-500 group-hover/header:opacity-100 focus-visible:opacity-100"
+          >
+            <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} />
+          </button>
+        )}
+      </div>
       <ul className="flex flex-col border-t border-hairline/40">
         {occurrences.map((it) => (
           <li key={it.occurrence.id}>
             <BacklogOccurrenceSubRow
               task={task}
               occurrence={it.occurrence}
+              onOpen={() => onOpenOccurrence?.(it.occurrence.id)}
             />
           </li>
         ))}
@@ -904,9 +1048,11 @@ function BacklogTaskGroupCard({
 function BacklogOccurrenceSubRow({
   task,
   occurrence,
+  onOpen,
 }: {
   task: Task;
   occurrence: TaskOccurrence;
+  onOpen?: () => void;
 }) {
   const title =
     (occurrence.label?.trim() && occurrence.label.trim().length > 0
@@ -929,19 +1075,13 @@ function BacklogOccurrenceSubRow({
     id: occurrence.id,
     data: { type: 'task', source: 'backlog', summary },
   });
-  // Sub-row is drag-only by design. Earlier we attached `onClick={onOpen}`
-  // here but a sub-pointerdown < 4px is treated as a click by dnd-kit's
-  // PointerSensor (activation distance) and would silently open
-  // TaskDetailDrawer — that drawer is right-docked + z-50 with a
-  // full-page backdrop, so it covers the Backlog and the user reads it
-  // as "drag stopped working". The header button above is the dedicated
-  // open-detail surface; sub-rows are pure drag handles.
   return (
     <div
       ref={setNodeRef}
       {...attributes}
       {...listeners}
-      title="拖到 cycle 格子即排期"
+      onClick={onOpen}
+      title="拖到 cycle 格子即排期，点击打开对应切分"
       className={clsx(
         'group flex cursor-grab items-center gap-2 px-3 py-1.5 transition hover:bg-surface-2 active:cursor-grabbing',
         isDragging && 'opacity-60',

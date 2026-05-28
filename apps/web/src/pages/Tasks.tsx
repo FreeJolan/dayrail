@@ -1,4 +1,11 @@
-import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   useLocation,
   useNavigate,
@@ -1417,10 +1424,14 @@ function FilterBar({
 export function TaskDetailDrawer({
   task,
   line,
+  highlightOccurrenceId,
+  highlightRequestId,
   onClose,
 }: {
   task: Task;
   line: Line | undefined;
+  highlightOccurrenceId?: string;
+  highlightRequestId?: number;
   onClose: () => void;
 }) {
   const updateTask = useStore((s) => s.updateTask);
@@ -1648,7 +1659,11 @@ export function TaskDetailDrawer({
 
           <PrioritySection task={task} />
 
-          <OccurrencesSection task={task} />
+          <OccurrencesSection
+            task={task}
+            highlightOccurrenceId={highlightOccurrenceId}
+            highlightRequestId={highlightRequestId}
+          />
 
           <div className="flex flex-col gap-1 pt-2">
             <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
@@ -1771,7 +1786,15 @@ function TaskOccurrenceCountBadge({ taskId }: { taskId: string }) {
 // what the user had before. The new affordance is the slot chip + the
 // percent input.
 
-function OccurrencesSection({ task }: { task: Task }) {
+function OccurrencesSection({
+  task,
+  highlightOccurrenceId,
+  highlightRequestId,
+}: {
+  task: Task;
+  highlightOccurrenceId?: string;
+  highlightRequestId?: number;
+}) {
   const occurrencesMap = useStore((s) => s.taskOccurrences);
   const railsMap = useStore((s) => s.rails);
   const addTaskOccurrence = useStore((s) => s.addTaskOccurrence);
@@ -1844,6 +1867,11 @@ function OccurrencesSection({ task }: { task: Task }) {
               onUpdate={(patch) => void updateTaskOccurrence(occ.id, patch)}
               onSchedule={(slot) => void scheduleTaskOccurrence(occ.id, slot)}
               onRemove={() => void removeTaskOccurrence(occ.id)}
+              highlighted={
+                occ.id === highlightOccurrenceId &&
+                highlightRequestId !== undefined
+              }
+              highlightRequestId={highlightRequestId}
               ime={ime}
             />
           ))}
@@ -1883,6 +1911,8 @@ function OccurrenceRow({
   onUpdate,
   onSchedule,
   onRemove,
+  highlighted,
+  highlightRequestId,
   ime,
 }: {
   task: Task;
@@ -1894,8 +1924,12 @@ function OccurrenceRow({
     slot: { cycleId: string; date: string; railId: string } | null,
   ) => void;
   onRemove: () => void;
+  highlighted: boolean;
+  highlightRequestId?: number;
   ime: ReturnType<typeof useIme>;
 }) {
+  const rowRef = useRef<HTMLLIElement | null>(null);
+  const [flash, setFlash] = useState(false);
   const [editingLabel, setEditingLabel] = useState(occurrence.label ?? '');
   const [editingPercent, setEditingPercent] = useState(
     occurrence.percent != null ? String(occurrence.percent) : '',
@@ -1918,6 +1952,22 @@ function OccurrenceRow({
   useEffect(() => {
     setEditingPercent(occurrence.percent != null ? String(occurrence.percent) : '');
   }, [occurrence.percent]);
+  useEffect(() => {
+    if (!highlighted) {
+      setFlash(false);
+      return;
+    }
+    if (highlightRequestId === undefined) return;
+    const frame = window.requestAnimationFrame(() => {
+      rowRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      setFlash(true);
+    });
+    const timer = window.setTimeout(() => setFlash(false), 1600);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [highlighted, highlightRequestId]);
 
   // ERD §10.6 — percent is a milestone marker, NOT a done flag.
   // The checkbox reflects status only; setting percent=100 does
@@ -1979,7 +2029,14 @@ function OccurrenceRow({
   })();
 
   return (
-    <li className="group flex flex-col gap-1 rounded-md px-1.5 py-1 transition hover:bg-surface-1">
+    <li
+      ref={rowRef}
+      className={clsx(
+        'group flex flex-col gap-1 rounded-md px-1.5 py-1 transition hover:bg-surface-1',
+        flash &&
+          'bg-cta-soft/70 ring-1 ring-cta/40 animate-[occurrenceTargetPulse_1600ms_ease-out]',
+      )}
+    >
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -3109,4 +3166,3 @@ function weekRangeOf(date: Date): { from: string; to: string } {
   end.setDate(start.getDate() + 6);
   return { from: toIsoDateStr(start), to: toIsoDateStr(end) };
 }
-
