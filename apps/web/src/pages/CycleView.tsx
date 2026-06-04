@@ -450,6 +450,10 @@ export function CycleView() {
       if (!task) return undefined;
       const line = lines[task.lineId];
       if (!line) return undefined;
+      // Cycle pills surface Project context for ad-hoc tasks, but
+      // Habit tasks usually repeat the Habit name as the task title,
+      // so showing the owning line there just creates duplicate text.
+      if (line.kind !== 'project') return undefined;
       return { name: line.name, color: line.color };
     },
     [tasks, taskOccurrencesMap, lines],
@@ -927,4 +931,3 @@ function CycleFooter({
     </footer>
   );
 }
-

@@ -367,6 +367,7 @@ function TaskPill(props: PillProps) {
             <PillBody
               task={task}
               color={color}
+              {...(line && { line })}
               {...(onClear && { onClear })}
             />
           </PopoverTrigger>
@@ -378,6 +379,7 @@ function TaskPill(props: PillProps) {
               <PillBody
                 task={task}
                 color={color}
+                {...(line && { line })}
                 {...(onClear && { onClear })}
               />
             </TooltipTrigger>
@@ -449,6 +451,7 @@ interface PillBodyProps
   extends Omit<React.HTMLAttributes<HTMLDivElement>, 'color'> {
   task: SlotTaskSummary;
   color: RailColor;
+  line?: { name: string; color?: RailColor };
   onClear?: () => void;
 }
 
@@ -456,7 +459,15 @@ const PillBody = forwardRef<HTMLDivElement, PillBodyProps>(function PillBody(
   props,
   ref,
 ) {
-  const { task, color, onClear, className, style: passedStyle, ...rest } = props;
+  const {
+    task,
+    color,
+    line,
+    onClear,
+    className,
+    style: passedStyle,
+    ...rest
+  } = props;
   const style = pillStyle(task.state, color);
   return (
     <div
@@ -526,6 +537,7 @@ const PillBody = forwardRef<HTMLDivElement, PillBodyProps>(function PillBody(
       </div>
       <PillBadges
         task={task}
+        {...(line && { line })}
         tone={style.badgeTone}
         hideProgress={task.parentTitle != null}
       />
@@ -629,10 +641,12 @@ function pillStyle(state: SlotTaskState, color: RailColor): PillStyle {
 
 function PillBadges({
   task,
+  line,
   tone,
   hideProgress,
 }: {
   task: SlotTaskSummary;
+  line?: { name: string; color?: RailColor };
   tone: 'default' | 'on-solid';
   /** Occurrence pills render sub-items / milestone-% on the parent
    *  title row via ParentRowProgress (so the metric visually belongs
@@ -642,6 +656,7 @@ function PillBadges({
 }) {
   const showProgress = !hideProgress;
   const anything =
+    line != null ||
     task.priority != null ||
     task.isAutoTask ||
     (showProgress && task.subItemsTotal > 0) ||
@@ -655,6 +670,7 @@ function PillBadges({
       )}
       style={tone === 'on-solid' ? { opacity: 0.75 } : undefined}
     >
+      {line && <ProjectChip line={line} tone={tone} />}
       {task.priority && <PriorityChip priority={task.priority} />}
       {task.isAutoTask && <span>habit</span>}
       {showProgress && task.subItemsTotal > 0 && (
@@ -666,6 +682,34 @@ function PillBadges({
         <span>{task.milestonePercent}%</span>
       )}
     </div>
+  );
+}
+
+function ProjectChip({
+  line,
+  tone,
+}: {
+  line: { name: string; color?: RailColor };
+  tone: 'default' | 'on-solid';
+}) {
+  return (
+    <span className="inline-flex min-w-0 max-w-full items-center gap-1">
+      {line.color && (
+        <span
+          aria-hidden
+          className="h-2 w-2 shrink-0 rounded-full"
+          style={{ background: RAIL_COLOR_HEX[line.color] }}
+        />
+      )}
+      <span
+        className={clsx(
+          'min-w-0 max-w-[8rem] truncate',
+          tone === 'on-solid' ? '' : 'text-ink-secondary',
+        )}
+      >
+        {line.name}
+      </span>
+    </span>
   );
 }
 
