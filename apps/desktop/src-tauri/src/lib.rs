@@ -24,12 +24,39 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 const RESTART_REASON_ENV: &str = "DAYRAIL_RESTART_REASON";
 const RESTART_REASON_UPDATE: &str = "update";
 const AUTOSTART_ARG: &str = "--autostart";
+const MAIN_WINDOW_LABEL: &str = "main";
 
 /// Window-geometry flags persisted + restored by tauri-plugin-window-state
 /// (ERD §15.11). Single source of truth so the save-before-restart in
 /// `relaunch_for_update` can't drift from the plugin registration.
 fn persisted_window_flags() -> StateFlags {
     StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
+}
+
+/// Show the main window and promote it to the foreground. Used by
+/// explicit foreground intents: post-update relaunch and macOS Dock
+/// reopen after an autostart-hidden launch.
+fn show_and_focus_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let window = if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        window
+    } else {
+        let Some(config) = app
+            .config()
+            .app
+            .windows
+            .iter()
+            .find(|window| window.label == MAIN_WINDOW_LABEL)
+        else {
+            return Ok(());
+        };
+
+        tauri::WebviewWindowBuilder::from_config(app, config)?.build()?
+    };
+
+    window.show()?;
+    window.unminimize()?;
+    window.set_focus()?;
+    Ok(())
 }
 
 /// Restart the app after an updater install, signalling the new
@@ -138,23 +165,33 @@ pub fn run() {
                 std::env::remove_var(RESTART_REASON_ENV);
             }
 
-            if let Some(window) = app.get_webview_window("main") {
-                if is_update_restart {
-                    // Post-update: force foreground regardless of
-                    // autostart status (update intent is explicit).
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                } else if is_autostart {
+            if is_update_restart {
+                // Post-update: force foreground regardless of
+                // autostart status (update intent is explicit).
+                let _ = show_and_focus_main_window(app.handle());
+            } else if is_autostart {
+                if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                     // Autostart with no update reason → hide; user
                     // surfaces the window by clicking the dock icon.
                     let _ = window.hide();
                 }
-                // Other paths (dock click, Finder, dev) → leave
-                // tauri's default show() behavior in place.
             }
+            // Other paths (dock click, Finder, dev) → leave
+            // tauri's default show() behavior in place.
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running DayRail desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building DayRail desktop")
+        .run(|app_handle, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = event
+            {
+                if !has_visible_windows {
+                    let _ = show_and_focus_main_window(app_handle);
+                }
+            }
+        });
 }
