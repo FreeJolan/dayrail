@@ -124,7 +124,7 @@ export function CycleCell({
     );
   }
   return (
-    <div className="group/cell relative flex h-full min-h-[44px] flex-col gap-1 rounded-sm bg-surface-1 px-1 py-1 transition hover:bg-surface-2">
+    <div className="group/cell relative flex h-full min-h-[44px] w-full max-w-full min-w-0 flex-col gap-1 overflow-hidden rounded-sm bg-surface-1 px-1 py-1 transition hover:bg-surface-2">
       {tasks.map((t, i) => (
         // ERD §10.6 v0.11 — pill identity is `rowId` (occurrence id when
         // present, else task id). All handler dispatches send `rowId`
@@ -278,6 +278,7 @@ function SortableTaskPillRow({
       {...attributes}
       {...listeners}
       className={clsx(
+        'w-full max-w-full min-w-0',
         !renderAsIndicator && 'cursor-grab active:cursor-grabbing',
         isDragging && !renderAsIndicator && 'opacity-50',
       )}
@@ -477,7 +478,7 @@ const PillBody = forwardRef<HTMLDivElement, PillBodyProps>(function PillBody(
         // Drag activation moved to the outer SortableTaskPillRow
         // wrapper (dnd-kit). PillBody now just owns presentation;
         // the wrapper handles the grab + drop gesture via useSortable.
-        'group/pill relative flex flex-col gap-0.5 rounded-sm px-1.5 py-1 pr-5',
+        'group/pill relative flex w-full max-w-full min-w-0 flex-col gap-0.5 overflow-hidden rounded-sm px-1.5 py-1 pr-5',
         className,
       )}
       style={{ ...style.container, ...passedStyle }}
@@ -1134,7 +1135,7 @@ function EmptyCell({
         <button
           type="button"
           aria-label={`Add task on ${date} to ${railName}`}
-          className="block w-full text-left"
+          className="block w-full max-w-full min-w-0 text-left"
         >
           <PlannedEmptyPlaceholder />
         </button>
@@ -1174,6 +1175,7 @@ function CellAddBar({
           aria-label={`Add another task on ${date} to ${railName}`}
           className={clsx(
             'flex h-5 w-full items-center justify-center gap-1 rounded-sm border border-dashed border-ink-tertiary/30 text-2xs text-ink-tertiary/70 transition',
+            'max-w-full min-w-0',
             'opacity-0 group-hover/cell:opacity-100 focus-visible:opacity-100',
             'hover:border-ink-tertiary/60 hover:text-ink-primary',
             open && 'opacity-100',
@@ -1257,7 +1259,7 @@ function PlannedEmptyPlaceholder() {
   return (
     <div
       className={clsx(
-        'relative h-full min-h-[44px] rounded-sm transition',
+        'relative h-full min-h-[44px] w-full max-w-full min-w-0 rounded-sm transition',
         'border border-dashed border-ink-tertiary/30',
         'hover:border-ink-tertiary/60 hover:bg-surface-1',
       )}
