@@ -1,5 +1,5 @@
 import { clsx } from 'clsx';
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { Check, ChevronDown, NotebookPen } from 'lucide-react';
 import * as RadixHoverCard from '@radix-ui/react-hover-card';
 import { useDndContext, useDroppable } from '@dnd-kit/core';
@@ -35,6 +35,22 @@ import {
 // popovers now (per-pill action popover + cell-level add-bar popover);
 // this component only handles the table frame, the day headers, and
 // drag-drop routing onto (rail, date).
+
+const RAIL_LABEL_COL_WIDTH = 220;
+const DAY_CELL_MAX_WIDTH = 180;
+
+const railLabelCellStyle: CSSProperties = {
+  width: RAIL_LABEL_COL_WIDTH,
+  maxWidth: RAIL_LABEL_COL_WIDTH,
+};
+const dayCellStyle: CSSProperties = {
+  width: DAY_CELL_MAX_WIDTH,
+  maxWidth: DAY_CELL_MAX_WIDTH,
+};
+const cycleSectionTableStyle = (dayCount: number): CSSProperties => ({
+  width: RAIL_LABEL_COL_WIDTH + dayCount * DAY_CELL_MAX_WIDTH,
+  maxWidth: RAIL_LABEL_COL_WIDTH + dayCount * DAY_CELL_MAX_WIDTH,
+});
 
 export interface TemplateChoice {
   key: TemplateKey;
@@ -182,11 +198,14 @@ export function CycleSection({
           onClearOverride={onClearOverride}
         />
 
-        <table className="table-fixed border-separate border-spacing-0">
+        <table
+          className="table-fixed border-separate border-spacing-0"
+          style={cycleSectionTableStyle(days.length)}
+        >
           <colgroup>
-            <col className="w-[220px]" />
+            <col style={railLabelCellStyle} />
             {days.map((d) => (
-              <col key={d.date} className="w-[180px]" />
+              <col key={d.date} style={dayCellStyle} />
             ))}
           </colgroup>
 
@@ -207,6 +226,7 @@ export function CycleSection({
                     'pr-3 py-1 text-left align-top',
                     railIsDropTarget && 'bg-cta-soft/25',
                   )}
+                  style={railLabelCellStyle}
                 >
                   <RailRowLabel rail={rail} isDropTarget={railIsDropTarget} />
                 </th>
@@ -337,6 +357,7 @@ export function CycleSection({
                         'p-1 align-top',
                         d.date === todayISO && 'bg-surface-2/40',
                       )}
+                      style={dayCellStyle}
                     >
                       {/* Off-rail pills are draggable BACK onto real
                           rails (the source-side data is bogus, but
@@ -426,6 +447,7 @@ function DroppableCellTd({
         showSoftRail && 'bg-cta-soft/15',
         showOver && 'bg-cta-soft/30 ring-1 ring-inset ring-cta/60',
       )}
+      style={dayCellStyle}
     >
       {children}
     </td>
@@ -457,16 +479,22 @@ function SectionMiniHeader({
 }) {
   return (
     <div className="flex min-h-[48px] items-center gap-0 border-b border-transparent py-2">
-      <table className="table-fixed border-separate border-spacing-0">
+      <table
+        className="table-fixed border-separate border-spacing-0"
+        style={cycleSectionTableStyle(days.length)}
+      >
         <colgroup>
-          <col className="w-[220px]" />
+          <col style={railLabelCellStyle} />
           {days.map((d) => (
-            <col key={d.date} className="w-[180px]" />
+            <col key={d.date} style={dayCellStyle} />
           ))}
         </colgroup>
         <thead>
           <tr>
-            <th className="pr-3 text-left align-middle">
+            <th
+              className="pr-3 text-left align-middle"
+              style={railLabelCellStyle}
+            >
               <div className="flex min-w-0 items-center gap-2">
                 <span
                   aria-hidden
@@ -482,7 +510,11 @@ function SectionMiniHeader({
               </div>
             </th>
             {days.map((d) => (
-              <th key={d.date} className="px-1 text-left align-middle">
+              <th
+                key={d.date}
+                className="px-1 text-left align-middle"
+                style={dayCellStyle}
+              >
                 <DayCellButton
                   day={d}
                   isToday={d.date === todayISO}
