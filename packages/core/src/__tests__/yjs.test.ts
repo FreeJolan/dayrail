@@ -85,6 +85,30 @@ describe('entityToYMap / yMapToEntity (doc-integrated)', () => {
     expect(placeAndRead(doc, 'tasks', 'task-1', entity)).toEqual(entity);
   });
 
+  it('round-trips additive expected-window fields without a schema migration', () => {
+    const taskDoc = createYDoc();
+    const task = {
+      id: 'task-expected',
+      title: 'Prepare launch',
+      expectedWindow: {
+        startDate: '2026-08-10',
+        endDate: '2026-08-16',
+        precision: 'week',
+      },
+    };
+    expect(placeAndRead(taskDoc, 'tasks', task.id, task)).toEqual(task);
+
+    const lineDoc = createYDoc();
+    const project = {
+      id: 'project-expected',
+      name: 'Launch',
+      plannedStart: '2026-08-10',
+      plannedEnd: '2026-08-16',
+      plannedPrecision: 'week',
+    };
+    expect(placeAndRead(lineDoc, 'lines', project.id, project)).toEqual(project);
+  });
+
   it('wraps explicitly-named array fields as Y.Array', () => {
     const doc = createYDoc();
     const entity = { id: 'x', items: ['a', 'b', 'c'] };

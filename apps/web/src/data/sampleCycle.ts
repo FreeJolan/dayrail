@@ -60,6 +60,8 @@ export interface SlotTaskSummary {
   subItems?: Array<{ id: string; title: string; done: boolean }>;
   milestonePercent?: number;
   priority?: TaskPriority;
+  /** Scheduled after the Task/Project expected window. */
+  isLateExpected?: boolean;
   /** §4.1 v0.4.4 · user-defined per-slot order. Set when the user has
    *  dragged this task into a specific position within the slot. */
   slotOrder?: number;

@@ -31,8 +31,6 @@ import type { Rail, Task } from './types';
 // convention already in use by the rest of the codebase.
 // ------------------------------------------------------------------
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 function parseIso(dateIso: string): Date {
   return new Date(`${dateIso}T00:00:00`);
 }
@@ -60,10 +58,11 @@ export function cycleIdOf(dateIso: string): string {
 
 /** Iterate ISO date strings from `start` (inclusive) to `end` (inclusive). */
 function* iterDates(startIso: string, endIso: string): Generator<string> {
-  const startMs = parseIso(startIso).getTime();
-  const endMs = parseIso(endIso).getTime();
-  for (let t = startMs; t <= endMs; t += DAY_MS) {
-    yield fmtIso(new Date(t));
+  const cursor = parseIso(startIso);
+  const end = parseIso(endIso);
+  while (cursor <= end) {
+    yield fmtIso(cursor);
+    cursor.setDate(cursor.getDate() + 1);
   }
 }
 
@@ -78,38 +77,30 @@ export interface MaterializeRange {
   endDate: string;
 }
 
-/** Pure materializer core. Same logic as `materializeAutoTasks` but
- *  takes the state slice + upsert dispatcher as parameters so unit
- *  tests can drive it without a real store / DB. Runtime callers go
- *  through `materializeAutoTasks` below.
- *
- *  Phase 2: walks `habitBindingsActiveOn(date)` per date and resolves
- *  each rail / template via revisions. Past dates that pre-date a
- *  config change land on the prior revision automatically — past
- *  cycles materialized later (user comes back from a long absence)
- *  see the historically correct day-shape, not whatever's in store
- *  today. */
-export async function materializeAutoTasksImpl(
-  state: Pick<
-    DayRailState,
-    | 'lines'
-    | 'templates'
-    | 'calendarRules'
-    | 'calendarRuleRevisions'
-    | 'calendarRuleTombstones'
-    | 'habitBindings'
-    | 'habitBindingRevisions'
-    | 'habitBindingTombstones'
-    | 'rails'
-    | 'railRevisions'
-    | 'railTombstones'
-    // `tasks` is read-only here — used solely for the pre-v0.13.1
-    // legacy-id back-compat guard below.
-    | 'tasks'
-  >,
-  upsert: (task: Task) => Promise<void>,
+export type AutoTaskCandidateState = Pick<
+  DayRailState,
+  | 'lines'
+  | 'templates'
+  | 'calendarRules'
+  | 'calendarRuleRevisions'
+  | 'calendarRuleTombstones'
+  | 'habitBindings'
+  | 'habitBindingRevisions'
+  | 'habitBindingTombstones'
+  | 'rails'
+  | 'railRevisions'
+  | 'railTombstones'
+  | 'tasks'
+> &
+  Partial<Pick<DayRailState, 'userDayNotes' | 'userProfile'>>;
+
+/** Pure, read-only half of habit materialization. Calendar uses this
+ *  to preview Habit occurrences without creating Tasks. */
+export function selectAutoTaskCandidates(
+  state: AutoTaskCandidateState,
   range: MaterializeRange,
-): Promise<void> {
+): Task[] {
+  const out: Task[] = [];
   for (const date of iterDates(range.startDate, range.endDate)) {
     const tplKey = resolveTemplateForDate(state, date, () => null);
     if (!tplKey) continue;
@@ -124,35 +115,39 @@ export async function materializeAutoTasksImpl(
       if (bRev.weekdays && !bRev.weekdays.includes(dow)) continue;
 
       const rRev = railAtDate(state, bRev.railId, date);
-      if (!rRev) continue;
-      if (rRev.templateKey !== tplKey) continue;
-
-      // ERD §10.3 "未物化的过去 cycle 不因配置变更而补": don't
-      // retroactively populate dates before the binding existed.
-      // Compare at DATE level, not ms — a binding created at 15:00
-      // should still cover today's 09:00 rail. Use the identity-shell
-      // `createdAt`, not the revision's `authoredAt`, since the latter
-      // shifts every time the binding is re-revised.
+      if (!rRev || rRev.templateKey !== tplKey) continue;
       const bindingShell = state.habitBindings[bindingId];
       if (!bindingShell) continue;
       const createdDate = toIsoDate(new Date(bindingShell.createdAt));
       if (date < createdDate) continue;
 
       const rail = railFromRevision(rRev);
-
-      // Back-compat (pre-v0.13.1): an already-materialized auto-task
-      // used the rail-less id `task-auto-{habitId}-{date}`. If one
-      // exists for THIS rail (its slot carries the same railId), it
-      // already covers this occurrence — skip so the new rail-scoped id
-      // doesn't create a duplicate. Other rails of the same habit/day
-      // fall through and now materialize (the bug this fixes). The
-      // snapshot is fine: legacy tasks predate this run.
       const legacy = state.tasks[legacyAutoTaskId(habit.id, date)];
       if (legacy?.slot?.railId === rail.id) continue;
-
-      const task: Task = buildAutoTask(habit.id, habit.name, rail, date);
-      await upsert(task);
+      out.push(buildAutoTask(habit.id, habit.name, rail, date));
     }
+  }
+  return out;
+}
+
+/** Pure materializer core. Same logic as `materializeAutoTasks` but
+ *  takes the state slice + upsert dispatcher as parameters so unit
+ *  tests can drive it without a real store / DB. Runtime callers go
+ *  through `materializeAutoTasks` below.
+ *
+ *  Phase 2: walks `habitBindingsActiveOn(date)` per date and resolves
+ *  each rail / template via revisions. Past dates that pre-date a
+ *  config change land on the prior revision automatically — past
+ *  cycles materialized later (user comes back from a long absence)
+ *  see the historically correct day-shape, not whatever's in store
+ *  today. */
+export async function materializeAutoTasksImpl(
+  state: AutoTaskCandidateState,
+  upsert: (task: Task) => Promise<void>,
+  range: MaterializeRange,
+): Promise<void> {
+  for (const task of selectAutoTaskCandidates(state, range)) {
+    await upsert(task);
   }
 }
 
@@ -396,4 +391,3 @@ export async function materializeAutoTasksForCycle(mondayIso: string): Promise<v
     endDate: addDays(mondayIso, 6),
   });
 }
-

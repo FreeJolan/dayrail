@@ -2,6 +2,8 @@ import { clsx } from 'clsx';
 import {
   ArrowRight,
   ArrowUpRight,
+  AlertTriangle,
+  CalendarClock,
   Check,
   ChevronDown,
   ChevronRight,
@@ -18,6 +20,11 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useDraggable } from '@dnd-kit/core';
 import {
   INBOX_LINE_ID,
+  effectiveExpectedWindow,
+  expectedCycleRelation,
+  formatExpectedWindow,
+  projectExpectedWindow,
+  selectAttentionIssues,
   useStore,
   type Line,
   type Task,
@@ -38,6 +45,7 @@ import {
 } from './primitives/Popover';
 import { RAIL_COLOR_HEX } from './railColors';
 import { useIme } from '@/lib/ime';
+import type { PlanningCycleContext } from '@/lib/planningContext';
 
 // ERD §5.3 D8 — split drawer docked on the right. Items are un-
 // scheduled Tasks waiting to be dragged onto a Cycle slot.
@@ -49,11 +57,12 @@ import { useIme } from '@/lib/ime';
 interface Props {
   open: boolean;
   onToggle: () => void;
+  planningCycle: PlanningCycleContext;
 }
 
-type BacklogGroupBy = 'none' | 'priority' | 'project';
+type BacklogGroupBy = 'expected' | 'none' | 'priority' | 'project';
 
-export function BacklogDrawer({ open, onToggle }: Props) {
+export function BacklogDrawer({ open, onToggle, planningCycle }: Props) {
   const tasksMap = useStore((s) => s.tasks);
   const taskOccurrencesMap = useStore((s) => s.taskOccurrences);
   const linesMap = useStore((s) => s.lines);
@@ -62,7 +71,7 @@ export function BacklogDrawer({ open, onToggle }: Props) {
   const deleteTask = useStore((s) => s.deleteTask);
   const [query, setQuery] = useState('');
   const [adding, setAdding] = useState(false);
-  const [groupBy, setGroupBy] = useState<BacklogGroupBy>('none');
+  const [groupBy, setGroupBy] = useState<BacklogGroupBy>('expected');
   // Per-group collapse state. Lives in component state (not store) —
   // backlog is a session-scoped tool surface; on next open the user
   // gets a fresh fully-expanded view, which fits the "no hidden
@@ -72,7 +81,7 @@ export function BacklogDrawer({ open, onToggle }: Props) {
   // Reset whenever the grouping dimension changes — same key string
   // can mean different things across modes.
   useEffect(() => {
-    setCollapsed(new Set());
+    setCollapsed(groupBy === 'expected' ? new Set(['expected-after']) : new Set());
   }, [groupBy]);
   const [detailTarget, setDetailTarget] = useState<{
     taskId: string;
@@ -162,6 +171,31 @@ export function BacklogDrawer({ open, onToggle }: Props) {
     });
   }, [items, query]);
 
+  const today = useMemo(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }, []);
+  const attentionIssues = useMemo(
+    () =>
+      selectAttentionIssues(
+        {
+          lines: linesMap,
+          tasks: tasksMap,
+          taskOccurrences: taskOccurrencesMap,
+          adhocEvents: adhocEventsMap,
+        },
+        today,
+      ),
+    [linesMap, tasksMap, taskOccurrencesMap, adhocEventsMap, today],
+  );
+  const attentionSubjectIds = useMemo(
+    () => new Set(attentionIssues.map((issue) => issue.subjectId)),
+    [attentionIssues],
+  );
+
   // ERD §10.6 v0.11 — group runs of consecutive same-task occurrence
   // rows into a compound visual ("split-task" card with parent header
   // + per-occurrence sub-rows). Single legacy task rows render as the
@@ -209,6 +243,40 @@ export function BacklogDrawer({ open, onToggle }: Props) {
     Array<{ key: string; label: string; items: BacklogItem[] }>
   >(() => {
     if (groupBy === 'none' || filtered.length === 0) return [];
+    if (groupBy === 'expected') {
+      const order = [
+        'expected-attention',
+        'expected-current',
+        'expected-before',
+        'expected-none',
+        'expected-after',
+      ];
+      const labels: Record<string, string> = {
+        'expected-attention': '需要关注',
+        'expected-current': '当前 Cycle',
+        'expected-before': '预期更早',
+        'expected-none': '未设预期',
+        'expected-after': '稍后',
+      };
+      const buckets = new Map(order.map((key) => [key, [] as BacklogItem[]]));
+      for (const item of filtered) {
+        const effective = effectiveExpectedWindow(item.task, linesMap);
+        const ownerId = effective?.ownerId;
+        const relation = expectedCycleRelation(
+          effective?.window ?? null,
+          planningCycle.startDate,
+          planningCycle.endDate,
+        );
+        const key =
+          ownerId && attentionSubjectIds.has(ownerId)
+            ? 'expected-attention'
+            : `expected-${relation}`;
+        buckets.get(key)?.push(item);
+      }
+      return order
+        .filter((key) => buckets.get(key)!.length > 0)
+        .map((key) => ({ key, label: labels[key]!, items: buckets.get(key)! }));
+    }
     if (groupBy === 'priority') {
       const buckets = new Map<string, BacklogItem[]>();
       const order = ['P0', 'P1', 'P2', '__none'];
@@ -245,7 +313,49 @@ export function BacklogDrawer({ open, onToggle }: Props) {
       label: linesMap[lineId]?.name ?? '未知项目',
       items,
     }));
-  }, [filtered, groupBy, linesMap]);
+  }, [filtered, groupBy, linesMap, planningCycle, attentionSubjectIds]);
+
+  const currentCycleCount = useMemo(
+    () =>
+      allItems.filter((item) => {
+        const effective = effectiveExpectedWindow(item.task, linesMap);
+        return (
+          expectedCycleRelation(
+            effective?.window ?? null,
+            planningCycle.startDate,
+            planningCycle.endDate,
+          ) === 'current'
+        );
+      }).length,
+    [allItems, linesMap, planningCycle],
+  );
+  const unstructuredProjectCues = useMemo(
+    () =>
+      Object.values(linesMap)
+        .filter((line) => line.kind === 'project' && line.status === 'active')
+        .filter((line) => {
+          if (attentionSubjectIds.has(line.id)) return false;
+          const window = projectExpectedWindow(line);
+          if (
+            expectedCycleRelation(
+              window,
+              planningCycle.startDate,
+              planningCycle.endDate,
+            ) !== 'current'
+          ) {
+            return false;
+          }
+          return !Object.values(tasksMap).some(
+            (task) =>
+              task.lineId === line.id &&
+              task.status !== 'done' &&
+              task.status !== 'archived' &&
+              task.status !== 'deleted',
+          );
+        })
+        .sort((a, b) => (a.plannedEnd ?? '').localeCompare(b.plannedEnd ?? '')),
+    [linesMap, tasksMap, planningCycle, attentionSubjectIds],
+  );
 
   return (
     <aside
@@ -283,6 +393,11 @@ export function BacklogDrawer({ open, onToggle }: Props) {
             <span className="font-mono text-2xs tabular-nums text-ink-tertiary">
               {items.length}
             </span>
+            {currentCycleCount > 0 && (
+              <span className="rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-[9px] text-ink-secondary">
+                本周期 {currentCycleCount}
+              </span>
+            )}
             <span className="ml-auto" />
             <button
               type="button"
@@ -366,7 +481,82 @@ export function BacklogDrawer({ open, onToggle }: Props) {
             })()}
           </div>
 
-          {filtered.length === 0 ? (
+          {attentionIssues.length > 0 && (
+            <div className="mx-4 mb-3 rounded-md bg-amber-50 px-3 py-2 text-amber-950 ring-1 ring-inset ring-amber-200/80">
+              <div className="flex items-center gap-1.5">
+                <AlertTriangle className="h-3.5 w-3.5" strokeWidth={1.8} />
+                <span className="font-mono text-2xs uppercase tracking-widest">
+                  需要关注 · {attentionIssues.length}
+                </span>
+              </div>
+              <ul className="mt-1.5 flex flex-col gap-1">
+                {attentionIssues.slice(0, 4).map((issue) => {
+                  const subjectLabel =
+                    issue.subjectType === 'project'
+                      ? linesMap[issue.subjectId]?.name
+                      : tasksMap[issue.subjectId]?.title;
+                  return (
+                    <li key={`${issue.subjectType}-${issue.subjectId}`}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (issue.subjectType === 'project') {
+                            navigate(`/tasks/line/${issue.subjectId}`);
+                          } else {
+                            openDetail(issue.subjectId);
+                          }
+                        }}
+                        className="flex w-full items-baseline gap-2 rounded-sm px-1 py-0.5 text-left transition hover:bg-amber-100"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                          {subjectLabel ?? '未命名'}
+                        </span>
+                        <span className="shrink-0 font-mono text-[9px] tabular-nums">
+                          {issue.overdueDays
+                            ? `超期 ${issue.overdueDays} 天`
+                            : `${issue.lateSchedules.length} 个排期偏晚`}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
+          {unstructuredProjectCues.length > 0 && (
+            <div className="mx-4 mb-3 rounded-md bg-surface-2/70 px-3 py-2">
+              <div className="flex items-center gap-1.5 text-ink-secondary">
+                <CalendarClock className="h-3.5 w-3.5" strokeWidth={1.8} />
+                <span className="font-mono text-2xs uppercase tracking-widest">
+                  本周期待拆分
+                </span>
+              </div>
+              <ul className="mt-1.5 flex flex-col gap-1">
+                {unstructuredProjectCues.map((project) => (
+                  <li key={project.id}>
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/tasks/line/${project.id}`)}
+                      className="flex w-full items-baseline gap-2 rounded-sm px-1 py-0.5 text-left transition hover:bg-surface-3"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-xs text-ink-primary">
+                        {project.name}
+                      </span>
+                      <span className="shrink-0 font-mono text-[9px] text-ink-tertiary">
+                        {formatExpectedWindow(projectExpectedWindow(project)!)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {filtered.length === 0 &&
+          (attentionIssues.length > 0 || unstructuredProjectCues.length > 0) ? (
+            <div className="flex-1" />
+          ) : filtered.length === 0 ? (
             <div className="px-5 py-6 text-sm text-ink-tertiary">
               {query.trim()
                 ? '没有匹配的任务'
@@ -390,6 +580,7 @@ export function BacklogDrawer({ open, onToggle }: Props) {
                       projectColor={linesMap[g.task.lineId]?.color}
                       onOpen={() => openDetail(g.task.id)}
                       onDelete={() => handleDeleteTask(g.task)}
+                      expected={effectiveExpectedWindow(g.task, linesMap)}
                     />
                   ) : (
                     <BacklogTaskGroupCard
@@ -402,6 +593,7 @@ export function BacklogDrawer({ open, onToggle }: Props) {
                         openDetail(g.task.id, occurrenceId)
                       }
                       onDelete={() => handleDeleteTask(g.task)}
+                      expected={effectiveExpectedWindow(g.task, linesMap)}
                     />
                   )}
                 </li>
@@ -464,6 +656,7 @@ export function BacklogDrawer({ open, onToggle }: Props) {
                                 projectColor={linesMap[vg.task.lineId]?.color}
                                 onOpen={() => openDetail(vg.task.id)}
                                 onDelete={() => handleDeleteTask(vg.task)}
+                                expected={effectiveExpectedWindow(vg.task, linesMap)}
                               />
                             ) : (
                               <BacklogTaskGroupCard
@@ -476,6 +669,7 @@ export function BacklogDrawer({ open, onToggle }: Props) {
                                   openDetail(vg.task.id, occurrenceId)
                                 }
                                 onDelete={() => handleDeleteTask(vg.task)}
+                                expected={effectiveExpectedWindow(vg.task, linesMap)}
                               />
                             )}
                           </li>
@@ -618,9 +812,10 @@ function GroupBySwitch({
   onChange: (v: BacklogGroupBy) => void;
 }) {
   const opts: Array<{ key: BacklogGroupBy; label: string }> = [
-    { key: 'none', label: 'None' },
-    { key: 'priority', label: 'Priority' },
-    { key: 'project', label: 'Project' },
+    { key: 'expected', label: '预期' },
+    { key: 'none', label: '无' },
+    { key: 'priority', label: '优先级' },
+    { key: 'project', label: '项目' },
   ];
   return (
     <div className="inline-flex items-stretch overflow-hidden rounded-sm border border-hairline/60">
@@ -779,12 +974,14 @@ function BacklogCard({
   projectColor,
   onOpen,
   onDelete,
+  expected,
 }: {
   item: BacklogItem;
   projectName: string | undefined;
   projectColor: string | undefined;
   onOpen?: () => void;
   onDelete?: () => void;
+  expected?: ReturnType<typeof effectiveExpectedWindow>;
 }) {
   const { task } = item;
   const accent = projectColor
@@ -912,6 +1109,16 @@ function BacklogCard({
               {projectName}
             </span>
           )}
+          {expected && (
+            <span className={clsx(
+              'inline-flex items-center gap-1 font-mono text-[9px] tabular-nums text-ink-tertiary',
+              expected.inherited && 'opacity-80',
+            )}>
+              <CalendarClock className="h-2.5 w-2.5" strokeWidth={1.8} />
+              {formatExpectedWindow(expected.window)}
+              {expected.inherited && ' · 项目'}
+            </span>
+          )}
           {item.kind === 'occurrence' && (
             <span className="rounded-sm bg-surface-2 px-1 py-0.5 font-mono text-[10px] uppercase tracking-widest text-ink-tertiary">
               切分
@@ -959,6 +1166,7 @@ function BacklogTaskGroupCard({
   onOpen,
   onOpenOccurrence,
   onDelete,
+  expected,
 }: {
   task: Task;
   occurrences: Array<Extract<BacklogItem, { kind: 'occurrence' }>>;
@@ -967,6 +1175,7 @@ function BacklogTaskGroupCard({
   onOpen?: () => void;
   onOpenOccurrence?: (occurrenceId: string) => void;
   onDelete?: () => void;
+  expected?: ReturnType<typeof effectiveExpectedWindow>;
 }) {
   const accent = projectColor
     ? RAIL_COLOR_HEX[projectColor as keyof typeof RAIL_COLOR_HEX]
@@ -1007,6 +1216,13 @@ function BacklogTaskGroupCard({
               {projectName && (
                 <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
                   {projectName}
+                </span>
+              )}
+              {expected && (
+                <span className="inline-flex items-center gap-1 font-mono text-[9px] tabular-nums text-ink-tertiary">
+                  <CalendarClock className="h-2.5 w-2.5" strokeWidth={1.8} />
+                  {formatExpectedWindow(expected.window)}
+                  {expected.inherited && ' · 项目'}
                 </span>
               )}
               <span className="rounded-sm bg-surface-2 px-1 py-0.5 font-mono text-[10px] uppercase tracking-widest text-ink-tertiary">

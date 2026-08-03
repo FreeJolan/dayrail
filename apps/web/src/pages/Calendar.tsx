@@ -1,14 +1,18 @@
 import { useCallback, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Settings2 } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Settings2 } from 'lucide-react';
+import { clsx } from 'clsx';
+import { useNavigate } from 'react-router-dom';
 import { pickTemplateForDate, toIsoDate } from './cycleFromStore';
 import {
   INBOX_LINE_ID,
   resolveEnabledHolidayRegions,
+  selectCalendarAgenda,
   selectExternalEventsOn,
   selectUserDayNotesOn,
   singleDateRuleId,
   useStore,
   type AdhocEvent,
+  type CalendarAgendaItem,
   type RailColor as CoreRailColor,
 } from '@dayrail/core';
 import {
@@ -20,6 +24,7 @@ import { CalendarRulesDrawer } from '@/components/CalendarRulesDrawer';
 import { buildMonthGrid, monthLabel } from '@/data/sampleCalendar';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import type { RailColor } from '@/data/sample';
+import { TaskDetailDrawer } from './Tasks';
 
 // ERD §5.4 F4 — Calendar month view, live-data edition. Template
 // resolution follows the same priority chain as Cycle View:
@@ -40,6 +45,27 @@ void INBOX_LINE_ID;
 // on the current month again, which matches "open the app today =
 // see today" expectations.
 const CALENDAR_MONTH_STORAGE_KEY = 'dayrail.calendar.viewedMonth';
+const CALENDAR_LAYERS_STORAGE_KEY = 'dayrail.calendar.layers';
+
+interface CalendarLayers {
+  tasks: boolean;
+  habits: boolean;
+}
+
+function readCalendarLayers(): CalendarLayers {
+  if (typeof window === 'undefined') return { tasks: true, habits: false };
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(CALENDAR_LAYERS_STORAGE_KEY) ?? '{}',
+    ) as Partial<CalendarLayers>;
+    return {
+      tasks: typeof parsed.tasks === 'boolean' ? parsed.tasks : true,
+      habits: typeof parsed.habits === 'boolean' ? parsed.habits : false,
+    };
+  } catch {
+    return { tasks: true, habits: false };
+  }
+}
 
 function readPersistedMonth(): { year: number; month: number } | null {
   if (typeof window === 'undefined') return null;
@@ -74,6 +100,7 @@ function persistMonth(value: { year: number; month: number }): void {
 }
 
 export function Calendar() {
+  const navigate = useNavigate();
   const now = useMemo(() => new Date(), []);
   const [{ year, month }, setMonthState] = useState(() =>
     readPersistedMonth() ?? {
@@ -96,6 +123,13 @@ export function Calendar() {
     });
   };
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [layers, setLayersState] = useState<CalendarLayers>(readCalendarLayers);
+  const [detailTarget, setDetailTarget] = useState<{
+    taskId: string;
+    occurrenceId?: string;
+    adhocId?: string;
+    requestId: number;
+  } | null>(null);
   const todayIso = toIsoDate(now);
 
   const templates = useStore((s) => s.templates);
@@ -103,6 +137,15 @@ export function Calendar() {
   const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
   const calendarRuleTombstones = useStore((s) => s.calendarRuleTombstones);
   const adhocEvents = useStore((s) => s.adhocEvents);
+  const lines = useStore((s) => s.lines);
+  const tasks = useStore((s) => s.tasks);
+  const taskOccurrences = useStore((s) => s.taskOccurrences);
+  const rails = useStore((s) => s.rails);
+  const railRevisions = useStore((s) => s.railRevisions);
+  const railTombstones = useStore((s) => s.railTombstones);
+  const habitBindings = useStore((s) => s.habitBindings);
+  const habitBindingRevisions = useStore((s) => s.habitBindingRevisions);
+  const habitBindingTombstones = useStore((s) => s.habitBindingTombstones);
   const userDayNotes = useStore((s) => s.userDayNotes);
   const userProfile = useStore((s) => s.userProfile);
   const overrideCycleDay = useStore((s) => s.overrideCycleDay);
@@ -118,6 +161,15 @@ export function Calendar() {
 
   const cells = useMemo(() => buildMonthGrid(year, month), [year, month]);
 
+  const setLayers = (next: CalendarLayers) => {
+    setLayersState(next);
+    try {
+      window.localStorage.setItem(CALENDAR_LAYERS_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // The layer preference is optional in private browsing contexts.
+    }
+  };
+
   const templateChoices = useMemo<DayCellTemplateChoice[]>(
     () =>
       Object.values(templates).map((t) => ({
@@ -128,13 +180,13 @@ export function Calendar() {
     [templates],
   );
 
-  // Bucket active ad-hoc events by date so each cell pulls its own
-  // slice in O(1). Deleted events are filtered; task-backed (free-
-  // time scheduled) and standalone ad-hocs both render here.
+  // Independent Ad-hoc rows keep their existing editable surface.
+  // Task-backed Ad-hoc rows are projected through the Tasks layer so
+  // they follow the toggle and never render twice.
   const adhocByDate = useMemo(() => {
     const m = new Map<string, DayCellAdhoc[]>();
     for (const ev of Object.values(adhocEvents)) {
-      if (ev.status !== 'active') continue;
+      if (ev.status !== 'active' || ev.taskId) continue;
       const list = m.get(ev.date) ?? [];
       list.push(adhocToCell(ev));
       m.set(ev.date, list);
@@ -142,6 +194,65 @@ export function Calendar() {
     for (const list of m.values()) list.sort((a, b) => a.startLabel.localeCompare(b.startLabel));
     return m;
   }, [adhocEvents]);
+
+  const agendaByDate = useMemo(() => {
+    const first = cells[0]?.date;
+    const last = cells[cells.length - 1]?.date;
+    const map = new Map<string, CalendarAgendaItem[]>();
+    if (!first || !last) return map;
+    const agenda = selectCalendarAgenda(
+      {
+        lines,
+        tasks,
+        taskOccurrences,
+        adhocEvents,
+        templates,
+        calendarRules,
+        calendarRuleRevisions,
+        calendarRuleTombstones,
+        habitBindings,
+        habitBindingRevisions,
+        habitBindingTombstones,
+        rails,
+        railRevisions,
+        railTombstones,
+        userDayNotes,
+        userProfile,
+      },
+      {
+        startDate: first,
+        endDate: last,
+        includeTasks: layers.tasks,
+        includeHabits: layers.habits,
+      },
+    );
+    for (const item of agenda) {
+      const rows = map.get(item.date) ?? [];
+      rows.push(item);
+      map.set(item.date, rows);
+    }
+    return map;
+  }, [
+    cells,
+    lines,
+    tasks,
+    taskOccurrences,
+    adhocEvents,
+    templates,
+    calendarRules,
+    calendarRuleRevisions,
+    calendarRuleTombstones,
+    habitBindings,
+    habitBindingRevisions,
+    habitBindingTombstones,
+    rails,
+    railRevisions,
+    railTombstones,
+    userDayNotes,
+    userProfile,
+    layers.tasks,
+    layers.habits,
+  ]);
 
   const gotoPrev = () =>
     setMonth(({ year, month }) =>
@@ -222,6 +333,8 @@ export function Calendar() {
         onNext={gotoNext}
         onToday={gotoToday}
         onOpenDrawer={() => setDrawerOpen(true)}
+        layers={layers}
+        onLayersChange={setLayers}
       />
 
       <WeekdayHeader />
@@ -260,6 +373,7 @@ export function Calendar() {
               overridden={overridden}
               templateChoices={templateChoices}
               adhocs={adhocByDate.get(cell.date) ?? []}
+              agendaItems={agendaByDate.get(cell.date) ?? []}
               externalEvents={externalEvents}
               userNotes={userNotesOnDate}
               onOverride={handleOverride}
@@ -268,6 +382,19 @@ export function Calendar() {
               onDeleteAdhoc={handleDeleteAdhoc}
               onUpsertNote={handleUpsertNote}
               onDeleteNote={handleDeleteNote}
+              onOpenAgendaItem={(item) => {
+                if (item.kind === 'habit' && item.lineId) {
+                  navigate(`/tasks/line/${item.lineId}`);
+                  return;
+                }
+                if (!item.taskId) return;
+                setDetailTarget((previous) => ({
+                  taskId: item.taskId!,
+                  ...(item.occurrenceId && { occurrenceId: item.occurrenceId }),
+                  ...(item.adhocId && { adhocId: item.adhocId }),
+                  requestId: (previous?.requestId ?? 0) + 1,
+                }));
+              }}
             />
           );
         })}
@@ -277,6 +404,15 @@ export function Calendar() {
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
       />
+      {detailTarget && tasks[detailTarget.taskId] && (
+        <TaskDetailDrawer
+          task={tasks[detailTarget.taskId]!}
+          line={lines[tasks[detailTarget.taskId]!.lineId]}
+          highlightOccurrenceId={detailTarget.occurrenceId}
+          highlightRequestId={detailTarget.requestId}
+          onClose={() => setDetailTarget(null)}
+        />
+      )}
     </div>
   );
 }
@@ -307,6 +443,8 @@ function TopBar({
   onNext,
   onToday,
   onOpenDrawer,
+  layers,
+  onLayersChange,
 }: {
   year: number;
   month: number;
@@ -314,6 +452,8 @@ function TopBar({
   onNext: () => void;
   onToday: () => void;
   onOpenDrawer: () => void;
+  layers: CalendarLayers;
+  onLayersChange: (layers: CalendarLayers) => void;
 }) {
   return (
     <header className="sticky top-0 z-30 flex h-[56px] items-center justify-between gap-4 bg-surface-0 pt-6">
@@ -352,15 +492,62 @@ function TopBar({
         </div>
       </div>
 
-      <button
-        type="button"
-        onClick={onOpenDrawer}
-        className="inline-flex items-center gap-2 rounded-md bg-surface-1 px-3 py-1.5 text-sm text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
-      >
-        <Settings2 className="h-3.5 w-3.5" strokeWidth={1.8} />
-        高级日历规则
-      </button>
+      <div className="flex items-center gap-2">
+        <CalendarLayerToggle
+          checked={layers.tasks}
+          label="Tasks"
+          onChange={(checked) => onLayersChange({ ...layers, tasks: checked })}
+        />
+        <CalendarLayerToggle
+          checked={layers.habits}
+          label="Habits"
+          onChange={(checked) => onLayersChange({ ...layers, habits: checked })}
+        />
+        <button
+          type="button"
+          onClick={onOpenDrawer}
+          className="inline-flex items-center gap-2 rounded-md bg-surface-1 px-3 py-1.5 text-sm text-ink-secondary transition hover:bg-surface-2 hover:text-ink-primary"
+        >
+          <Settings2 className="h-3.5 w-3.5" strokeWidth={1.8} />
+          规则
+        </button>
+      </div>
     </header>
+  );
+}
+
+function CalendarLayerToggle({
+  checked,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={clsx(
+        'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition',
+        checked
+          ? 'bg-surface-2 text-ink-primary'
+          : 'bg-surface-1 text-ink-tertiary hover:text-ink-primary',
+      )}
+    >
+      <span
+        className={clsx(
+          'inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border',
+          checked ? 'border-ink-primary bg-ink-primary' : 'border-hairline',
+        )}
+      >
+        {checked && <Check className="h-2.5 w-2.5 text-surface-0" strokeWidth={2.4} />}
+      </span>
+      {label}
+    </button>
   );
 }
 
@@ -379,4 +566,3 @@ function WeekdayHeader() {
     </div>
   );
 }
-

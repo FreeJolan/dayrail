@@ -3109,6 +3109,7 @@ type Line = {
   isDefault?: boolean;        // true 的 Line 不能被删 / 改色 / 重命名（保留给 Inbox: id='line-inbox'）
   plannedStart?: string;      // YYYY-MM-DD，Project / Habit 的软时间窗
   plannedEnd?: string;        // YYYY-MM-DD；无此字段的开放式 Line 不算风险
+  plannedPrecision?: 'day' | 'week' | 'month' | 'range'; // Project 预期窗口的录入粒度，仅影响展示
   note?: string;              // 可选长文。按 Markdown 渲染（见 §5.5.4）——
                               //   Project 详情页 = "描述"，Habit 详情页 = "备注"。
                               //   纯文本也是合法 Markdown；不强制语法。搜索按原始源码子串匹配。
@@ -3179,6 +3180,11 @@ type Task = {
   // 老 Task（occurrences=空）行为与 v0.10 完全一致。
   milestonePercent?: number;   // 0–100，带百分比即里程碑；缺省为"附加事项"
   priority?: 'P0' | 'P1' | 'P2'; // 可选的轻量提示（§5.5）。不驱动调度 / check-in / 通知 —— 仅作为清单视图的 排序 / 分组 / 筛选 维度。
+  expectedWindow?: {          // 可选预期窗口；Task 自己设置时覆盖所属 Project
+    startDate: string;        // YYYY-MM-DD，含首尾
+    endDate: string;
+    precision: 'day' | 'week' | 'month' | 'range';
+  };
   // v0.11+: subItems 在 v0.11 升级时一次性迁移成 TaskOccurrence（label = title，
   // done = done，无 slot / percent）。字段保留可读 + 老版本仍可写；新版本读取
   // 时把 subItems 与 occurrences 合并显示（subItems 项作为虚拟 occurrence，
@@ -3786,6 +3792,16 @@ v0.12.4 只修了 Tasks 页,**漏了 Backlog**。dogfood 真数据(2026-05-23 �
 - **未改**:off-rail 行(`__offrail__`)与拖到格子空白 padding 仍是 no-op(无意义排序位 / 无插入索引),与 task 一致。`occ.order`(Task 详情 / Pending 排序)语义不动。
 
 ***
+
+### 10.7 预期窗口与规划可见性（v0.15）
+
+预期窗口表达“希望在哪段时间推进或完成”，不占用具体 Slot，也不等同于 deadline。Project 复用 `Line.plannedStart / plannedEnd`，新增 `plannedPrecision`；Task 使用可选 `expectedWindow`。Task 自己的窗口优先，否则继承所属 Project。TaskOccurrence 不复制字段，始终读取宿主 Task 的有效窗口，因此后续拆分不会造成日期漂移。
+
+Backlog 在 Cycle 场景默认按有效窗口分组：需要关注、当前 Cycle、预期更早、未设预期、稍后。当前 Cycle 取 Cycle View 正在浏览的范围；其它页面打开 Backlog 时取今天所在周期。未完成且 `today > endDate` 为“超出预期”，未完成且实际排期日期晚于 `endDate` 为“排期偏晚”。继承同一 Project 窗口的子任务聚合成一个 Project 问题，Task 自设窗口则单独计数。提醒是纯派生查询，不写回状态。
+
+Calendar 的 Tasks / Habits 是本机展示偏好，默认 Tasks 开、Habits 关，不进入同步数据。Habit 层把当前计划候选与已经物化的 auto-task 事实做只读并集，同一 `(habitId, date, railId)` 以事实为准；切换图层、浏览月份、打开日期详情都不得触发物化写入。任务 Slot、TaskOccurrence、Task 关联 Ad-hoc 和独立 Ad-hoc 在日期格共享最多三行摘要；外部事件仍走独立展示，不占这三行。
+
+以上字段均为可选附加字段，`.dryj` container version 不升，旧数据读出时视为“未设预期”，读取过程不得补写默认值。
 
 ## 11. 开放问题（待讨论）
 

@@ -215,6 +215,10 @@ export interface Line {
   isDefault?: boolean;
   plannedStart?: string;
   plannedEnd?: string;
+  /** Display precision for the Project's soft planning window. The
+   *  existing plannedStart / plannedEnd fields remain the storage
+   *  source of truth so old clients keep their current behaviour. */
+  plannedPrecision?: ExpectedWindowPrecision;
   /** Long-form free text. Used by the v0.4 habit detail page for
    *  capturing goals / context ("why I started", "target event") —
    *  available on any Line kind though, no enforcement. */
@@ -505,6 +509,17 @@ export interface CalendarRuleRevision {
  *  renamed to "Task" to match universal TODO-tool vocabulary. */
 export type TaskPriority = 'P0' | 'P1' | 'P2';
 
+/** A soft planning expectation, deliberately separate from Task.slot.
+ *  Dates are local-calendar YYYY-MM-DD values and both ends are
+ *  inclusive. */
+export type ExpectedWindowPrecision = 'day' | 'week' | 'month' | 'range';
+
+export interface ExpectedWindow {
+  startDate: string;
+  endDate: string;
+  precision: ExpectedWindowPrecision;
+}
+
 export interface Task {
   id: string;
   /** Owning Line. Tasks without an explicit Project default to `INBOX_LINE_ID`. */
@@ -516,6 +531,9 @@ export interface Task {
    *  drive scheduling, check-in weighting, or notifications — only
    *  sort/group/filter in list surfaces. */
   priority?: TaskPriority;
+  /** Rough period in which the user hopes to move this Task forward.
+   *  It never schedules, completes, or shifts the Task by itself. */
+  expectedWindow?: ExpectedWindow;
   /** `deferred` = "do this later" (from v0.4 §5.6 check-in "Later").
    *  Semi-terminal; lands in §5.7 Pending queue for re-decision.
    *  `archived` = user parked it (restorable).

@@ -660,6 +660,7 @@ function PillBadges({
     line != null ||
     task.priority != null ||
     task.isAutoTask ||
+    task.isLateExpected ||
     (showProgress && task.subItemsTotal > 0) ||
     (showProgress && task.milestonePercent != null);
   if (!anything) return null;
@@ -674,6 +675,11 @@ function PillBadges({
       {line && <ProjectChip line={line} tone={tone} />}
       {task.priority && <PriorityChip priority={task.priority} />}
       {task.isAutoTask && <span>habit</span>}
+      {task.isLateExpected && (
+        <span className={tone === 'on-solid' ? '' : 'text-amber-700'}>
+          晚于预期
+        </span>
+      )}
       {showProgress && task.subItemsTotal > 0 && (
         <span>
           {task.subItemsDone}/{task.subItemsTotal}

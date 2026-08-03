@@ -36,6 +36,7 @@ import {
   deriveTaskStatus,
   INBOX_LINE_ID,
   isOccurrenceManaged,
+  projectExpectedWindow,
   railAtDate,
   selectCurrentHabitPhase,
   selectHabitPhasesByLine,
@@ -65,6 +66,7 @@ import { SchedulePopover } from '@/components/SchedulePopover';
 import { useResolvedTemplateKey } from '@/lib/useResolvedTemplate';
 import { HabitDetail } from './HabitDetail';
 import { ReasonToast } from '@/components/ReasonToast';
+import { ExpectedWindowEditor } from '@/components/ExpectedWindowEditor';
 import {
   latestTagsForTask,
   useReasonToast,
@@ -866,6 +868,25 @@ function MainPanel({
         }
       />
 
+      {!isHabitView && selectedLine && !selectedLine.isDefault && (
+        <div className="flex items-center gap-3">
+          <span className="shrink-0 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            预期
+          </span>
+          <ExpectedWindowEditor
+            value={projectExpectedWindow(selectedLine) ?? undefined}
+            onChange={(next) =>
+              void updateLine(selectedLine.id, {
+                plannedStart: next?.startDate,
+                plannedEnd: next?.endDate,
+                plannedPrecision: next?.precision,
+              })
+            }
+            className="max-w-[360px]"
+          />
+        </div>
+      )}
+
       {isHabitView && selectedHabit && (
         <>
           <HabitPhasePanel lineId={selectedHabit.id} />
@@ -1658,6 +1679,23 @@ export function TaskDetailDrawer({
           )}
 
           <PrioritySection task={task} />
+
+          {!isAutoTask && (
+            <div className="flex items-center gap-3 text-xs text-ink-secondary">
+              <span className="shrink-0 font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+                预期
+              </span>
+              <ExpectedWindowEditor
+                value={task.expectedWindow}
+                inherited={line ? projectExpectedWindow(line) ?? undefined : undefined}
+                inheritedLabel={line?.name}
+                onChange={(next) =>
+                  void updateTask(task.id, { expectedWindow: next })
+                }
+                className="min-w-0 flex-1"
+              />
+            </div>
+          )}
 
           <OccurrencesSection
             task={task}
