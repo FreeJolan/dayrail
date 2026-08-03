@@ -3276,6 +3276,7 @@ type Line = {
   isDefault?: boolean;        // Lines with isDefault=true cannot be deleted/renamed/recolored (reserved for Inbox, id='line-inbox')
   plannedStart?: string;      // YYYY-MM-DD, soft window for Project / Habit
   plannedEnd?: string;        // YYYY-MM-DD; a Line without plannedEnd is legitimately open-ended, NOT a risk signal
+  plannedPrecision?: 'day' | 'week' | 'month' | 'range'; // Project expectation input precision; display-only
   note?: string;              // Optional long-form text, rendered as Markdown (see §5.5.4) —
                               //   Project detail surface labels it "Description"; Habit detail surface
                               //   labels it "Notes". Plain text is valid Markdown; no syntax is required.
@@ -3359,6 +3360,11 @@ type Task = {
   // Legacy tasks (occurrences=empty) keep v0.10 behavior verbatim.
   milestonePercent?: number;   // 0–100; if set, this task is a milestone; otherwise an "extra item"
   priority?: 'P0' | 'P1' | 'P2'; // optional lightweight hint (§5.5). Does not drive scheduling / check-in / notifications — only sort / group / filter in list surfaces.
+  expectedWindow?: {          // optional expectation; a Task-owned value overrides its Project
+    startDate: string;        // inclusive YYYY-MM-DD boundaries
+    endDate: string;
+    precision: 'day' | 'week' | 'month' | 'range';
+  };
   // v0.11+: subItems are migrated one-shot to TaskOccurrences on v0.11 upgrade
   // (label = title, done = done, no slot / percent). The field stays readable +
   // older clients can still write it; new clients merge subItems with
@@ -4335,6 +4341,16 @@ orthogonal to the task-relative `order`).
   ordering) is left untouched.
 
 ---
+
+### 10.7 Expected windows and planning visibility (v0.15)
+
+An expected window says when the user hopes to advance or finish something. It does not occupy a Slot and is not a hard deadline. Projects reuse `Line.plannedStart / plannedEnd` and add `plannedPrecision`; Tasks use the optional `expectedWindow`. A Task-owned window wins, otherwise the Task inherits its Project. TaskOccurrences never copy the field and always resolve through their host Task, so later decomposition cannot make the dates drift.
+
+In the Cycle planning context, Backlog defaults to expectation groups: Needs attention, Current cycle, Earlier expectation, Unset, and Later. The current range comes from the cycle currently shown in Cycle View; Backlog opened elsewhere uses the cycle containing today. An incomplete subject with `today > endDate` is overdue; an incomplete schedule dated after `endDate` is scheduled late. Child Tasks inheriting one Project window aggregate into one Project issue, while a Task-owned window produces a separate issue. All reminders are pure derived reads and never write state back.
+
+Calendar's Tasks / Habits layers are local display preferences, with Tasks on and Habits off by default; they are not synced. The Habit layer makes a read-only union of currently planned candidates and already materialized auto-task facts, with the fact winning for the same `(habitId, date, railId)`. Toggling a layer, browsing months, or opening a date must never materialize Tasks. Task Slots, TaskOccurrences, Task-backed Ad-hoc events, and independent Ad-hoc events share up to three agenda rows in a month cell. External events keep their independent display path and do not consume those rows.
+
+Every new field is optional and additive. The `.dryj` container version stays unchanged; older data reads as “no expectation”, and reads must not write defaults back.
 
 ## 11. Open Questions
 
