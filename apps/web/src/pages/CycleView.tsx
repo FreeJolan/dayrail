@@ -47,13 +47,21 @@ import {
   cycleRangeLabel,
   enumerateCycles,
 } from './cycleNotation';
+import {
+  planningCycleFor,
+  type PlanningCycleContext,
+} from '@/lib/planningContext';
 
 // ERD §5.3 Cycle View, v0.3 with a real Edit Session (§5.3.1).
 // Every mutation from this page (drag-drop, template override, slot
 // clear, quick-create, mark-done) is tagged with the view's sessionId
 // so "⤺ 撤销本次编辑" rolls back the whole batch in one step.
 
-export function CycleView() {
+export function CycleView({
+  onPlanningCycleChange,
+}: {
+  onPlanningCycleChange?: (context: PlanningCycleContext) => void;
+}) {
   const navigate = useNavigate();
   const [anchorDate, setAnchorDate] = useState<Date>(() => new Date());
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
@@ -126,6 +134,9 @@ export function CycleView() {
   const changeCount = session?.changeCount ?? 0;
 
   const weekStart = useMemo(() => startOfWeekMonday(anchorDate), [anchorDate]);
+  useEffect(() => {
+    onPlanningCycleChange?.(planningCycleFor(weekStart, 'cycle'));
+  }, [onPlanningCycleChange, weekStart]);
 
   // §10.2 trigger point "Cycle View 打开 / 切换 cycle". Materialize the
   // visible Monday-anchored 7-day window so habit auto-tasks appear

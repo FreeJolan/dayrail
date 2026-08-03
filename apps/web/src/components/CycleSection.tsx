@@ -1,5 +1,5 @@
 import { clsx } from 'clsx';
-import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Check, ChevronDown, NotebookPen } from 'lucide-react';
 import * as RadixHoverCard from '@radix-ui/react-hover-card';
 import { useDndContext, useDroppable } from '@dnd-kit/core';
@@ -135,6 +135,8 @@ export function CycleSection({
   onQuickCreate,
   lineLookup,
 }: Props) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [hasHorizontalOffset, setHasHorizontalOffset] = useState(false);
   const stripColor = RAIL_COLOR_HEX[templateColor];
   // The Off-rail row only renders when at least one day in this
   // section has a scheduled task whose rail isn't active that day.
@@ -184,7 +186,13 @@ export function CycleSection({
         style={{ background: stripColor }}
       />
 
-      <div className="overflow-x-auto pl-5">
+      <div
+        ref={scrollRef}
+        className="overflow-x-auto pl-5"
+        onScroll={(event) =>
+          setHasHorizontalOffset(event.currentTarget.scrollLeft > 1)
+        }
+      >
         <SectionMiniHeader
           templateLabel={templateLabel}
           days={days}
@@ -196,6 +204,7 @@ export function CycleSection({
           onOpenReflection={onOpenReflection}
           onOverride={onOverride}
           onClearOverride={onClearOverride}
+          hasHorizontalOffset={hasHorizontalOffset}
         />
 
         <table
@@ -223,7 +232,8 @@ export function CycleSection({
                   // I passed over stay highlighted". State is correct;
                   // we just need it to snap.
                   className={clsx(
-                    'pr-3 py-1 text-left align-top',
+                    'sticky left-0 z-20 bg-surface-1 pr-3 py-1 text-left align-top',
+                    hasHorizontalOffset && 'shadow-[12px_0_12px_-12px_rgba(0,0,0,0.22)]',
                     railIsDropTarget && 'bg-cta-soft/25',
                   )}
                   style={railLabelCellStyle}
@@ -323,7 +333,10 @@ export function CycleSection({
               <tr>
                 <th
                   scope="row"
-                  className="pr-3 py-1 text-left align-top"
+                  className={clsx(
+                    'sticky left-0 z-20 bg-surface-1 pr-3 py-1 text-left align-top',
+                    hasHorizontalOffset && 'shadow-[12px_0_12px_-12px_rgba(0,0,0,0.22)]',
+                  )}
                 >
                   <OffRailRowLabel />
                 </th>
@@ -465,6 +478,7 @@ function SectionMiniHeader({
   onOpenReflection,
   onOverride,
   onClearOverride,
+  hasHorizontalOffset,
 }: {
   templateLabel: string;
   days: CycleDay[];
@@ -476,6 +490,7 @@ function SectionMiniHeader({
   onOpenReflection: (date: string) => void;
   onOverride: (date: string, nextTemplate: TemplateKey) => void;
   onClearOverride: (date: string) => void;
+  hasHorizontalOffset: boolean;
 }) {
   return (
     <div className="flex min-h-[48px] items-center gap-0 border-b border-transparent py-2">
@@ -492,7 +507,10 @@ function SectionMiniHeader({
         <thead>
           <tr>
             <th
-              className="pr-3 text-left align-middle"
+              className={clsx(
+                'sticky left-0 z-30 bg-surface-1 pr-3 text-left align-middle',
+                hasHorizontalOffset && 'shadow-[12px_0_12px_-12px_rgba(0,0,0,0.22)]',
+              )}
               style={railLabelCellStyle}
             >
               <div className="flex min-w-0 items-center gap-2">

@@ -14,6 +14,7 @@ import type {
 } from '@dayrail/core';
 import {
   deriveTaskStatus,
+  effectiveExpectedWindow,
   isOccurrenceManaged,
   railsActiveOn,
   resolveTemplateForDate,
@@ -222,14 +223,14 @@ export function deriveCycleFromStore(
       for (const occ of occs) {
         if (!occ.slot) continue;
         if (occ.status === 'archived') continue;
-        const summary = buildOccurrenceSummary(task, occ);
+        const summary = buildOccurrenceSummary(task, occ, state.lines);
         placeSummary(occ.slot.date, occ.slot.railId, summary);
       }
       continue;
     }
     // Legacy / pre-adoption path — single pill at task.slot.
     if (!task.slot) continue;
-    const summary = buildSlotTaskSummary(task);
+    const summary = buildSlotTaskSummary(task, state.lines);
     placeSummary(task.slot.date, task.slot.railId, summary);
   }
   // Sort each slot's tasks by (state rank → priority rank → stable
@@ -298,7 +299,10 @@ export function deriveCycleFromStore(
   return { cycle, railsByTemplate, offRailByDate };
 }
 
-function buildSlotTaskSummary(task: Task): SlotTaskSummary {
+function buildSlotTaskSummary(
+  task: Task,
+  lines: DayRailState['lines'],
+): SlotTaskSummary {
   const subItems = task.subItems ?? [];
   let state: SlotTaskState;
   if (task.status === 'done') state = 'done';
@@ -325,6 +329,10 @@ function buildSlotTaskSummary(task: Task): SlotTaskSummary {
       milestonePercent: task.milestonePercent,
     }),
     ...(task.priority != null && { priority: task.priority }),
+    ...(task.slot &&
+      isLateForExpectation(task, task.slot.date, lines) && {
+        isLateExpected: true,
+      }),
     ...(task.slotOrder != null && { slotOrder: task.slotOrder }),
   };
 }
@@ -337,6 +345,7 @@ function buildSlotTaskSummary(task: Task): SlotTaskSummary {
 function buildOccurrenceSummary(
   task: Task,
   occ: TaskOccurrence,
+  lines: DayRailState['lines'],
 ): SlotTaskSummary {
   // ERD §10.6 — status drives the pill state; percent is a marker
   // only. A pending occurrence with percent=100 is "the 100% milestone
@@ -378,6 +387,10 @@ function buildOccurrenceSummary(
     subItemsTotal: 0,
     ...(milestone != null && { milestonePercent: milestone }),
     ...(task.priority != null && { priority: task.priority }),
+    ...(occ.slot &&
+      isLateForExpectation(task, occ.slot.date, lines) && {
+        isLateExpected: true,
+      }),
     // §10.6 v0.13 — cycle-slot ordering for 切分 pills follows the
     // occurrence's own slot-local `slotOrder` (set by drag-reorder),
     // the same field the slot sort below reads for task pills. The
@@ -385,6 +398,15 @@ function buildOccurrenceSummary(
     // order instead, and is intentionally NOT consulted here.
     ...(occ.slotOrder != null && { slotOrder: occ.slotOrder }),
   };
+}
+
+function isLateForExpectation(
+  task: Task,
+  scheduledDate: string,
+  lines: DayRailState['lines'],
+): boolean {
+  const expected = effectiveExpectedWindow(task, lines);
+  return expected != null && scheduledDate > expected.window.endDate;
 }
 
 function railRevisionToEditable(rev: RailRevision): EditableRail {

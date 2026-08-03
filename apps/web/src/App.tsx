@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import {
   DndContext,
   DragOverlay,
@@ -63,6 +63,10 @@ import {
 import { WebVersionUpdateProvider } from './lib/swRegistration';
 import { DesktopVersionUpdateProvider } from './lib/desktopUpdate';
 import { isTauriRuntime } from './lib/versionUpdateContext';
+import {
+  planningCycleFor,
+  type PlanningCycleContext,
+} from './lib/planningContext';
 
 // ERD §15 — pick the version-update provider based on runtime context.
 // PWA users get the Service Worker-based one; Tauri desktop users get
@@ -151,11 +155,20 @@ function TaskDragPreview({ taskId: id }: { taskId: string }) {
 // Split out so the shortcut hooks live inside <BrowserRouter> (they
 // call `useNavigate`).
 function Shell() {
+  const location = useLocation();
   const cheatsheet = useCheatsheetToggle();
   const backlog = useBacklogDrawerState();
   const [stagingOpen, setStagingOpen] = useState(false);
   useGlobalShortcuts(cheatsheet.show, backlog.toggle, () => setStagingOpen(true));
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [planningCycle, setPlanningCycle] = useState<PlanningCycleContext>(() =>
+    planningCycleFor(new Date(), 'today'),
+  );
+  useEffect(() => {
+    if (location.pathname !== '/cycle') {
+      setPlanningCycle(planningCycleFor(new Date(), 'today'));
+    }
+  }, [location.pathname]);
   const { mirror, setMirror } = useDragMirror();
 
   // Boot-time mode regression check (ERD §7.10.6 · v0.12 P3). Fires
@@ -478,7 +491,10 @@ function Shell() {
         <SyncStatusBanner />
         <Routes>
           <Route path="/" element={<TodayTrack />} />
-          <Route path="/cycle" element={<CycleView />} />
+          <Route
+            path="/cycle"
+            element={<CycleView onPlanningCycleChange={setPlanningCycle} />}
+          />
           <Route path="/tasks" element={<Navigate to="/tasks/inbox" replace />} />
           <Route path="/tasks/inbox" element={<Tasks />} />
           <Route path="/tasks/line/:lineId" element={<Tasks />} />
@@ -496,7 +512,11 @@ function Shell() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
-      <BacklogDrawer open={backlog.open} onToggle={backlog.toggle} />
+      <BacklogDrawer
+        open={backlog.open}
+        onToggle={backlog.toggle}
+        planningCycle={planningCycle}
+      />
       <StagingModal open={stagingOpen} onClose={() => setStagingOpen(false)} />
       <ShortcutCheatsheet open={cheatsheet.open} onClose={cheatsheet.hide} />
       <ReasonToast
@@ -533,4 +553,3 @@ function useBacklogDrawerState(): { open: boolean; toggle: () => void } {
   }, [open]);
   return { open, toggle: () => setOpen((v) => !v) };
 }
-

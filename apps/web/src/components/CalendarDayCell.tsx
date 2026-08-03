@@ -5,7 +5,11 @@ import * as RadixHoverCard from '@radix-ui/react-hover-card';
 import { Popover, PopoverContent, PopoverTrigger } from './primitives/Popover';
 import type { TemplateKey } from '@/data/sampleTemplate';
 import type { RailColor } from '@/data/sample';
-import type { ExternalEvent, UserDayNote } from '@dayrail/core';
+import type {
+  CalendarAgendaItem,
+  ExternalEvent,
+  UserDayNote,
+} from '@dayrail/core';
 import { RAIL_COLOR_HEX, RAIL_COLOR_STEP_3 } from './railColors';
 import { ExternalEventChip } from './ExternalEventChip';
 import { useIme } from '@/lib/ime';
@@ -57,6 +61,7 @@ interface Props {
   overridden: boolean;
   templateChoices: DayCellTemplateChoice[];
   adhocs: DayCellAdhoc[];
+  agendaItems: CalendarAgendaItem[];
   /** ERD §14 — holiday + user-note ExternalEvents rendered as chips
    *  in the cell footer (below the template badge). */
   externalEvents: ExternalEvent[];
@@ -76,6 +81,7 @@ interface Props {
     opts: { id?: string; label: string; color?: RailColor },
   ) => void;
   onDeleteNote: (id: string) => void;
+  onOpenAgendaItem: (item: CalendarAgendaItem) => void;
 }
 
 const WEEKDAY_SHORT_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -90,6 +96,7 @@ export function CalendarDayCell({
   overridden,
   templateChoices,
   adhocs,
+  agendaItems,
   externalEvents,
   userNotes,
   onOverride,
@@ -98,6 +105,7 @@ export function CalendarDayCell({
   onDeleteAdhoc,
   onUpsertNote,
   onDeleteNote,
+  onOpenAgendaItem,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [adhocFormOpen, setAdhocFormOpen] = useState(false);
@@ -198,24 +206,14 @@ export function CalendarDayCell({
             </div>
           </div>
 
-          {/* Bottom: template label + ad-hoc titles + holiday/note chips */}
+          {/* Bottom: agenda + external context + template label. */}
           <div className="mt-auto flex w-full flex-col items-start gap-0.5">
-            {adhocs.slice(0, 2).map((a) => (
-              <span
-                key={a.id}
-                className="w-full truncate text-2xs text-ink-secondary"
-              >
-                <span
-                  aria-hidden
-                  className="mr-1 inline-block h-1.5 w-1.5 -translate-y-px rounded-full align-middle"
-                  style={{ background: RAIL_COLOR_HEX[a.color] }}
-                />
-                {a.startLabel} {a.name}
-              </span>
+            {agendaItems.slice(0, 3).map((item) => (
+              <AgendaRow key={item.id} item={item} compact />
             ))}
-            {adhocs.length > 2 && (
+            {agendaItems.length > 3 && (
               <span className="font-mono text-2xs text-ink-tertiary">
-                +{adhocs.length - 2}
+                +{agendaItems.length - 3}
               </span>
             )}
             {/* ERD §14 — external event chips (holidays / observances /
@@ -353,6 +351,36 @@ export function CalendarDayCell({
               </li>
             );
           })}
+        </ul>
+
+        <div className="mx-3 my-1 h-px bg-surface-3" />
+
+        <div className="px-3 pb-1 pt-1.5">
+          <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
+            安排
+          </span>
+        </div>
+        {agendaItems.filter((item) => item.kind !== 'adhoc').length === 0 && (
+          <div className="px-3 py-1 text-xs text-ink-tertiary">暂无任务或习惯</div>
+        )}
+        <ul className="flex flex-col">
+          {agendaItems
+            .filter((item) => item.kind !== 'adhoc')
+            .map((item) => (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  disabled={!item.taskId}
+                  onClick={() => {
+                    setOpen(false);
+                    onOpenAgendaItem(item);
+                  }}
+                  className="flex w-full rounded-md px-3 py-1 text-left transition enabled:hover:bg-surface-2"
+                >
+                  <AgendaRow item={item} />
+                </button>
+              </li>
+            ))}
         </ul>
 
         <div className="mx-3 my-1 h-px bg-surface-3" />
@@ -526,6 +554,59 @@ export function CalendarDayCell({
       </PopoverContent>
     </Popover>
   );
+}
+
+function AgendaRow({
+  item,
+  compact = false,
+}: {
+  item: CalendarAgendaItem;
+  compact?: boolean;
+}) {
+  const time = item.startMinutes == null ? null : formatMinutes(item.startMinutes);
+  const done = item.status === 'done' || item.status === 'archived';
+  return (
+    <span className="flex min-w-0 w-full items-center gap-1.5">
+      <span
+        aria-hidden
+        className={clsx(
+          'h-1.5 w-1.5 shrink-0 rounded-full',
+          item.kind === 'habit'
+            ? 'bg-teal-500'
+            : item.kind === 'adhoc'
+              ? 'bg-slate-400'
+              : item.status === 'in-progress'
+                ? 'bg-amber-500'
+                : 'bg-ink-tertiary/60',
+        )}
+      />
+      {time && (
+        <span className="shrink-0 font-mono text-[9px] tabular-nums text-ink-tertiary">
+          {time}
+        </span>
+      )}
+      <span
+        className={clsx(
+          'min-w-0 flex-1 truncate text-ink-secondary',
+          compact ? 'text-2xs' : 'text-xs',
+          done && 'line-through opacity-60',
+        )}
+      >
+        {item.title}
+      </span>
+      {!compact && item.kind === 'habit' && (
+        <span className="shrink-0 font-mono text-[9px] uppercase tracking-widest text-ink-tertiary">
+          habit
+        </span>
+      )}
+    </span>
+  );
+}
+
+function formatMinutes(total: number): string {
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
 function AdhocForm({
