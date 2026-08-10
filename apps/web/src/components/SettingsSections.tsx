@@ -69,6 +69,7 @@ import {
 } from '@/lib/sync/driveBackend';
 import {
   clearLocalIsSamplesOnly,
+  clearSyncProbeSuppressed,
   getBootSyncChoice,
   getDeviceId,
   getDeviceLabel,
@@ -390,6 +391,7 @@ function SyncConnectTab({ connected }: { connected: boolean }) {
   return (
     <div className="flex flex-col">
       <DeviceLabelRow />
+      <ReconnectDriveRow />
       <BootSyncChoiceRow />
       <DisconnectRow />
     </div>
@@ -621,6 +623,11 @@ function ExportScheduleRow() {
 
 function SyncStatusCard({ connected }: { connected: boolean }) {
   const status = useSyncStatus();
+  const canReauthenticate =
+    connected &&
+    (status.phase.kind === 'offline' ||
+      (status.phase.kind === 'error' &&
+        status.phase.message.includes('NEEDS_RECONNECT')));
   const lastText = (() => {
     if (status.phase.kind === 'syncing') return '正在同步…';
     if (status.phase.kind === 'error') return `同步失败：${status.phase.message}`;
@@ -659,6 +666,7 @@ function SyncStatusCard({ connected }: { connected: boolean }) {
         </span>
         <span className="text-xs text-ink-tertiary">{lastText}</span>
       </div>
+      {canReauthenticate && <ReconnectDriveControl compact />}
     </div>
   );
 }
@@ -1600,6 +1608,81 @@ function SyncNowRow() {
         </div>
       }
     />
+  );
+}
+
+function ReconnectDriveRow() {
+  return (
+    <Row
+      label="重新认证 Google Drive"
+      description="授权过期或同步持续离线时，重新打开 Google 登录。本地数据和现有同步设置不会被清除。"
+      control={<ReconnectDriveControl />}
+    />
+  );
+}
+
+function ReconnectDriveControl({ compact = false }: { compact?: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+
+  const onClick = async () => {
+    setBusy(true);
+    setErr(null);
+    setHint(null);
+    try {
+      await connectDrive();
+      syncStore.setConnected(true);
+      await verifyIdentityAfterConnect();
+
+      if (syncStore.getSnapshot().pendingIdentityMismatch) {
+        setHint('已完成授权，请确认登录账号');
+        return;
+      }
+
+      clearSyncProbeSuppressed();
+      const outcome = await runManualSync();
+      if (outcome.kind === 'offline') {
+        setErr('授权已完成，但仍无法连接 Drive，请检查网络后重试。');
+      } else {
+        setHint('已重新授权并检查同步');
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={busy}
+        className={clsx(
+          'rounded-md px-3 py-1.5 text-xs font-medium transition disabled:opacity-50',
+          compact
+            ? 'bg-ink-primary text-surface-0 hover:brightness-95'
+            : 'bg-surface-1 text-ink-secondary hover:bg-surface-2 hover:text-ink-primary',
+        )}
+      >
+        {busy ? '正在打开 Google 登录…' : '重新认证'}
+      </button>
+      {hint && (
+        <span className="font-mono text-2xs text-ink-tertiary">{hint}</span>
+      )}
+      {err && (
+        <span
+          className={clsx(
+            'font-mono text-2xs text-warn',
+            compact && 'max-w-52 text-right',
+          )}
+        >
+          {err}
+        </span>
+      )}
+    </div>
   );
 }
 
