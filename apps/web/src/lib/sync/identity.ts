@@ -570,6 +570,19 @@ export function setSyncProbeSuppressed(): void {
   safeSetSession(KEY_PROBE_SUPPRESSED, '1');
 }
 
+/** Resume automatic sync after an explicit reconnect. The suppression
+ *  flag represents "use local for now", so a later user-initiated
+ *  authorization is a clear signal that the session should talk to
+ *  Drive again. */
+export function clearSyncProbeSuppressed(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.removeItem(KEY_PROBE_SUPPRESSED);
+  } catch {
+    /* private mode / storage unavailable — non-fatal */
+  }
+}
+
 // ============ session-scoped "this session has had a successful round-trip" ============
 //
 // Drives the SideNav "已同步" semantic (ERD §7.9 decision 5). After
