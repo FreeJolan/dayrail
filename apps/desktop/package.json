@@ -1,6 +1,6 @@
 {
   "name": "@dayrail/desktop",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "private": true,
   "description": "Tauri 2 desktop shell wrapping the @dayrail/web frontend. ERD §15.",
   "scripts": {
