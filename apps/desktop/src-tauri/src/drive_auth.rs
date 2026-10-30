@@ -10,19 +10,20 @@
 // issue refresh tokens (OAuth spec restriction for browser clients),
 // forcing a hourly re-auth UI. Desktop apps are allowed to use the
 // authorization-code flow, which DOES issue a refresh token. The
-// refresh token lives in the OS keychain forever (until revoked); the
-// frontend just asks for fresh access tokens whenever it needs one.
+// refresh token is stored locally; the frontend asks for fresh access
+// tokens whenever needed. Google can still expire or revoke the grant
+// (including after 7 days while the OAuth project is in Testing).
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use keyring::Entry;
-use oauth2::basic::BasicClient;
+use oauth2::basic::{BasicClient, BasicErrorResponse, BasicErrorResponseType};
 use oauth2::reqwest;
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
-    PkceCodeChallenge, RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
+    PkceCodeChallenge, RedirectUrl, RefreshToken, RequestTokenError, Scope, TokenResponse, TokenUrl,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -118,9 +119,18 @@ fn read_refresh_token(app: &AppHandle) -> Result<String, String> {
         }
     }
     let path = token_file_path(app)?;
-    std::fs::read_to_string(&path)
-        .map(|s| s.trim().to_string())
-        .map_err(|e| format!("not connected: {}", e))
+    let token = std::fs::read_to_string(&path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "NEEDS_RECONNECT: refresh token is missing".to_string()
+        } else {
+            format!("read refresh token: {}", e)
+        }
+    })?;
+    let token = token.trim();
+    if token.is_empty() {
+        return Err("NEEDS_RECONNECT: refresh token is missing".to_string());
+    }
+    Ok(token.to_string())
 }
 
 /// Write to BOTH keychain (best-effort) and file (must succeed).
@@ -321,10 +331,8 @@ pub async fn drive_connect(app: AppHandle) -> Result<AccessTokenInfo, String> {
 /// Frontend calls this whenever its cached access token is about to
 /// expire (or has expired).
 ///
-/// Returns an error string when the refresh token is missing
-/// (frontend should treat this as "not connected, prompt user to
-/// re-authorize") or when Google rejects the refresh (token revoked
-/// — same path).
+/// Only missing credentials and Google's `invalid_grant` require
+/// reauthorization. Other failures preserve the connection for retry.
 #[tauri::command]
 pub async fn drive_get_token(app: AppHandle) -> Result<AccessTokenInfo, String> {
     let refresh_token = read_refresh_token(&app)?;
@@ -335,7 +343,7 @@ pub async fn drive_get_token(app: AppHandle) -> Result<AccessTokenInfo, String> 
         .exchange_refresh_token(&RefreshToken::new(refresh_token.clone()))
         .request_async(&http)
         .await
-        .map_err(|e| format!("refresh: {}", e))?;
+        .map_err(format_refresh_error)?;
 
     let access_token = token_result.access_token().secret().to_string();
     let expires_in = token_result
@@ -360,6 +368,19 @@ pub async fn drive_get_token(app: AppHandle) -> Result<AccessTokenInfo, String> 
         access_token,
         expires_at,
     })
+}
+
+fn format_refresh_error<RE: std::error::Error + 'static>(
+    err: RequestTokenError<RE, BasicErrorResponse>,
+) -> String {
+    if matches!(
+        &err,
+        RequestTokenError::ServerResponse(response)
+            if response.error() == &BasicErrorResponseType::InvalidGrant
+    ) {
+        return "NEEDS_RECONNECT: Google Drive authorization has expired or been revoked".to_string();
+    }
+    format!("refresh: {}", err)
 }
 
 /// Forget the stored refresh token. Idempotent — calling on a
@@ -452,4 +473,44 @@ async fn wait_for_callback(listener: TcpListener) -> Result<String, String> {
     let _ = stream.shutdown().await;
 
     Ok(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server_error(
+        error: BasicErrorResponseType,
+    ) -> RequestTokenError<std::io::Error, BasicErrorResponse> {
+        RequestTokenError::ServerResponse(BasicErrorResponse::new(error, None, None))
+    }
+
+    #[test]
+    fn expired_or_revoked_grant_requires_reconnect() {
+        let message = format_refresh_error(server_error(BasicErrorResponseType::InvalidGrant));
+        assert!(message.starts_with("NEEDS_RECONNECT:"));
+    }
+
+    #[test]
+    fn service_and_client_errors_preserve_connection() {
+        for error in [
+            BasicErrorResponseType::InvalidClient,
+            BasicErrorResponseType::Extension("temporarily_unavailable".to_string()),
+        ] {
+            let message = format_refresh_error(server_error(error));
+            assert!(message.starts_with("refresh:"));
+            assert!(!message.contains("NEEDS_RECONNECT"));
+        }
+    }
+
+    #[test]
+    fn network_failure_preserves_connection() {
+        let error = RequestTokenError::<_, BasicErrorResponse>::Request(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "network timeout",
+        ));
+        let message = format_refresh_error(error);
+        assert!(message.starts_with("refresh:"));
+        assert!(!message.contains("NEEDS_RECONNECT"));
+    }
 }

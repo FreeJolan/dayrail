@@ -215,9 +215,13 @@ async function desktopEnsureAccessToken(): Promise<string> {
     const info = await tauriInvoke<DesktopAccessTokenInfo>('drive_get_token');
     return applyDesktopTokenInfo(info).token;
   } catch (err) {
-    // Refresh-token gone (user revoked on Google's side, or wiped the
-    // keychain). Reset frontend state so the offline branch surfaces a
-    // Reconnect button instead of looping on a stale connected flag.
+    const msg = err instanceof Error ? err.message : String(err);
+    // Rust marks only missing credentials and invalid_grant as terminal.
+    // Keep the connection through network / service / storage failures so
+    // the next sync can retry silently without another consent flow.
+    if (!msg.startsWith('NEEDS_RECONNECT:')) {
+      throw new Error(msg);
+    }
     cachedToken = null;
     clearPersistedToken();
     if (typeof window !== 'undefined') {
@@ -227,9 +231,8 @@ async function desktopEnsureAccessToken(): Promise<string> {
         /* swallow */
       }
     }
-    const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
-      `NEEDS_RECONNECT · 桌面端 Drive 授权失效（${msg}），点 重新连接 重新授权`,
+      'NEEDS_RECONNECT · Google Drive 需要重新授权，请点「重新连接」继续同步。',
     );
   }
 }

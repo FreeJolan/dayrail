@@ -4350,7 +4350,8 @@ Tauri Rust 后端（drive_connect 命令）
 - **frontend 直接用 fetch**：Drive API 调用走 webview 内的 `fetch()`，与 PWA 同路径——`drive.appdata` 端点支持 CORS，不需要 `tauri-plugin-http` 绕。Rust 那侧只负责 OAuth（认证 endpoint 不支持 CORS / 但本来就要在 Rust 跑因为要碰 keychain）。
 - **redirect_uri 用 loopback 不用 deep link**：deep link（`dayrail://` scheme）需要操作系统注册 + macOS 的 LaunchServices / Windows registry / Linux .desktop 协议绑定逐平台 plumbing；loopback 是 RFC 8252 推荐的 native-app pattern，OS 选随机端口、零注册成本、Google OAuth 直接支持。
 - **frontend 怎么知道当前在 Tauri**：`isTauriRuntime()`（`apps/web/src/lib/versionUpdateContext.ts`）检测 `__TAURI_INTERNALS__` 全局，PR-B auto-update 已经用过同一函数。`apps/web/src/lib/sync/driveAuth.ts` 在 4 个公开函数（`connectDrive` / `disconnectDrive` / `ensureAccessToken` / `isDriveConnected`）头部 early-return 到 desktop 路径，PWA 路径完全不动。
-- **`KEY_CONNECTED` localStorage hint 仍保留**：keychain 是真源，但前端需要一个同步可读的 "已连接" flag 来 gate UI。`drive_connect` 成功时写 `'1'`，`drive_disconnect` 清掉，`drive_get_token` 失败（refresh token 被撤销）时也清掉。
+- **`KEY_CONNECTED` localStorage hint 仍保留**：keychain 是真源，前端用同步可读的 "已连接" flag 控制 UI。`drive_connect` 成功时写 `'1'`，`drive_disconnect` 清掉。只有 refresh token 丢失或 Google 返回 `invalid_grant` 时才清掉并要求重新授权。网络、超时、服务异常及其他存储错误保留连接状态，后续同步继续尝试静默续期。
+- **长期授权需要发布 OAuth 项目**：Google Cloud 中 External 应用处于 **Testing** 状态时，申请 `drive.appdata` 得到的 refresh token 会在 7 天后过期。在 **Google Auth Platform → Audience → Publishing status** 中切到 **In production**，再重新连接一次以取得新的授权。发布可解除 Testing 的 7 天限制，Google 仍可能因撤销授权等原因使凭据失效。参见 [Google 受众设置](https://support.google.com/cloud/answer/15549945)和 [token 过期规则](https://developers.google.com/identity/protocols/oauth2#expiration)。
 - **PWA `aiApiKey` 等本机字段**：桌面端**没换**，仍走 `localStorage`。`aiApiKey` 是 OpenAI-compatible 端点的密码，泄露代价比 `drive.appdata` token 低（后者能写 DayRail 自己的 appdata，前者能扣别家 LLM 余额但不能动 DayRail 数据）。如果将来要给桌面用户额外保护，再迁。
 
 ### 15.4 auto-update 基础设施
