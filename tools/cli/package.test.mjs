@@ -79,6 +79,16 @@ test('the npm tarball installs an executable client, includes the canonical skil
     );
     assert.equal((await run('--version')).stdout.trim(), metadata.version);
     assert.match((await run('--help')).stdout, /Usage: dayrail/);
+    const skillDirectory = path.join(temporary, 'agent-skills');
+    const installed = JSON.parse(
+      (await run('skills', 'install', '--dir', skillDirectory, '--json'))
+        .stdout,
+    );
+    assert.equal(installed.result.installations[0].status, 'installed');
+    const repeated = JSON.parse(
+      (await run('skills', 'update', '--dir', skillDirectory, '--json')).stdout,
+    );
+    assert.equal(repeated.result.installations[0].status, 'unchanged');
     for (const relative of [
       'SKILL.md',
       'references/model.md',
@@ -90,6 +100,10 @@ test('the npm tarball installs an executable client, includes the canonical skil
           path.resolve(directory, '../../skills/dayrail', relative),
           'utf8',
         ),
+      );
+      assert.equal(
+        await readFile(path.join(skillDirectory, 'dayrail', relative), 'utf8'),
+        await readFile(path.join(packageDirectory, 'skill', relative), 'utf8'),
       );
     }
     const received = [];

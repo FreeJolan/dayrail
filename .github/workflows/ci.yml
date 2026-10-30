@@ -6,6 +6,17 @@ on:
 permissions:
   contents: read
 jobs:
+  cli:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - run: node --test tools/cli/dayrail.test.mjs tools/cli/skills.test.mjs tools/cli/package.test.mjs
   web:
     runs-on: ubuntu-latest
     steps:

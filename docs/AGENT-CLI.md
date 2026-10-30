@@ -55,6 +55,7 @@ Settings > Advanced. Install from npm:
 ```sh
 npm install --global dayrail-cli
 dayrail --version
+dayrail skills install
 dayrail --help
 dayrail schema task.schedule --json
 dayrail task list --status pending --json
@@ -91,9 +92,39 @@ Task list/get expose derived effectiveStatus without changing stored status.
 plus background and holiday/rule-order preferences. It excludes provider
 settings, credentials, session state, bridge tokens and diagnostic metadata.
 
-Copy `skills/dayrail` from the app resources or release skill archive into your
-agent's skill directory. The skill explains domain semantics and composition;
-it grants no independent permission to mutate data.
+CLI >=0.16.1 includes offline skill installation:
+
+```sh
+dayrail skills install                       # Detect configured agents or PATH executables
+dayrail skills install --agent codex,claude   # Select agents; also gemini and opencode
+dayrail skills install --agent all
+dayrail skills update                        # Same idempotent operation after a CLI upgrade
+dayrail skills install --dir /path/to/skills  # Other agents or custom paths
+```
+
+Both actions create missing copies and replace changed ones using the bundled
+skill. They do not connect to the app or download a newer CLI. Codex uses
+`~/.agents/skills/dayrail`, shared with Gemini CLI. Claude Code uses
+`~/.claude/skills/dayrail`, and OpenCode uses
+`~/.config/opencode/skills/dayrail`. `CLAUDE_CONFIG_DIR` and `XDG_CONFIG_HOME`
+override the corresponding configuration roots. `CODEX_HOME` participates in
+Codex detection; its skill target remains the documented shared directory.
+
+Changed copies, including local customizations and obsolete reference files,
+are moved intact into `.dayrail-skill-backups/` beside the skills directory.
+Replacement files are staged locally first; failure during replacement restores
+the old directory when the target is still absent. Identical copies are skipped.
+A per-directory lock prevents simultaneous DayRail installers from replacing the
+same copy. Symlinks and special files are rejected, and an older CLI cannot
+downgrade a skill installed by a newer CLI. Results report each selected
+agent independently, including partial failures and backup paths. A new agent
+session or skill reload may be needed for discovery.
+
+The standalone app resource finds the skill at `../skills/dayrail`; keep that
+layout if using the release script and skill archive outside the app. Installing
+the npm package alone does not write agent directories. The skill explains
+domain semantics and composition; it grants no independent permission to mutate
+data. Copies in other discovery directories are not automatically migrated.
 
 ## Compatibility and limits
 
