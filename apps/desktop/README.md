@@ -123,8 +123,10 @@ issue refresh tokens — that's why every fresh launch beyond the 1 h
 access-token window forces a popup. The desktop build uses the
 **authorization-code flow + PKCE** instead and persists the refresh
 token in the OS keychain (macOS Keychain Services / Windows Credential
-Manager / Linux Secret Service via libsecret), so reconnects are
-silent until the user revokes from Google's account-permissions page.
+Manager / Linux Secret Service via libsecret), so access-token renewal
+normally happens silently. Network and service failures keep the
+connection and allow a later sync to retry. Reauthorization is needed
+when Google expires or revokes the grant, or local credentials are lost.
 
 The flow is wired in `src-tauri/src/drive_auth.rs` and exposed to the
 frontend as four Tauri commands (`drive_connect`, `drive_get_token`,
@@ -160,6 +162,24 @@ at compile time, so there's no runtime file IO and no shipped `.env`.
 > one because their OAuth library mandates it; treat it as
 > identifying-but-not-secret. The PKCE step is what actually protects
 > the auth-code exchange.
+
+### Keep authorization across weeks
+
+In the same Google Cloud project, open **Google Auth Platform → Audience**
+and check **Publishing status**. For an External app, switch **Testing**
+to **In production** using **Publish app**, then reconnect Drive in DayRail
+once to obtain a new refresh token.
+
+Google expires Testing authorizations after seven days, including offline
+refresh tokens. DayRail requests `drive.appdata`, so it does not qualify
+for the exception for basic profile / email / OpenID scopes. Refreshing
+an access token cannot extend that seven-day grant. Publishing removes
+this Testing limit; Google can still revoke or expire a grant for other
+reasons. See [Manage App Audience](https://support.google.com/cloud/answer/15549945)
+and [refresh token expiration](https://developers.google.com/identity/protocols/oauth2#expiration).
+The `drive.appdata` scope is
+[non-sensitive](https://developers.google.com/workspace/drive/api/guides/api-specific-auth#non-sensitive).
+Follow any branding or verification requirements shown by the console.
 
 ### CI
 
