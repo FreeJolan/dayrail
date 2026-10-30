@@ -72,7 +72,11 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,wasm}'],
         // OPFS isn't routable, but the DB worker boots from a chunk that
         // the default SPA fallback would otherwise serve `index.html` for.
-        navigateFallbackDenylist: [/^\/api\//, /\.worker\.js$/],
+        navigateFallbackDenylist: [
+          /^\/api\//,
+          /\.worker\.js$/,
+          /^\/(about|privacy|terms)\.html$/,
+        ],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
       },
       devOptions: {

@@ -3294,6 +3294,24 @@ export function AboutSection() {
 
         <div className="flex flex-col gap-1">
           <a
+            href="https://dayrail-web-dusky.vercel.app/privacy.html"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 text-sm text-ink-primary underline underline-offset-4 hover:text-ink-secondary"
+          >
+            隐私政策
+            <ExternalLink className="h-3 w-3" strokeWidth={1.8} />
+          </a>
+          <a
+            href="https://dayrail-web-dusky.vercel.app/terms.html"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 text-sm text-ink-secondary underline underline-offset-4 hover:text-ink-primary"
+          >
+            使用条款
+            <ExternalLink className="h-3 w-3" strokeWidth={1.8} />
+          </a>
+          <a
             href="https://github.com/FreeJolan/dayrail"
             target="_blank"
             rel="noreferrer"
@@ -3314,7 +3332,7 @@ export function AboutSection() {
         </div>
 
         <p className="max-w-xl text-xs text-ink-tertiary">
-          DayRail 是 local-first、无账号的个人规划工具。你的数据在你自己的设备上；同步由你挑的云盘承担（Google Drive / iCloud / WebDAV）。
+          DayRail 是以本机存储为主的个人规划工具，无需注册账号。你可以选择用自己的 Google Drive 同步数据。
         </p>
 
         <p className="text-xs text-ink-tertiary/80">
