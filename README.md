@@ -223,38 +223,42 @@ current shape):
 
 Each test user, on first connect, sees one consent screen ("DayRail
 wants to see and manage its own configuration data in your Google
-Drive"), picks their account, accepts. From then on, no Google
-sign-in page for the lifetime of the browser-account session — token
-refresh is silent (~hourly, hidden iframe).
+Drive"), picks their account and accepts. See the authorization
+lifetime and renewal behavior below.
 
-**Tier 2 · Public release** (only if you ever ship this beyond your
-test-user list — current ROADMAP says you do not):
+**Tier 2 · Long-term authorization and production**:
 
-To remove the 100-user cap and the "Google hasn't verified this app"
-warning, the OAuth consent screen must be moved to **Publishing
-status: In production**. Because Drive API counts as a "sensitive"
-scope, this triggers Google's OAuth verification review:
+External OAuth projects in **Testing** expire Drive grants, including
+desktop refresh tokens, after seven days. For long-term use, complete
+**Google Auth Platform → Branding**, then set **Audience → Publishing
+status** to **In production**. Reconnect Drive once after publishing
+to obtain a new grant.
 
-- Provide a **homepage URL** + **privacy policy URL** + **terms of
-  service URL** for DayRail.
-- Add a 30s screen recording showing where in the app the scope is
-  used and why it's necessary.
-- Submit for review. Google takes 2–6 weeks; usually one round of
-  follow-up emails.
-- We deliberately picked `drive.appdata` (the lightest sensitive
-  scope), not `drive.file` or full Drive, so verification is the
-  simpler track — no CASA security assessment required.
+The public web deployment serves these bilingual pages without login:
 
-Until verification clears, public users would see an "Advanced →
-Continue anyway" warning page during consent. Acceptable for a beta
-of a few friends; not acceptable for a real public launch. Reopen
-this section before flipping to In production.
+- Homepage: `https://dayrail-web-dusky.vercel.app/about.html`
+- Privacy policy: `https://dayrail-web-dusky.vercel.app/privacy.html`
+- Terms of use (the existing MIT License): `https://dayrail-web-dusky.vercel.app/terms.html`
+
+Use those URLs in Branding, with `dayrail-web-dusky.vercel.app` as an
+authorized domain. Deploy and check the pages before saving their URLs.
+Settings → About also links to the policy and terms. The pages are
+static files in `apps/web/public/`; keep them aligned with actual data
+handling when the app changes.
+
+Google classifies `drive.appdata` as
+[non-sensitive](https://developers.google.com/workspace/drive/api/guides/api-specific-auth#non-sensitive).
+Publishing and brand/scope verification are separate steps; follow any
+requirements shown by the console. See Google's
+[audience settings](https://support.google.com/cloud/answer/15549945) and
+[branding requirements](https://support.google.com/cloud/answer/15549049).
 
 ### Steady-state UX
 
-Connect once, then never see a Google sign-in page again for the
-lifetime of the browser-account session. Token refresh is silent
-(~hourly, hidden iframe). Two devices on the same Google account
+The desktop app silently renews access tokens while its refresh grant
+remains valid. The web app uses the browser token flow, which may require
+another user interaction after its approximately one-hour token expires.
+Google can still expire or revoke either grant. Two devices on the same Google account
 share the same `appdata` folder automatically — no passphrase, no
 recovery code, no per-device pairing step.
 
