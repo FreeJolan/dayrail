@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
-import { encodeDryj } from '@dayrail/db/dryj';
+import { decodeDryj, encodeDryj } from '@dayrail/db/dryj';
 import { classifySyncStatus } from '../syncStatus';
 
 const disk = vi.hoisted(() => ({
@@ -10,6 +10,7 @@ const disk = vi.hoisted(() => ({
   connected: true,
   getRemoteMeta: vi.fn(),
   bytes: null as Uint8Array | null,
+  savedBytes: null as Uint8Array | null,
 }));
 
 vi.mock('@dayrail/db/yDocStore', async (importOriginal) => {
@@ -25,7 +26,7 @@ vi.mock('@dayrail/db/yDocStore', async (importOriginal) => {
 });
 vi.mock('@dayrail/db/yjsPersistence', () => ({
   loadYDocBytes: async () => disk.bytes,
-  saveYDocBytes: vi.fn(),
+  saveYDocBytes: async (bytes: Uint8Array) => { disk.savedBytes = bytes; },
 }));
 vi.mock('../../../../apps/web/src/lib/importData', () => ({ popPendingImport: () => null }));
 vi.mock('../../../../apps/web/src/lib/sync/driveAuth', () => ({
@@ -40,6 +41,7 @@ const lastSync = { at: Date.parse('2026-10-29T10:00:00Z'), label: 'My Mac' };
 beforeEach(() => {
   vi.resetModules();
   vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-30T12:00:00'));
   disk.connected = true;
   disk.meta = {
     lastSyncAt: lastSync.at,
@@ -48,6 +50,7 @@ beforeEach(() => {
     dirtyCount: 0,
   };
   disk.getRemoteMeta.mockReset();
+  disk.savedBytes = null;
   const doc = new Y.Doc();
   doc.getMap('tasks').set('task', new Y.Map(Object.entries({
     id: 'task', lineId: 'line-inbox', title: 'Existing task', order: 0, status: 'pending',
@@ -59,6 +62,8 @@ beforeEach(() => {
   doc.destroy();
   const local = new Map<string, string>([['dayrail.sync.deviceLabel', 'My Mac']]);
   vi.stubGlobal('window', {
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
     localStorage: {
       getItem: (key: string) => local.get(key) ?? null,
       setItem: (key: string, value: string) => local.set(key, value),
@@ -78,6 +83,48 @@ afterEach(() => {
 });
 
 describe('sync status after cold boot', () => {
+  it('queues habit tasks created during boot before confirming remote consistency', async () => {
+    const decoded = decodeDryj(disk.bytes!);
+    const doc = new Y.Doc();
+    Y.applyUpdate(doc, decoded.update);
+    const entity = (map: string, id: string, value: Record<string, unknown>) => {
+      doc.getMap(map).set(id, new Y.Map(Object.entries(value)));
+    };
+    const revision = (map: string, id: string, value: Record<string, unknown>) => {
+      const array = new Y.Array();
+      array.push([{ id: 'rev-' + id, effectiveFrom: '1970-01-01', authoredAt: 0, ...value }]);
+      doc.getMap(map).set(id, array);
+    };
+    const rail = { id: 'rail', templateKey: 'workday', name: 'Morning', startMinutes: 540, durationMinutes: 30, color: 'indigo', showInCheckin: true };
+    const binding = { id: 'binding', habitId: 'habit', railId: 'rail', createdAt: 0 };
+    const rule = { id: 'rule', kind: 'weekday', priority: 10, value: { templateKey: 'workday', weekdays: [0, 1, 2, 3, 4, 5, 6] }, createdAt: 0 };
+    entity('templates', 'workday', { key: 'workday', name: 'Workday', isDefault: true });
+    entity('lines', 'habit', { id: 'habit', name: 'Read', kind: 'habit', status: 'active', createdAt: 0 });
+    entity('rails', 'rail', rail);
+    entity('habitBindings', 'binding', binding);
+    entity('calendarRules', 'rule', rule);
+    revision('railRevisions', 'rail', { ...rail, railId: 'rail' });
+    revision('habitBindingRevisions', 'binding', { ...binding, bindingId: 'binding' });
+    revision('calendarRuleRevisions', 'rule', { ruleId: 'rule', priority: 10, value: rule.value });
+    disk.bytes = encodeDryj(decoded.meta, Y.encodeStateAsUpdate(doc));
+    doc.destroy();
+
+    const { syncStore } = await import('../../../../apps/web/src/lib/sync/syncStore');
+    const { boot } = await import('../../../../apps/web/src/boot');
+    await boot();
+    await vi.advanceTimersByTimeAsync(751);
+    expect(disk.savedBytes).not.toBeNull();
+    const saved = new Y.Doc();
+    Y.applyUpdate(saved, decodeDryj(disk.savedBytes!).update);
+    expect(saved.getMap('tasks').has('task-auto-habit-2026-10-30-rail')).toBe(true);
+    saved.destroy();
+    expect(syncStore.getSnapshot().dirtyCount).toBeGreaterThan(0);
+    disk.getRemoteMeta.mockResolvedValue({ fileId: 'file-1', snapshotId: 'snapshot-1' });
+    const { runBootProbe } = await import('../../../../apps/web/src/lib/sync/syncController');
+    await runBootProbe();
+    expect(syncStore.getSnapshot().sessionRoundTripDone).toBe(false);
+  });
+
   it('restores history and pending writes after metadata loads without claiming a new round-trip', async () => {
     disk.meta.dirtyCount = 3;
     // Importing the UI store precedes boot's asynchronous disk read.
