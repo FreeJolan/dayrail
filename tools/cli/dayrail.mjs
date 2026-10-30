@@ -8,12 +8,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
-const usage = `DayRail CLI (Node.js >=18)
+export const CLI_VERSION = '0.16.0';
+
+const usage = `DayRail CLI ${CLI_VERSION} (Node.js >=18)
 Usage: dayrail <resource> <action> [id] [--field value] [--input JSON|@file]
        dayrail status | schema [resource.action] | data export
        dayrail install [--dir PATH]
 
 Global flags:
+  --version               Print the CLI version without connecting
   --json                  Compact JSON (responses are JSON by default)
   --dev                   Connect to the isolated development app
   --request-id ID         Reuse this ID after an uncertain outcome (same runtime)
@@ -251,6 +254,10 @@ async function install(dir = path.join(homedir(), '.local', 'bin')) {
   return { installed: target, addToPath: dir };
 }
 export async function main(args = process.argv.slice(2)) {
+  if (args.length === 1 && ['--version', '-v'].includes(args[0])) {
+    process.stdout.write(CLI_VERSION + '\n');
+    return;
+  }
   const parsed = await parseArgs(args);
   if (!args.length || (parsed.global.help && !parsed.positional.length)) {
     process.stdout.write(usage);
