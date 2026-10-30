@@ -1,0 +1,41 @@
+{
+  "name": "dayrail-cli",
+  "version": "0.16.0",
+  "description": "Domain primitives for local AI agents controlling the running DayRail desktop app",
+  "type": "module",
+  "bin": {
+    "dayrail": "./dayrail.mjs"
+  },
+  "files": [
+    "dayrail.mjs",
+    "skill/",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FreeJolan/dayrail.git",
+    "directory": "tools/cli"
+  },
+  "homepage": "https://github.com/FreeJolan/dayrail#local-ai-agents-v0160",
+  "bugs": {
+    "url": "https://github.com/FreeJolan/dayrail/issues"
+  },
+  "keywords": [
+    "dayrail",
+    "cli",
+    "agent",
+    "planning"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "prepack": "node scripts/prepare-package.mjs",
+    "test": "node --test dayrail.test.mjs package.test.mjs"
+  }
+}

@@ -7,17 +7,21 @@ The CLI exposes domain primitives and complete business-data reads; changes
 update the open UI immediately and await local saving. Agent workflows live
 in the bundled [DayRail skill](skills/dayrail/SKILL.md).
 
-On macOS, install the command with Node.js >=18:
+Install the command with Node.js >=18:
 
 ```sh
-node /Applications/DayRail.app/Contents/Resources/cli/dayrail.mjs install
-# Add ~/.local/bin to PATH if needed.
+npm install --global dayrail-cli
+dayrail --version
 dayrail --help
 dayrail schema task.schedule --json
 dayrail data export --json
 ```
 
-The release also includes standalone `dayrail.mjs` and `dayrail-skill.tar.gz`.
+You can also run `npx dayrail-cli status --json` without a global install.
+The npm package includes the skill at `$(npm root -g)/dayrail-cli/skill`.
+The desktop app and GitHub Release also include standalone `dayrail.mjs` and
+`dayrail-skill.tar.gz`; the app's bundled `dayrail.mjs install` command remains
+available as an alternative.
 Copy the `dayrail` skill folder into your agent's skill directory, for example
 `~/.codex/skills/dayrail` for Codex or `~/.claude/skills/dayrail` for Claude Code.
 The packaged copy is under the app's `Contents/Resources/skills/dayrail`.

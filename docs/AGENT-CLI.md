@@ -50,11 +50,11 @@ existing UI model; they are not durable transactions or rollback guarantees.
 ## Usage
 
 Requires Node.js >=18 and a running desktop app. Enable local access in
-Settings > Advanced. On macOS, run the following once:
+Settings > Advanced. Install from npm:
 
 ```sh
-node /Applications/DayRail.app/Contents/Resources/cli/dayrail.mjs install
-# Put ~/.local/bin on PATH if needed.
+npm install --global dayrail-cli
+dayrail --version
 dayrail --help
 dayrail schema task.schedule --json
 dayrail task list --status pending --json
@@ -64,7 +64,12 @@ dayrail task schedule TASK_ID --date 2026-11-03 --rail-id RAIL_ID --json
 dayrail data export --json > dayrail-context.json
 ```
 
-On Linux/Windows, the standalone release client can be run as
+Alternatively run `npx dayrail-cli status --json` without a global install.
+The npm package's `skill/` folder contains the canonical DayRail skill and
+references. After a global install it is located at
+`$(npm root -g)/dayrail-cli/skill`.
+
+The standalone release client can also be run as
 `node /path/to/dayrail.mjs`; its `install --dir PATH` command creates a launcher.
 The installed launcher's directory must be on PATH. Production discovery is
 `app.dayrail.desktop/agent-bridge.json` under the OS app-data directory. Use
@@ -122,3 +127,24 @@ Finder was frontmost kept Finder in front.
 The scheduling command in this run took 47ms including client startup; this is
 an observation, not a latency guarantee. Screenshots were inspected to verify
 that the task appeared on the unchanged Today page and remained after restart.
+
+
+## npm distribution
+
+`tools/cli` is the public `dayrail-cli` package; its executable is `dayrail`.
+The first package version is 0.16.0 and it works with desktop 0.16.0 or newer.
+The CLI's offline `--version` reports its own version. App and CLI versions may
+advance independently while bridge protocol version 1 remains compatible.
+
+The package has no runtime dependencies or install hooks. Its explicit file
+allowlist contains the client, package metadata, README, license, and canonical
+skill with references. Prepack copies the skill from `skills/dayrail` and the
+repository license into ignored staging paths; generated copies are not source
+files. Packaging verification installs the real tarball under an isolated npm
+prefix, checks its executable and version, compares the packaged skill, and
+uses the installed command against a fake local bridge. No app window is opened.
+
+Publish only after source changes land through a PR. Pack from `tools/cli`,
+then publish that tested tarball explicitly to `https://registry.npmjs.org/`.
+The public npm registry requires an authenticated publisher; keep credentials
+outside the repository. No registry or account settings are changed by install.

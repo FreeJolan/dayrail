@@ -5104,3 +5104,15 @@ occurrence. Free-time tasks must be unscheduled before adding Rail-only
 occurrences so their previous arrangement is not hidden. See
 `docs/AGENT-CLI.md` for the protocol and verification plan, and
 `skills/dayrail/SKILL.md` for agent usage.
+
+
+#### 15.14.1 npm distribution
+
+The CLI is distributed as the public npm package `dayrail-cli`, exposing the
+`dayrail` executable. Its first npm version is 0.16.0, compatible with desktop
+0.16.0 and newer. The package includes the client, documentation, license and
+skill, without runtime dependencies or install hooks. Global npm installs and
+npx invocation use the same local bridge, permissions, confirmations, live UI
+updates and data format. Offline `--version` reports the CLI's own version.
+The standalone desktop resource remains available; CLI and desktop versions may
+advance independently within protocol compatibility.

@@ -6,8 +6,10 @@ description: Read and manage the user's local DayRail projects, tasks, task spli
 # DayRail
 
 Use the CLI against the running desktop app. Enable access in Settings > Advanced.
-The installed command is `dayrail`; the app also ships
-`Contents/Resources/cli/dayrail.mjs` on macOS, callable with Node.js >=18.
+Install with `npm install --global dayrail-cli`, or invoke `npx dayrail-cli`.
+The installed command is `dayrail`; Node.js >=18 is required. The npm package
+includes this skill under `skill/`. The app also ships a standalone
+`Contents/Resources/cli/dayrail.mjs` on macOS.
 Run `dayrail --help` for client syntax and `dayrail schema` for the current
 command catalog. Use `dayrail schema resource.action` before an unfamiliar write.
 Do not read or edit `.dryj` files, browser storage, or credential files.
