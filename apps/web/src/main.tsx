@@ -7,7 +7,6 @@ import { initTheme } from './lib/theme';
 import { resetLocalData } from './lib/resetLocalData';
 import { BootGate } from './lib/sync/BootGate';
 import { RuntimeSyncDialog } from './lib/sync/RuntimeSyncDialog';
-import { startSyncBackgroundLoop } from './lib/sync/syncController';
 import './index.css';
 
 // Theme setup runs before React mounts so the loading veil + first
@@ -31,10 +30,6 @@ root.render(
 
 boot()
   .then(() => {
-    // Start the dirty-tracking subscription before any user input has
-    // a chance to run. Idempotent — guards against StrictMode double-
-    // invoke + HMR re-runs.
-    startSyncBackgroundLoop();
     root.render(
       <React.StrictMode>
         <BootGate>

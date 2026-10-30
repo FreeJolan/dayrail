@@ -27,6 +27,7 @@ import HOLIDAYS_ZH_CN from './data/holidays/zh-CN.json';
 import { popPendingImport } from './lib/importData';
 import { loadSyncMetaCache, setAutoDetectedDeviceLabel } from './lib/sync/identity';
 import { syncStore } from './lib/sync/syncStore';
+import { startSyncBackgroundLoop } from './lib/sync/syncController';
 import { isTauriRuntime } from './lib/versionUpdateContext';
 
 export async function boot(): Promise<void> {
@@ -113,6 +114,10 @@ export async function boot(): Promise<void> {
   //    the old "here are some example rails I'll silently replace
   //    when Drive shows up" implicit handoff.
   await ensureInbox();
+
+  // Track startup-generated tasks as pending before materializing them.
+  // A matching remote cursor must not hide these new local writes.
+  startSyncBackgroundLoop();
 
   // 5. Materialise today's habit auto-tasks. Idempotent.
   const today = toIsoDate();

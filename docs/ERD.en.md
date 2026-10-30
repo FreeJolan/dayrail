@@ -1976,6 +1976,8 @@ Each phase ships as an independent PR · each PR runs the existing 203 tests + n
 
 Cold-start status hydration (2026-10-30): `syncStore` is imported before asynchronous metadata loading. After `loadSyncMetaCache()` resolves, boot refreshes its persisted fields (connection, pending writes, last successful sync and device label). Restoring history does not count as a new session round-trip. A manual sync that finds no changes retains this history, and a failed non-silent probe keeps an offline status instead of returning to idle.
 
+Boot starts dirty tracking after hydration and Inbox setup, before materializing today's habit tasks. Newly generated tasks enter the pending count and normal push queue, so matching an older remote cursor cannot mark these local changes as already synchronized.
+
 > Status: locked 2026-05-15 (doc-only PR · single implementation PR · planned for the v0.11.x milestone). This section continues §7.8's repair path and **supersedes** the implicit assumption in §7.8 P1 / P3 that "`lastPulled` and other sync metadata live in localStorage"; the rest of §7.8 (push firewall / smart diff / Drive history UI) remains in effect.
 
 **Trigger**
