@@ -1,6 +1,6 @@
 {
   "name": "dayrail-cli",
-  "version": "0.16.0",
+  "version": "0.16.1",
   "description": "Domain primitives for local AI agents controlling the running DayRail desktop app",
   "type": "module",
   "bin": {
@@ -36,6 +36,6 @@
   },
   "scripts": {
     "prepack": "node scripts/prepare-package.mjs",
-    "test": "node --test dayrail.test.mjs package.test.mjs"
+    "test": "node --test dayrail.test.mjs skills.test.mjs package.test.mjs"
   }
 }

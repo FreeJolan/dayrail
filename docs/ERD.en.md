@@ -5120,3 +5120,13 @@ npx invocation use the same local bridge, permissions, confirmations, live UI
 updates and data format. Offline `--version` reports the CLI's own version.
 The standalone desktop resource remains available; CLI and desktop versions may
 advance independently within protocol compatibility.
+
+CLI 0.16.1 adds `dayrail skills install` and its equivalent `skills update`.
+By default they detect Codex, Claude Code, Gemini CLI and OpenCode; `--agent`
+selects targets and `--dir` selects a custom skills directory. Both commands
+work offline using the current CLI's bundled skill, without the app running,
+creating missing copies or updating existing ones. Rerun after upgrading the
+CLI to refresh skills. Identical copies are skipped; changed directories are
+preserved intact in a backup outside skill discovery, with the path returned.
+Symlinks are not automatically replaced, and multiple targets report results
+independently. npm installation itself does not write agent directories.

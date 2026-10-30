@@ -3,7 +3,15 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, writeFile, rm, lstat } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  writeFile,
+  rm,
+  lstat,
+  cp,
+} from 'node:fs/promises';
 import net from 'node:net';
 import { once } from 'node:events';
 import os from 'node:os';
@@ -24,10 +32,26 @@ test('the npm tarball installs an executable client, includes the canonical skil
   const prefix = path.join(temporary, 'global');
   const config = path.join(temporary, 'npmrc');
   await writeFile(config, 'registry=https://registry.npmjs.org/\n');
+  // Prepack mutates its staging folder; keep it separate from concurrent CLI tests.
+  const fixture = path.join(temporary, 'source/tools/cli');
+  await mkdir(fixture, { recursive: true });
+  for (const file of ['dayrail.mjs', 'package.json', 'README.md', 'scripts'])
+    await cp(path.join(directory, file), path.join(fixture, file), {
+      recursive: true,
+    });
+  await cp(
+    path.resolve(directory, '../../skills/dayrail'),
+    path.join(temporary, 'source/skills/dayrail'),
+    { recursive: true },
+  );
+  await cp(
+    path.resolve(directory, '../../LICENSE'),
+    path.join(temporary, 'source/LICENSE'),
+  );
   const environment = { ...process.env, npm_config_userconfig: config };
   const npm = (...args) =>
     execute(process.execPath, [npmCli, ...args], {
-      cwd: directory,
+      cwd: fixture,
       env: environment,
       maxBuffer: 4 * 1024 * 1024,
     });
@@ -79,6 +103,16 @@ test('the npm tarball installs an executable client, includes the canonical skil
     );
     assert.equal((await run('--version')).stdout.trim(), metadata.version);
     assert.match((await run('--help')).stdout, /Usage: dayrail/);
+    const skillDirectory = path.join(temporary, 'agent-skills');
+    const installed = JSON.parse(
+      (await run('skills', 'install', '--dir', skillDirectory, '--json'))
+        .stdout,
+    );
+    assert.equal(installed.result.installations[0].status, 'installed');
+    const repeated = JSON.parse(
+      (await run('skills', 'update', '--dir', skillDirectory, '--json')).stdout,
+    );
+    assert.equal(repeated.result.installations[0].status, 'unchanged');
     for (const relative of [
       'SKILL.md',
       'references/model.md',
@@ -90,6 +124,10 @@ test('the npm tarball installs an executable client, includes the canonical skil
           path.resolve(directory, '../../skills/dayrail', relative),
           'utf8',
         ),
+      );
+      assert.equal(
+        await readFile(path.join(skillDirectory, 'dayrail', relative), 'utf8'),
+        await readFile(path.join(packageDirectory, 'skill', relative), 'utf8'),
       );
     }
     const received = [];

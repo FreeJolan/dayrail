@@ -4538,3 +4538,5 @@ dogfood 暴露:Tasks 页 Projects / Habits 的「+ 新建」在桌面端**点了
 #### 15.14.1 npm 分发
 
 CLI 通过公开 npm 包 `dayrail-cli` 分发，执行命令为 `dayrail`，首个 npm 版本为 0.16.0，兼容桌面版 0.16.0 及以上。包中包含客户端、说明、许可证和配套 skill，无运行时依赖或安装钩子。npm 全局安装或 npx 调用沿用同一条本机通道，不改变权限、确认要求、实时 UI 更新和数据格式。`--version` 可离线查看 CLI 自身版本。桌面随包脚本继续保留，CLI 与桌面可在协议兼容范围内独立发版。
+
+CLI 0.16.1 新增 `dayrail skills install` 和等价的 `skills update`。默认检测 Codex、Claude Code、Gemini CLI 和 OpenCode，也可用 `--agent` 指定目标或用 `--dir` 指定技能目录。命令离线使用当前 CLI 附带的 skill，安装缺失副本或更新已有副本，无需启动应用；升级 CLI 后需再次执行以更新 skill。内容相同则跳过，替换前将旧目录完整移至技能目录外的备份位置，并返回路径。符号链接不自动替换，多个目标分别报告结果。npm 安装本身不写入 Agent 目录。

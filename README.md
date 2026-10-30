@@ -11,6 +11,7 @@ Install the command with Node.js >=18:
 
 ```sh
 npm install --global dayrail-cli
+dayrail skills install
 dayrail --version
 dayrail --help
 dayrail schema task.schedule --json
@@ -22,8 +23,11 @@ The npm package includes the skill at `$(npm root -g)/dayrail-cli/skill`.
 The desktop app and GitHub Release also include standalone `dayrail.mjs` and
 `dayrail-skill.tar.gz`; the app's bundled `dayrail.mjs install` command remains
 available as an alternative.
-Copy the `dayrail` skill folder into your agent's skill directory, for example
-`~/.codex/skills/dayrail` for Codex or `~/.claude/skills/dayrail` for Claude Code.
+With CLI >=0.16.1, `dayrail skills install` detects supported local agents and
+installs or upgrades their skill. Use `--agent codex,claude` to choose targets,
+or `--agent all` for Codex, Claude Code, Gemini CLI and OpenCode. After updating
+the CLI, run `dayrail skills update` to refresh the installed copies. Changed
+copies are backed up; the command works offline without the app running.
 The packaged copy is under the app's `Contents/Resources/skills/dayrail`.
 See [the interface and implementation plan](docs/AGENT-CLI.md) for runtime,
 idempotency, confirmation, pagination, and verification details.
