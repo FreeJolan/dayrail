@@ -1306,8 +1306,11 @@ export async function runBootProbe(
 
   const outcome = await Promise.race([probe, hardTimer]);
   if (!silent) {
-    if (timedOut) {
-      syncStore.setPhase({ kind: 'offline', message: '同步探测超时' });
+    if (outcome.kind === 'offline') {
+      syncStore.setPhase({
+        kind: 'offline',
+        message: timedOut ? '同步探测超时' : outcome.reason,
+      });
     } else {
       syncStore.setPhase({ kind: 'idle' });
     }

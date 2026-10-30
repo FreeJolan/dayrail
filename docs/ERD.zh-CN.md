@@ -1895,6 +1895,8 @@ Y.Doc 序列化字节仍是 sync 传输格式（`Y.encodeStateAsUpdate(doc)`）�
 
 ### 7.9 v0.11.x 实施说明 — 持久化层重构 · 元数据生命周期对齐
 
+冷启动状态恢复（2026-10-30）：`syncStore` 在异步读取同步记录之前就会被导入。`loadSyncMetaCache()` 完成后，boot 刷新其中的连接状态、待上传数量、最近成功同步记录和设备名。恢复历史记录不算本次会话的新同步。手动同步检查到没有变化时保留这份历史；非静默探测失败时保留离线状态，避免又显示为空闲等待。
+
 > 状态：2026-05-15 决策已锁定（doc-only PR · 实施单 PR · 计划 v0.11.x milestone 内完成）。本节延续 §7.8 的修复路径，**取代** §7.8 P1 / P3 中"`lastPulled` 等同步元数据存 localStorage"的隐含假设；其余 §7.8 决策（push firewall / smart diff / Drive history UI）继续生效。
 
 **触发因素**
