@@ -12,6 +12,7 @@
 // decides whether to hide the window (autostart) or force foreground
 // (post-update relaunch).
 
+mod agent_bridge;
 mod backup;
 mod drive_auth;
 mod system_info;
@@ -81,6 +82,7 @@ fn relaunch_for_update(app: tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(agent_bridge::AgentBridge::default())
         // ERD §15.11 — restore the window's last geometry on launch and
         // save it on exit. Covers size, position (which monitor the
         // window lands on is just its saved x/y), maximized, and
@@ -127,6 +129,9 @@ pub fn run() {
         // access tokens it can drop straight into Authorization
         // headers.
         .invoke_handler(tauri::generate_handler![
+            agent_bridge::agent_start,
+            agent_bridge::agent_stop,
+            agent_bridge::agent_respond,
             drive_auth::drive_connect,
             drive_auth::drive_get_token,
             drive_auth::drive_disconnect,

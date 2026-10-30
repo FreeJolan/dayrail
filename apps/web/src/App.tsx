@@ -35,6 +35,7 @@ import { Pending } from './pages/Pending';
 import { Settings } from './pages/Settings';
 import { Calendar } from './pages/Calendar';
 import { BacklogDrawer } from './components/BacklogDrawer';
+import { AgentBridge } from './components/AgentBridge';
 import { StagingModal } from './components/StagingModal';
 import { DevModeIndicator } from './components/DevModeIndicator';
 import { ImportSuccessToast } from './components/ImportSuccessToast';
@@ -103,6 +104,7 @@ export default function App() {
       <VersionUpdateProvider>
         <TooltipProvider delayDuration={200} skipDelayDuration={300}>
           <DragMirrorProvider>
+            <AgentBridge />
             <Shell />
           </DragMirrorProvider>
         </TooltipProvider>

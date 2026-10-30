@@ -25,3 +25,5 @@ export * from './stagingStore';
 export * from './intentParse';
 export * from './expectedWindow';
 export * from './calendarAgenda';
+
+export * from './agent';

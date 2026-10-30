@@ -124,3 +124,11 @@ jobs:
           # in tauri.conf.json points at via the `releases/latest/download/`
           # GitHub redirect.
           updaterJsonKeepUniversal: false
+
+      - name: Upload CLI and agent skill
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tar -czf dayrail-skill.tar.gz -C skills dayrail
+          gh release upload "${{ github.ref_name }}" tools/cli/dayrail.mjs dayrail-skill.tar.gz --clobber
