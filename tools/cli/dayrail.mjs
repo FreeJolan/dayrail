@@ -308,9 +308,10 @@ async function skillFiles(directory, prefix = '') {
 }
 
 async function bundledSkill() {
-  // npm package, signed desktop resource, and repository checkout respectively.
+  // npm package, standalone archive, signed desktop resource, and checkout.
   for (const relative of [
     './skill/',
+    './skills/dayrail/',
     '../skills/dayrail/',
     '../../skills/dayrail/',
   ]) {

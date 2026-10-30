@@ -329,4 +329,19 @@ test('the standalone desktop resource finds its adjacent skill and fails clearly
       await readFile(path.join(home, 'target/dayrail/SKILL.md'), 'utf8'),
       await readFile(path.join(canonical, 'SKILL.md'), 'utf8'),
     );
+    const standalone = path.join(home, 'dayrail.mjs');
+    await cp(cli, standalone);
+    await cp(canonical, path.join(home, 'skills/dayrail'), { recursive: true });
+    const flat = await run(
+      ['skills', 'install', '--dir', path.join(home, 'standalone-target')],
+      standalone,
+    );
+    assert.equal(flat.code, 0, flat.stdout);
+    assert.equal(
+      await readFile(
+        path.join(home, 'standalone-target/dayrail/SKILL.md'),
+        'utf8',
+      ),
+      await readFile(path.join(canonical, 'SKILL.md'), 'utf8'),
+    );
   }));
