@@ -1,3 +1,4 @@
+import { AgentSettings } from '@/components/AgentSettings';
 import { useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { clsx } from 'clsx';
@@ -66,7 +67,12 @@ export function Settings() {
           {active === 'appearance' && <AppearanceSection />}
           {active === 'sync' && <SyncSection />}
           {active === 'ai' && <AISection />}
-          {active === 'advanced' && <AdvancedSection />}
+          {active === 'advanced' && (
+            <>
+              <AgentSettings />
+              <AdvancedSection />
+            </>
+          )}
           {active === 'about' && <AboutSection />}
         </div>
       </section>

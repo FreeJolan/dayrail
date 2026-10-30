@@ -7,7 +7,7 @@
     "build": "pnpm --filter @dayrail/web build",
     "preview": "pnpm --filter @dayrail/web preview",
     "typecheck": "pnpm -r --if-present typecheck",
-    "test": "pnpm -r --if-present test",
+    "test": "pnpm -r --if-present test && node --test tools/cli/dayrail.test.mjs",
     "desktop:dev": "pnpm --filter @dayrail/desktop dev",
     "desktop:build": "pnpm --filter @dayrail/desktop build",
     "desktop:icon": "pnpm --filter @dayrail/desktop icon"

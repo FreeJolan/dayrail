@@ -1,6 +1,6 @@
 [package]
 name = "dayrail-desktop"
-version = "0.15.1"
+version = "0.16.0"
 description = "DayRail desktop shell"
 authors = ["FreeJolan"]
 edition = "2021"
@@ -51,6 +51,8 @@ tauri-plugin-autostart = "2"
 tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+fs2 = "0.4"
+uuid = { version = "1", features = ["v4"] }
 
 # ERD §15.3 — desktop OAuth pattern for Drive sync.
 # `oauth2` runs the auth-code + PKCE + refresh exchange against

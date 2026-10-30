@@ -17,7 +17,7 @@ import {
   effectiveExpectedWindow,
   isOccurrenceManaged,
   railsActiveOn,
-  resolveTemplateForDate,
+  pickDayTemplate,
   selectOccurrencesForTask,
   singleDateRuleId,
 } from '@dayrail/core';
@@ -76,25 +76,7 @@ export function pickTemplateForDate(
   >,
   date: string,
 ): TemplateKey | null {
-  return resolveTemplateForDate(state, date, (d) =>
-    weekdayHeuristic(state.templates, d),
-  );
-}
-
-function weekdayHeuristic(
-  templatesMap: DayRailState['templates'],
-  date: string,
-): TemplateKey | null {
-  const templates = Object.values(templatesMap);
-  if (templates.length === 0) return null;
-  const dt = new Date(`${date}T00:00:00`);
-  const dow = dt.getDay();
-  const isWeekend = dow === 0 || dow === 6;
-  const preferredKey = isWeekend ? 'restday' : 'workday';
-  const exact = templates.find((t) => t.key === preferredKey);
-  if (exact) return exact.key;
-  const fallback = templates.find((t) => t.isDefault) ?? templates[0];
-  return fallback ? fallback.key : null;
+  return pickDayTemplate(state, date);
 }
 
 export interface DerivedCycle {

@@ -495,6 +495,15 @@ function schedulePersist(): void {
   }, SAVE_DEBOUNCE_MS);
 }
 
+/** Flush the current live document and await its local persistence. */
+export async function flushPersistence(): Promise<void> {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  await persistNow();
+}
+
 async function persistNow(): Promise<void> {
   const doc = getYDoc();
   const update = encodeDocAsUpdate(doc);
@@ -1715,15 +1724,16 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
       let baseOrder = existingCount;
 
       // Adoption-edge conversion (§10.6 Q1 boundary): if this newly-
-      // created occurrence will itself be slot/percent-bearing AND the
-      // Task is not yet in occurrence-managed mode AND Task.slot is
+      // created occurrence enters managed mode AND the Task has no
+      // already-scheduled split AND Task.slot is
       // currently set, convert that legacy slot into a label-less /
       // percent-less occurrence in the same transaction. Without this,
       // the user's existing scheduling on the Task would silently
       // disappear from Today/Cycle the moment they add their first
       // slot-bearing occurrence.
+      // Any first occurrence enters managed mode, including a plain label.
       const willAdopt =
-        partial?.slot != null || partial?.percent != null;
+        existingCount === 0 || partial?.slot != null || partial?.percent != null;
       const legacySlot = (taskYMap as YMap<unknown>).get('slot');
       if (
         willAdopt &&
@@ -3009,3 +3019,22 @@ export {
   deriveTaskProgress,
   isOccurrenceManaged,
 } from './types';
+
+/** UI and external adapters share the same weekday fallback. */
+export function pickDayTemplate(
+  state: Pick<DayRailState,
+    'templates' | 'calendarRules' | 'calendarRuleRevisions' | 'calendarRuleTombstones'
+  > & Partial<Pick<DayRailState, 'userDayNotes' | 'userProfile'>>,
+  date: string,
+): TemplateKey | null {
+  return resolveTemplateForDate(state, date, (day) => {
+    const templates = Object.values(state.templates);
+    const weekday = new Date(`${day}T00:00:00`).getDay();
+    const preferred = weekday === 0 || weekday === 6 ? 'restday' : 'workday';
+    return (
+      templates.find(t => t.key === preferred)?.key ??
+      templates.find(t => t.isDefault)?.key ??
+      templates[0]?.key ?? null
+    );
+  });
+}

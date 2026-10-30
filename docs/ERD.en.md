@@ -5067,3 +5067,40 @@ The `update_cleanup` module spawns a background thread from setup() that scans `
 ---
 
 > This document is the starting point of DayRail's design discussion, not the end. Any decision can be overturned.
+
+
+### 15.14 Local agent CLI (v0.16.0)
+
+Decision, 2026-10-30: expose domain primitives first, with CLI as the initial
+adapter and a skill explaining semantics and composition. This supersedes
+§15.10's MCP-first, add-only, staging-only restrictions for external agents.
+The existing paste/staging surface retains its purpose. Planning, decomposition
+and review are composed by the agent; the CLI embeds no scenario workflow or
+model call.
+
+The desktop app owns the live Y.Doc. The CLI sends authenticated loopback
+requests to the main webview's domain dispatcher. Y.Doc observers update Zustand
+and the UI immediately; successful mutations await local saving. Drive sync
+remains independent on the existing local-edit path. UI edits are immediately
+readable through the CLI. The client never accesses .dryj directly and never
+launches or focuses the app. The first version requires a running app and the
+device-local Settings > Advanced opt-in. Development/production discovery is
+separate.
+
+Reads cover all business collections, including occurrences, background,
+reflections, historical revisions, archived rows and Trash. Credentials and
+runtime state are excluded. Lists expose pagination; full export is unpaginated.
+Writes validate fields/references and support an optional revision precondition.
+Requests are serialized; the latest 1,000 IDs are deduplicated in the current
+runtime. Timeout means an uncertain outcome, so never blindly retry a create
+with a new ID. Deletion still requires in-app confirmation; tasks/lines use
+restorable soft deletion. Permanent purge is not exposed. Edit Sessions group
+supported operations for in-memory undo, do not survive restart, and do not
+promise transactional rollback.
+
+Compatibility: existing business data formats remain unchanged. Adding a first
+plain occurrence now preserves a Task's existing Rail slot as a separate
+occurrence. Free-time tasks must be unscheduled before adding Rail-only
+occurrences so their previous arrangement is not hidden. See
+`docs/AGENT-CLI.md` for the protocol and verification plan, and
+`skills/dayrail/SKILL.md` for agent usage.

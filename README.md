@@ -1,5 +1,31 @@
 # DayRail
 
+## Local AI agents (v0.16.0)
+
+Enable **Settings → Advanced → Local Agent** in the running desktop app.
+The CLI exposes domain primitives and complete business-data reads; changes
+update the open UI immediately and await local saving. Agent workflows live
+in the bundled [DayRail skill](skills/dayrail/SKILL.md).
+
+On macOS, install the command with Node.js >=18:
+
+```sh
+node /Applications/DayRail.app/Contents/Resources/cli/dayrail.mjs install
+# Add ~/.local/bin to PATH if needed.
+dayrail --help
+dayrail schema task.schedule --json
+dayrail data export --json
+```
+
+The release also includes standalone `dayrail.mjs` and `dayrail-skill.tar.gz`.
+Copy the `dayrail` skill folder into your agent's skill directory, for example
+`~/.codex/skills/dayrail` for Codex or `~/.claude/skills/dayrail` for Claude Code.
+The packaged copy is under the app's `Contents/Resources/skills/dayrail`.
+See [the interface and implementation plan](docs/AGENT-CLI.md) for runtime,
+idempotency, confirmation, pagination, and verification details.
+
+
+
 Local-first personal planning · **Stay on the Rail** 🚉
 
 > Design philosophy: *Be kinder to yourself. Keep moving, gently.*
