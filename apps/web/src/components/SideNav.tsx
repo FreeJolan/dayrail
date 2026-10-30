@@ -559,7 +559,7 @@ function describeSyncStatus(
         label: '已同步',
         tone: 'ok',
         ...(anchor && {
-          hoverTitle: `刚同步过 · ${formatDurationAgo(anchor, Date.now())}`,
+          hoverTitle: `最近确认：${formatDurationAgo(anchor, Date.now())}`,
         }),
       };
     }

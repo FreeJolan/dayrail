@@ -586,10 +586,9 @@ export function clearSyncProbeSuppressed(): void {
 // ============ session-scoped "this session has had a successful round-trip" ============
 //
 // Drives the SideNav "已同步" semantic (ERD §7.9 decision 5). After
-// cold boot the indicator reads "未确认" until a push or pull
-// completes within the current session. Surviving across reloads is
-// explicitly NOT desired — stale lastSync alone shouldn't claim
-// in-sync after a wipe.
+// cold boot the indicator reads "未确认" until a push/pull or a matching
+// remote check with no pending writes completes this session. The flag
+// resets on reload; stored history cannot confirm the current state.
 
 let _sessionRoundTripDone = false;
 const _roundTripListeners = new Set<() => void>();

@@ -2058,7 +2058,7 @@ Same shape as the sample-seed incident — **out-of-band metadata drifts away fr
 
 5. **"In-sync" UI semantic fix**
 
-   `SideNav.describeSyncStatus` adds an in-memory "this session has had a successful round-trip" flag. After cold boot, the status reads "未确认" (unconfirmed) until a push/pull completes this session. The `lastSync` timestamp continues to display as informational ("Last synced: X minutes ago") but no longer drives the "in-sync" judgment — preventing the empty-UI + "in-sync" misleading combination.
+   `SideNav.describeSyncStatus` uses an in-memory confirmation flag that resets on cold boot. A completed push/pull can set it. A completed metadata probe can also set it when the remote snapshot matches the current local cursor, local data is present and no local writes are pending. This includes no-change manual sync and periodic checks. Confirmation happens after the timeout race, so a late response cannot confirm a timed-out check. Matching checks refresh `lastSuccessAt.pull` and record a successful pull/probe attempt, while `lastSync` continues to describe actual transfer history.
 
 6. **One-time localStorage migration**
 
@@ -2488,12 +2488,12 @@ Grey-tier design principle: don't force the user to back up immediately, but eac
 | 4 | Changes not pushed | `pending>0` AND push persistently erroring | {N} 个改动没传上去 (hover: duration) | warn-strong |
 | 5 | Can't reach cloud | pull/probe persistently failing | 连不上云端 (hover: duration) | warn |
 | 6 | Queued | `pending>0`, push not erroring | 未同步 · {N} | warn-soft |
-| 7 | Synced | `pending==0` AND recent successful pull AND `sessionRoundTripDone` | 已同步 (hover: synced N min ago) | ok |
+| 7 | Synced | `pending==0` AND successful pull/matching probe AND `sessionRoundTripDone` | 已同步 (hover: recently confirmed N min ago) | ok |
 | 8 | Checking | `pending==0` but pull-freshness unconfirmed (just relaunched / probe not back) | 检查中 | grey-soft |
 
 **"同步断开" retired**, split into three precise states: #4 changes-not-pushed (data genuinely at risk) / #5 can't-reach-cloud (real connectivity failure) / #8 checking (the brief post-relaunch unconfirmed window · **non-alarming**). The duration ladder (1 day / 3 days) is preserved, re-attached to #4/#5.
 
-**"Synced" gate tightened = stronger false-OK protection**: claiming "已同步" now requires `pending==0` (mine are all up) + a recent successful pull (not behind remote) + `sessionRoundTripDone` (this session actually synced once — guards the wipe / empty-DB false-OK). The old code implied OK whenever push was fresh; now it also needs pull-freshness backing — **more** false-OK-proof than before. #7's hover spells out "synced N min ago" so currency is honestly visible (no pretense of millisecond-live).
+**Confirmed consistency**: "已同步" requires no pending local writes, a successful remote confirmation in the current session and no active pull failure. An equal metadata probe counts only after the local-data sanity check passes. Persisted timestamps alone cannot set the session flag. The hover reads "最近确认：…" to describe the latest confirmation rather than implying a new data transfer.
 
 **Default dials** (tunable): pull-freshness window = 10 min (2× the probe interval · tolerates one missed probe); failure-ladder thresholds keep 1 day / 3 days.
 

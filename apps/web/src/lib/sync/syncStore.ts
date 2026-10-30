@@ -111,10 +111,8 @@ export interface SyncSnapshot {
    *  ERD §7.10.3 · v0.12 P6). UI-only flag · modal closes via the
    *  same setter. */
   showDepartureGate: boolean;
-  /** True once a successful push or pull has completed in the
-   *  current browser session (ERD §7.9 decision 5). The "已同步"
-   *  label only displays when this is true — `lastSync` alone can
-   *  reflect a stale value that survived a wipe. */
+  /** True after a push/pull or a matching remote check with no pending
+   *  writes confirms this session. Persisted history alone is insufficient. */
   sessionRoundTripDone: boolean;
 }
 
@@ -182,6 +180,15 @@ export const syncStore = {
     } else {
       update({ lastSync: info });
     }
+  },
+  /** A current remote snapshot matches the local cursor, local data is
+   *  present and nothing is pending. Keep actual transfer history intact. */
+  confirmRemoteMatch(): void {
+    markSessionRoundTrip();
+    update({
+      sessionRoundTripDone: true,
+      phase: snapshot.phase.kind === 'offline' ? { kind: 'idle' } : snapshot.phase,
+    });
   },
   setConnected(v: boolean): void {
     update({ connected: v });

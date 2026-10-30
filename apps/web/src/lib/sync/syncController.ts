@@ -1252,8 +1252,8 @@ export type BootProbeOutcome =
  *  that's ahead is just "linear-lead"; the local doc applies it and
  *  any local-only changes survive via CRDT merge.
  *
- *  `silent: true` skips the topbar phase mutation (used by passive
- *  periodic / online-restoration probes). */
+ *  `silent: true` skips the transient syncing phase. A verified matching
+ *  check can still clear an earlier offline state. */
 export async function runBootProbe(
   options: { silent?: boolean } = {},
 ): Promise<BootProbeOutcome> {
@@ -1266,8 +1266,9 @@ export async function runBootProbe(
   }
 
   let timedOut = false;
+  let hardTimerId: ReturnType<typeof setTimeout>;
   const hardTimer = new Promise<BootProbeOutcome>((resolve) => {
-    setTimeout(() => {
+    hardTimerId = setTimeout(() => {
       timedOut = true;
       resolve({ kind: 'offline', reason: 'TIMEOUT' });
     }, PROBE_HARD_TIMEOUT_MS);
@@ -1305,6 +1306,22 @@ export async function runBootProbe(
   })();
 
   const outcome = await Promise.race([probe, hardTimer]);
+  clearTimeout(hardTimerId!);
+  // A no-change check is still a successful round-trip. Confirm it only
+  // after the timeout race, with current state, so late responses, pending
+  // writes and the empty-local recovery path cannot produce a false OK.
+  if (
+    outcome.kind === 'equal' &&
+    isDriveConnected() &&
+    getDirtyCount() === 0 &&
+    outcome.remote.snapshotId === getLastPulledSnapshotId() &&
+    !localLooksEmpty()
+  ) {
+    const at = new Date().toISOString();
+    setLastSuccessAt('pull', at);
+    appendSyncAttempt({ at, direction: 'pull', result: 'ok' });
+    syncStore.confirmRemoteMatch();
+  }
   if (!silent) {
     if (outcome.kind === 'offline') {
       syncStore.setPhase({
