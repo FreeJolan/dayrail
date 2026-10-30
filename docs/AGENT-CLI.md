@@ -106,7 +106,7 @@ unschedule an existing free-time block before splitting that task.
 
 ## Verification record (2026-10-30)
 
-Local checks passed: 385 Vitest cases, five Node CLI transport tests, two Rust
+Local checks passed: 385 Vitest cases, six Node CLI transport tests, two Rust
 transport tests, workspace type checking, skill validation, and a debug macOS
 app bundle built with updater artifacts disabled (release signing remains on
 GitHub runners).
@@ -117,6 +117,8 @@ opt-in, launcher installation, creating a template/Rail/task, CLI scheduling
 while Today remained open, reading a UI-authored reflection, complete export,
 in-app delete confirmation and Trash restoration, unavailable-app reporting,
 and reopening the app with the schedule, reflection and background preserved.
+Disabling access rejects calls; re-enabling restores access. A CLI edit while
+Finder was frontmost kept Finder in front.
 The scheduling command in this run took 47ms including client startup; this is
 an observation, not a latency guarantee. Screenshots were inspected to verify
 that the task appeared on the unchanged Today page and remained after restart.

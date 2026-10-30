@@ -2,15 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { once } from 'node:events';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, sendRequest } from './dayrail.mjs';
 const cli = fileURLToPath(new URL('./dayrail.mjs', import.meta.url));
-async function run(args, bridgeFile) {
-  const child = spawn(process.execPath, [cli, ...args], {
+async function run(args, bridgeFile, entry = cli) {
+  const child = spawn(process.execPath, [entry, ...args], {
     env: { ...process.env, DAYRAIL_BRIDGE_FILE: bridgeFile },
   });
   let stdout = '';
@@ -150,3 +150,20 @@ test('connection closed after a write is an uncertain outcome and is never autom
     server.close();
   }
 });
+
+test(
+  'runs through a symlinked standalone client path',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'dayrail-entry-'));
+    try {
+      const entry = path.join(dir, 'dayrail.mjs');
+      await symlink(cli, entry);
+      const response = await run(['--help'], '/missing/bridge.json', entry);
+      assert.equal(response.code, 0);
+      assert.match(response.stdout, /Usage: dayrail/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);

@@ -2,6 +2,7 @@
 // Dependency-free client for the running DayRail desktop app. Node.js >=18.
 import net from 'node:net';
 import { readFile, mkdir, writeFile, chmod, lstat } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -293,7 +294,7 @@ export async function main(args = process.argv.slice(2)) {
 }
 if (
   process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
 )
   main().catch((e) => {
     process.stdout.write(
