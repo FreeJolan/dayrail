@@ -26,6 +26,7 @@ import { setYDocStoreDevMode } from '@dayrail/db/yDocStore';
 import HOLIDAYS_ZH_CN from './data/holidays/zh-CN.json';
 import { popPendingImport } from './lib/importData';
 import { loadSyncMetaCache, setAutoDetectedDeviceLabel } from './lib/sync/identity';
+import { syncStore } from './lib/sync/syncStore';
 import { isTauriRuntime } from './lib/versionUpdateContext';
 
 export async function boot(): Promise<void> {
@@ -71,6 +72,7 @@ export async function boot(): Promise<void> {
   //       are read once, written through the store, then deleted;
   //       migration code planned to be removed v0.14).
   await loadSyncMetaCache();
+  syncStore.hydratePersistedState();
 
   // 0.5. Pending import from the previous page (user clicked "Import
   //      from snapshot" in Settings, or finished a sync pull that

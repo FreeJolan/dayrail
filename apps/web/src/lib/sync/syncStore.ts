@@ -123,11 +123,8 @@ const listeners = new Set<() => void>();
 
 function readSnapshot(): SyncSnapshot {
   return {
-    connected: isDriveConnected(),
+    ...readPersistedState(),
     phase: { kind: 'idle' },
-    dirtyCount: getDirtyCount(),
-    lastSync: getLastSyncInfo(),
-    deviceLabel: getDeviceLabel(),
     pendingConflict: null,
     pendingIdentityMismatch: null,
     pendingModeRegression: null,
@@ -136,6 +133,15 @@ function readSnapshot(): SyncSnapshot {
     showModeUpgradeToast: false,
     showDepartureGate: false,
     sessionRoundTripDone: hasSessionRoundTrip(),
+  };
+}
+
+function readPersistedState() {
+  return {
+    connected: isDriveConnected(),
+    dirtyCount: getDirtyCount(),
+    lastSync: getLastSyncInfo(),
+    deviceLabel: getDeviceLabel(),
   };
 }
 
@@ -149,6 +155,11 @@ function update(patch: Partial<SyncSnapshot>): void {
 }
 
 export const syncStore = {
+  /** Module imports precede boot's disk read. Refresh persisted fields
+   *  after the metadata cache is ready, without marking a new round-trip. */
+  hydratePersistedState(): void {
+    update(readPersistedState());
+  },
   getSnapshot(): SyncSnapshot {
     return snapshot;
   },
