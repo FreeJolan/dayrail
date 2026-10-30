@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { encodeDryj } from '@dayrail/db/dryj';
+import { classifySyncStatus } from '../syncStatus';
 
 const disk = vi.hoisted(() => ({
   meta: {} as Record<string, unknown>,
@@ -107,7 +108,7 @@ describe('sync status after cold boot', () => {
     expect(syncStore.getSnapshot()).toMatchObject({ lastSync: null, dirtyCount: 0, sessionRoundTripDone: false });
   });
 
-  it('retains restored history when manual sync succeeds without changes', async () => {
+  it('confirms a no-change manual sync without rewriting transfer history', async () => {
     const { syncStore } = await import('../../../../apps/web/src/lib/sync/syncStore');
     const { boot } = await import('../../../../apps/web/src/boot');
     await boot();
@@ -116,7 +117,89 @@ describe('sync status after cold boot', () => {
     await expect(runManualSync()).resolves.toEqual({ kind: 'noop' });
     expect(syncStore.getSnapshot().lastSync).toEqual(lastSync);
     expect(syncStore.getSnapshot().phase).toEqual({ kind: 'idle' });
+    expect(syncStore.getSnapshot().sessionRoundTripDone).toBe(true);
+    const identity = await import('../../../../apps/web/src/lib/sync/identity');
+    expect(identity.getLastSyncInfo()).toEqual(lastSync);
+    const pullAt = identity.getLastSuccessAt('pull');
+    expect(pullAt).toBe(new Date().toISOString());
+    expect(classifySyncStatus({
+      nowMs: Date.now(), pendingCount: 0,
+      lastSuccessPushIso: identity.getLastSuccessAt('push'),
+      lastSuccessPullIso: pullAt,
+      pushErroring: false, pullErroring: false,
+      sessionRoundTripDone: syncStore.getSnapshot().sessionRoundTripDone,
+    }).kind).toBe('synced');
+  });
+
+  it.each([false, true])('confirms a matching boot or periodic probe (silent=%s)', async (silent) => {
+    const { syncStore } = await import('../../../../apps/web/src/lib/sync/syncStore');
+    const { boot } = await import('../../../../apps/web/src/boot');
+    await boot();
+    disk.getRemoteMeta.mockResolvedValue({ fileId: 'file-1', snapshotId: 'snapshot-1' });
+    const { runBootProbe } = await import('../../../../apps/web/src/lib/sync/syncController');
+    const listener = vi.fn();
+    const unsubscribe = syncStore.subscribe(listener);
+    expect((await runBootProbe({ silent })).kind).toBe('equal');
+    expect(syncStore.getSnapshot().sessionRoundTripDone).toBe(true);
+    expect(listener).toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it.each(['pending', 'empty-local', 'ahead', 'no-remote'])('does not confirm an unverified local state: %s', async (scenario) => {
+    if (scenario === 'pending') disk.meta.dirtyCount = 1;
+    if (scenario === 'empty-local') disk.bytes = null;
+    const { syncStore } = await import('../../../../apps/web/src/lib/sync/syncStore');
+    const { boot } = await import('../../../../apps/web/src/boot');
+    await boot();
+    disk.getRemoteMeta.mockResolvedValue(scenario === 'no-remote' ? null : {
+      fileId: 'file-1', snapshotId: scenario === 'ahead' ? 'snapshot-2' : 'snapshot-1',
+    });
+    const { runBootProbe } = await import('../../../../apps/web/src/lib/sync/syncController');
+    await runBootProbe();
     expect(syncStore.getSnapshot().sessionRoundTripDone).toBe(false);
+    const identity = await import('../../../../apps/web/src/lib/sync/identity');
+    expect(identity.getLastSuccessAt('pull')).toBeNull();
+  });
+
+  it('does not confirm a response that arrives after the probe timed out', async () => {
+    const { syncStore } = await import('../../../../apps/web/src/lib/sync/syncStore');
+    const { boot } = await import('../../../../apps/web/src/boot');
+    await boot();
+    let respond!: (remote: { fileId: string; snapshotId: string }) => void;
+    disk.getRemoteMeta.mockImplementation(() => new Promise((resolve) => { respond = resolve; }));
+    const { runBootProbe, PROBE_TIMEOUTS } = await import('../../../../apps/web/src/lib/sync/syncController');
+    const probe = runBootProbe();
+    await vi.advanceTimersByTimeAsync(PROBE_TIMEOUTS.hard);
+    expect(await probe).toEqual({ kind: 'offline', reason: 'TIMEOUT' });
+    respond({ fileId: 'file-1', snapshotId: 'snapshot-1' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(syncStore.getSnapshot().sessionRoundTripDone).toBe(false);
+  });
+
+  it('clears a previous pull failure after a verified no-change check', async () => {
+    disk.meta.recentAttempts = [{ at: '2026-10-29T10:00:00Z', direction: 'pull', result: 'fail' }];
+    const { syncStore } = await import('../../../../apps/web/src/lib/sync/syncStore');
+    const { boot } = await import('../../../../apps/web/src/boot');
+    await boot();
+    disk.getRemoteMeta.mockResolvedValue({ fileId: 'file-1', snapshotId: 'snapshot-1' });
+    const { runBootProbe } = await import('../../../../apps/web/src/lib/sync/syncController');
+    await runBootProbe();
+    const identity = await import('../../../../apps/web/src/lib/sync/identity');
+    expect(identity.getRecentAttempts().at(-1)).toMatchObject({ direction: 'pull', result: 'ok' });
+    expect(syncStore.getSnapshot().sessionRoundTripDone).toBe(true);
+  });
+
+  it('clears an earlier offline state when a background check verifies consistency', async () => {
+    const { syncStore } = await import('../../../../apps/web/src/lib/sync/syncStore');
+    const { boot } = await import('../../../../apps/web/src/boot');
+    await boot();
+    syncStore.setPhase({ kind: 'offline', message: '同步探测超时' });
+    disk.getRemoteMeta.mockResolvedValue({ fileId: 'file-1', snapshotId: 'snapshot-1' });
+    const { runBootProbe } = await import('../../../../apps/web/src/lib/sync/syncController');
+    await runBootProbe({ silent: true });
+    expect(syncStore.getSnapshot()).toMatchObject({
+      sessionRoundTripDone: true, phase: { kind: 'idle' },
+    });
   });
 
   it('preserves a failed probe instead of returning the status to idle', async () => {
@@ -127,5 +210,6 @@ describe('sync status after cold boot', () => {
       kind: 'offline', reason: 'NEEDS_RECONNECT · 请重新连接 Google Drive',
     });
     expect(syncStore.getSnapshot().phase.kind).toBe('offline');
+    expect(syncStore.getSnapshot().sessionRoundTripDone).toBe(false);
   });
 });

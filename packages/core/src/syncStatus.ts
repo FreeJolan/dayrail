@@ -81,7 +81,8 @@ export interface SyncStatusInputs {
   pushErroring: boolean;
   /** The most recent PULL/probe attempt failed. */
   pullErroring: boolean;
-  /** This session has had ≥1 successful sync round-trip (push OR pull).
+  /** This session has confirmed remote consistency through a push/pull
+   *  or a matching probe with no pending local writes.
    *  §7.9 false-OK guard: never claim "已同步" before we've actually
    *  reached remote once this session (guards the wipe / empty-DB case). */
   sessionRoundTripDone: boolean;
