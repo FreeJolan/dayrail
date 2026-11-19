@@ -18,100 +18,100 @@ import type {
 // (which it doesn't know how to handle).
 type CheckInAction = Exclude<ToastAction, 'reschedule' | 'unschedule'>;
 
-// Shared controller for the §5.2 Reason toast. Both the check-in
-// strip on Today Track and the Pending page wire into it so all
-// three action surfaces behave identically.
-//
-// v0.4 source-of-truth rule (ERD §10.1): status lives on Task.
-// This hook writes `Task.status` + stamps the matching timestamp
-// (doneAt / deferredAt / archivedAt), logs a Signal event for audit
-// (so the user can trace "I pressed Later at 14:32"), and commits a
-// Shift record on close if the user added any tags.
-//
-// RailInstance is gone — Shift + Signal anchor directly to Task.
+type ReasonAction = {
+  taskId: string;
+  displayName: string;
+  /** Used to compute recommended reason tags from past Shifts. */
+  railId?: string;
+  /** Keeps the write and its undo in the caller's Edit Session. */
+  sessionId?: string;
+} & (
+  | { action: 'defer'; occurrenceId?: never }
+  | { action: 'done' | 'archive'; occurrenceId?: string }
+);
 
-type TaskStatus = Task['status'];
+const TASK_ACTIONS = {
+  done: { status: 'done', timestamp: 'doneAt' },
+  defer: { status: 'deferred', timestamp: 'deferredAt' },
+  archive: { status: 'archived', timestamp: 'archivedAt' },
+} as const;
 
+// Status belongs to the row's Task or TaskOccurrence (ERD §10.6).
+// Signal and reason tags are still recorded against the parent Task.
 export function useReasonToast(surface: Signal['surface']): {
   toast: ReasonToastState | null;
-  fire: (opts: {
-    taskId: string;
-    /** Display label in the toast. Pass the rail name for rail-bound
-     *  tasks; task title for unscheduled / ad-hoc tasks. */
-    displayName: string;
-    /** Optional Rail id, used to compute recommended reason tags
-     *  from past Shifts on the same Rail. Omit for unscheduled tasks. */
-    railId?: string;
-    /** Optional Edit-Session id (§5.3.1). When set, the Task status
-     *  write is tagged so the session-level undo rolls it back with
-     *  the rest of the batch. Cycle View passes its session here. */
-    sessionId?: string;
-    action: CheckInAction;
-  }) => void;
+  fire: (opts: ReasonAction) => void;
   handleAddTag: (tag: string) => void;
   handleUndo: () => void;
   handleClose: () => void;
 } {
-  const tasks = useStore((s) => s.tasks);
-  const shifts = useStore((s) => s.shifts);
-  const recordSignal = useStore((s) => s.recordSignal);
   const recordShift = useStore((s) => s.recordShift);
-  const updateTask = useStore((s) => s.updateTask);
 
   const [toast, setToast] = useState<ReasonToastState | null>(null);
   // Committed-on-close state; refs because they don't drive rendering.
   const tagsRef = useRef<string[]>([]);
   const taskIdRef = useRef<string | null>(null);
   const actionRef = useRef<CheckInAction | null>(null);
-  // Pre-action task snapshot so Undo restores precisely.
-  const prevTaskStatusRef = useRef<TaskStatus | null>(null);
-
-  // Session id used by Undo — captured per-fire so Cycle View can
-  // pass its own and Today Track / Tasks leave it empty.
-  const sessionIdRef = useRef<string | undefined>(undefined);
+  const undoRef = useRef<(() => void) | null>(null);
 
   const fire = useCallback(
-    ({ taskId, displayName, railId, sessionId, action }: {
-      taskId: string;
-      displayName: string;
-      railId?: string;
-      sessionId?: string;
-      action: CheckInAction;
-    }) => {
+    ({ taskId, occurrenceId, displayName, railId, sessionId, action }: ReasonAction) => {
+      const store = useStore.getState();
+      const { tasks, shifts } = store;
       const task = tasks[taskId];
       if (!task) return;
 
-      prevTaskStatusRef.current = task.status;
-      sessionIdRef.current = sessionId;
-
-      const nextTaskStatus: TaskStatus =
-        action === 'done'
-          ? 'done'
-          : action === 'defer'
-            ? 'deferred'
-            : 'archived';
-      const nowIso = new Date().toISOString();
-      const patch: Partial<Task> = { status: nextTaskStatus };
-      if (action === 'done') patch.doneAt = nowIso;
-      if (action === 'defer') patch.deferredAt = nowIso;
-      if (action === 'archive') patch.archivedAt = nowIso;
-      void updateTask(taskId, patch, sessionId);
+      if (occurrenceId !== undefined) {
+        const occurrence = store.taskOccurrences[occurrenceId];
+        if (
+          task.status === 'deleted' ||
+          occurrence?.taskId !== taskId ||
+          occurrence.status !== 'pending'
+        ) {
+          return;
+        }
+        const timestamp = action === 'done' ? 'doneAt' : 'archivedAt';
+        const write =
+          action === 'done' ? store.completeTaskOccurrence : store.archiveTaskOccurrence;
+        void write(occurrenceId, sessionId);
+        undoRef.current = () => {
+          void store.updateTaskOccurrence(
+            occurrenceId,
+            { status: occurrence.status, [timestamp]: occurrence[timestamp] },
+            sessionId,
+          );
+        };
+      } else {
+        const { status, timestamp } = TASK_ACTIONS[action];
+        void store.updateTask(
+          taskId,
+          { status, [timestamp]: new Date().toISOString() },
+          sessionId,
+        );
+        undoRef.current = () => {
+          void store.updateTask(
+            taskId,
+            { status: task.status, [timestamp]: task[timestamp] },
+            sessionId,
+          );
+        };
+      }
 
       // Signal event — pure audit. Anchored on Task.
-      void recordSignal(taskId, action, surface);
+      void store.recordSignal(taskId, action, surface);
 
       tagsRef.current = [];
       taskIdRef.current = taskId;
       actionRef.current = action;
       setToast({
         action,
-        instanceId: taskId, // the toast still uses `instanceId` as an opaque key
+        instanceId: occurrenceId ?? taskId,
         railName: displayName,
-        isRecurring: true,
+        isRecurring: occurrenceId === undefined,
         recommendedTags: railId ? topTagsForRail(railId, tasks, shifts) : [],
       });
     },
-    [tasks, shifts, recordSignal, updateTask, surface],
+    [surface],
   );
 
   const handleAddTag = useCallback((tag: string) => {
@@ -121,30 +121,12 @@ export function useReasonToast(surface: Signal['surface']): {
   }, []);
 
   const handleUndo = useCallback(() => {
-    const tid = taskIdRef.current;
-    const prevTaskStatus = prevTaskStatusRef.current;
-    const sid = sessionIdRef.current;
-    if (tid && prevTaskStatus) {
-      // Clear the stamp fields we may have just set so the restored
-      // row is a clean revert. Pass the same sessionId so a session-
-      // undo batch stays internally consistent.
-      void updateTask(
-        tid,
-        {
-          status: prevTaskStatus,
-          doneAt: undefined,
-          deferredAt: undefined,
-          archivedAt: undefined,
-        },
-        sid,
-      );
-    }
+    undoRef.current?.();
     tagsRef.current = [];
     taskIdRef.current = null;
     actionRef.current = null;
-    prevTaskStatusRef.current = null;
-    sessionIdRef.current = undefined;
-  }, [updateTask]);
+    undoRef.current = null;
+  }, []);
 
   const handleClose = useCallback(() => {
     const tags = tagsRef.current;
@@ -154,8 +136,7 @@ export function useReasonToast(surface: Signal['surface']): {
     tagsRef.current = [];
     taskIdRef.current = null;
     actionRef.current = null;
-    prevTaskStatusRef.current = null;
-    sessionIdRef.current = undefined;
+    undoRef.current = null;
     if (!tid || !action) return;
     if (action === 'done') return; // done isn't a Shift
     if (tags.length === 0) return;

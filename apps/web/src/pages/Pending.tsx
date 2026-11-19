@@ -79,6 +79,7 @@ export function Pending() {
   const lines = useStore((s) => s.lines);
   const shifts = useStore((s) => s.shifts);
   const updateTask = useStore((s) => s.updateTask);
+  const archiveTaskOccurrence = useStore((s) => s.archiveTaskOccurrence);
 
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   // Keyboard navigation cursor (Pending page · ROADMAP 停车场 ·
@@ -118,8 +119,9 @@ export function Pending() {
     (row: PendingRow) => {
       fire({
         taskId: row.taskId,
+        occurrenceId: row.occurrenceId,
         railId: row.railId,
-        displayName: row.railName,
+        displayName: row.occurrenceId ? row.title : row.railName,
         action: 'done',
       });
     },
@@ -130,8 +132,9 @@ export function Pending() {
     (row: PendingRow) => {
       fire({
         taskId: row.taskId,
+        occurrenceId: row.occurrenceId,
         railId: row.railId,
-        displayName: row.railName,
+        displayName: row.occurrenceId ? row.title : row.railName,
         action: 'archive',
       });
     },
@@ -234,11 +237,14 @@ export function Pending() {
     if (!window.confirm(msg)) return;
     const nowIso = new Date().toISOString();
     for (const row of rows) {
-      if (row.ageDays > STALE_THRESHOLD_DAYS) {
+      if (row.ageDays <= STALE_THRESHOLD_DAYS) continue;
+      if (row.occurrenceId) {
+        void archiveTaskOccurrence(row.occurrenceId);
+      } else {
         void updateTask(row.taskId, { status: 'archived', archivedAt: nowIso });
       }
     }
-  }, [rows, summary.eligible, updateTask]);
+  }, [rows, summary.eligible, archiveTaskOccurrence, updateTask]);
 
   return (
     <div className="flex w-full max-w-[920px] flex-col gap-6 py-10 pl-10 pr-10 lg:pl-14 xl:pl-20">
