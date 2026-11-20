@@ -28,6 +28,7 @@ vi.mock('@dayrail/db/yjsPersistence', () => ({
     if (disk.fail) throw new Error('Disk full');
     disk.bytes = bytes;
   },
+  quarantineYDocBytes: async () => null,
 }));
 const dispatchers: ReturnType<typeof createAgentDispatcher>[] = [];
 const today = '2026-11-03';
