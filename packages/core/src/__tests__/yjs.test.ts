@@ -316,6 +316,51 @@ describe('readFlatStateFromDoc dedupRevisions', () => {
     expect(flat.railRevisions['rail-1']).toHaveLength(2);
   });
 
+  it('re-sorts out-of-order revisions ASC by effectiveFrom (self-heal)', () => {
+    // Legacy appendRevision pushed to the array tail, so a
+    // "tomorrow-dated edit, then today-dated re-edit" persisted
+    // [tomorrow, today] — and pickActive's early break made the
+    // entity vanish for today. The read path re-sorts defensively.
+    const doc = createYDoc();
+    const railRevisions = doc.getMap('railRevisions');
+    const arr = new Y.Array<unknown>();
+    arr.push([
+      {
+        id: 'rev-rail-rail-1-2026-03-01',
+        railId: 'rail-1',
+        effectiveFrom: '2026-03-01',
+        authoredAt: 1,
+      },
+      {
+        id: 'rev-rail-rail-1-2026-01-01',
+        railId: 'rail-1',
+        effectiveFrom: '2026-01-01',
+        authoredAt: 5,
+      },
+      {
+        // Same-id duplicate (concurrent-append merge): dedup keeps
+        // the later-authored body, then the sort places it by date.
+        id: 'rev-rail-rail-1-2026-03-01',
+        railId: 'rail-1',
+        effectiveFrom: '2026-03-01',
+        name: 'later copy',
+        authoredAt: 9,
+      },
+    ]);
+    railRevisions.set('rail-1', arr);
+
+    const flat = readFlatStateFromDoc(doc);
+    const revs = flat.railRevisions['rail-1'] as Array<{
+      effectiveFrom: string;
+      name?: string;
+    }>;
+    expect(revs.map((r) => r.effectiveFrom)).toEqual([
+      '2026-01-01',
+      '2026-03-01',
+    ]);
+    expect(revs[1]?.name).toBe('later copy');
+  });
+
   it('handles entries without an id by dropping them (defensive)', () => {
     const doc = createYDoc();
     const railRevisions = doc.getMap('railRevisions');

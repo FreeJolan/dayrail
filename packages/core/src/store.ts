@@ -903,14 +903,39 @@ function appendRevision(
     map.set(parentId, arr);
   }
   // Same-(entity, effectiveFrom) replacement: drop any prior entry
-  // with the same id, then append. Mirrors store.ts's
-  // upsertRevisionInArray semantics (id schema makes same-day
-  // re-edits collide on id, so we replace in place).
+  // with the same id (the id schema makes same-day re-edits collide
+  // on id, so we replace). A post-CRDT-merge array can carry
+  // duplicate ids, so remove every match, not just the first.
   const yarr = arr as YArray<unknown>;
-  const revs = yarr.toArray() as Array<{ id?: string }>;
-  const idx = revs.findIndex((r) => r?.id === revision['id']);
-  if (idx >= 0) yarr.delete(idx, 1);
-  yarr.push([revision]);
+  const existing = yarr.toArray() as Array<{ id?: string }>;
+  for (let i = existing.length - 1; i >= 0; i--) {
+    if (existing[i]?.id === revision['id']) yarr.delete(i, 1);
+  }
+  // Sorted insert: `pickActive` (revisions.ts) requires the array to
+  // be ASC by `effectiveFrom` (it early-breaks on the first entry
+  // past the queried date). Insert before the first strictly-later
+  // entry — "tomorrow-dated" revisions written before a "today"
+  // re-edit land after it otherwise, and the entity would vanish for
+  // today's reads. The read path (@dayrail/db dedupRevisions) also
+  // re-sorts defensively, self-healing legacy out-of-order arrays
+  // and multi-device Y.Array interleavings.
+  const ef =
+    typeof revision['effectiveFrom'] === 'string'
+      ? (revision['effectiveFrom'] as string)
+      : '';
+  const revs = yarr.toArray() as Array<{ effectiveFrom?: string }>;
+  let insertAt = revs.length;
+  for (let i = 0; i < revs.length; i++) {
+    const other =
+      typeof revs[i]?.effectiveFrom === 'string'
+        ? (revs[i]!.effectiveFrom as string)
+        : '';
+    if (other > ef) {
+      insertAt = i;
+      break;
+    }
+  }
+  yarr.insert(insertAt, [revision]);
 }
 
 function setTombstone(
