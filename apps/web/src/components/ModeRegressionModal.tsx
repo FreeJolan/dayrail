@@ -58,8 +58,10 @@ function Panel() {
       syncStore.setConnected(true);
       syncStore.setPendingModeRegression(null);
       // Re-verify identity in case the reconnect picked a different
-      // account · IdentityMismatchModal will surface if so.
-      void verifyIdentityAfterConnect();
+      // account · IdentityMismatchModal will surface if so. AWAITED
+      // so the mismatch (if any) is recorded before the next probe
+      // can auto-pull — the controller's pull gates key off it.
+      await verifyIdentityAfterConnect();
     } catch (e) {
       setErrMsg((e as Error).message ?? String(e));
       setBusy(null);

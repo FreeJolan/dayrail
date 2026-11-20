@@ -828,7 +828,24 @@ export async function runForcePush(): Promise<void> {
   return inFlightPush;
 }
 
+/** IDENTITY GATE (ERD §7.10.2 · audit #2) — pull-side counterpart of
+ *  the runPush firewall's mismatch check. While an identity mismatch
+ *  is pending, NO remote bytes may reach the local doc: a Yjs merge
+ *  of the wrong account's data is irreversible (the modal itself
+ *  promises "两边账号的数据不会自动合并"). Throwing (instead of a
+ *  silent no-op) keeps callers' success paths honest — BootGate /
+ *  RuntimeSyncDialog treat it like any other failed pull and leave
+ *  their samples-only / cursor state untouched. */
+function assertNoPendingIdentityMismatch(): void {
+  if (syncStore.getSnapshot().pendingIdentityMismatch !== null) {
+    throw new Error(
+      'IDENTITY_MISMATCH · 当前登录的 Google 账号与本设备绑定的账号不一致，已暂停拉取',
+    );
+  }
+}
+
 async function runPullFromRemote(remote: RemoteMeta): Promise<void> {
+  assertNoPendingIdentityMismatch();
   // Serialize against an in-flight push so the lineage cursor
   // (lastPulledSnapshotId) doesn't get clobbered by an upload's
   // post-success setLastPulledSnapshotId after we've already
@@ -840,6 +857,9 @@ async function runPullFromRemote(remote: RemoteMeta): Promise<void> {
     } catch {
       /* push errored; we still want to attempt the pull */
     }
+    // Re-check: the awaited push runs its own identity verify and may
+    // have set the mismatch while we waited.
+    assertNoPendingIdentityMismatch();
   }
   if (inFlightPull) return inFlightPull;
   inFlightPull = (async () => {
@@ -1504,6 +1524,7 @@ export async function applyRemoteDryj(remote: RemoteMeta): Promise<void> {
  *  to preserve. CRDT-merging samples with cloud data and pushing the
  *  union pollutes Drive for every other device. */
 export async function replaceLocalFromRemote(remote: RemoteMeta): Promise<void> {
+  assertNoPendingIdentityMismatch();
   // Replace semantics: any pending debounced push referenced the
   // pre-replace state. Cancel it so we don't waste a Drive history
   // slot uploading the just-pulled state under a fresh snapshotId
@@ -1518,6 +1539,9 @@ export async function replaceLocalFromRemote(remote: RemoteMeta): Promise<void> 
     } catch {
       /* push errored; we still want to replace */
     }
+    // Re-check: the awaited push runs its own identity verify and may
+    // have set the mismatch while we waited.
+    assertNoPendingIdentityMismatch();
   }
   if (inFlightPull) return inFlightPull;
   inFlightPull = (async () => {

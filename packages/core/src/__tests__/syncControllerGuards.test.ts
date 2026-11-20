@@ -451,3 +451,77 @@ describe('pull routes same-field divergence into the conflict panel', () => {
     });
   });
 });
+
+// ============ audit #2 · identity mismatch gates every pull surface ============
+
+describe('identity mismatch gates the pull surfaces (ERD §7.10.2)', () => {
+  it('refuses to merge or replace remote bytes while a mismatch is pending', async () => {
+    await bootApp();
+    const identity = await import('../../../../apps/web/src/lib/sync/identity');
+    const { syncStore } = await import('../../../../apps/web/src/lib/sync/syncStore');
+    const { applyRemoteDryj, replaceLocalFromRemote } = await import(
+      '../../../../apps/web/src/lib/sync/syncController'
+    );
+
+    // Reconnect picked the wrong Google account: the verify hook has
+    // recorded the mismatch, the modal is about to mount. From this
+    // moment NO pull path may let the other account's bytes reach the
+    // local doc — a Yjs merge is irreversible.
+    syncStore.setPendingIdentityMismatch({
+      stored: 'pinned@example.com',
+      current: 'wrong@example.com',
+      detectedAt: Date.now(),
+      source: 'connect',
+    });
+
+    const remote = {
+      fileId: 'file-wrong-account',
+      snapshotId: 'snapshot-wrong-account',
+      modifiedTime: '2026-10-30T11:00:00Z',
+    };
+    await expect(applyRemoteDryj(remote)).rejects.toThrow(/IDENTITY_MISMATCH/);
+    await expect(replaceLocalFromRemote(remote)).rejects.toThrow(
+      /IDENTITY_MISMATCH/,
+    );
+
+    // Nothing was downloaded, merged, or cursor-advanced.
+    expect(disk.downloadDryjById).not.toHaveBeenCalled();
+    expect(identity.getLastPulledSnapshotId()).toBe('snapshot-1');
+  });
+
+  it('pulls normally once the mismatch is resolved', async () => {
+    await bootApp();
+    const { syncStore } = await import('../../../../apps/web/src/lib/sync/syncStore');
+    const { applyRemoteDryj } = await import(
+      '../../../../apps/web/src/lib/sync/syncController'
+    );
+    const identity = await import('../../../../apps/web/src/lib/sync/identity');
+
+    syncStore.setPendingIdentityMismatch({
+      stored: 'pinned@example.com',
+      current: 'wrong@example.com',
+      detectedAt: Date.now(),
+      source: 'connect',
+    });
+    syncStore.setPendingIdentityMismatch(null); // user resolved (re-picked)
+
+    const decoded = decodeDryj(baseBytes);
+    const remoteBytes = encodeDryj(
+      {
+        snapshotId: 'snapshot-2',
+        deviceId: 'other-device',
+        deviceLabel: 'Other Mac',
+        createdAt: '2026-10-30T11:00:00Z',
+        schemaVersion: 2,
+      },
+      decoded.update,
+    );
+    disk.downloadDryjById.mockResolvedValue(remoteBytes);
+    await applyRemoteDryj({
+      fileId: 'file-2',
+      snapshotId: 'snapshot-2',
+      modifiedTime: '2026-10-30T11:00:00Z',
+    });
+    expect(identity.getLastPulledSnapshotId()).toBe('snapshot-2');
+  });
+});

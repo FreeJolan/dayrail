@@ -690,10 +690,18 @@ function ConnectDrivePanel() {
     try {
       await connectDrive();
       syncStore.setConnected(true);
-      // Identity pin check (ERD §7.10.2). Fire-and-forget — a
-      // mismatch sets `pendingIdentityMismatch` on the store which
-      // mounts the modal in parallel with the probe below.
-      void verifyIdentityAfterConnect();
+      // Identity pin check (ERD §7.10.2) — AWAITED as the pull/push
+      // gate, same as BootGate's reconnect path. Fire-and-forget here
+      // raced the probe: a wrong-account pick could reach the
+      // pull/push branches below before the mismatch was recorded.
+      // 'failed' (transient /about error) stays fail-open.
+      await verifyIdentityAfterConnect();
+      if (syncStore.getSnapshot().pendingIdentityMismatch !== null) {
+        // Wrong account — the IdentityMismatchModal owns the next
+        // step; don't probe or offer pull/push on top of it.
+        setPhase({ kind: 'idle' });
+        return;
+      }
       setPhase({ kind: 'probing' });
       const remote = await getRemoteMeta();
       if (!remote) {
