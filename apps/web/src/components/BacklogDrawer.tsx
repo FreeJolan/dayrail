@@ -45,6 +45,7 @@ import {
 } from './primitives/Popover';
 import { RAIL_COLOR_HEX } from './railColors';
 import { useIme } from '@/lib/ime';
+import { useTodayIso } from '@/lib/useTodayIso';
 import type { PlanningCycleContext } from '@/lib/planningContext';
 
 // ERD §5.3 D8 — split drawer docked on the right. Items are un-
@@ -171,13 +172,11 @@ export function BacklogDrawer({ open, onToggle, planningCycle }: Props) {
     });
   }, [items, query]);
 
-  const today = useMemo(() => {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }, []);
+  // Live local date — the drawer is mounted for the app's whole
+  // lifetime (collapse only flips `open`), so a mount-time snapshot
+  // would freeze overdue/attention checks on yesterday's date after
+  // midnight in a resident desktop window.
+  const today = useTodayIso();
   const attentionIssues = useMemo(
     () =>
       selectAttentionIssues(
@@ -895,7 +894,8 @@ function QuickCreateInput({
           if (e.key === 'Enter' && !ime.isComposing(e)) {
             e.preventDefault();
             submit();
-          } else if (e.key === 'Escape') {
+          } else if (e.key === 'Escape' && !ime.isComposing(e)) {
+            // Composing Esc = cancel the IME candidate, not the form.
             e.preventDefault();
             onCancel();
           }
