@@ -17,6 +17,7 @@
 
 import {
   exportYDocAsUpdate,
+  USER_PROFILE_ID,
   useStore,
 } from '@dayrail/core';
 import { encodeDryj, type DryjMeta } from '@dayrail/db/dryj';
@@ -26,8 +27,11 @@ export interface ExportBundle {
   version: string;
   gitSha: string;
   exportedAt: string; // ISO
-  /** v0.7 export shape — the same `state` map shape v0.6 used. JSON
-   *  bundles are inspection-only in v0.7; "Import from snapshot"
+  /** v0.7 export shape — the same `state` map shape v0.6 used, plus
+   *  the entities added since (taskOccurrences / dailyReflections /
+   *  userDayNotes / userProfile, keyed by their Y.Doc map names so the
+   *  JSON → .dryj migration script restores them without changes).
+   *  JSON bundles are inspection-only in v0.7; "Import from snapshot"
    *  expects the .dryj container, not this JSON. */
   schemaVersion: 1;
   state: {
@@ -35,6 +39,8 @@ export interface ExportBundle {
     rails: unknown;
     lines: unknown;
     tasks: unknown;
+    /** ERD §10.6 (v0.11) — task split occurrences. */
+    taskOccurrences: unknown;
     signals: unknown;
     shifts: unknown;
     adhocEvents: unknown;
@@ -42,6 +48,14 @@ export interface ExportBundle {
     cycles: unknown;
     habitPhases: unknown;
     habitBindings: unknown;
+    /** Store field `reflections` — exported under the FlatState /
+     *  Y.Doc map name `dailyReflections`. */
+    dailyReflections: unknown;
+    /** ERD §14.3 — user-defined day notes. */
+    userDayNotes: unknown;
+    /** Singleton profile, keyed by USER_PROFILE_ID to match the
+     *  Y.Doc map shape ({} when no profile has been written yet). */
+    userProfile: unknown;
     railRevisions?: unknown;
     templateRevisions?: unknown;
     calendarRuleRevisions?: unknown;
@@ -67,6 +81,7 @@ export function buildExportBundle(): ExportBundle {
       rails: s.rails,
       lines: s.lines,
       tasks: s.tasks,
+      taskOccurrences: s.taskOccurrences,
       signals: s.signals,
       shifts: s.shifts,
       adhocEvents: s.adhocEvents,
@@ -74,6 +89,9 @@ export function buildExportBundle(): ExportBundle {
       cycles: s.cycles,
       habitPhases: s.habitPhases,
       habitBindings: s.habitBindings,
+      dailyReflections: s.reflections,
+      userDayNotes: s.userDayNotes,
+      userProfile: s.userProfile ? { [USER_PROFILE_ID]: s.userProfile } : {},
       railRevisions: s.railRevisions,
       templateRevisions: s.templateRevisions,
       calendarRuleRevisions: s.calendarRuleRevisions,
