@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./dryj": "./src/dryj.ts",
+    "./serialQueue": "./src/serialQueue.ts",
     "./yjs": "./src/yjs.ts",
     "./yjsPersistence": "./src/yjsPersistence.ts",
     "./yDocStore": "./src/yDocStore.ts"

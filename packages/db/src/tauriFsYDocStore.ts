@@ -13,13 +13,22 @@
 // split a dev session would read and write the same Y.Doc / metadata
 // files as the user's daily prod app.
 //
-// `@tauri-apps/plugin-fs` and `@tauri-apps/api/path` are dynamically
-// imported — the `getYDocStore` factory only routes here when
-// `__TAURI_INTERNALS__` is present, so the browser bundle pays
-// nothing for these.
+// Durability: all writes go through the dedicated `ydoc_atomic_write`
+// Rust command (write unique tmp → fsync file → rename → fsync parent
+// dir). plugin-fs's JS `writeFile` + `rename` never fsyncs, so on
+// power loss the rename's metadata change could land before the tmp
+// file's data blocks, leaving a 0-byte / truncated `state.dryj` —
+// violating the YDocStore "interrupted write leaves the previous
+// bytes intact" contract. Reads and removals still use plugin-fs.
+//
+// `@tauri-apps/plugin-fs`, `@tauri-apps/api/path` and
+// `@tauri-apps/api/core` are dynamically imported — the
+// `getYDocStore` factory only routes here when `__TAURI_INTERNALS__`
+// is present, so the browser bundle pays nothing for these.
 
 import type { SyncMeta, YDocStore, YDocStoreOptions } from './yDocStore';
 import { DEFAULT_SYNC_META } from './yDocStore';
+import { makeSerialQueue } from './serialQueue';
 
 const STATE_BASENAME = 'state.dryj';
 const LAST_PULLED_BASENAME = 'last-pulled.dryj';
@@ -76,28 +85,26 @@ async function removeIfExists(path: string): Promise<void> {
   await fs.remove(path);
 }
 
-// Per-file serial write chains — mirrors opfsYDocStore. Without this,
-// two concurrent saveYDoc() calls race on the .tmp file.
-function makeSerialQueue(): (task: () => Promise<void>) => Promise<void> {
-  let inFlight: Promise<void> | null = null;
-  return (taskFn) => {
-    const prev = inFlight;
-    const task = (async () => {
-      if (prev) {
-        try {
-          await prev;
-        } catch {
-          /* prior task failed; we proceed */
-        }
-      }
-      await taskFn();
-    })();
-    const wrapped: Promise<void> = task.finally(() => {
-      if (inFlight === wrapped) inFlight = null;
-    });
-    inFlight = wrapped;
-    return task;
-  };
+/** Remove the fixed-name legacy tmp plus any `<basename>.<uuid>.tmp`
+ *  leftovers an interrupted Rust-side write may have stranded in the
+ *  ydoc dir. Best-effort. */
+async function removeStaleTmps(dir: string, basename: string): Promise<void> {
+  const fs = await import('@tauri-apps/plugin-fs');
+  const { join } = await import('@tauri-apps/api/path');
+  await removeIfExists(await join(dir, basename + TMP_SUFFIX)).catch(() => {});
+  let entries: { name?: string }[] = [];
+  try {
+    entries = await fs.readDir(dir);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const name = entry.name;
+    if (!name) continue;
+    if (name.startsWith(`${basename}.`) && name.endsWith(TMP_SUFFIX)) {
+      await removeIfExists(await join(dir, name)).catch(() => {});
+    }
+  }
 }
 
 export class TauriFsYDocStore implements YDocStore {
@@ -105,40 +112,32 @@ export class TauriFsYDocStore implements YDocStore {
   private lastPulledQueue = makeSerialQueue();
   private syncMetaQueue = makeSerialQueue();
   private pathsPromise: Promise<Paths>;
-  private dirEnsured = false;
+  private dirName: string;
 
   constructor(options: YDocStoreOptions = {}) {
-    const dirName = dirNameFor(options.devMode === true);
+    this.dirName = dirNameFor(options.devMode === true);
     // Resolved absolute paths cached after first call. `appDataDir()`
     // hits Tauri IPC, no reason to call it on every save.
-    this.pathsPromise = buildPaths(dirName);
+    this.pathsPromise = buildPaths(this.dirName);
   }
 
-  private async ensureDir(): Promise<void> {
-    if (this.dirEnsured) return;
-    const { dir } = await this.pathsPromise;
-    const fs = await import('@tauri-apps/plugin-fs');
-    if (!(await fs.exists(dir))) {
-      await fs.mkdir(dir, { recursive: true });
-    }
-    this.dirEnsured = true;
+  // Durable atomic write via the dedicated Rust command — see module
+  // header. The command resolves `relPath` against app_data_dir() on
+  // the Rust side (and rejects traversal), creates the parent dir,
+  // writes a uniquely-named tmp file, fsyncs it, renames it into
+  // place, then fsyncs the parent directory.
+  private async atomicWriteBinary(basename: string, bytes: Uint8Array): Promise<void> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('ydoc_atomic_write', {
+      relPath: `${this.dirName}/${basename}`,
+      // Tauri serialises a plain Array as Vec<u8>; same pattern as
+      // backup_save in backupController.ts.
+      bytes: Array.from(bytes),
+    });
   }
 
-  // Atomic write: write .tmp, then rename. plugin-fs `rename` calls
-  // `std::fs::rename` on the Rust side, which is atomic on POSIX
-  // when both paths share a filesystem (always true within app_data_dir).
-  private async atomicWriteBinary(path: string, tmp: string, bytes: Uint8Array): Promise<void> {
-    await this.ensureDir();
-    const fs = await import('@tauri-apps/plugin-fs');
-    await fs.writeFile(tmp, bytes);
-    await fs.rename(tmp, path);
-  }
-
-  private async atomicWriteText(path: string, tmp: string, text: string): Promise<void> {
-    await this.ensureDir();
-    const fs = await import('@tauri-apps/plugin-fs');
-    await fs.writeTextFile(tmp, text);
-    await fs.rename(tmp, path);
+  private async atomicWriteText(basename: string, text: string): Promise<void> {
+    await this.atomicWriteBinary(basename, new TextEncoder().encode(text));
   }
 
   async loadYDoc(): Promise<Uint8Array | null> {
@@ -147,14 +146,42 @@ export class TauriFsYDocStore implements YDocStore {
   }
 
   async saveYDoc(bytes: Uint8Array): Promise<void> {
-    const p = await this.pathsPromise;
-    return this.stateQueue(() => this.atomicWriteBinary(p.state, p.stateTmp, bytes));
+    return this.stateQueue(() => this.atomicWriteBinary(STATE_BASENAME, bytes));
   }
 
+  // Deletion goes through the SAME serial queue as saveYDoc —
+  // otherwise an in-flight / queued save interleaves with the wipe
+  // and its final rename resurrects the file after the delete
+  // claims to be done.
   async deleteYDoc(): Promise<void> {
     const p = await this.pathsPromise;
-    await removeIfExists(p.state);
-    await removeIfExists(p.stateTmp);
+    return this.stateQueue(async () => {
+      await removeIfExists(p.state);
+      await removeStaleTmps(p.dir, STATE_BASENAME);
+    });
+  }
+
+  /** Move a state file that failed to decode aside under a
+   *  `.corrupt-<n>` name so the bytes survive for manual recovery /
+   *  a future fixed build, while hydrate restarts from a clean slate
+   *  without ever overwriting them. Serialized on the state queue so
+   *  it can't interleave with an in-flight save. */
+  async quarantineYDoc(): Promise<string | null> {
+    const p = await this.pathsPromise;
+    return this.stateQueue(async () => {
+      const fs = await import('@tauri-apps/plugin-fs');
+      if (!(await fs.exists(p.state))) return null;
+      let target = `${p.state}.corrupt-${Date.now()}`;
+      for (let i = 1; i <= 99; i++) {
+        const candidate = `${p.state}.corrupt-${i}`;
+        if (!(await fs.exists(candidate))) {
+          target = candidate;
+          break;
+        }
+      }
+      await fs.rename(p.state, target);
+      return `${STATE_BASENAME}${target.slice(p.state.length)}`;
+    });
   }
 
   async loadLastPulled(): Promise<Uint8Array | null> {
@@ -163,16 +190,17 @@ export class TauriFsYDocStore implements YDocStore {
   }
 
   async saveLastPulled(bytes: Uint8Array): Promise<void> {
-    const p = await this.pathsPromise;
     return this.lastPulledQueue(() =>
-      this.atomicWriteBinary(p.lastPulled, p.lastPulledTmp, bytes),
+      this.atomicWriteBinary(LAST_PULLED_BASENAME, bytes),
     );
   }
 
   async deleteLastPulled(): Promise<void> {
     const p = await this.pathsPromise;
-    await removeIfExists(p.lastPulled);
-    await removeIfExists(p.lastPulledTmp);
+    return this.lastPulledQueue(async () => {
+      await removeIfExists(p.lastPulled);
+      await removeStaleTmps(p.dir, LAST_PULLED_BASENAME);
+    });
   }
 
   async loadSyncMeta(): Promise<SyncMeta | null> {
@@ -188,21 +216,32 @@ export class TauriFsYDocStore implements YDocStore {
   }
 
   async saveSyncMeta(meta: SyncMeta): Promise<void> {
-    const p = await this.pathsPromise;
     return this.syncMetaQueue(() =>
-      this.atomicWriteText(p.syncMeta, p.syncMetaTmp, JSON.stringify(meta)),
+      this.atomicWriteText(SYNC_META_BASENAME, JSON.stringify(meta)),
     );
   }
 
+  // Each file's deletion is enqueued on that file's own serial write
+  // queue — see deleteYDoc. A save that was already queued (e.g. the
+  // 750ms debounced persist that fired while the user sat in the
+  // confirm dialog) fully lands BEFORE the wipe removes the file,
+  // instead of interleaving with it and resurrecting old data
+  // post-reset.
   async reset(): Promise<void> {
     const p = await this.pathsPromise;
     await Promise.all([
-      removeIfExists(p.state),
-      removeIfExists(p.stateTmp),
-      removeIfExists(p.lastPulled),
-      removeIfExists(p.lastPulledTmp),
-      removeIfExists(p.syncMeta),
-      removeIfExists(p.syncMetaTmp),
+      this.stateQueue(async () => {
+        await removeIfExists(p.state);
+        await removeStaleTmps(p.dir, STATE_BASENAME);
+      }),
+      this.lastPulledQueue(async () => {
+        await removeIfExists(p.lastPulled);
+        await removeStaleTmps(p.dir, LAST_PULLED_BASENAME);
+      }),
+      this.syncMetaQueue(async () => {
+        await removeIfExists(p.syncMeta);
+        await removeStaleTmps(p.dir, SYNC_META_BASENAME);
+      }),
     ]);
   }
 }

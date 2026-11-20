@@ -87,6 +87,7 @@ import {
 import { encodeDryj, type DryjMeta } from '@dayrail/db/dryj';
 import {
   loadYDocBytes,
+  quarantineYDocBytes,
   saveYDocBytes,
 } from '@dayrail/db/yjsPersistence';
 import { decodeDryj } from '@dayrail/db/dryj';
@@ -485,7 +486,28 @@ function attachObservers(doc: YDoc): void {
   observerAttached = true;
 }
 
+/** One-way kill switch for the debounced persist loop in this JS
+ *  context. Two callers:
+ *    - hydrate, when the on-disk bytes fail to decode — the corrupt
+ *      file gets quarantined and NOTHING may write a fresh (empty /
+ *      partial) doc over the state path until the user acts;
+ *    - resetLocalData, right before wiping the store — otherwise a
+ *      pending 750ms persist timer (e.g. armed while the user sat in
+ *      the confirm dialog) could enqueue a full-doc save after the
+ *      wipe and resurrect the data on reload.
+ *  Both flows end in a page reload (or a dead boot screen), so there
+ *  is deliberately no "resume". */
+let persistenceSuspended = false;
+export function suspendPersistence(): void {
+  persistenceSuspended = true;
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+}
+
 function schedulePersist(): void {
+  if (persistenceSuspended) return;
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
@@ -505,6 +527,7 @@ export async function flushPersistence(): Promise<void> {
 }
 
 async function persistNow(): Promise<void> {
+  if (persistenceSuspended) return;
   const doc = getYDoc();
   const update = encodeDocAsUpdate(doc);
   const meta: DryjMeta = {
@@ -691,10 +714,32 @@ async function hydrateImpl(): Promise<void> {
       const decoded = decodeDryj(bytes);
       Y.applyUpdate(doc, decoded.update, OPFS_ORIGIN);
     } catch (err) {
-      console.warn(
-        '[store] failed to decode OPFS state, starting fresh:',
-        err,
-      );
+      // The state file exists but can't be decoded (truncated /
+      // corrupted / written by a future container version). The old
+      // behavior — warn + "start fresh" — was catastrophic: the first
+      // transaction after boot triggered the debounced persist, which
+      // atomically overwrote the ONLY copy of the user's data with an
+      // empty (or half-applied) doc. Instead:
+      //   1. kill the persist loop so nothing can touch the file,
+      //   2. quarantine the original bytes (rename → .corrupt-<n>),
+      //   3. abort boot with a recognizable error — main.tsx's
+      //      BootError screen picks it up (its corruption hint matches
+      //      ".dryj" / "truncated") and offers explicit recovery.
+      suspendPersistence();
+      let quarantined: string | null = null;
+      try {
+        quarantined = await quarantineYDocBytes();
+      } catch (qErr) {
+        console.error('[store] failed to quarantine corrupt state file:', qErr);
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      const message =
+        `本地数据文件（.dryj）无法解码：${reason}` +
+        (quarantined
+          ? ` —— 原文件已原样保全为 ${quarantined}，未被覆盖。`
+          : ' —— 且未能将原文件改名隔离；已停用自动保存，原字节不会被覆盖。');
+      useStore.setState((prev) => ({ ...prev, ready: false, error: message }));
+      throw new Error(message, { cause: err });
     }
   }
   // 2. Attach the document-wide observer so subsequent transacts
