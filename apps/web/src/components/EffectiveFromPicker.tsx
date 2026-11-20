@@ -43,8 +43,6 @@ export interface EffectiveFromPickerProps {
   className?: string;
 }
 
-const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-
 /** Resolve an `EffectiveFromValue` into the ISO date the writers want.
  *  Returns `undefined` when the value is invalid (e.g. custom mode
  *  without a date). Callers can then fall back to the writer's default
@@ -54,8 +52,11 @@ export function resolveEffectiveFromValue(
 ): string | undefined {
   if (v.mode === 'today') return toIsoDate();
   if (v.mode === 'tomorrow') {
+    // Calendar arithmetic, not +24h of wall-clock ms: on a DST
+    // fall-back day (25h) the latter resolves back to *today*.
     const t = new Date();
-    return toIsoDate(new Date(t.getTime() + ONE_DAY_MS));
+    t.setDate(t.getDate() + 1);
+    return toIsoDate(t);
   }
   // custom
   if (!v.customDate) return undefined;
