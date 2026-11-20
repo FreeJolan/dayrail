@@ -11,6 +11,8 @@
 //   · genuine field-level conflicts (A and B set title to different values)
 //   · add/remove asymmetry (A adds entity, B unchanged · A removes, B modifies)
 //   · array fields (subItems) — conservative deep-equal compare
+//   · revision-array entities (railRevisions …) — semantic per-id
+//     alignment instead of positional diff
 //   · empty diffs (no local changes → vacuously same-direction)
 
 import { describe, expect, it } from 'vitest';
@@ -401,6 +403,188 @@ describe('smartDiff · array fields', () => {
     // semantically a set union ['a','b','x','y'] might be sensible.
     // Future P2.x refinement could add array-aware merging.
     expect(result.type).toBe('true-conflict');
+  });
+});
+
+// ── revision-array entities (ERD §10.5) ───────────────────────────
+//
+// The revision stores (railRevisions etc.) hold Y.Array<revision>
+// per entity id. These used to be diffed positionally like field
+// maps ('0', '1', … keys), so two devices each appending a revision
+// to the same rail always collided at the same index and escalated
+// to true-conflict — blocking push over edits Yjs merges losslessly.
+// Revisions now align by id; `authoredAt` is metadata (same-content
+// revisions authored on two devices must not diverge on it); and the
+// merged snapshot keeps these entities as arrays sorted ASC by
+// effectiveFrom (spreading them into {"0":…} objects would make the
+// read path drop the whole revision history).
+
+function setRevisionArray(
+  doc: Y.Doc,
+  store: string,
+  id: string,
+  revs: Array<Record<string, unknown>>,
+): void {
+  const m = doc.getMap(store);
+  const arr = new Y.Array();
+  arr.insert(0, revs);
+  m.set(id, arr);
+}
+
+function appendRevisionRaw(
+  doc: Y.Doc,
+  store: string,
+  id: string,
+  rev: Record<string, unknown>,
+): void {
+  const arr = doc.getMap(store).get(id);
+  if (!(arr instanceof Y.Array)) {
+    throw new Error(`entity ${store}/${id} is not a Y.Array`);
+  }
+  arr.push([rev]);
+}
+
+function railRev(
+  effectiveFrom: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: `rev-rail-r1-${effectiveFrom}`,
+    railId: 'r1',
+    effectiveFrom,
+    name: 'Deep work',
+    authoredAt: 0,
+    ...extra,
+  };
+}
+
+describe('smartDiff · revision-array entities', () => {
+  it('two devices appended different-day revisions to the same rail → orthogonal, not true-conflict', () => {
+    const base = makeDoc((d) => {
+      setRevisionArray(d, 'railRevisions', 'r1', [railRev('2026-01-01')]);
+    });
+    const local = cloneDoc(base);
+    appendRevisionRaw(
+      local,
+      'railRevisions',
+      'r1',
+      railRev('2026-03-01', { name: 'local edit', authoredAt: 111 }),
+    );
+    const remote = cloneDoc(base);
+    appendRevisionRaw(
+      remote,
+      'railRevisions',
+      'r1',
+      railRev('2026-02-01', { name: 'remote edit', authoredAt: 222 }),
+    );
+    const result = classify(base, local, remote);
+    expect(result.type).toBe('orthogonal');
+    if (result.type === 'orthogonal') {
+      const merged = result.merged.railRevisions?.r1;
+      // Stays an array (not an index-keyed object) …
+      expect(Array.isArray(merged)).toBe(true);
+      // … carries both sides' appends plus the base revision, sorted
+      // ASC by effectiveFrom (the invariant pickActive relies on).
+      expect(
+        (merged as Array<{ effectiveFrom: string }>).map(
+          (r) => r.effectiveFrom,
+        ),
+      ).toEqual(['2026-01-01', '2026-02-01', '2026-03-01']);
+    }
+  });
+
+  it('both devices authored the identical same-day revision (authoredAt differs) → same-direction', () => {
+    const base = makeDoc((d) => {
+      setRevisionArray(d, 'railRevisions', 'r1', [railRev('2026-01-01')]);
+    });
+    const local = cloneDoc(base);
+    appendRevisionRaw(
+      local,
+      'railRevisions',
+      'r1',
+      railRev('2026-05-01', { name: 'Same edit', authoredAt: 100 }),
+    );
+    const remote = cloneDoc(base);
+    appendRevisionRaw(
+      remote,
+      'railRevisions',
+      'r1',
+      railRev('2026-05-01', { name: 'Same edit', authoredAt: 200 }),
+    );
+    expect(classify(base, local, remote).type).toBe('same-direction');
+  });
+
+  it('same-day revisions with different content → true-conflict keyed by revision id, not array index', () => {
+    const base = makeDoc((d) => {
+      setRevisionArray(d, 'railRevisions', 'r1', [railRev('2026-01-01')]);
+    });
+    const local = cloneDoc(base);
+    appendRevisionRaw(
+      local,
+      'railRevisions',
+      'r1',
+      railRev('2026-05-01', { name: 'Local name', authoredAt: 100 }),
+    );
+    const remote = cloneDoc(base);
+    appendRevisionRaw(
+      remote,
+      'railRevisions',
+      'r1',
+      railRev('2026-05-01', { name: 'Remote name', authoredAt: 200 }),
+    );
+    const result = classify(base, local, remote);
+    expect(result.type).toBe('true-conflict');
+    if (result.type === 'true-conflict') {
+      expect(result.conflicts).toHaveLength(1);
+      const c = result.conflicts[0]!;
+      expect(c.storeKey).toBe('railRevisions');
+      expect(c.field).toBe('rev-rail-r1-2026-05-01');
+      expect((c.localValue as Record<string, unknown>).name).toBe(
+        'Local name',
+      );
+      expect((c.remoteValue as Record<string, unknown>).name).toBe(
+        'Remote name',
+      );
+    }
+  });
+
+  it('local-only revision append round-trips through merged (array type + content preserved)', () => {
+    const base = makeDoc((d) => {
+      setRevisionArray(d, 'railRevisions', 'r1', [railRev('2026-01-01')]);
+    });
+    const local = cloneDoc(base);
+    appendRevisionRaw(
+      local,
+      'railRevisions',
+      'r1',
+      railRev('2026-02-01', { name: 'v2', authoredAt: 10 }),
+    );
+    const remote = cloneDoc(base);
+    const result = classify(base, local, remote);
+    expect(result.type).toBe('orthogonal');
+    if (result.type === 'orthogonal') {
+      const keys = unionTopLevelKeys([base, local, remote]);
+      expect(result.merged.railRevisions?.r1).toEqual(
+        toSnapshotJson(local, keys).railRevisions?.r1,
+      );
+    }
+  });
+
+  it('merged drops removed fields instead of writing explicit undefined keys', () => {
+    const base = makeDoc((d) => {
+      setEntity(d, 'tasks', 't1', { title: 'A', note: 'temp' });
+    });
+    const local = cloneDoc(base);
+    const entity = local.getMap('tasks').get('t1') as Y.Map<unknown>;
+    entity.delete('note');
+    const remote = cloneDoc(base);
+    const result = classify(base, local, remote);
+    expect(result.type).toBe('orthogonal');
+    if (result.type === 'orthogonal') {
+      const t1 = result.merged.tasks?.t1 as Record<string, unknown>;
+      expect(t1.title).toBe('A');
+      expect('note' in t1).toBe(false);
+    }
   });
 });
 

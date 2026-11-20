@@ -32,11 +32,25 @@
 //     `merged: SnapshotJson`. P3 decides how to materialize that
 //     into a Y.Doc (likely: encode + apply on the remoteDoc, then
 //     re-set the local-only fields).
-//   - It does NOT support array-aware merging. An array field
-//     touched on both sides with different final values is a
-//     conflict, even if the changes are non-overlapping (e.g., A
-//     appended "x" while B appended "y" to the same tags array).
-//     The conservative-but-correct call. Future refinement.
+//   - It does NOT support array-aware merging for array *fields*
+//     inside Y.Map entities. An array field touched on both sides
+//     with different final values is a conflict, even if the changes
+//     are non-overlapping (e.g., A appended "x" while B appended "y"
+//     to the same tags array). The conservative-but-correct call.
+//     Future refinement.
+//
+// Array-valued *entities* are the exception: the revision stores
+// (railRevisions etc., ERD §10.5) hold Y.Array<revision> per entity
+// id. Diffing those positionally would misread "both devices
+// appended a revision" as a conflict at index N, so they are
+// compared semantically instead — revisions align by `id` (falling
+// back to `effectiveFrom`), duplicates resolve by latest
+// `authoredAt` exactly like the read path's dedupRevisions, and
+// `authoredAt` itself is treated as metadata (two same-id revisions
+// with equal content but different authoring timestamps are the
+// same revision). Merged output keeps these entities as arrays,
+// sorted ASC by `effectiveFrom` (the invariant pickActive relies
+// on).
 
 import * as Y from 'yjs';
 
@@ -51,8 +65,15 @@ export interface EntityDiff {
   storeKey: string;
   entityId: string;
   kind: 'added' | 'removed' | 'modified';
-  /** Present when `kind === 'modified'`. Map of field name → before/after. */
+  /** Present when `kind === 'modified'`. Map of field name → before/after.
+   *  For array-valued entities (revision stores) the "field names" are
+   *  revision keys (`id`, falling back to `effectiveFrom`) and the
+   *  values are whole revision objects (`undefined` = absent). */
   fields?: Record<string, { base: unknown; next: unknown }>;
+  /** True when the entity is array-valued (a revision list). Tells the
+   *  merge/conflict passes to treat `fields` as revision-keyed and to
+   *  materialize the entity back as a sorted array, not an object. */
+  arrayEntity?: boolean;
   /** Present when `kind === 'added'` (the new entity) or `'removed'`
    *  (the entity as it existed at base). */
   entitySnapshot?: Record<string, unknown>;
@@ -167,6 +188,103 @@ function fieldDiff(
   return Object.keys(fields).length === 0 ? null : fields;
 }
 
+// ── revision-array entities (ERD §10.5) ───────────────────────────
+//
+// See module header: array-valued entities are revision lists and
+// get semantic (per-revision) comparison instead of positional.
+
+/** Alignment key for one revision: `id` when present, else
+ *  `effectiveFrom`, else its index (defensive — real revisions
+ *  always carry an id). */
+function revisionKey(rev: unknown, index: number): string {
+  if (rev && typeof rev === 'object') {
+    const obj = rev as Record<string, unknown>;
+    if (typeof obj.id === 'string') return obj.id;
+    if (typeof obj.effectiveFrom === 'string') return `ef:${obj.effectiveFrom}`;
+  }
+  return `#${index}`;
+}
+
+/** Resolve a revision array into a key → revision map, mirroring the
+ *  read path's dedupRevisions: duplicate keys keep the entry with
+ *  the latest `authoredAt`. Insertion order of first appearance is
+ *  preserved (Map semantics). */
+function revisionsByKey(arr: unknown[]): Map<string, unknown> {
+  const byKey = new Map<string, unknown>();
+  const authored = new Map<string, number>();
+  for (let i = 0; i < arr.length; i++) {
+    const rev = arr[i];
+    const key = revisionKey(rev, i);
+    const at =
+      rev && typeof rev === 'object' &&
+      typeof (rev as Record<string, unknown>).authoredAt === 'number'
+        ? ((rev as Record<string, unknown>).authoredAt as number)
+        : 0;
+    if (!byKey.has(key) || at > (authored.get(key) ?? 0)) {
+      byKey.set(key, rev);
+      authored.set(key, at);
+    }
+  }
+  return byKey;
+}
+
+/** Deep-equal ignoring a revision's top-level `authoredAt` — a
+ *  device-local authoring timestamp, not content. Two devices making
+ *  the identical edit necessarily differ there (the read path's
+ *  dedup resolves it by LWW); that must not count as divergence. */
+function revisionContentEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (
+    !a || !b ||
+    typeof a !== 'object' || typeof b !== 'object' ||
+    Array.isArray(a) || Array.isArray(b)
+  ) {
+    return deepEqual(a, b);
+  }
+  const sa = { ...(a as Record<string, unknown>) };
+  const sb = { ...(b as Record<string, unknown>) };
+  delete sa.authoredAt;
+  delete sb.authoredAt;
+  return deepEqual(sa, sb);
+}
+
+/** Per-revision diff of two revision arrays, keyed by revisionKey.
+ *  Returns null when semantically unchanged. */
+function revisionArrayDiff(
+  base: unknown[],
+  next: unknown[],
+): Record<string, { base: unknown; next: unknown }> | null {
+  const bm = revisionsByKey(base);
+  const nm = revisionsByKey(next);
+  const allKeys = new Set<string>([...bm.keys(), ...nm.keys()]);
+  const fields: Record<string, { base: unknown; next: unknown }> = {};
+  for (const k of allKeys) {
+    const bv = bm.get(k);
+    const nv = nm.get(k);
+    if (!revisionContentEqual(bv, nv)) {
+      fields[k] = { base: bv, next: nv };
+    }
+  }
+  return Object.keys(fields).length === 0 ? null : fields;
+}
+
+/** Stable ASC sort by `effectiveFrom` — the invariant `pickActive`
+ *  (revisions.ts) relies on; mirrors the read path's ordering. */
+function sortRevisionsAsc(revs: unknown[]): unknown[] {
+  const ef = (r: unknown): string => {
+    if (r && typeof r === 'object') {
+      const v = (r as Record<string, unknown>).effectiveFrom;
+      if (typeof v === 'string') return v;
+    }
+    return '';
+  };
+  return [...revs].sort((a, b) => {
+    const ea = ef(a);
+    const eb = ef(b);
+    return ea < eb ? -1 : ea > eb ? 1 : 0;
+  });
+}
+
 /** Compute the diff between two doc snapshots. Pure function.
  *  Exported so P3 / tests / debugging surfaces can inspect diffs
  *  directly. `topLevelKeys` enumerates all stores to compare — pass
@@ -212,13 +330,23 @@ export function snapshotDiff(
           entitySnapshot: baseEntity,
         });
       } else if (baseEntity && nextEntity) {
-        const fields = fieldDiff(baseEntity, nextEntity);
+        // Revision-array entities diff per revision (aligned by id),
+        // not per index — see module header.
+        const bothArrays =
+          Array.isArray(baseEntity) && Array.isArray(nextEntity);
+        const fields = bothArrays
+          ? revisionArrayDiff(
+              baseEntity as unknown[],
+              nextEntity as unknown[],
+            )
+          : fieldDiff(baseEntity, nextEntity);
         if (fields) {
           changes.push({
             storeKey,
             entityId,
             kind: 'modified',
             fields,
+            ...(bothArrays && { arrayEntity: true }),
             // Snapshot of the entity as it stands after the change —
             // useful for entity-level conflict surfaces ("local
             // deleted, remote modified → here's what remote looks
@@ -271,10 +399,33 @@ function collectConflicts(
       continue;
     }
     if (local.kind === 'added' && remote.kind === 'added') {
-      // Both added same id. Decompose into per-field comparison so
-      // the conflict UX can offer field-level pickers.
       const lf = local.entitySnapshot ?? {};
       const rf = remote.entitySnapshot ?? {};
+      if (Array.isArray(lf) && Array.isArray(rf)) {
+        // Both added the same revision-array entity. A revision key
+        // present on only one side is an append (the Y.Array merge
+        // keeps both — no conflict); a key present on both sides
+        // with different content is a genuine conflict.
+        const lm = revisionsByKey(lf as unknown[]);
+        const rm = revisionsByKey(rf as unknown[]);
+        for (const [k, lv] of lm) {
+          if (!rm.has(k)) continue;
+          const rv = rm.get(k);
+          if (!revisionContentEqual(lv, rv)) {
+            conflicts.push({
+              storeKey: local.storeKey,
+              entityId: local.entityId,
+              field: k,
+              baseValue: undefined,
+              localValue: lv,
+              remoteValue: rv,
+            });
+          }
+        }
+        continue;
+      }
+      // Decompose into per-field comparison so the conflict UX can
+      // offer field-level pickers.
       const allFields = new Set<string>([
         ...Object.keys(lf),
         ...Object.keys(rf),
@@ -311,12 +462,18 @@ function collectConflicts(
       });
       continue;
     }
-    // Both modified — compare per-field overlap.
+    // Both modified — compare per-field overlap. For revision-array
+    // entities the "fields" are revision keys and the values whole
+    // revisions, so equality ignores the authoredAt metadata.
     const lf = local.fields ?? {};
     const rf = remote.fields ?? {};
+    const eq =
+      local.arrayEntity && remote.arrayEntity
+        ? revisionContentEqual
+        : deepEqual;
     for (const f of Object.keys(lf)) {
       if (!(f in rf)) continue;
-      if (!deepEqual(lf[f]!.next, rf[f]!.next)) {
+      if (!eq(lf[f]!.next, rf[f]!.next)) {
         conflicts.push({
           storeKey: local.storeKey,
           entityId: local.entityId,
@@ -343,7 +500,20 @@ function isLocalSubsetOfRemote(
     if (local.kind === 'removed' && remote.kind === 'removed') continue;
     if (local.kind !== remote.kind) return false;
     if (local.kind === 'added' && remote.kind === 'added') {
-      if (!deepEqual(local.entitySnapshot, remote.entitySnapshot)) {
+      const ls = local.entitySnapshot;
+      const rs = remote.entitySnapshot;
+      if (Array.isArray(ls) && Array.isArray(rs)) {
+        // Revision-array entity: every local revision must exist in
+        // remote with the same content (authoredAt is metadata).
+        const lm = revisionsByKey(ls as unknown[]);
+        const rm = revisionsByKey(rs as unknown[]);
+        for (const [k, lv] of lm) {
+          if (!rm.has(k)) return false;
+          if (!revisionContentEqual(lv, rm.get(k))) return false;
+        }
+        continue;
+      }
+      if (!deepEqual(ls, rs)) {
         return false;
       }
       continue;
@@ -351,9 +521,13 @@ function isLocalSubsetOfRemote(
     // Both modified
     const lf = local.fields ?? {};
     const rf = remote.fields ?? {};
+    const eq =
+      local.arrayEntity && remote.arrayEntity
+        ? revisionContentEqual
+        : deepEqual;
     for (const f of Object.keys(lf)) {
       if (!(f in rf)) return false;
-      if (!deepEqual(lf[f]!.next, rf[f]!.next)) return false;
+      if (!eq(lf[f]!.next, rf[f]!.next)) return false;
     }
   }
   return true;
@@ -370,13 +544,33 @@ function applyDiffToSnapshot(
     } else if (c.kind === 'removed') {
       delete target[c.storeKey]![c.entityId];
     } else if (c.kind === 'modified' && c.fields) {
-      const cur =
-        (target[c.storeKey]![c.entityId] as
-          | Record<string, unknown>
-          | undefined) ?? {};
-      const merged: Record<string, unknown> = { ...cur };
+      const cur = target[c.storeKey]![c.entityId];
+      if (c.arrayEntity) {
+        // Revision-array entity: apply per-revision changes and
+        // materialize back as a sorted array — spreading an array
+        // into an object would turn the revision list into
+        // {"0":…} index keys and the read path would drop it.
+        const byKey = revisionsByKey(Array.isArray(cur) ? cur : []);
+        for (const k of Object.keys(c.fields)) {
+          const next = c.fields[k]!.next;
+          if (next === undefined) byKey.delete(k);
+          else byKey.set(k, next);
+        }
+        target[c.storeKey]![c.entityId] = sortRevisionsAsc([
+          ...byKey.values(),
+        ]);
+        continue;
+      }
+      const merged: Record<string, unknown> = {
+        ...((cur as Record<string, unknown> | undefined) ?? {}),
+      };
       for (const f of Object.keys(c.fields)) {
-        merged[f] = c.fields[f]!.next;
+        const next = c.fields[f]!.next;
+        // `next === undefined` means the field was removed — delete
+        // it rather than writing an explicit `undefined` key, so the
+        // merged snapshot round-trips (diff → apply ≡ identity).
+        if (next === undefined) delete merged[f];
+        else merged[f] = next;
       }
       target[c.storeKey]![c.entityId] = merged;
     }
@@ -413,16 +607,39 @@ function applyLocalNonConflictingToSnapshot(
       continue;
     }
     // Modified: apply only fields remote didn't touch.
-    const cur =
-      (target[c.storeKey]?.[c.entityId] as
-        | Record<string, unknown>
-        | undefined) ?? {};
-    const merged: Record<string, unknown> = { ...cur };
+    const cur = target[c.storeKey]?.[c.entityId];
+    if (c.arrayEntity) {
+      // Revision-array entity — per-revision apply, array output
+      // (sorted ASC by effectiveFrom). See applyDiffToSnapshot.
+      const byKey = revisionsByKey(Array.isArray(cur) ? cur : []);
+      let mutated = false;
+      if (c.fields) {
+        for (const f of Object.keys(c.fields)) {
+          if (remoteTouchedField.has(`${k}/${f}`)) continue;
+          const next = c.fields[f]!.next;
+          if (next === undefined) byKey.delete(f);
+          else byKey.set(f, next);
+          mutated = true;
+        }
+      }
+      if (mutated) {
+        if (!target[c.storeKey]) target[c.storeKey] = {};
+        target[c.storeKey]![c.entityId] = sortRevisionsAsc([
+          ...byKey.values(),
+        ]);
+      }
+      continue;
+    }
+    const merged: Record<string, unknown> = {
+      ...((cur as Record<string, unknown> | undefined) ?? {}),
+    };
     let mutated = false;
     if (c.fields) {
       for (const f of Object.keys(c.fields)) {
         if (remoteTouchedField.has(`${k}/${f}`)) continue;
-        merged[f] = c.fields[f]!.next;
+        const next = c.fields[f]!.next;
+        if (next === undefined) delete merged[f];
+        else merged[f] = next;
         mutated = true;
       }
     }
