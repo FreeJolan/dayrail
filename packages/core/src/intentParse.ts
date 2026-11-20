@@ -20,6 +20,7 @@ import {
   mapToAiClientError,
   withColdStart403Retry,
 } from './ai/client';
+import { isIsoDate } from './expectedWindow';
 import { INBOX_LINE_ID } from './types';
 import type {
   HabitSlotDraft,
@@ -30,7 +31,11 @@ import type {
 } from './intentStaging';
 
 const MINUTES_IN_DAY = 24 * 60;
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Total timeout for the parse `generateText` call. Production callers
+ *  pass no AbortSignal and the Proposals panel has no cancel button, so
+ *  a hung provider would otherwise leave the parse pending forever. */
+export const AI_PARSE_TIMEOUT_MS = 120_000;
 
 // ── shared field schemas ────────────────────────────────────────────
 const minutesOfDay = z.number().int().min(0).max(MINUTES_IN_DAY - 1);
@@ -159,26 +164,63 @@ export function formatParseContext(ctx: ParseContext): string {
 
 // ── model proposal → native draft ───────────────────────────────────
 
-function toSlotDraft(s: z.infer<typeof habitSlotProposalSchema>): HabitSlotDraft {
+/** Legal-id sets from the grounding snapshot (§6.7.8), used to strip
+ *  hallucinated references the model minted outside "Current setup".
+ *  A stripped railId degrades to '' (= unbound): `commitDraft` skips
+ *  empty rail bindings defensively and the review card's rail picker
+ *  shows an empty selection the user can fill — instead of silently
+ *  persisting a dangling reference no view will ever render. */
+export interface ParseKnownIds {
+  railIds: ReadonlySet<string>;
+  templateKeys: ReadonlySet<string>;
+}
+
+function knownRailId(railId: string, known: ParseKnownIds | undefined): string {
+  return known && !known.railIds.has(railId) ? '' : railId;
+}
+
+function toSlotDraft(
+  s: z.infer<typeof habitSlotProposalSchema>,
+  known?: ParseKnownIds,
+): HabitSlotDraft {
   if (s.bind === 'existing') {
-    return { mode: 'existing', railId: s.railId, ...(s.weekdays ? { weekdays: s.weekdays } : {}) };
+    return {
+      mode: 'existing',
+      railId: knownRailId(s.railId, known),
+      ...(s.weekdays ? { weekdays: s.weekdays } : {}),
+    };
   }
+  // Unknown template keys are dropped; an empty rest means "no explicit
+  // restriction" = a rail in every template (the §6.7.8 default), which
+  // the review card shows — safer than creating rails on templates that
+  // do not exist.
+  const templateKeys =
+    known && s.templateKeys
+      ? s.templateKeys.filter((k) => known.templateKeys.has(k))
+      : s.templateKeys;
   return {
     mode: 'new',
     startMinutes: s.startMinutes,
     ...(s.durationMinutes !== undefined ? { durationMinutes: s.durationMinutes } : {}),
-    ...(s.templateKeys && s.templateKeys.length > 0 ? { templateKeys: s.templateKeys } : {}),
+    ...(templateKeys && templateKeys.length > 0 ? { templateKeys } : {}),
     ...(s.weekdays ? { weekdays: s.weekdays } : {}),
   };
 }
 
 function isoDateOpt(date: string | undefined): { date?: string } {
-  return date && ISO_DATE_RE.test(date) ? { date } : {};
+  // Real calendar-day validation, not just shape: "2025-02-30" /
+  // "2025-13-05" match \d{4}-\d{2}-\d{2} but roll over / NaN out when a
+  // Date is built, and `cycleIdOf` downstream would persist a
+  // cycle-NaN-NaN-NaN slot. Invalid → dropped → defaults to today.
+  return date && isIsoDate(date) ? { date } : {};
 }
 
-function toScheduleDraft(s: z.infer<typeof taskScheduleSchema>): TaskScheduleDraft {
+function toScheduleDraft(
+  s: z.infer<typeof taskScheduleSchema>,
+  known?: ParseKnownIds,
+): TaskScheduleDraft {
   if (s.bind === 'rail') {
-    return { mode: 'rail', railId: s.railId, ...isoDateOpt(s.date) };
+    return { mode: 'rail', railId: knownRailId(s.railId, known), ...isoDateOpt(s.date) };
   }
   return {
     mode: 'free',
@@ -188,9 +230,9 @@ function toScheduleDraft(s: z.infer<typeof taskScheduleSchema>): TaskScheduleDra
   };
 }
 
-function toStepDraft(s: z.infer<typeof taskStepSchema>): TaskStep {
+function toStepDraft(s: z.infer<typeof taskStepSchema>, known?: ParseKnownIds): TaskStep {
   const occ: OccurrenceScheduleDraft | undefined = s.schedule
-    ? { railId: s.schedule.railId, ...isoDateOpt(s.schedule.date) }
+    ? { railId: knownRailId(s.schedule.railId, known), ...isoDateOpt(s.schedule.date) }
     : undefined;
   return {
     label: s.label,
@@ -200,8 +242,13 @@ function toStepDraft(s: z.infer<typeof taskStepSchema>): TaskStep {
 }
 
 /** Map a model proposal → internal native draft, filling defaults the
- *  AI shouldn't have to (Inbox line, empty steps). */
-export function toProposalDraft(p: ParseResult['proposals'][number]): ProposalDraft {
+ *  AI shouldn't have to (Inbox line, empty steps). With `known` (the
+ *  legal ids from the grounding context) hallucinated rail/template
+ *  references are stripped — see `ParseKnownIds`. */
+export function toProposalDraft(
+  p: ParseResult['proposals'][number],
+  known?: ParseKnownIds,
+): ProposalDraft {
   if (p.kind === 'task') {
     return {
       kind: 'task',
@@ -209,15 +256,15 @@ export function toProposalDraft(p: ParseResult['proposals'][number]): ProposalDr
       ...(p.note ? { note: p.note } : {}),
       ...(p.priority ? { priority: p.priority } : {}),
       lineId: INBOX_LINE_ID,
-      steps: (p.steps ?? []).map(toStepDraft),
-      ...(p.schedule ? { schedule: toScheduleDraft(p.schedule) } : {}),
+      steps: (p.steps ?? []).map((s) => toStepDraft(s, known)),
+      ...(p.schedule ? { schedule: toScheduleDraft(p.schedule, known) } : {}),
     };
   }
   return {
     kind: 'habit',
     name: p.name,
     ...(p.note ? { note: p.note } : {}),
-    slots: p.slots.map(toSlotDraft),
+    slots: p.slots.map((s) => toSlotDraft(s, known)),
   };
 }
 
@@ -313,6 +360,9 @@ const defaultGenerate: IntentObjectGenerator = async (config, { system, prompt }
           }),
         },
         toolChoice: 'required',
+        // Default total timeout — production callers pass no signal and
+        // the Proposals panel has no cancel button (see AI_PARSE_TIMEOUT_MS).
+        timeout: AI_PARSE_TIMEOUT_MS,
         ...(signal ? { abortSignal: signal } : {}),
       });
       const call = result.toolCalls.find((c) => c.toolName === 'emit_proposals');
@@ -321,7 +371,17 @@ const defaultGenerate: IntentObjectGenerator = async (config, { system, prompt }
           ...(result.text ? { bodyExcerpt: result.text.slice(0, 500) } : {}),
         });
       }
-      return parseResultSchema.parse(call.input);
+      // A tool call whose input doesn't match the schema is the MODEL
+      // failing at structured output, not a network problem — classify
+      // as parse-error (a raw ZodError would fall into mapToAiClientError's
+      // 'network' fallback and mislead the user into debugging CORS).
+      const parsed = parseResultSchema.safeParse(call.input);
+      if (!parsed.success) {
+        throw new AiClientError('parse-error', 'AI 返回的结构化结果不符合预期格式。', {
+          bodyExcerpt: parsed.error.message.slice(0, 500),
+        });
+      }
+      return parsed.data;
     } catch (err) {
       throw mapToAiClientError(err, APICallError);
     }
@@ -330,7 +390,10 @@ const defaultGenerate: IntentObjectGenerator = async (config, { system, prompt }
 
 /** ERD §6.7.5 / §6.7.8. Parse a free-form blob into native proposal
  *  drafts for the staging tray. `context` (current templates + rails)
- *  grounds the model so it can bind existing rails / place new ones.
+ *  grounds the model so it can bind existing rails / place new ones —
+ *  and is also the legal-id universe: rail/template references the
+ *  model hallucinated outside it are stripped from the drafts (see
+ *  `ParseKnownIds`) instead of being persisted as dangling references.
  *  Empty input → no proposals. Throws `AiClientError` on any provider
  *  failure (with a `bodyExcerpt` the UI can surface). */
 export async function parseIntentsFromText(
@@ -346,5 +409,11 @@ export async function parseIntentsFromText(
       ? `${PARSE_SYSTEM_PROMPT}\n\n${formatParseContext(context)}`
       : PARSE_SYSTEM_PROMPT;
   const result = await generate(config, { system, prompt: trimmed });
-  return result.proposals.map(toProposalDraft);
+  const known: ParseKnownIds | undefined = context
+    ? {
+        railIds: new Set(context.rails.map((r) => r.id)),
+        templateKeys: new Set(context.templates.map((t) => t.key)),
+      }
+    : undefined;
+  return result.proposals.map((p) => toProposalDraft(p, known));
 }

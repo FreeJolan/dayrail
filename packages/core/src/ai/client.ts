@@ -44,7 +44,25 @@ export interface CallChatCompletionParams {
    *  assistant content as it streams in. The promise still resolves
    *  to the full assembled string at the end. */
   onChunk?: (delta: string) => void;
+  /** Hung-provider watchdog override (tests). Defaults to
+   *  `AI_STREAM_IDLE_TIMEOUT_MS`. */
+  idleTimeoutMs?: number;
 }
+
+// ── Default timeouts ───────────────────────────────────────────────
+//
+// None of the production callers pass an AbortSignal or render a
+// cancel button, so a provider that accepts the connection and then
+// goes silent (observed with local CLI bridges) would otherwise leave
+// the promise pending forever and the UI stuck in its loading state.
+//
+// Chat streams get an IDLE watchdog, not a total cap: the timer resets
+// on every stream part, so a slow-but-alive generation of any length is
+// unaffected, while "connected but never sends" and "stalled mid-
+// stream" both abort after one idle window.
+export const AI_STREAM_IDLE_TIMEOUT_MS = 60_000;
+/** Total cap for the hand-rolled `/v1/models` GET (small response). */
+export const AI_LIST_MODELS_TIMEOUT_MS = 15_000;
 
 export type AiClientErrorKind =
   | 'network' // fetch threw (connection refused, DNS, generic TypeError)
@@ -147,6 +165,7 @@ export async function callChatCompletion(
   params: CallChatCompletionParams,
 ): Promise<string> {
   const { baseUrl, apiKey, model, messages, signal, onChunk } = params;
+  const idleTimeoutMs = params.idleTimeoutMs ?? AI_STREAM_IDLE_TIMEOUT_MS;
 
   // Dynamic import: the AI SDK + provider together are ~80 KB gzipped
   // and we want them off the cold-start path for users who never
@@ -168,21 +187,67 @@ export async function callChatCompletion(
   // Wrap in the cold-start 403 retry: a 403 arrives before any stream
   // body, so a re-attempt never double-emits via onChunk.
   return withColdStart403Retry(async () => {
+    // Idle watchdog (see AI_STREAM_IDLE_TIMEOUT_MS): abort when the
+    // stream produces nothing for one idle window. Re-armed on every
+    // part, so an alive stream never trips it.
+    const watchdog = new AbortController();
+    let timedOut = false;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const armWatchdog = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        timedOut = true;
+        watchdog.abort();
+      }, idleTimeoutMs);
+    };
+
     const result = streamText({
       model: provider(model),
       messages,
-      ...(signal && { abortSignal: signal }),
+      abortSignal: signal
+        ? AbortSignal.any([signal, watchdog.signal])
+        : watchdog.signal,
+      // Error parts are surfaced as thrown AiClientErrors below —
+      // silence the SDK's default console.error duplicate.
+      onError: () => {},
     });
 
+    // AI SDK v6 gotcha: `textStream` silently DROPS `error` parts — an
+    // HTTP-level failure (401/403/404/429/5xx) is caught by the SDK,
+    // enqueued as an `error` part and the stream closed, so iterating
+    // textStream would resolve to '' instead of throwing. Iterate
+    // `fullStream` and surface error/abort parts ourselves; this is
+    // also what makes the cold-start 403 retry above reachable.
     let assembled = '';
     try {
-      for await (const delta of result.textStream) {
-        assembled += delta;
-        if (onChunk && delta.length > 0) onChunk(delta);
+      armWatchdog();
+      for await (const part of result.fullStream) {
+        armWatchdog();
+        switch (part.type) {
+          case 'text-delta':
+            assembled += part.text;
+            if (onChunk && part.text.length > 0) onChunk(part.text);
+            break;
+          case 'error':
+            throw mapToAiClientError(part.error, APICallError);
+          case 'abort':
+            // Caller signal or watchdog — the catch below tells apart.
+            throw new AiClientError('aborted', 'Request aborted by caller');
+          default:
+            break;
+        }
       }
       return assembled;
     } catch (err) {
+      if (timedOut && !signal?.aborted) {
+        throw new AiClientError(
+          'network',
+          `Provider stopped responding: no stream activity for ${Math.round(idleTimeoutMs / 1000)}s.`,
+        );
+      }
       throw mapToAiClientError(err, APICallError);
+    } finally {
+      clearTimeout(idleTimer);
     }
   }, signal);
 }
@@ -199,6 +264,15 @@ export function mapToAiClientError(
   APICallErrorCtor: typeof APICallErrorType,
 ): AiClientError {
   if (err instanceof AiClientError) return err;
+
+  // The SDK wraps its internal retries (429/5xx get up to maxRetries
+  // re-attempts) in an AI_RetryError whose `lastError` is the final
+  // APICallError — unwrap so the HTTP status still classifies.
+  // Duck-typed on name: the ctor isn't worth another injection seam.
+  const maybeRetry = err as { name?: string; lastError?: unknown };
+  if (maybeRetry.name === 'AI_RetryError' && maybeRetry.lastError !== undefined) {
+    return mapToAiClientError(maybeRetry.lastError, APICallErrorCtor);
+  }
 
   if (APICallErrorCtor.isInstance(err)) {
     const status = (err as { statusCode?: number }).statusCode;
@@ -249,6 +323,16 @@ export function mapToAiClientError(
     return new AiClientError('aborted', 'Request aborted by caller');
   }
 
+  // `AbortSignal.timeout` (e.g. the AI SDK's own `timeout` option)
+  // aborts with a DOMException named TimeoutError — a hung provider,
+  // not a caller cancellation.
+  if ((err as { name?: string }).name === 'TimeoutError') {
+    return new AiClientError(
+      'network',
+      'Provider timed out: no response within the time limit.',
+    );
+  }
+
   // CORS / network heuristic — TypeError("Failed to fetch") is the
   // canonical browser CORS failure.
   const message = (err as Error).message ?? String(err);
@@ -289,6 +373,9 @@ export interface ListModelsParams {
   apiKey: string;
   /** Optional cancellation. */
   signal?: AbortSignal;
+  /** Total-timeout override (tests). Defaults to
+   *  `AI_LIST_MODELS_TIMEOUT_MS`. */
+  timeoutMs?: number;
 }
 
 /** ERD §6.6 v0.8.2 — fetch the `/v1/models` autocomplete list.
@@ -301,15 +388,26 @@ export async function listModels(
   params: ListModelsParams,
 ): Promise<ModelInfo[]> {
   const { baseUrl, apiKey, signal } = params;
+  const timeoutMs = params.timeoutMs ?? AI_LIST_MODELS_TIMEOUT_MS;
   const url = joinUrl(baseUrl, '/models');
+  // Default timeout: production callers pass no signal, so without it a
+  // hung provider would leave the Settings "test connection" / model
+  // autocomplete pending forever (see AI_LIST_MODELS_TIMEOUT_MS).
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const init: RequestInit = {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${apiKey}`,
       Accept: 'application/json',
     },
-    ...(signal && { signal }),
+    signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
   };
+
+  const timeoutError = () =>
+    new AiClientError(
+      'network',
+      `Provider timed out: no response from ${url} within ${Math.round(timeoutMs / 1000)}s.`,
+    );
 
   let res: Response;
   try {
@@ -317,6 +415,9 @@ export async function listModels(
   } catch (err) {
     if (signal?.aborted) {
       throw new AiClientError('aborted', 'Request aborted by caller');
+    }
+    if (timeoutSignal.aborted) {
+      throw timeoutError();
     }
     if (looksLikeCors(err)) {
       throw new AiClientError(
@@ -362,6 +463,12 @@ export async function listModels(
   try {
     payload = await res.json();
   } catch (err) {
+    if (signal?.aborted) {
+      throw new AiClientError('aborted', 'Request aborted by caller');
+    }
+    if (timeoutSignal.aborted) {
+      throw timeoutError();
+    }
     throw new AiClientError(
       'parse-error',
       `Could not parse /models response as JSON: ${(err as Error).message}`,

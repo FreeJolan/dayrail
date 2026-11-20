@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  AI_PARSE_TIMEOUT_MS,
   parseIntentsFromText,
   parseResultSchema,
   toProposalDraft,
@@ -8,7 +9,21 @@ import {
   type ParseIntentsConfig,
   type ParseResult,
 } from '../intentParse';
+import { AiClientError } from '../ai/client';
 import { INBOX_LINE_ID } from '../types';
+
+// The default generator calls the AI SDK's `generateText` (dynamically
+// imported) — mock just that export so its response handling (forced
+// tool call → Zod validation → error classification) is testable.
+const generateTextMock = vi.hoisted(() => vi.fn());
+vi.mock('ai', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ai')>()),
+  generateText: generateTextMock,
+}));
+
+afterEach(() => {
+  generateTextMock.mockReset();
+});
 
 const VALID: ParseResult = {
   proposals: [
@@ -204,6 +219,37 @@ describe('toProposalDraft', () => {
       expect(d.steps[0]?.schedule).toEqual({ railId: 'rail-a', date: '2026-05-25' });
     }
   });
+  it('drops calendar-impossible dates that match the ISO shape', () => {
+    // "2025-02-30" / "2025-13-05" pass \d{4}-\d{2}-\d{2} but are not
+    // real days; persisting them would produce slots no view renders
+    // (and cycle-NaN-NaN-NaN for out-of-range months).
+    const d = toProposalDraft({
+      kind: 'task',
+      title: 'x',
+      schedule: { bind: 'rail', railId: 'rail-a', date: '2025-02-30' },
+    });
+    if (d.kind === 'task') {
+      expect(d.schedule).toEqual({ mode: 'rail', railId: 'rail-a' });
+    }
+    const e = toProposalDraft({
+      kind: 'task',
+      title: 'x',
+      steps: [{ label: 's', schedule: { railId: 'rail-a', date: '2025-13-05' } }],
+    });
+    if (e.kind === 'task') {
+      expect(e.steps[0]?.schedule).toEqual({ railId: 'rail-a' });
+    }
+  });
+  it('keeps a real calendar date (incl. a leap day)', () => {
+    const d = toProposalDraft({
+      kind: 'task',
+      title: 'x',
+      schedule: { bind: 'rail', railId: 'rail-a', date: '2028-02-29' },
+    });
+    if (d.kind === 'task') {
+      expect(d.schedule).toEqual({ mode: 'rail', railId: 'rail-a', date: '2028-02-29' });
+    }
+  });
 });
 
 describe('parseIntentsFromText', () => {
@@ -257,5 +303,152 @@ describe('parseIntentsFromText', () => {
       throw new Error('boom');
     };
     await expect(parseIntentsFromText('x', config, undefined, generate)).rejects.toThrow('boom');
+  });
+
+  describe('grounding check (§6.7.8)', () => {
+    const context: ParseContext = {
+      templates: [{ key: 'workday', name: '工作日' }],
+      rails: [
+        { id: 'rail-am', name: '晨间', templateKey: 'workday', startMinutes: 420, durationMinutes: 30 },
+      ],
+    };
+
+    it('strips a hallucinated railId from a whole-task schedule but keeps the date', async () => {
+      const generate: IntentObjectGenerator = async () => ({
+        proposals: [
+          {
+            kind: 'task',
+            title: 'x',
+            schedule: { bind: 'rail', railId: 'rail-ghost', date: '2026-05-25' },
+          },
+        ],
+      });
+      const [d] = await parseIntentsFromText('x', config, context, generate);
+      if (d?.kind === 'task') {
+        // Degraded to unbound ('' = the review card's native "no rail
+        // picked" state) instead of a dangling reference.
+        expect(d.schedule).toEqual({ mode: 'rail', railId: '', date: '2026-05-25' });
+      } else {
+        throw new Error('expected a task draft');
+      }
+    });
+
+    it('strips hallucinated step railIds but keeps grounded ones', async () => {
+      const generate: IntentObjectGenerator = async () => ({
+        proposals: [
+          {
+            kind: 'task',
+            title: 'x',
+            steps: [
+              { label: 'ok', schedule: { railId: 'rail-am' } },
+              { label: 'ghost', schedule: { railId: 'rail-ghost', date: '2026-05-25' } },
+            ],
+          },
+        ],
+      });
+      const [d] = await parseIntentsFromText('x', config, context, generate);
+      if (d?.kind === 'task') {
+        expect(d.steps[0]?.schedule).toEqual({ railId: 'rail-am' });
+        expect(d.steps[1]?.schedule).toEqual({ railId: '', date: '2026-05-25' });
+      } else {
+        throw new Error('expected a task draft');
+      }
+    });
+
+    it('unbinds a habit slot pointing at a hallucinated rail and filters unknown templateKeys', async () => {
+      const generate: IntentObjectGenerator = async () => ({
+        proposals: [
+          {
+            kind: 'habit',
+            name: 'h',
+            slots: [
+              { bind: 'existing', railId: 'rail-ghost', weekdays: [1, 3] },
+              { bind: 'existing', railId: 'rail-am' },
+              { bind: 'new', startMinutes: 420, templateKeys: ['ghostday', 'workday'] },
+              { bind: 'new', startMinutes: 500, templateKeys: ['ghostday'] },
+            ],
+          },
+        ],
+      });
+      const [d] = await parseIntentsFromText('x', config, context, generate);
+      if (d?.kind === 'habit') {
+        expect(d.slots[0]).toEqual({ mode: 'existing', railId: '', weekdays: [1, 3] });
+        expect(d.slots[1]).toEqual({ mode: 'existing', railId: 'rail-am' });
+        expect(d.slots[2]).toMatchObject({ mode: 'new', templateKeys: ['workday'] });
+        // All-unknown keys → no restriction (= every template), which
+        // the review card shows, instead of rails on ghost templates.
+        expect((d.slots[3] as { templateKeys?: string[] }).templateKeys).toBeUndefined();
+      } else {
+        throw new Error('expected a habit draft');
+      }
+    });
+
+    it('leaves references untouched when no grounding context was given', async () => {
+      const generate: IntentObjectGenerator = async () => ({
+        proposals: [
+          { kind: 'task', title: 'x', schedule: { bind: 'rail', railId: 'rail-anything' } },
+        ],
+      });
+      const [d] = await parseIntentsFromText('x', config, undefined, generate);
+      if (d?.kind === 'task') {
+        expect(d.schedule).toEqual({ mode: 'rail', railId: 'rail-anything' });
+      }
+    });
+  });
+});
+
+// ── default generator (forced tool call via the AI SDK) ─────────────
+
+describe('defaultGenerate response handling', () => {
+  const config: ParseIntentsConfig = { baseUrl: 'http://x/v1', apiKey: 'k', model: 'm' };
+
+  it('accepts a schema-valid forced tool call and passes a default timeout', async () => {
+    generateTextMock.mockResolvedValue({
+      text: '',
+      toolCalls: [{ toolName: 'emit_proposals', input: VALID }],
+    });
+    const out = await parseIntentsFromText('x', config);
+    expect(out.map((d) => d.kind)).toEqual(['habit', 'task']);
+    expect(generateTextMock).toHaveBeenCalledWith(
+      expect.objectContaining({ timeout: AI_PARSE_TIMEOUT_MS }),
+    );
+  });
+
+  it('classifies schema-mismatched structured output as parse-error, not network', async () => {
+    // e.g. the model writes percent as the string "20%" — a structured-
+    // output failure of the MODEL; before the fix the ZodError fell into
+    // mapToAiClientError's fallback and surfaced as「Network failure」.
+    generateTextMock.mockResolvedValue({
+      text: '',
+      toolCalls: [
+        {
+          toolName: 'emit_proposals',
+          input: {
+            proposals: [{ kind: 'task', title: 'x', steps: [{ label: 's', percent: '20%' }] }],
+          },
+        },
+      ],
+    });
+    const err = await parseIntentsFromText('x', config).then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(AiClientError);
+    expect((err as AiClientError).kind).toBe('parse-error');
+    expect((err as AiClientError).message).not.toMatch(/network/i);
+  });
+
+  it('classifies a missing tool call as parse-error', async () => {
+    generateTextMock.mockResolvedValue({ text: 'just prose', toolCalls: [] });
+    const err = await parseIntentsFromText('x', config).then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(AiClientError);
+    expect((err as AiClientError).kind).toBe('parse-error');
   });
 });
