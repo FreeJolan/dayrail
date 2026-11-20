@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CURRENT_CONTAINER_VERSION,
   DRYJ_MAGIC,
+  crc32,
   decodeDryj,
   encodeDryj,
   type DryjMeta,
@@ -106,5 +107,101 @@ describe('dryj codec', () => {
     // with something that breaks parse.
     bytes[10] = 0x00; // null byte — not a valid JSON start char
     expect(() => decodeDryj(bytes)).toThrow(/meta JSON parse failed/);
+  });
+});
+
+// ---- v2 container framing (update length + CRC-32) ----
+//
+// Audit #47: the v1 container had no length / checksum over the
+// update segment, so a file truncated inside the update decoded
+// "successfully" and the damage only surfaced (or half-applied)
+// inside Y.applyUpdate — after which the mangled doc was persisted
+// back as the new truth. v2 must catch truncation and bit-rot at the
+// container layer, before any byte reaches Yjs.
+describe('dryj v2 framing', () => {
+  /** Hand-rolled v1 container (legacy layout: no length/checksum —
+   *  update is "whatever bytes remain"). */
+  function encodeV1(meta: DryjMeta, update: Uint8Array): Uint8Array {
+    const metaBytes = new TextEncoder().encode(JSON.stringify(meta));
+    const out = new Uint8Array(10 + metaBytes.length + update.length);
+    out.set(DRYJ_MAGIC, 0);
+    out[4] = 0;
+    out[5] = 1; // container version 1
+    const metaLen = metaBytes.length;
+    out[6] = (metaLen >>> 24) & 0xff;
+    out[7] = (metaLen >>> 16) & 0xff;
+    out[8] = (metaLen >>> 8) & 0xff;
+    out[9] = metaLen & 0xff;
+    out.set(metaBytes, 10);
+    out.set(update, 10 + metaBytes.length);
+    return out;
+  }
+
+  it('writes container version 2', () => {
+    expect(CURRENT_CONTAINER_VERSION).toBe(2);
+    const bytes = encodeDryj(sampleMeta, sampleUpdate);
+    expect((bytes[4]! << 8) | bytes[5]!).toBe(2);
+  });
+
+  it('still decodes a legacy v1 container', () => {
+    const v1 = encodeV1(sampleMeta, sampleUpdate);
+    const decoded = decodeDryj(v1);
+    expect(decoded.containerVersion).toBe(1);
+    expect(decoded.meta).toEqual(sampleMeta);
+    expect(Array.from(decoded.update)).toEqual(Array.from(sampleUpdate));
+  });
+
+  it('decodes a legacy v1 container with an empty update', () => {
+    const v1 = encodeV1(sampleMeta, new Uint8Array(0));
+    expect(decodeDryj(v1).update.length).toBe(0);
+  });
+
+  it('detects truncation inside the update payload', () => {
+    const bytes = encodeDryj(sampleMeta, sampleUpdate);
+    const truncated = bytes.subarray(0, bytes.length - 3);
+    expect(() => decodeDryj(truncated)).toThrow(/payload truncated/);
+  });
+
+  it('detects truncation that cuts into the payload header', () => {
+    const bytes = encodeDryj(sampleMeta, sampleUpdate);
+    // Keep meta intact but lose part of the [len][crc] header.
+    const headerCut = bytes.subarray(0, bytes.length - sampleUpdate.length - 5);
+    expect(() => decodeDryj(headerCut)).toThrow(/truncated container/);
+  });
+
+  it('detects a single flipped bit in the update payload', () => {
+    const bytes = encodeDryj(sampleMeta, sampleUpdate);
+    bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 0x01;
+    expect(() => decodeDryj(bytes)).toThrow(/checksum mismatch/);
+  });
+
+  it('detects trailing garbage appended after the payload', () => {
+    const bytes = encodeDryj(sampleMeta, sampleUpdate);
+    const padded = new Uint8Array(bytes.length + 4);
+    padded.set(bytes, 0);
+    expect(() => decodeDryj(padded)).toThrow(/length mismatch/);
+  });
+
+  it('round-trips a large payload through the v2 framing', () => {
+    const big = new Uint8Array(100_000);
+    for (let i = 0; i < big.length; i++) big[i] = (i * 31) & 0xff;
+    const decoded = decodeDryj(encodeDryj(sampleMeta, big));
+    expect(decoded.containerVersion).toBe(2);
+    expect(decoded.update.length).toBe(big.length);
+    expect(decoded.update[99_999]).toBe(big[99_999]);
+  });
+
+  it('crc32 matches the IEEE reference vector', () => {
+    // CRC-32("123456789") = 0xCBF43926 — the classic check value.
+    const bytes = new TextEncoder().encode('123456789');
+    expect(crc32(bytes)).toBe(0xcbf43926);
+    expect(crc32(new Uint8Array(0))).toBe(0);
+  });
+
+  it('tells old readers to upgrade on a future container version', () => {
+    const bytes = encodeDryj(sampleMeta, sampleUpdate);
+    bytes[4] = 0;
+    bytes[5] = 3;
+    expect(() => decodeDryj(bytes)).toThrow(/upgrade DayRail/);
   });
 });

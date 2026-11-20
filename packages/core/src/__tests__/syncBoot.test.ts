@@ -27,6 +27,7 @@ vi.mock('@dayrail/db/yDocStore', async (importOriginal) => {
 vi.mock('@dayrail/db/yjsPersistence', () => ({
   loadYDocBytes: async () => disk.bytes,
   saveYDocBytes: async (bytes: Uint8Array) => { disk.savedBytes = bytes; },
+  quarantineYDocBytes: async () => null,
 }));
 vi.mock('../../../../apps/web/src/lib/importData', () => ({ popPendingImport: () => null }));
 vi.mock('../../../../apps/web/src/lib/sync/driveAuth', () => ({

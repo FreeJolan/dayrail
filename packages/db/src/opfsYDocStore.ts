@@ -4,12 +4,21 @@
 
 import type { SyncMeta, YDocStore, YDocStoreOptions } from './yDocStore';
 import { DEFAULT_SYNC_META } from './yDocStore';
+import { makeSerialQueue } from './serialQueue';
 
 // File name set (prod vs dev). For OPFS, browser origin already
 // separates PWA dev (`localhost:5173`) from PWA prod, so the suffix
 // is defense-in-depth more than functional — but keeps the two
 // backends symmetrical and shields against any future surface that
 // shares an origin between dev and prod.
+//
+// The `*Tmp` entries are PREFIXES, not literal filenames: each atomic
+// write appends a per-call unique suffix (see atomicWriteBinary), so
+// two tabs that both have this store open never write the same .tmp
+// path and can't truncate each other's in-flight write. (Cross-tab
+// whole-file LWW on the FINAL file is a separate, parked concern —
+// ROADMAP "Single-tab guard"; the unique tmp names only remove the
+// silent mutual-corruption mode.)
 function fileNames(devMode: boolean) {
   const suffix = devMode ? '-dev' : '';
   return {
@@ -20,6 +29,14 @@ function fileNames(devMode: boolean) {
     syncMeta: `dayrail-sync-meta${suffix}.json`,
     syncMetaTmp: `dayrail-sync-meta${suffix}.json.tmp`,
   };
+}
+
+function uniqueTmpName(prefix: string): string {
+  const rand =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${rand}`;
 }
 
 async function getRoot(): Promise<FileSystemDirectoryHandle> {
@@ -59,15 +76,19 @@ async function loadTextFile(name: string): Promise<string | null> {
   return await file.text();
 }
 
-// Atomic write: write to .tmp, rename via FileSystemFileHandle.move
-// (Chrome 110+, Safari 17+) with two-arg/one-arg/copy+delete fallbacks.
-// Same shape as the original yjsPersistence.ts saveYDocBytes.
+// Atomic write: write to a uniquely-named .tmp, rename via
+// FileSystemFileHandle.move (Chrome 110+, Safari 17+) with
+// two-arg/one-arg/copy+delete fallbacks. Same shape as the original
+// yjsPersistence.ts saveYDocBytes. `tmpPrefix` gets a per-call random
+// suffix so a second tab's concurrent write can never recycle /
+// truncate this call's tmp file out from under it.
 async function atomicWriteBinary(
   name: string,
-  tmp: string,
+  tmpPrefix: string,
   bytes: Uint8Array,
 ): Promise<void> {
   const root = await getRoot();
+  const tmp = uniqueTmpName(tmpPrefix);
   const tmpHandle = await root.getFileHandle(tmp, { create: true });
   const writable = await tmpHandle.createWritable();
   await writable.write(bytes as unknown as BufferSource);
@@ -116,30 +137,31 @@ async function removeIfExists(root: FileSystemDirectoryHandle, name: string): Pr
   });
 }
 
-// Per-file serial write chains — mirrors the wrapped/inFlightSave
-// trick from the original yjsPersistence so concurrent callers don't
-// race on the .tmp file. Each file gets its own chain since they
-// don't conflict with each other.
-function makeSerialQueue(): (task: () => Promise<void>) => Promise<void> {
-  let inFlight: Promise<void> | null = null;
-  return (taskFn) => {
-    const prev = inFlight;
-    const task = (async () => {
-      if (prev) {
-        try {
-          await prev;
-        } catch {
-          /* prior task failed; we proceed */
-        }
-      }
-      await taskFn();
-    })();
-    const wrapped: Promise<void> = task.finally(() => {
-      if (inFlight === wrapped) inFlight = null;
+/** Remove the fixed-name legacy tmp file plus any uniquely-suffixed
+ *  tmp files (`<prefix>-<rand>`) left behind by interrupted writes.
+ *  Best-effort: directory iteration is typed loosely because
+ *  FileSystemDirectoryHandle's async iterator isn't in lib.dom on
+ *  every TS configuration. */
+async function removeTmpFiles(
+  root: FileSystemDirectoryHandle,
+  tmpPrefix: string,
+): Promise<void> {
+  await removeIfExists(root, tmpPrefix);
+  const iterable = root as unknown as { keys?: () => AsyncIterable<string> };
+  if (typeof iterable.keys !== 'function') return;
+  const stale: string[] = [];
+  try {
+    for await (const name of iterable.keys()) {
+      if (name.startsWith(`${tmpPrefix}-`)) stale.push(name);
+    }
+  } catch {
+    return; // iteration unsupported — fixed-name removal above is enough
+  }
+  for (const name of stale) {
+    await removeIfExists(root, name).catch(() => {
+      /* best-effort */
     });
-    inFlight = wrapped;
-    return task;
-  };
+  }
 }
 
 /** Generic OPFS-backed JSON store for a small, self-contained blob that
@@ -193,10 +215,74 @@ export class OpfsYDocStore implements YDocStore {
     );
   }
 
-  async deleteYDoc(): Promise<void> {
-    const root = await getRoot();
-    await removeIfExists(root, this.names.state);
-    await removeIfExists(root, this.names.stateTmp);
+  // Deletion goes through the SAME serial queue as saveYDoc —
+  // otherwise an in-flight / queued save interleaves with the wipe
+  // and its final rename resurrects the file after the delete
+  // claims to be done.
+  deleteYDoc(): Promise<void> {
+    return this.stateQueue(async () => {
+      const root = await getRoot();
+      await removeIfExists(root, this.names.state);
+      await removeTmpFiles(root, this.names.stateTmp);
+    });
+  }
+
+  /** Move a state file that failed to decode aside under a
+   *  `.corrupt-<n>` name so the bytes survive for manual recovery /
+   *  a future fixed build, while hydrate restarts from a clean slate
+   *  without ever overwriting them. Serialized on the state queue so
+   *  it can't interleave with an in-flight save. */
+  quarantineYDoc(): Promise<string | null> {
+    return this.stateQueue(async () => {
+      const root = await getRoot();
+      let handle: FileSystemFileHandle;
+      try {
+        handle = await root.getFileHandle(this.names.state, { create: false });
+      } catch (err) {
+        if ((err as DOMException).name === 'NotFoundError') return null;
+        throw err;
+      }
+      const target = await this.firstFreeCorruptName(root);
+      const movable = handle as unknown as {
+        move?: (...args: unknown[]) => Promise<void>;
+      };
+      if (typeof movable.move === 'function') {
+        try {
+          await movable.move(root, target);
+          return target;
+        } catch {
+          try {
+            await movable.move(target);
+            return target;
+          } catch {
+            /* fall through to copy+delete */
+          }
+        }
+      }
+      const file = await handle.getFile();
+      const buf = new Uint8Array(await file.arrayBuffer());
+      const quarantineHandle = await root.getFileHandle(target, { create: true });
+      const w = await quarantineHandle.createWritable();
+      await w.write(buf as unknown as BufferSource);
+      await w.close();
+      await root.removeEntry(this.names.state);
+      return target;
+    });
+  }
+
+  private async firstFreeCorruptName(
+    root: FileSystemDirectoryHandle,
+  ): Promise<string> {
+    for (let i = 1; i <= 99; i++) {
+      const candidate = `${this.names.state}.corrupt-${i}`;
+      try {
+        await root.getFileHandle(candidate, { create: false });
+      } catch (err) {
+        if ((err as DOMException).name === 'NotFoundError') return candidate;
+        throw err;
+      }
+    }
+    return `${this.names.state}.corrupt-${Date.now()}`;
   }
 
   loadLastPulled(): Promise<Uint8Array | null> {
@@ -209,10 +295,12 @@ export class OpfsYDocStore implements YDocStore {
     );
   }
 
-  async deleteLastPulled(): Promise<void> {
-    const root = await getRoot();
-    await removeIfExists(root, this.names.lastPulled);
-    await removeIfExists(root, this.names.lastPulledTmp);
+  deleteLastPulled(): Promise<void> {
+    return this.lastPulledQueue(async () => {
+      const root = await getRoot();
+      await removeIfExists(root, this.names.lastPulled);
+      await removeTmpFiles(root, this.names.lastPulledTmp);
+    });
   }
 
   async loadSyncMeta(): Promise<SyncMeta | null> {
@@ -234,15 +322,28 @@ export class OpfsYDocStore implements YDocStore {
     );
   }
 
+  // Each file's deletion is enqueued on that file's own serial write
+  // queue, so a save already in flight (or queued — e.g. the 750ms
+  // debounced persist that fired while the user sat in the confirm
+  // dialog) fully lands BEFORE the wipe removes the file, instead of
+  // interleaving with it and resurrecting old data post-reset.
   async reset(): Promise<void> {
-    const root = await getRoot();
     await Promise.all([
-      removeIfExists(root, this.names.state),
-      removeIfExists(root, this.names.stateTmp),
-      removeIfExists(root, this.names.lastPulled),
-      removeIfExists(root, this.names.lastPulledTmp),
-      removeIfExists(root, this.names.syncMeta),
-      removeIfExists(root, this.names.syncMetaTmp),
+      this.stateQueue(async () => {
+        const root = await getRoot();
+        await removeIfExists(root, this.names.state);
+        await removeTmpFiles(root, this.names.stateTmp);
+      }),
+      this.lastPulledQueue(async () => {
+        const root = await getRoot();
+        await removeIfExists(root, this.names.lastPulled);
+        await removeTmpFiles(root, this.names.lastPulledTmp);
+      }),
+      this.syncMetaQueue(async () => {
+        const root = await getRoot();
+        await removeIfExists(root, this.names.syncMeta);
+        await removeTmpFiles(root, this.names.syncMetaTmp);
+      }),
     ]);
   }
 }

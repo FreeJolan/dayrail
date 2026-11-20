@@ -3,6 +3,7 @@ import {
   selectCheckinQueue,
   selectPendingQueue,
   selectTodayTimeline,
+  toIsoDateTime,
 } from '../today';
 import type {
   CalendarRule,
@@ -11,6 +12,7 @@ import type {
   Rail,
   RailRevision,
   Task,
+  TaskOccurrence,
   Template,
 } from '../types';
 import { REVISION_SENTINEL_DATE } from '../types';
@@ -400,5 +402,179 @@ describe('selectPendingQueue', () => {
       const rows = selectPendingQueue(withRevisions(state), NOW);
       expect(rows, `status=${s}`).toEqual([]);
     }
+  });
+});
+
+// ------------------------------------------------------------------
+// toIsoDateTime — overnight (past-midnight) windows. Regression for
+// the "T24:30" bug: minutes >= 1440 used to produce unparseable
+// datetime strings (Date.parse → NaN) that silently dropped overnight
+// rail tasks from the check-in strip and the Pending queue.
+// ------------------------------------------------------------------
+
+describe('toIsoDateTime', () => {
+  it('formats same-day minutes unchanged', () => {
+    expect(toIsoDateTime('2026-11-20', 90)).toBe('2026-11-20T01:30');
+    expect(toIsoDateTime('2026-11-20', 23 * 60)).toBe('2026-11-20T23:00');
+    expect(toIsoDateTime('2026-11-20', 0)).toBe('2026-11-20T00:00');
+  });
+
+  it('rolls minutes past midnight into the next calendar day', () => {
+    // 23:00 rail + 120 min → ends 01:00 the NEXT day, not "T25:00".
+    expect(toIsoDateTime('2026-11-20', 1380 + 120)).toBe('2026-11-21T01:00');
+    expect(toIsoDateTime('2026-11-20', 1440)).toBe('2026-11-21T00:00');
+  });
+
+  it('rolls across month and year boundaries', () => {
+    expect(toIsoDateTime('2026-11-30', 1470)).toBe('2026-12-01T00:30');
+    expect(toIsoDateTime('2026-12-31', 1500)).toBe('2027-01-01T01:00');
+  });
+
+  it('always produces a Date.parse-able local datetime', () => {
+    const s = toIsoDateTime('2026-04-18', 23 * 60 + 120);
+    expect(Number.isNaN(Date.parse(s))).toBe(false);
+  });
+});
+
+describe('overnight rails (start + duration past midnight)', () => {
+  // 23:00–01:00 rail: the planned window ends at 01:00 the next day.
+  const overnight = rail({
+    id: 'r-night',
+    templateKey: 'workday',
+    startMinutes: 23 * 60,
+    durationMinutes: 120,
+  });
+
+  it('check-in: surfaces a pending task once the (next-day) window ended', () => {
+    // Slot on 2026-04-18 → window ends 2026-04-19T01:00. NOW is
+    // 2026-04-19T12:00 → ended 11 h ago, inside the 24 h strip.
+    // Before the rollover fix this row was silently dropped (NaN end).
+    const t = task({ id: 't-night', railId: 'r-night', date: '2026-04-18' });
+    const state = { rails: mapById([overnight]), tasks: mapById([t]) };
+    const rows = selectCheckinQueue(withRevisions(state), NOW);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.plannedEnd).toBe('2026-04-19T01:00');
+  });
+
+  it('check-in: does NOT surface while tonight\'s window is still open', () => {
+    // Slot on TODAY (2026-04-19) → ends 2026-04-20T01:00 > NOW.
+    const t = task({ id: 't-tonight', railId: 'r-night', date: TODAY_ISO });
+    const state = { rails: mapById([overnight]), tasks: mapById([t]) };
+    expect(selectCheckinQueue(withRevisions(state), NOW)).toEqual([]);
+  });
+
+  it('pending queue: stale overnight task surfaces with a valid window', () => {
+    const t = task({ id: 't-old', railId: 'r-night', date: '2026-04-15' });
+    const state = { rails: mapById([overnight]), tasks: mapById([t]) };
+    const rows = selectPendingQueue(withRevisions(state), NOW);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.plannedStart).toBe('2026-04-15T23:00');
+    expect(rows[0]?.plannedEnd).toBe('2026-04-16T01:00');
+  });
+});
+
+// ------------------------------------------------------------------
+// Deleted (tombstoned) rails — §5.7 "master list / no hidden rows".
+// A pending task whose slot points at a rail that no longer resolves
+// on the slot's date must fall back to a rail-less Pending row rather
+// than silently disappearing from every scheduling surface.
+// ------------------------------------------------------------------
+
+describe('pending tasks on deleted (tombstoned) rails', () => {
+  const r = rail({
+    id: 'r1',
+    templateKey: 'workday',
+    startMinutes: 8 * 60,
+    durationMinutes: 60,
+  });
+  const tombstoned = <
+    S extends {
+      rails?: Record<string, Rail>;
+      calendarRules?: Record<string, CalendarRule>;
+    },
+  >(
+    state: S,
+  ) => ({
+    ...withRevisions(state),
+    railTombstones: { r1: { effectiveFrom: '2026-04-01', at: 0 } },
+  });
+
+  it('pending queue: surfaces a rail-less row instead of dropping the task', () => {
+    const t = task({ id: 't1', railId: 'r1', date: '2026-04-15' });
+    const rows = selectPendingQueue(
+      tombstoned({ rails: mapById([r]), tasks: mapById([t]) }),
+      NOW,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.task.id).toBe('t1');
+    expect(rows[0]?.rail).toBeUndefined();
+    expect(rows[0]?.plannedStart).toBeUndefined();
+  });
+
+  it('pending queue: surfaces future-dated slots too (the schedule is void)', () => {
+    // With the rail gone there is no window to wait for — the task
+    // needs a re-scheduling decision now.
+    const t = task({ id: 't-future', railId: 'r1', date: '2026-04-30' });
+    const rows = selectPendingQueue(
+      tombstoned({ rails: mapById([r]), tasks: mapById([t]) }),
+      NOW,
+    );
+    expect(rows.map((row) => row.task.id)).toEqual(['t-future']);
+  });
+
+  it('pending queue: deferred task on a dead rail keeps surfacing (rail-less)', () => {
+    const t = task({
+      id: 't-def',
+      railId: 'r1',
+      date: '2026-04-15',
+      status: 'deferred',
+    });
+    const rows = selectPendingQueue(
+      tombstoned({ rails: mapById([r]), tasks: mapById([t]) }),
+      NOW,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.rail).toBeUndefined();
+  });
+
+  it('pending queue: occurrence slots on a dead rail surface rail-less rows', () => {
+    const host = task({ id: 't-host' });
+    const occ: TaskOccurrence = {
+      id: 'occ-1',
+      taskId: 't-host',
+      slot: { cycleId: 'cycle-2026-04-15', date: '2026-04-15', railId: 'r1' },
+      status: 'pending',
+      order: 0,
+    };
+    const base = tombstoned({ rails: mapById([r]), tasks: mapById([host]) });
+    const rows = selectPendingQueue(
+      { ...base, taskOccurrences: mapById([occ]) },
+      NOW,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.occurrence?.id).toBe('occ-1');
+    expect(rows[0]?.rail).toBeUndefined();
+  });
+
+  it('slots BEFORE the tombstone date still resolve the historical rail', () => {
+    // effectiveFrom = 2026-04-01 → a slot on 2026-03-30 predates the
+    // deletion; the sentinel revision still resolves and the row stays
+    // rail-bound.
+    const t = task({ id: 't-old', railId: 'r1', date: '2026-03-30' });
+    const rows = selectPendingQueue(
+      tombstoned({ rails: mapById([r]), tasks: mapById([t]) }),
+      NOW,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.rail?.id).toBe('r1');
+  });
+
+  it('check-in stays rail-bound: dead-rail tasks go to Pending, not the strip', () => {
+    const t = task({ id: 't1', railId: 'r1', date: TODAY_ISO });
+    const rows = selectCheckinQueue(
+      tombstoned({ rails: mapById([r]), tasks: mapById([t]) }),
+      NOW,
+    );
+    expect(rows).toEqual([]);
   });
 });

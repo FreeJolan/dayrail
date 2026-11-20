@@ -60,6 +60,106 @@ fn show_and_focus_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Durable atomic write for the Y.Doc store files (ERD §7.9).
+///
+/// `tauri-plugin-fs`'s JS `writeFile` + `rename` pair never fsyncs
+/// (write_file_inner only `write_all`s; rename is a bare
+/// `std::fs::rename`), so on power loss the rename's metadata change
+/// can hit the journal before the tmp file's data blocks hit disk —
+/// leaving a 0-byte / truncated `state.dryj` under the final name and
+/// violating the YDocStore "interrupted write leaves the previous
+/// bytes intact" contract. This command owns the full durability
+/// dance on the Rust side:
+///
+///   write unique tmp → fsync(file) → rename → fsync(parent dir)
+///
+/// The tmp name embeds a UUID so two webview windows can never share
+/// (and mutually truncate) a fixed `.tmp` path. `rel_path` is
+/// resolved against `app_data_dir()` and strictly validated — no
+/// absolute paths, no `..`, no backslashes — so a compromised webview
+/// can't use this as an arbitrary-file-write primitive.
+#[tauri::command]
+fn ydoc_atomic_write(
+    app: tauri::AppHandle,
+    rel_path: String,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {}", e))?;
+    atomic_write_under(&base, &rel_path, &bytes)
+}
+
+/// Reject anything that could escape `base`: absolute paths, drive /
+/// root prefixes, `.` / `..` components, and backslash separators
+/// (which `Path::components` would treat as literal file-name bytes
+/// on Unix but as separators on Windows).
+fn validate_rel_path(rel_path: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::Component;
+    if rel_path.is_empty() || rel_path.contains('\\') {
+        return Err(format!("invalid rel_path: {:?}", rel_path));
+    }
+    let path = std::path::Path::new(rel_path);
+    let mut out = std::path::PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::Normal(c) => out.push(c),
+            _ => return Err(format!("invalid rel_path: {:?}", rel_path)),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        return Err(format!("invalid rel_path: {:?}", rel_path));
+    }
+    Ok(out)
+}
+
+fn atomic_write_under(
+    base: &std::path::Path,
+    rel_path: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    use std::io::Write;
+    let rel = validate_rel_path(rel_path)?;
+    let final_path = base.join(&rel);
+    let parent = final_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| base.to_path_buf());
+    std::fs::create_dir_all(&parent).map_err(|e| format!("create dir: {}", e))?;
+    let file_name = final_path
+        .file_name()
+        .ok_or_else(|| format!("invalid rel_path: {:?}", rel_path))?
+        .to_string_lossy()
+        .to_string();
+    let tmp = parent.join(format!("{}.{}.tmp", file_name, uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        // Data blocks must be on disk BEFORE the rename's metadata
+        // change, otherwise the classic APFS/ext4 reorder leaves a
+        // 0-byte file under the final name after a power cut.
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, &final_path)?;
+        // Persist the rename itself: fsync the parent directory so
+        // the directory-entry update is durable too. Unix-only —
+        // Windows can't open a directory as a File, and the reorder
+        // this guards against is a POSIX-filesystem behavior.
+        #[cfg(unix)]
+        {
+            std::fs::File::open(&parent)?.sync_all()?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        // Best-effort: don't leave a dangling tmp file behind.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.map_err(|e| format!("atomic write {}: {}", rel_path, e))
+}
+
 /// Restart the app after an updater install, signalling the new
 /// process that it should foreground itself instead of inheriting
 /// macOS's default "stay hidden behind whatever the user is doing"
@@ -143,6 +243,7 @@ pub fn run() {
             backup::backup_delete,
             backup::backup_export_to,
             backup::backup_default_dir,
+            ydoc_atomic_write,
             relaunch_for_update,
         ])
         .setup(|app| {
@@ -204,4 +305,94 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// Unique scratch dir per test under the real temp dir, cleaned up
+    /// by the Drop guard (same pattern as backup.rs).
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "dayrail-ydoc-write-test-{}-{}",
+                tag,
+                uuid::Uuid::new_v4()
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn list_names(dir: &Path) -> Vec<String> {
+        match fs::read_dir(dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn atomic_write_creates_dirs_lands_bytes_and_leaves_no_tmp() {
+        let scratch = Scratch::new("happy");
+        atomic_write_under(scratch.path(), "ydoc/state.dryj", b"snapshot-bytes").unwrap();
+        let final_path = scratch.path().join("ydoc").join("state.dryj");
+        assert_eq!(fs::read(&final_path).unwrap(), b"snapshot-bytes");
+        let leftovers: Vec<String> = list_names(&scratch.path().join("ydoc"))
+            .into_iter()
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "stale tmp files: {:?}", leftovers);
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_file() {
+        let scratch = Scratch::new("replace");
+        atomic_write_under(scratch.path(), "ydoc/state.dryj", b"first").unwrap();
+        atomic_write_under(scratch.path(), "ydoc/state.dryj", b"second").unwrap();
+        let final_path = scratch.path().join("ydoc").join("state.dryj");
+        assert_eq!(fs::read(&final_path).unwrap(), b"second");
+    }
+
+    #[test]
+    fn atomic_write_rejects_escaping_paths() {
+        let scratch = Scratch::new("escape");
+        for rel in [
+            "",
+            "..",
+            "../evil.dryj",
+            "ydoc/../../evil.dryj",
+            "/etc/evil.dryj",
+            "./ydoc/state.dryj",
+            "ydoc\\state.dryj",
+        ] {
+            let err = atomic_write_under(scratch.path(), rel, b"x")
+                .expect_err(&format!("{:?} must be rejected", rel));
+            assert!(err.contains("invalid rel_path"), "{:?} → {}", rel, err);
+        }
+        // Nothing may have been written anywhere in the scratch dir.
+        assert!(list_names(scratch.path()).is_empty());
+    }
+
+    #[test]
+    fn validate_rel_path_accepts_plain_nested_names() {
+        assert_eq!(
+            validate_rel_path("ydoc-dev/sync-meta.json").unwrap(),
+            PathBuf::from("ydoc-dev").join("sync-meta.json")
+        );
+    }
 }

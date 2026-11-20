@@ -47,6 +47,12 @@ export interface CallChatCompletionParams {
   /** Hung-provider watchdog override (tests). Defaults to
    *  `AI_STREAM_IDLE_TIMEOUT_MS`. */
   idleTimeoutMs?: number;
+  /** SDK-internal retry attempts for retryable statuses (429/5xx)
+   *  (tests). Defaults to the AI SDK's own default. */
+  maxRetries?: number;
+  /** Cold-start 403 backoff schedule override (tests). Defaults to
+   *  `COLD_START_403_BACKOFFS_MS`. */
+  coldStartBackoffsMs?: number[];
 }
 
 // ── Default timeouts ───────────────────────────────────────────────
@@ -139,12 +145,13 @@ function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
 export async function withColdStart403Retry<T>(
   attempt: () => Promise<T>,
   signal?: AbortSignal,
+  backoffsMs: readonly number[] = COLD_START_403_BACKOFFS_MS,
 ): Promise<T> {
   for (let i = 0; ; i++) {
     try {
       return await attempt();
     } catch (err) {
-      const backoff = COLD_START_403_BACKOFFS_MS[i]; // undefined once exhausted
+      const backoff = backoffsMs[i]; // undefined once exhausted
       if (
         backoff === undefined ||
         !(err instanceof AiClientError) ||
@@ -204,6 +211,7 @@ export async function callChatCompletion(
     const result = streamText({
       model: provider(model),
       messages,
+      maxRetries: params.maxRetries,
       abortSignal: signal
         ? AbortSignal.any([signal, watchdog.signal])
         : watchdog.signal,
@@ -249,7 +257,7 @@ export async function callChatCompletion(
     } finally {
       clearTimeout(idleTimer);
     }
-  }, signal);
+  }, signal, params.coldStartBackoffsMs);
 }
 
 /** Map any thrown error from the AI SDK / fetch layer onto our

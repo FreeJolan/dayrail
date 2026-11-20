@@ -9,6 +9,16 @@ import { startOfWeekMonday, toIsoDate } from './cycleFromStore';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Local calendar-day addition. Millisecond arithmetic
+ *  (`getTime() + n * DAY_MS`) is NOT equivalent for local-midnight
+ *  dates: across a DST transition a week is 167 h or 169 h, so the
+ *  result lands at 23:00 of the previous day (or 01:00), shifting
+ *  the derived ISO date. `new Date(y, m, d + n)` renormalises in
+ *  calendar space and always lands on local midnight. */
+function addDays(d: Date, days: number): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days);
+}
+
 /** First Monday on or after the 1st of `year`/`month` (1-12). */
 function firstMondayOfMonth(year: number, month: number): Date {
   const first = new Date(year, month - 1, 1);
@@ -22,7 +32,11 @@ function firstMondayOfMonth(year: number, month: number): Date {
  *  The first Monday on or after the 1st of that month is C1. */
 export function cycleNumberOfMonday(monday: Date): number {
   const firstMon = firstMondayOfMonth(monday.getFullYear(), monday.getMonth() + 1);
-  const diff = Math.floor((monday.getTime() - firstMon.getTime()) / DAY_MS);
+  // Both endpoints are local midnights, so the raw ms diff is "N days
+  // ± 1 h" when a DST transition sits in between. Round (not floor)
+  // recovers the exact calendar-day count — floor turned 167 h into
+  // 6 days and stamped two consecutive weeks with the same C number.
+  const diff = Math.round((monday.getTime() - firstMon.getTime()) / DAY_MS);
   return Math.floor(diff / 7) + 1;
 }
 
@@ -34,7 +48,7 @@ export function cycleLabel(monday: Date, locale = 'zh-CN'): string {
 
 /** Short range label: `Apr 13 – Apr 19`. */
 export function cycleRangeLabel(monday: Date, locale = 'en-US'): string {
-  const end = new Date(monday.getTime() + 6 * DAY_MS);
+  const end = addDays(monday, 6);
   const fmt = (d: Date) =>
     d.toLocaleDateString(locale, { month: 'short', day: '2-digit' });
   return `${fmt(monday)} – ${fmt(end)}`;
@@ -86,9 +100,13 @@ export function enumerateCycles(
 
   const entries: CycleEntry[] = [];
   for (let i = -past; i <= future; i++) {
-    const m = new Date(anchorMonday.getTime() + i * 7 * DAY_MS);
+    // Calendar-day stepping: ms stepping drifted off local midnight
+    // across DST, producing Sunday-23:00 "Mondays" whose startIso
+    // missed the `cycle-{mondayIso}` store keys and whose onPick
+    // round-tripped back to the current week.
+    const m = addDays(anchorMonday, i * 7);
     const startIso = toIsoDate(m);
-    const endIso = toIsoDate(new Date(m.getTime() + 6 * DAY_MS));
+    const endIso = toIsoDate(addDays(m, 6));
     const stored = cycles?.[`cycle-${startIso}`];
     entries.push({
       monday: m,

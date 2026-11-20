@@ -155,6 +155,13 @@ export interface YDocStore {
    *  interrupted write leaves the previous bytes intact. */
   saveYDoc(bytes: Uint8Array): Promise<void>;
   deleteYDoc(): Promise<void>;
+  /** Move the current Y.Doc state file aside under a `.corrupt-<n>`
+   *  name (never delete, never overwrite). Called by hydrate when the
+   *  bytes fail to decode: the original bytes must survive for manual
+   *  recovery / a future fixed build, while the state path is freed so
+   *  a later boot can start clean. Returns the quarantine file name,
+   *  or null when no state file exists. */
+  quarantineYDoc(): Promise<string | null>;
   loadLastPulled(): Promise<Uint8Array | null>;
   saveLastPulled(bytes: Uint8Array): Promise<void>;
   deleteLastPulled(): Promise<void>;

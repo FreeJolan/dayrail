@@ -9,9 +9,19 @@
 //
 // Safe to call from any surface; the caller owns the confirmation UX.
 
+import { suspendPersistence } from '@dayrail/core';
 import { getYDocStore } from '@dayrail/db/yDocStore';
 
 export async function resetLocalData(): Promise<void> {
+  // Stop the debounced persist loop BEFORE wiping. A 750ms persist
+  // timer armed by a recent edit (and kept pending while the user sat
+  // in the confirm dialog) would otherwise fire mid-reset, enqueue a
+  // full-doc save behind the wipe, and resurrect the old data on
+  // reload. The suspension is one-way; location.reload() below gives
+  // the next session a fresh context. Store-level deletions are also
+  // serialized on the same per-file write queues as saves, so an
+  // already-in-flight save fully lands before its file is removed.
+  suspendPersistence();
   const store = await getYDocStore();
   await store.reset();
   location.reload();
