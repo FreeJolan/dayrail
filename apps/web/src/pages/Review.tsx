@@ -114,6 +114,7 @@ export function Review() {
   const railRevisions = useStore((s) => s.railRevisions);
   const railTombstones = useStore((s) => s.railTombstones);
   const tasks = useStore((s) => s.tasks);
+  const taskOccurrences = useStore((s) => s.taskOccurrences);
   const templates = useStore((s) => s.templates);
   const calendarRules = useStore((s) => s.calendarRules);
   const calendarRuleRevisions = useStore((s) => s.calendarRuleRevisions);
@@ -140,6 +141,7 @@ export function Review() {
       railRevisions,
       railTombstones,
       tasks,
+      taskOccurrences,
       templates,
       calendarRules,
       calendarRuleRevisions,
@@ -155,6 +157,7 @@ export function Review() {
       railRevisions,
       railTombstones,
       tasks,
+      taskOccurrences,
       templates,
       calendarRules,
       calendarRuleRevisions,

@@ -7,7 +7,12 @@
 // ranges; the derivation is the same.
 
 import type { DayRailState, Task } from '@dayrail/core';
-import { railAtDate, railsActiveOn } from '@dayrail/core';
+import {
+  railAtDate,
+  railsActiveOn,
+  selectEffectiveTaskSlots,
+  toIsoDate as coreToIsoDate,
+} from '@dayrail/core';
 import type {
   HeatmapRow,
   HeatmapState,
@@ -47,6 +52,7 @@ export function deriveReviewData(
     | 'railRevisions'
     | 'railTombstones'
     | 'tasks'
+    | 'taskOccurrences'
     | 'templates'
     | 'calendarRules'
     | 'calendarRuleRevisions'
@@ -69,14 +75,33 @@ export function deriveReviewData(
     templateByDate.set(date, pickTemplateForDate(state, date));
   }
 
-  // v0.4: Task.status is the single source of truth (ERD §10.1).
-  // Index tasks by (railId|date) — both hand-built and auto-habit
-  // tasks flow through the same path.
-  const taskByKey = new Map<string, Task>();
+  // §4.1 / §10.6 — a slot holds 0..N entries: every non-deleted Task
+  // scheduled there (slot↔task is one-to-many) AND, for occurrence-
+  // managed tasks, every occurrence whose own slot lands there
+  // (`Task.slot` is cleared at adoption, so reading only `task.slot`
+  // made split tasks invisible to Review). Collect the per-entry
+  // effective status into a (railId|date) bucket; the cell state rolls
+  // up over ALL entries instead of keeping whichever task the object
+  // iteration happened to visit last.
+  type EntryStatus = Task['status'] | 'in-progress';
+  const entriesByKey = new Map<string, EntryStatus[]>();
   for (const task of Object.values(state.tasks)) {
     if (task.status === 'deleted') continue;
-    if (!task.slot) continue;
-    taskByKey.set(`${task.slot.railId}|${task.slot.date}`, task);
+    for (const entry of selectEffectiveTaskSlots(state, task)) {
+      const status: EntryStatus = entry.occurrence
+        ? entry.occurrence.status
+        : task.status;
+      if (status === 'archived' && entry.occurrence) {
+        // Archived occurrence = "never actually did this split"; it is
+        // excluded from every other surface's rollup, keep Review
+        // consistent with that.
+        continue;
+      }
+      const key = `${entry.slot.railId}|${entry.slot.date}`;
+      const bucket = entriesByKey.get(key);
+      if (bucket) bucket.push(status);
+      else entriesByKey.set(key, [status]);
+    }
   }
 
   // §5.5.6 · "something was shifted away from this cell" index.
@@ -151,14 +176,25 @@ export function deriveReviewData(
       frequency++;
 
       const key = `${seed.railId}|${date}`;
-      const task = taskByKey.get(key);
+      const entries = entriesByKey.get(key) ?? [];
 
+      // Roll the cell state up over EVERY entry on this (rail, date):
+      //   - any entry still pending/in-progress → the slot isn't
+      //     settled: past days render 'unmarked', future 'empty'
+      //     (single-entry behavior preserved: a lone pending task
+      //     rendered 'unmarked' before too);
+      //   - else any done → 'done';
+      //   - else any deferred → 'shifted'; any archived → 'skipped';
+      //   - no entries at all → legacy no-task path (past 'unmarked').
       let cell: HeatmapState;
-      if (task?.status === 'done') {
+      const hasOpen = entries.some(
+        (s) => s === 'pending' || s === 'in-progress',
+      );
+      if (!hasOpen && entries.includes('done')) {
         cell = 'done';
-      } else if (task?.status === 'deferred') {
+      } else if (!hasOpen && entries.includes('deferred')) {
         cell = 'shifted';
-      } else if (task?.status === 'archived') {
+      } else if (!hasOpen && entries.includes('archived')) {
         cell = 'skipped';
       } else {
         // No terminal state yet: past days count as unmarked (stale-
@@ -245,15 +281,26 @@ function countApplied(row: HeatmapRow): number {
 }
 
 function aggregateShiftTags(
-  state: Pick<DayRailState, 'shifts' | 'tasks'>,
+  state: Pick<DayRailState, 'shifts'>,
   dates: string[],
 ): ShiftTagStat[] {
   const dateSet = new Set(dates);
   const tally = new Map<string, number>();
   for (const sh of Object.values(state.shifts)) {
-    const task = state.tasks[sh.taskId];
-    if (!task?.slot || !dateSet.has(task.slot.date)) continue;
-    for (const tag of sh.tags ?? []) {
+    if (!sh.tags || sh.tags.length === 0) continue;
+    // Bucket by when the shift HAPPENED, not by wherever the task's
+    // slot currently points: `payload.fromDate` (the day the task was
+    // moved away from) when the shift carries one, else the local
+    // calendar day of `sh.at`. Reading the task's live slot made every
+    // later reschedule/unschedule silently move historical tags into
+    // other periods (or drop them entirely).
+    const p = sh.payload as { fromDate?: string } | undefined;
+    const atMs = Date.parse(sh.at);
+    const anchor =
+      p?.fromDate ??
+      (Number.isNaN(atMs) ? undefined : coreToIsoDate(new Date(atMs)));
+    if (!anchor || !dateSet.has(anchor)) continue;
+    for (const tag of sh.tags) {
       tally.set(tag, (tally.get(tag) ?? 0) + 1);
     }
   }

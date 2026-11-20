@@ -174,6 +174,38 @@ describe('attention issues', () => {
     expect(issues[0]!.lateSchedules).toHaveLength(3);
   });
 
+  it('ignores a dangling host Task.slot on slot-less occurrence rows (§10.6)', () => {
+    // A CRDT merge can leave `task.slot` populated AFTER the task
+    // became occurrence-managed (adoption normally clears it; see
+    // store.ts scheduleTaskToRail's guard). Managed-mode read paths
+    // must ignore it: a slot-less pending occurrence has NO schedule,
+    // so it must not inherit the host's stale late date and spray
+    // "scheduled past expected end" ghosts across the Attention panel.
+    const parent = task({
+      slot: {
+        cycleId: 'cycle-2026-08-24',
+        date: '2026-08-25', // beyond the project window's 2026-08-16 end
+        railId: 'rail-1',
+      },
+    });
+    const occurrences: Record<string, TaskOccurrence> = {
+      'occ-a': { id: 'occ-a', taskId: parent.id, status: 'pending', order: 0 },
+      'occ-b': { id: 'occ-b', taskId: parent.id, status: 'pending', order: 1 },
+    };
+    const issues = selectAttentionIssues(
+      {
+        lines: { [project.id]: project },
+        tasks: { [parent.id]: parent },
+        taskOccurrences: occurrences,
+        adhocEvents: {},
+      },
+      // Window not overdue yet — only a (bogus) late schedule could
+      // surface the issue, so the correct output is no issue at all.
+      '2026-08-12',
+    );
+    expect(issues).toEqual([]);
+  });
+
   it('keeps an independently planned child as a separate Task issue', () => {
     const inherited = task({ id: 'task-inherited' });
     const independent = task({

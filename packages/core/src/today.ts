@@ -97,6 +97,38 @@ export interface CarriedTaskRow {
   plannedEnd?: string; // ISO datetime
 }
 
+/** ERD §10.6 — one effective schedule entry for a Task. When the slot
+ *  comes from a TaskOccurrence (occurrence-managed mode) the occurrence
+ *  rides along so callers can read its status / label / timestamps. */
+export interface EffectiveSlotEntry {
+  slot: NonNullable<Task['slot']>;
+  occurrence?: TaskOccurrence;
+}
+
+/** The Task's effective rail schedule per §10.6: when the Task is
+ *  occurrence-managed (any occurrence present), its scheduling lives on
+ *  the occurrences and `Task.slot` is ignored — one entry per
+ *  slot-bearing occurrence (all statuses; callers filter). Otherwise
+ *  the legacy `Task.slot` is the single entry. Consumers that used to
+ *  read `task.slot` directly (filters, exports, stats) should go
+ *  through this helper so split tasks don't silently read as
+ *  "unscheduled". */
+export function selectEffectiveTaskSlots(
+  state: Pick<DayRailState, 'taskOccurrences'>,
+  task: Task,
+): EffectiveSlotEntry[] {
+  const occs = selectOccurrencesForTask(state, task.id);
+  if (isOccurrenceManaged(occs)) {
+    const out: EffectiveSlotEntry[] = [];
+    for (const occ of occs) {
+      if (!occ.slot) continue;
+      out.push({ slot: occ.slot, occurrence: occ });
+    }
+    return out;
+  }
+  return task.slot ? [{ slot: task.slot }] : [];
+}
+
 function plannedWindow(rail: Rail, date: string): { start: string; end: string } {
   return {
     start: toIsoDateTime(date, rail.startMinutes),

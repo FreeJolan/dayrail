@@ -39,6 +39,7 @@ import {
   projectExpectedWindow,
   railAtDate,
   selectCurrentHabitPhase,
+  selectEffectiveTaskSlots,
   selectHabitPhasesByLine,
   selectOccurrencesForTask,
   useStore,
@@ -648,6 +649,38 @@ function MainPanel({
   }, []);
   const thisWeekRange = useMemo(() => weekRangeOf(new Date()), []);
 
+  // ERD §10.6 — the schedule filter must read the task's EFFECTIVE
+  // schedule: for occurrence-managed tasks the slots live on the
+  // occurrences (`Task.slot` is cleared at adoption), so reading only
+  // `t.slot` made every split task filter as 「未排期」 and never match
+  // 今日/本周/过期未做. `dates` = all non-archived effective slot dates
+  // (+ the active free-time adhoc date); `pendingDates` = the subset
+  // still awaiting action, used by the overdue filter.
+  const scheduleDatesByTaskId = useMemo(() => {
+    const m = new Map<string, { dates: string[]; pendingDates: string[] }>();
+    for (const t of tasksInScope) {
+      const dates: string[] = [];
+      const pendingDates: string[] = [];
+      for (const entry of selectEffectiveTaskSlots(
+        { taskOccurrences: taskOccurrencesMap },
+        t,
+      )) {
+        if (entry.occurrence?.status === 'archived') continue;
+        dates.push(entry.slot.date);
+        if ((entry.occurrence?.status ?? 'pending') === 'pending') {
+          pendingDates.push(entry.slot.date);
+        }
+      }
+      const adhocDate = adhocDateByTaskId.get(t.id);
+      if (adhocDate != null) {
+        dates.push(adhocDate);
+        pendingDates.push(adhocDate);
+      }
+      m.set(t.id, { dates, pendingDates });
+    }
+    return m;
+  }, [tasksInScope, taskOccurrencesMap, adhocDateByTaskId]);
+
   const filteredTasks = useMemo(() => {
     const q = filters.search.trim().toLowerCase();
     const applyLineFilter = filters.lineIds.size > 0;
@@ -655,24 +688,24 @@ function MainPanel({
       .filter((t) => (applyLineFilter ? filters.lineIds.has(t.lineId) : true))
       .filter((t) => {
         if (filters.schedule === 'any') return true;
-        const scheduledDate = t.slot?.date ?? adhocDateByTaskId.get(t.id);
+        const sched = scheduleDatesByTaskId.get(t.id) ?? {
+          dates: [],
+          pendingDates: [],
+        };
         switch (filters.schedule) {
           case 'scheduled':
-            return scheduledDate != null;
+            return sched.dates.length > 0;
           case 'unscheduled':
-            return scheduledDate == null;
+            return sched.dates.length === 0;
           case 'today':
-            return scheduledDate === today;
+            return sched.dates.includes(today);
           case 'thisWeek':
-            return (
-              scheduledDate != null &&
-              scheduledDate >= thisWeekRange.from &&
-              scheduledDate <= thisWeekRange.to
+            return sched.dates.some(
+              (d) => d >= thisWeekRange.from && d <= thisWeekRange.to,
             );
           case 'overdue':
             return (
-              scheduledDate != null &&
-              scheduledDate < today &&
+              sched.pendingDates.some((d) => d < today) &&
               effectiveStatusOf(t) !== 'done'
             );
           default:
@@ -687,7 +720,7 @@ function MainPanel({
         );
       })
       .sort((a, b) => a.order - b.order);
-  }, [tasksInScope, filters, adhocDateByTaskId, today, thisWeekRange, effectiveStatusOf]);
+  }, [tasksInScope, filters, scheduleDatesByTaskId, today, thisWeekRange, effectiveStatusOf]);
 
   // Split into the two collapsible groups for inbox / line views.
   // Archived / trash don't split — they're status-scoped lists already.
@@ -3006,9 +3039,41 @@ function ScheduleInfo({ task }: { task: Task }) {
   //   Neither → "— 未排期".
   // §10.5 Phase 3 · the rail label resolves via railAtDate(slot.date)
   // so a past slot shows the rail's name as it was on that date.
+  // ERD §10.6 — occurrence-managed tasks carry their schedule on the
+  // occurrences; render the earliest non-archived occurrence slot
+  // (+ a `+N` overflow count) instead of the ignored `task.slot`.
   const railRevisions = useStore((s) => s.railRevisions);
   const railTombstones = useStore((s) => s.railTombstones);
   const adhocs = useStore((s) => s.adhocEvents);
+  const taskOccurrences = useStore((s) => s.taskOccurrences);
+
+  const occSlots = useMemo(
+    () =>
+      selectEffectiveTaskSlots({ taskOccurrences }, task)
+        .filter((e) => e.occurrence && e.occurrence.status !== 'archived')
+        .sort((a, b) => a.slot.date.localeCompare(b.slot.date)),
+    [taskOccurrences, task],
+  );
+
+  if (occSlots.length > 0) {
+    const first = occSlots[0]!;
+    const rev = railAtDate(
+      { railRevisions, railTombstones },
+      first.slot.railId,
+      first.slot.date,
+    );
+    return (
+      <span className="inline-flex items-center gap-1 font-mono text-2xs tabular-nums text-ink-secondary">
+        <CalendarIcon className="h-2.5 w-2.5" strokeWidth={1.8} />
+        {first.slot.date.slice(5)}
+        <span className="text-ink-tertiary">·</span>
+        {rev?.name ?? first.slot.railId}
+        {occSlots.length > 1 && (
+          <span className="text-ink-tertiary">+{occSlots.length - 1}</span>
+        )}
+      </span>
+    );
+  }
 
   if (task.slot) {
     const rev = railAtDate(

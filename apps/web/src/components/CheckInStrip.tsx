@@ -16,6 +16,9 @@ export type CheckInAction = 'done' | 'defer' | 'archive';
 
 export interface CheckInEntry {
   taskId: string;
+  /** ERD §10.6 — set when this row represents a TaskOccurrence. The
+   *  caller's action handler routes the write to the occurrence. */
+  occurrenceId?: string;
   railId: string;
   railName: string;
   /** Title of the Task carrying this Rail. Rendered next to the rail
@@ -67,7 +70,7 @@ export function CheckInStrip({ queue, onAction }: Props) {
         <ul className="px-4 pb-3">
           {queue.map((entry, idx) => (
             <CheckInRow
-              key={entry.taskId}
+              key={`${entry.taskId}|${entry.occurrenceId ?? '_root'}`}
               entry={entry}
               first={idx === 0}
               onAction={onAction}

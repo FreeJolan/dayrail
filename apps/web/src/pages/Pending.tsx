@@ -7,6 +7,7 @@ import {
   type CarriedTaskRow,
   type Shift,
   type Task,
+  type TaskOccurrence,
 } from '@dayrail/core';
 import { RAIL_COLOR_HEX } from '@/components/railColors';
 import { NoteHoverPopover } from '@/components/NoteHoverPopover';
@@ -41,6 +42,11 @@ interface PendingRow {
   /** Set when this row represents a TaskOccurrence rather than the
    *  bare Task. Carries the per-row identity for keys + cursor. */
   occurrenceId?: string;
+  /** The occurrence itself — lets the 改期 popover schedule THIS
+   *  occurrence via scheduleTaskOccurrence instead of handing the
+   *  parent task to scheduleTaskToRail (which throws on
+   *  occurrence-managed tasks, silently breaking the popover). */
+  occurrence?: TaskOccurrence;
   railId: string;
   date: string; // YYYY-MM-DD
   start: string; // HH:MM
@@ -355,6 +361,7 @@ function adaptRow(
       key,
       taskId: row.task.id,
       ...(occurrenceId && { occurrenceId }),
+      ...(row.occurrence && { occurrence: row.occurrence }),
       railId: row.rail.id,
       date,
       start: row.plannedStart.slice(11, 16) || '00:00',
@@ -380,6 +387,7 @@ function adaptRow(
     key,
     taskId: row.task.id,
     ...(occurrenceId && { occurrenceId }),
+    ...(row.occurrence && { occurrence: row.occurrence }),
     railId: '',
     date: (
       row.occurrence?.slot?.date ??
@@ -709,7 +717,10 @@ function PendingItemRow({
         >
           归档
         </ActionChip>
-        <SchedulePopover task={row.task}>
+        <SchedulePopover
+          task={row.task}
+          {...(row.occurrence && { occurrence: row.occurrence })}
+        >
           <ActionChip
             variant="ghost"
             onClick={(e) => {

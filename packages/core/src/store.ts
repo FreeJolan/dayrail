@@ -237,7 +237,7 @@ export interface DayRailActions {
     patch: Partial<Task>,
     sessionId?: string,
   ) => Promise<void>;
-  archiveTask: (id: string) => Promise<void>;
+  archiveTask: (id: string, sessionId?: string) => Promise<void>;
   restoreTask: (id: string) => Promise<void>;
   deleteTask: (id: string) => Promise<void>;
   purgeTask: (id: string, sessionId?: string) => Promise<void>;
@@ -774,7 +774,12 @@ async function hydrateImpl(): Promise<void> {
  *       fill in only what's missing. We do NOT delete `Task.subItems`
  *       — older clients may still write to that field, and the new
  *       client dual-reads (subItems + occurrences) so writes from older
- *       peers stay visible.
+ *       peers stay visible. When the migration flips a Task into
+ *       occurrence-managed mode and the Task still carries a legacy
+ *       `Task.slot`, the slot is folded into a deterministic
+ *       `occ-{taskId}-legacy-slot` occurrence (same adoption-edge rule
+ *       as the user-action paths) so the existing schedule survives
+ *       the mode flip instead of silently vanishing per §10.6.
  *
  *    2. **Orphan GC**. Drop any occurrence whose `taskId` no longer
  *       exists in `state.tasks`. The original Task may have been hard-
@@ -805,7 +810,7 @@ function runOccurrencesMigration(doc: YDoc): void {
       if (!(value instanceof Y.Map)) return;
       const taskYMap = value as YMap<unknown>;
       const subItems = taskYMap.get('subItems');
-      if (!Array.isArray(subItems)) return;
+      if (!Array.isArray(subItems) || subItems.length === 0) return;
       for (let i = 0; i < subItems.length; i++) {
         const sub = subItems[i] as
           | { id?: unknown; title?: unknown; done?: unknown }
@@ -830,6 +835,54 @@ function runOccurrencesMigration(doc: YDoc): void {
           entityToYMap(occ as unknown as Record<string, unknown>),
         );
       }
+
+      // §10.6 adoption-edge fold (mirrors maybeConvertLegacyTaskSlot,
+      // which only guards the user-action paths). The migration just
+      // flipped this Task into occurrence-managed mode (any occurrence
+      // present, v0.11.4), where every read path ignores `Task.slot` —
+      // without folding, a schedule the user could see before this
+      // hydrate silently vanishes from Today/Cycle. Fold the legacy
+      // slot into a label-less sibling occurrence and clear the field.
+      // Deterministic id keeps the fold idempotent across re-runs AND
+      // convergent when two devices migrate the same task concurrently
+      // (both write the same key instead of duplicating via random
+      // ids). Skipped when a sibling already carries slot/percent —
+      // the Task was managed before this run and its dangling slot is
+      // the §10.6 "selectors ignore it" case, not ours to touch.
+      const legacySlot = taskYMap.get('slot');
+      if (legacySlot != null && typeof legacySlot === 'object') {
+        let hasOccurrence = false;
+        let alreadyManaged = false;
+        let maxOrder = -1;
+        occMap.forEach((value2) => {
+          if (!(value2 instanceof Y.Map)) return;
+          const o = value2 as YMap<unknown>;
+          if (o.get('taskId') !== taskId) return;
+          hasOccurrence = true;
+          if (o.get('slot') != null || o.get('percent') != null) {
+            alreadyManaged = true;
+          }
+          const ord = o.get('order');
+          if (typeof ord === 'number' && ord > maxOrder) maxOrder = ord;
+        });
+        if (hasOccurrence && !alreadyManaged) {
+          const convId = `occ-${taskId}-legacy-slot`;
+          if (!occMap.has(convId)) {
+            const conv: TaskOccurrence = {
+              id: convId,
+              taskId,
+              slot: legacySlot as TaskOccurrence['slot'],
+              status: 'pending',
+              order: maxOrder + 1,
+            };
+            occMap.set(
+              convId,
+              entityToYMap(conv as unknown as Record<string, unknown>),
+            );
+          }
+          taskYMap.delete('slot');
+        }
+      }
     });
 
     // Pass 2 — orphan GC.
@@ -852,6 +905,21 @@ function runOccurrencesMigration(doc: YDoc): void {
 
 function getEntityMap(doc: YDoc, name: string): YMap<unknown> {
   return doc.getMap(name) as YMap<unknown>;
+}
+
+/** §10.6 hard-delete cascade — remove every TaskOccurrence whose
+ *  `taskId` is in `taskIds`. Caller must already be inside a
+ *  doc.transact (purgeTask / purgeLine). */
+function deleteOccurrencesForTasks(doc: YDoc, taskIds: Set<string>): void {
+  if (taskIds.size === 0) return;
+  const occMap = getEntityMap(doc, 'taskOccurrences');
+  const toDelete: string[] = [];
+  occMap.forEach((value, occId) => {
+    if (!(value instanceof Y.Map)) return;
+    const tId = (value as YMap<unknown>).get('taskId');
+    if (typeof tId === 'string' && taskIds.has(tId)) toDelete.push(occId);
+  });
+  for (const occId of toDelete) occMap.delete(occId);
 }
 
 function upsertEntity(
@@ -1712,6 +1780,10 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
         }
       });
       for (const tid of cascade) tasksMap.delete(tid);
+      // ERD §10.6 — hard-deleting a Task must cascade to its
+      // taskOccurrences, or the orphans linger in the doc (and ride
+      // the sync stream) until the next hydrate's GC pass.
+      deleteOccurrencesForTasks(doc, new Set(cascade));
       linesMap.delete(id);
     }, 'purgeLine');
   },
@@ -1742,7 +1814,7 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
   // cascade archive to all pending / in-progress occurrences (NOT
   // 'done', preserving "I never actually did them" truth on the ones
   // the user already finished).
-  archiveTask: async (id) => {
+  archiveTask: async (id, sessionId) => {
     const doc = getYDoc();
     const archivedAtIso = new Date().toISOString();
     doc.transact(() => {
@@ -1753,11 +1825,13 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
         status: 'archived',
         archivedAt: archivedAtIso,
       });
-      // ERD §10.6 v0.11 D7 cascade — only fires in occurrence-managed
-      // mode. For pure-checklist (pre-adoption) tasks, archiving the
-      // Task simply hides the task per the legacy semantics; the
-      // checklist occurrences ride along (no separate scheduling state
-      // to clean up). For occurrence-managed tasks, archive any
+      // ERD §10.6 v0.11 D7 cascade — fires in occurrence-managed mode.
+      // v0.11.4 redefined `isOccurrenceManaged` as "ANY occurrence
+      // present" (the hidden slot/percent adoption gate was removed);
+      // this cascade uses the same definition. Pure-label splits are
+      // managed too: without the cascade their pending occurrences
+      // keep deriving the Task to 'pending' and keep surfacing in
+      // Backlog / Pending / Tasks stats after the archive. Archive any
       // pending sibling occurrence so it stops surfacing in
       // Today/Cycle/Pending.
       const occMap = getEntityMap(doc, 'taskOccurrences');
@@ -1766,9 +1840,7 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
         if (manageMode) return;
         if (!(value instanceof Y.Map)) return;
         if ((value as YMap<unknown>).get('taskId') !== id) return;
-        const slotVal = (value as YMap<unknown>).get('slot');
-        const pctVal = (value as YMap<unknown>).get('percent');
-        if (slotVal != null || pctVal != null) manageMode = true;
+        manageMode = true;
       });
       if (!manageMode) return;
       occMap.forEach((value) => {
@@ -1783,7 +1855,7 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
           archivedAt: archivedAtIso,
         });
       });
-    }, 'archiveTask');
+    }, sessionId ?? 'archiveTask');
   },
 
   // Legacy: store.ts:2052 — restore to pending, clear timestamps.
@@ -1815,11 +1887,15 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
     }, 'deleteTask');
   },
 
-  // Legacy: store.ts:2076 — hard delete from the map.
+  // Legacy: store.ts:2076 — hard delete from the map. §10.6: cascade
+  // the hard delete to the task's occurrences in the same transact so
+  // no orphan splits linger in the doc / sync stream until the next
+  // hydrate GC.
   purgeTask: async (id, sessionId) => {
     const doc = getYDoc();
     doc.transact(() => {
       deleteEntity(doc, 'tasks', id);
+      deleteOccurrencesForTasks(doc, new Set([id]));
     }, sessionId ?? 'purgeTask');
   },
 
@@ -2612,7 +2688,11 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
           priorAdhoc?.id != null && { fromAdhocId: priorAdhoc.id }),
         toAdhocId: nextAdhocId,
       };
-      persistShiftAndQueuePromptY(taskId, 'reschedule', payload);
+      // sessionId threads into the Shift's transact origin so the
+      // session's UndoManager rolls the Shift back together with the
+      // scheduling write (mirrors scheduleTaskToRail / unscheduleTask;
+      // omitting it left ghost reschedule Shifts behind session undo).
+      persistShiftAndQueuePromptY(taskId, 'reschedule', payload, sessionId);
     }
   },
 

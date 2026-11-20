@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import { Check } from 'lucide-react';
-import { toIsoDate, useStore, type Rail, type Task } from '@dayrail/core';
+import {
+  toIsoDate,
+  useStore,
+  type Rail,
+  type Task,
+  type TaskOccurrence,
+} from '@dayrail/core';
 import { useResolvedTemplateKey } from '@/lib/useResolvedTemplate';
 import {
   Popover,
@@ -20,47 +26,77 @@ import { RailPicker } from './RailPicker';
 // Templates are still reachable via the fallback group at the bottom
 // for users who want to pin across templates without editing rules
 // first.
+//
+// ERD §10.6 — when `occurrence` is set the popover schedules THAT
+// occurrence (rail mode only; occurrences have no free-time mode) via
+// scheduleTaskOccurrence. Passing only the parent task for an
+// occurrence row is a hard error path: core's scheduleTaskToRail
+// throws on occurrence-managed tasks.
 
 type Mode = 'rail' | 'free';
 
 interface Props {
   task: Task;
+  /** §10.6 — set when the trigger row represents a TaskOccurrence.
+   *  Confirm / clear then write the occurrence's slot, never Task.slot. */
+  occurrence?: TaskOccurrence;
   children: React.ReactNode; // the trigger (an icon button)
 }
 
-export function SchedulePopover({ task, children }: Props) {
+export function SchedulePopover({ task, occurrence, children }: Props) {
   const [open, setOpen] = useState(false);
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent align="end" sideOffset={6} className="w-[340px] p-0">
-        {open && <Body task={task} onDone={() => setOpen(false)} />}
+        {open && (
+          <Body
+            task={task}
+            {...(occurrence !== undefined && { occurrence })}
+            onDone={() => setOpen(false)}
+          />
+        )}
       </PopoverContent>
     </Popover>
   );
 }
 
-function Body({ task, onDone }: { task: Task; onDone: () => void }) {
+function Body({
+  task,
+  occurrence,
+  onDone,
+}: {
+  task: Task;
+  occurrence?: TaskOccurrence;
+  onDone: () => void;
+}) {
   const railsMap = useStore((s) => s.rails);
   const templatesMap = useStore((s) => s.templates);
   const adhocsMap = useStore((s) => s.adhocEvents);
   const scheduleTaskToRail = useStore((s) => s.scheduleTaskToRail);
   const scheduleTaskFreeTime = useStore((s) => s.scheduleTaskFreeTime);
   const unscheduleTask = useStore((s) => s.unscheduleTask);
+  const scheduleTaskOccurrence = useStore((s) => s.scheduleTaskOccurrence);
+
+  const isOccurrence = occurrence !== undefined;
 
   const currentAdhoc = useMemo(
     () =>
-      Object.values(adhocsMap).find(
-        (a) => a.taskId === task.id && a.status === 'active',
-      ),
-    [adhocsMap, task.id],
+      isOccurrence
+        ? undefined
+        : Object.values(adhocsMap).find(
+            (a) => a.taskId === task.id && a.status === 'active',
+          ),
+    [adhocsMap, task.id, isOccurrence],
   );
 
   // Seed form defaults: prefer current state, else today + common slot.
+  const currentSlot = isOccurrence ? occurrence.slot : task.slot;
   const initialDate =
-    task.slot?.date ?? currentAdhoc?.date ?? toIsoDate(new Date());
-  const initialMode: Mode = task.slot ? 'rail' : currentAdhoc ? 'free' : 'rail';
-  const initialRailId = task.slot?.railId ?? '';
+    currentSlot?.date ?? currentAdhoc?.date ?? toIsoDate(new Date());
+  const initialMode: Mode =
+    isOccurrence || currentSlot ? 'rail' : currentAdhoc ? 'free' : 'rail';
+  const initialRailId = currentSlot?.railId ?? '';
   const initialStart = currentAdhoc?.startMinutes ?? 9 * 60;
   const initialDuration = currentAdhoc?.durationMinutes ?? 60;
 
@@ -106,7 +142,15 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
 
   const handleConfirm = async () => {
     if (!canConfirm) return;
-    if (mode === 'rail') {
+    if (isOccurrence) {
+      // §10.6 — the occurrence owns its slot; scheduleTaskToRail would
+      // throw on an occurrence-managed task.
+      await scheduleTaskOccurrence(occurrence.id, {
+        cycleId: `cycle-${date}`,
+        date,
+        railId,
+      });
+    } else if (mode === 'rail') {
       // v0.3 will add a proper cycleId lookup from CalendarRule; for
       // v0.2 we stamp a date-scoped ambient id so the field has
       // something deterministic.
@@ -126,11 +170,18 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
   };
 
   const handleUnschedule = async () => {
-    await unscheduleTask(task.id);
+    if (isOccurrence) {
+      await scheduleTaskOccurrence(occurrence.id, null);
+    } else {
+      await unscheduleTask(task.id);
+    }
     onDone();
   };
 
-  const isScheduled = Boolean(task.slot) || Boolean(currentAdhoc);
+  const isScheduled = Boolean(currentSlot) || Boolean(currentAdhoc);
+  const headerTitle = isOccurrence
+    ? occurrence.label?.trim() || task.title
+    : task.title;
 
   return (
     <form
@@ -144,7 +195,12 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
         <span className="font-mono text-2xs uppercase tracking-widest text-ink-tertiary">
           Schedule
         </span>
-        <span className="truncate text-sm text-ink-primary">{task.title}</span>
+        <span className="truncate text-sm text-ink-primary">{headerTitle}</span>
+        {isOccurrence && headerTitle !== task.title && (
+          <span className="truncate text-xs text-ink-tertiary">
+            {task.title} · 切分
+          </span>
+        )}
       </header>
 
       <div className="flex flex-col gap-4 px-4 py-4">
@@ -158,7 +214,9 @@ function Body({ task, onDone }: { task: Task; onDone: () => void }) {
         </Field>
 
         <Field label="时段">
-          <ModePicker value={mode} onChange={setMode} />
+          {/* §10.6 — occurrences schedule onto rails only (no free-time
+              mode), so the mode picker is hidden for occurrence rows. */}
+          {!isOccurrence && <ModePicker value={mode} onChange={setMode} />}
 
           {mode === 'rail' ? (
             <div className="mt-2 flex flex-col gap-2">

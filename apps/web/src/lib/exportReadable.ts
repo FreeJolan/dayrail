@@ -9,7 +9,14 @@
 // each format can carry. The .dryj export remains the lossless
 // round-trip channel; this file is the "diaspora" channel.
 
-import { useStore, type DayRailState, type Task } from '@dayrail/core';
+import {
+  railAtDate,
+  selectEffectiveTaskSlots,
+  useStore,
+  type DayRailState,
+  type Task,
+  type TaskOccurrence,
+} from '@dayrail/core';
 
 // ============ Markdown · reflections ============
 
@@ -42,9 +49,12 @@ export function formatReflectionsAsMarkdown(state: DayRailState): string {
 
 // ============ CSV · tasks ============
 
-/** Tasks as CSV, one row per task. Includes scheduled date + line
- *  name + status + priority + note + completion timestamp. Inbox /
- *  unscheduled tasks have an empty `date` column. */
+/** Tasks as CSV. One row per task — except occurrence-managed tasks
+ *  (ERD §10.6), which export one row per occurrence: the schedule /
+ *  status / timestamps live on the occurrences there (`task.slot` is
+ *  cleared at adoption), so a single task-level row would export an
+ *  empty date and a stale status. Inbox / unscheduled rows have an
+ *  empty `date` column. */
 export function formatTasksAsCsv(state: DayRailState): string {
   const lineName = (lineId: string): string => {
     const line = state.lines[lineId];
@@ -64,20 +74,50 @@ export function formatTasksAsCsv(state: DayRailState): string {
     'archived_at',
   ];
 
-  const rows: string[] = [headers.map(csvEscape).join(',')];
+  // Collect row records first so occurrence rows can sort by their own
+  // date: date desc (unscheduled at bottom), then created order.
+  const records: Array<{ date: string; order: number; cols: string[] }> = [];
 
-  // Sort by date desc (unscheduled at bottom), then by created order
-  // within the same day.
-  const tasks = Object.values(state.tasks).sort((a, b) => {
-    const da = a.slot?.date ?? '';
-    const db = b.slot?.date ?? '';
-    if (da !== db) return db.localeCompare(da);
-    return a.order - b.order;
-  });
+  const occsByTask = new Map<string, TaskOccurrence[]>();
+  for (const occ of Object.values(state.taskOccurrences)) {
+    const list = occsByTask.get(occ.taskId);
+    if (list) list.push(occ);
+    else occsByTask.set(occ.taskId, [occ]);
+  }
 
-  for (const t of tasks) {
-    rows.push(
-      [
+  for (const t of Object.values(state.tasks)) {
+    const occs = (occsByTask.get(t.id) ?? []).sort((a, b) => {
+      const ao = a.order ?? Number.POSITIVE_INFINITY;
+      const bo = b.order ?? Number.POSITIVE_INFINITY;
+      if (ao !== bo) return ao - bo;
+      return a.id.localeCompare(b.id);
+    });
+    if (occs.length > 0) {
+      for (const occ of occs) {
+        const label = occ.label?.trim();
+        records.push({
+          date: occ.slot?.date ?? '',
+          order: t.order,
+          cols: [
+            occ.slot?.date ?? '',
+            lineName(t.lineId),
+            label ? `${t.title} · ${label}` : t.title,
+            occ.status,
+            t.priority ?? '',
+            (occ.note ?? '').replace(/\r?\n/g, ' '),
+            taskCreatedAt(t),
+            occ.doneAt ?? '',
+            '',
+            occ.archivedAt ?? '',
+          ],
+        });
+      }
+      continue;
+    }
+    records.push({
+      date: t.slot?.date ?? '',
+      order: t.order,
+      cols: [
         t.slot?.date ?? '',
         lineName(t.lineId),
         t.title,
@@ -88,10 +128,18 @@ export function formatTasksAsCsv(state: DayRailState): string {
         t.doneAt ?? '',
         t.deferredAt ?? '',
         t.archivedAt ?? '',
-      ]
-        .map(csvEscape)
-        .join(','),
-    );
+      ],
+    });
+  }
+
+  records.sort((a, b) => {
+    if (a.date !== b.date) return b.date.localeCompare(a.date);
+    return a.order - b.order;
+  });
+
+  const rows: string[] = [headers.map(csvEscape).join(',')];
+  for (const r of records) {
+    rows.push(r.cols.map(csvEscape).join(','));
   }
 
   return rows.join('\n') + '\n';
@@ -115,11 +163,15 @@ function taskCreatedAt(_t: Task): string {
 
 // ============ iCal · scheduled tasks as time blocks ============
 
-/** Tasks that have a slot pinned to a rail (Mode A scheduling) get
- *  exported as VEVENTs. Time = rail startMinutes/durationMinutes
- *  resolved against slot.date. Unscheduled tasks and free-time
- *  AdhocEvents are skipped — Mode A tasks are the only ones with
- *  unambiguous start/end times in DayRail's model. */
+/** Rail-slot schedules (Mode A) exported as VEVENTs — the task's
+ *  EFFECTIVE schedule per ERD §10.6: for occurrence-managed tasks one
+ *  event per slot-bearing occurrence (that's where the schedule lives;
+ *  `task.slot` is cleared at adoption), otherwise the legacy
+ *  `task.slot`. Time = the rail revision in effect ON the slot's date
+ *  (§10.5 effective-from — matches what the app showed that day, not
+ *  whatever the rail was later changed to). Unscheduled tasks and
+ *  free-time AdhocEvents are skipped — rail slots are the only ones
+ *  with unambiguous start/end times in DayRail's model. */
 export function formatScheduleAsIcal(state: DayRailState): string {
   const lines: string[] = [
     'BEGIN:VCALENDAR',
@@ -129,35 +181,54 @@ export function formatScheduleAsIcal(state: DayRailState): string {
   ];
 
   for (const task of Object.values(state.tasks)) {
-    if (!task.slot || task.status === 'deleted' || task.status === 'archived') {
+    if (task.status === 'deleted' || task.status === 'archived') {
       continue;
     }
-    const rail = state.rails[task.slot.railId];
-    if (!rail) continue;
-    const dt = computeIcalTimes(task.slot.date, rail.startMinutes, rail.durationMinutes);
-    if (!dt) continue;
+    for (const entry of selectEffectiveTaskSlots(state, task)) {
+      // Archived occurrence = "never did this split"; mirror the
+      // task-level archived skip above.
+      if (entry.occurrence?.status === 'archived') continue;
+      const rev = railAtDate(
+        state,
+        entry.slot.railId,
+        entry.slot.date,
+      );
+      if (!rev) continue;
+      const dt = computeIcalTimes(
+        entry.slot.date,
+        rev.startMinutes,
+        rev.durationMinutes,
+      );
+      if (!dt) continue;
 
-    const summary = task.title || rail.name;
-    const description = [
-      rail.subtitle ? `Rail: ${rail.name} · ${rail.subtitle}` : `Rail: ${rail.name}`,
-      task.note ? `Note: ${task.note}` : null,
-      `Status: ${task.status}`,
-    ]
-      .filter(Boolean)
-      // Join with a REAL newline — escapeIcalText turns it into the
-      // RFC 5545 `\n` sequence. Joining with a literal backslash-n
-      // here would get its backslash doubled by the escaper and render
-      // as the two characters "\n" in calendar apps.
-      .join('\n');
+      const occ = entry.occurrence;
+      const label = occ?.label?.trim();
+      const summary = label || task.title || rev.name;
+      const status = occ ? occ.status : task.status;
+      // §10.6 v0.12.2 — occurrence rows surface their own note only.
+      const note = occ ? occ.note : task.note;
+      const description = [
+        rev.subtitle ? `Rail: ${rev.name} · ${rev.subtitle}` : `Rail: ${rev.name}`,
+        occ && label && label !== task.title ? `Task: ${task.title}` : null,
+        note ? `Note: ${note}` : null,
+        `Status: ${status}`,
+      ]
+        .filter(Boolean)
+        // Join with a REAL newline — escapeIcalText turns it into the
+        // RFC 5545 `\n` sequence. Joining with a literal backslash-n
+        // here would get its backslash doubled by the escaper and render
+        // as the two characters "\n" in calendar apps.
+        .join('\n');
 
-    lines.push('BEGIN:VEVENT');
-    lines.push(`UID:${task.id}@dayrail`);
-    lines.push(`DTSTAMP:${dt.stamp}`);
-    lines.push(`DTSTART:${dt.start}`);
-    lines.push(`DTEND:${dt.end}`);
-    lines.push(`SUMMARY:${escapeIcalText(summary)}`);
-    lines.push(`DESCRIPTION:${escapeIcalText(description)}`);
-    lines.push('END:VEVENT');
+      lines.push('BEGIN:VEVENT');
+      lines.push(`UID:${occ?.id ?? task.id}@dayrail`);
+      lines.push(`DTSTAMP:${dt.stamp}`);
+      lines.push(`DTSTART:${dt.start}`);
+      lines.push(`DTEND:${dt.end}`);
+      lines.push(`SUMMARY:${escapeIcalText(summary)}`);
+      lines.push(`DESCRIPTION:${escapeIcalText(description)}`);
+      lines.push('END:VEVENT');
+    }
   }
 
   lines.push('END:VCALENDAR');
