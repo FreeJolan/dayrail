@@ -69,7 +69,10 @@ urlencoding = "2"
 # without going through tauri-plugin-shell IPC (we're invoking from
 # Rust side, no need for the capability + frontend round-trip).
 open = "5"
-tokio = { version = "1", features = ["net", "io-util", "macros", "time"] }
+# `rt` is for `#[tokio::test]` in the drive_auth loopback tests — it
+# gates code inside tokio itself (no extra crates; reqwest already
+# enables it transitively, this just makes the requirement explicit).
+tokio = { version = "1", features = ["net", "io-util", "macros", "time", "rt"] }
 
 # Profile tweaks for release builds — small binary + faster crash
 # reports. v0.9 starts with defaults; we'll tune after PR-B if the
