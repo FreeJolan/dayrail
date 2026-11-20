@@ -11,17 +11,107 @@
 //   - listModels: end-to-end fetch + error classification for the
 //     /v1/models endpoint.
 //
-// `callChatCompletion` is now a thin wrapper around `streamText`;
-// mocking the SDK to test the wrapper would mostly test the SDK
-// rather than our integration. Trust the SDK; verify the wrapper at
-// runtime via real-call dogfood instead.
+// `callChatCompletion` runs against the REAL AI SDK with a stubbed
+// global `fetch`: the SDK's streaming error contract is exactly what
+// bit us once (v6 textStream silently swallows HTTP errors — see the
+// callChatCompletion describe below), so the integration IS our
+// problem and gets covered end-to-end here.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AiClientError, listModels, parseModelList } from '../ai/client';
+import { APICallError } from 'ai';
+import {
+  AiClientError,
+  callChatCompletion,
+  listModels,
+  mapToAiClientError,
+  parseModelList,
+} from '../ai/client';
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
+
+// ── fetch fixtures ─────────────────────────────────────────────────
+
+const SSE_HEADERS = { 'Content-Type': 'text/event-stream' };
+
+/** A well-formed OpenAI-compatible streaming response. */
+function sseResponse(...contents: string[]): Response {
+  const encoder = new TextEncoder();
+  const lines = [
+    ...contents.map(
+      (content) =>
+        `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`,
+    ),
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`,
+    'data: [DONE]\n\n',
+  ];
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const line of lines) controller.enqueue(encoder.encode(line));
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200, headers: SSE_HEADERS });
+}
+
+/** Accepts the connection, sends headers, then never sends a byte —
+ *  the hung-bridge scenario. Honors the request's abort signal the way
+ *  real fetch does (rejects the pending read). */
+function hangingSseResponse(init?: RequestInit): Response {
+  const signal = init?.signal;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      signal?.addEventListener('abort', () => {
+        controller.error(
+          signal.reason ?? new DOMException('Aborted', 'AbortError'),
+        );
+      });
+    },
+  });
+  return new Response(body, { status: 200, headers: SSE_HEADERS });
+}
+
+function errorResponse(status: number): Response {
+  return new Response(
+    JSON.stringify({ error: { message: `upstream said ${status}` } }),
+    { status, headers: { 'Content-Type': 'application/json' } },
+  );
+}
+
+const chatParams = () => ({
+  baseUrl: 'https://example.test/v1',
+  apiKey: 'sk-test',
+  model: 'test-model',
+  messages: [{ role: 'user' as const, content: 'hi' }],
+});
+
+/** Capture the rejection (fails the test on resolution). */
+function rejection(p: Promise<unknown>): Promise<unknown> {
+  return p.then(
+    () => {
+      throw new Error('expected the promise to reject');
+    },
+    (err) => err,
+  );
+}
+
+/** Drive fake timers in small steps until `p` settles. (Backoff timers
+ *  are scheduled only after async hops — a single big advance can run
+ *  before anything is on the clock and then just no-op.) */
+async function advanceUntilSettled<T>(p: Promise<T>, maxMs = 30_000): Promise<T> {
+  let settled = false;
+  const tracked = p.finally(() => {
+    settled = true;
+  });
+  tracked.catch(() => {}); // avoid an unhandled-rejection report while driving
+  for (let elapsed = 0; elapsed < maxMs && !settled; elapsed += 500) {
+    await vi.advanceTimersByTimeAsync(500);
+  }
+  return tracked;
+}
 
 // ------------ parseModelList ------------
 
@@ -232,5 +322,180 @@ describe('listModels', () => {
       apiKey: 'k',
     });
     expect(out).toEqual([]);
+  });
+
+  it('times out instead of pending forever when the provider never responds', async () => {
+    // No production caller passes a signal, so without the default
+    // timeout this promise would simply never settle.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () =>
+              reject(
+                init.signal?.reason ?? new DOMException('Aborted', 'AbortError'),
+              ),
+            );
+          }),
+      ),
+    );
+    const err = await rejection(
+      listModels({ baseUrl: 'https://example.test/v1', apiKey: 'k', timeoutMs: 50 }),
+    );
+    expect(err).toBeInstanceOf(AiClientError);
+    expect((err as AiClientError).kind).toBe('network');
+    expect((err as AiClientError).message).toMatch(/timed out/i);
+  });
+
+  it('still classifies a caller abort as aborted, not as a timeout', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () =>
+              reject(
+                init.signal?.reason ?? new DOMException('Aborted', 'AbortError'),
+              ),
+            );
+          }),
+      ),
+    );
+    const ac = new AbortController();
+    const pending = rejection(
+      listModels({
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'k',
+        signal: ac.signal,
+      }),
+    );
+    ac.abort();
+    const err = await pending;
+    expect(err).toBeInstanceOf(AiClientError);
+    expect((err as AiClientError).kind).toBe('aborted');
+  });
+});
+
+// ------------ callChatCompletion ------------
+//
+// AI SDK v6's `textStream` silently swallows error parts: an HTTP
+// failure (401/403/404/429/5xx) used to make callChatCompletion
+// resolve to '' instead of throwing, which broke error classification
+// AND the cold-start 403 retry. These run against the real SDK with a
+// stubbed fetch to pin the error-surfacing contract.
+
+describe('callChatCompletion', () => {
+  it('streams and assembles content, forwarding deltas to onChunk', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse('Hel', 'lo')));
+    const chunks: string[] = [];
+    const out = await callChatCompletion({
+      ...chatParams(),
+      onChunk: (d) => chunks.push(d),
+    });
+    expect(out).toBe('Hello');
+    expect(chunks).toEqual(['Hel', 'lo']);
+  });
+
+  it('surfaces a streaming 401 as auth-401 instead of resolving to an empty string', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async () => errorResponse(401)),
+    );
+    const err = await rejection(callChatCompletion(chatParams()));
+    expect(err).toBeInstanceOf(AiClientError);
+    expect((err as AiClientError).kind).toBe('auth-401');
+    expect((err as AiClientError).status).toBe(401);
+  });
+
+  it('classifies a streaming 429 as rate-limit-429', async () => {
+    // Fresh Response per call: the SDK retries retryable statuses
+    // internally with multi-second backoff — drive it with fake timers.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async () => errorResponse(429)),
+    );
+    vi.useFakeTimers();
+    const err = await advanceUntilSettled(
+      rejection(callChatCompletion(chatParams())),
+    );
+    expect(err).toBeInstanceOf(AiClientError);
+    expect((err as AiClientError).kind).toBe('rate-limit-429');
+    expect((err as AiClientError).status).toBe(429);
+  });
+
+  it('classifies a streaming 5xx as provider-error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async () => errorResponse(502)),
+    );
+    vi.useFakeTimers();
+    const err = await advanceUntilSettled(
+      rejection(callChatCompletion(chatParams())),
+    );
+    expect(err).toBeInstanceOf(AiClientError);
+    expect((err as AiClientError).kind).toBe('provider-error');
+    expect((err as AiClientError).status).toBe(502);
+  });
+
+  it('retries a cold-start 403 and succeeds once the bridge warms up', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockImplementationOnce(async () => errorResponse(403))
+      .mockImplementation(async () => sseResponse('warm'));
+    vi.stubGlobal('fetch', fetchSpy);
+    vi.useFakeTimers();
+    const out = await advanceUntilSettled(callChatCompletion(chatParams()));
+    expect(out).toBe('warm');
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('aborts a hung stream via the idle watchdog instead of pending forever', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockImplementation(async (_url: string, init: RequestInit) =>
+          hangingSseResponse(init),
+        ),
+    );
+    const err = await rejection(
+      callChatCompletion({ ...chatParams(), idleTimeoutMs: 50 }),
+    );
+    expect(err).toBeInstanceOf(AiClientError);
+    expect((err as AiClientError).kind).toBe('network');
+    expect((err as AiClientError).message).toMatch(/no stream activity/);
+  });
+
+  it('keeps a caller abort classified as aborted, not as a watchdog timeout', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockImplementation(async (_url: string, init: RequestInit) =>
+          hangingSseResponse(init),
+        ),
+    );
+    const ac = new AbortController();
+    const pending = rejection(
+      callChatCompletion({ ...chatParams(), signal: ac.signal }),
+    );
+    setTimeout(() => ac.abort(), 20);
+    const err = await pending;
+    expect(err).toBeInstanceOf(AiClientError);
+    expect((err as AiClientError).kind).toBe('aborted');
+  });
+});
+
+// ------------ mapToAiClientError ------------
+
+describe('mapToAiClientError', () => {
+  it('maps a TimeoutError DOMException (AbortSignal.timeout) to a network timeout', () => {
+    const err = mapToAiClientError(
+      new DOMException('The operation was aborted due to timeout', 'TimeoutError'),
+      APICallError,
+    );
+    expect(err.kind).toBe('network');
+    expect(err.message).toMatch(/timed out/i);
   });
 });
