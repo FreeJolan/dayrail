@@ -153,7 +153,12 @@ export function StagingModal({ open, onClose }: { open: boolean; onClose: () => 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') requestClose();
+      // `defaultPrevented` = a nested layer already consumed this Esc
+      // (MarkdownField's in-place editor commit-and-exit, Radix's
+      // dismissable layers). Without the check, exiting the paste-box
+      // editor would also close the whole modal — and with zero
+      // proposals that clears the just-committed paste text.
+      if (e.key === 'Escape' && !e.defaultPrevented) requestClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

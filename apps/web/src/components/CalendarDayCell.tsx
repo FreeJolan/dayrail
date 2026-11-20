@@ -785,7 +785,8 @@ function UserDayNoteForm({
             e.preventDefault();
             submit();
           }
-          if (e.key === 'Escape') {
+          if (e.key === 'Escape' && !ime.isComposing(e)) {
+            // Composing Esc = cancel the IME candidate, not the form.
             e.preventDefault();
             onCancel();
           }

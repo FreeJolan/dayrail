@@ -33,7 +33,7 @@ import {
 } from './railColors';
 import type { RailColor } from '@/data/sample';
 import type { SlotTaskState, SlotTaskSummary } from '@/data/sampleCycle';
-import { useIme } from '@/lib/ime';
+import { useIme, type ImeHandlers } from '@/lib/ime';
 
 // ERD §5.3 — cell = stack of per-task pills. Each pill owns its own
 // Radix popover (actions) and Radix tooltip (details on hover). The
@@ -1132,6 +1132,11 @@ function EmptyCell({
   onQuickCreate?: (date: string, railId: string, title: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // Shared with the body so Radix's document-capture Escape listener
+  // can be suppressed while an IME composition is active (otherwise
+  // cancelling a pinyin candidate closes the popover and drops the
+  // typed title).
+  const ime = useIme();
   if (!onQuickCreate) {
     return <PlannedEmptyPlaceholder />;
   }
@@ -1146,8 +1151,15 @@ function EmptyCell({
           <PlannedEmptyPlaceholder />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="center" className="w-[260px]">
+      <PopoverContent
+        align="center"
+        className="w-[260px]"
+        onEscapeKeyDown={(e) => {
+          if (ime.isComposing(e)) e.preventDefault();
+        }}
+      >
         <QuickCreatePopoverBody
+          ime={ime}
           railName={railName}
           date={date}
           onSubmit={(title) => {
@@ -1173,6 +1185,9 @@ function CellAddBar({
   onQuickCreate: (date: string, railId: string, title: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // See EmptyCell — shared IME guard for both the input handler and
+  // Radix's own Escape dismissal.
+  const ime = useIme();
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -1191,8 +1206,15 @@ function CellAddBar({
           <span className="font-mono uppercase tracking-widest">add</span>
         </button>
       </PopoverTrigger>
-      <PopoverContent align="center" className="w-[260px]">
+      <PopoverContent
+        align="center"
+        className="w-[260px]"
+        onEscapeKeyDown={(e) => {
+          if (ime.isComposing(e)) e.preventDefault();
+        }}
+      >
         <QuickCreatePopoverBody
+          ime={ime}
           railName={railName}
           date={date}
           onSubmit={(title) => {
@@ -1207,18 +1229,21 @@ function CellAddBar({
 }
 
 function QuickCreatePopoverBody({
+  ime,
   railName,
   date,
   onSubmit,
   onCancel,
 }: {
+  /** Owned by the parent so the enclosing PopoverContent can share the
+   *  composition state in its `onEscapeKeyDown` guard. */
+  ime: ImeHandlers;
   railName: string;
   date: string;
   onSubmit: (title: string) => void;
   onCancel: () => void;
 }) {
   const [value, setValue] = useState('');
-  const ime = useIme();
   const submit = () => {
     const t = value.trim();
     if (!t) return;
@@ -1241,7 +1266,8 @@ function QuickCreatePopoverBody({
           if (e.key === 'Enter' && !ime.isComposing(e)) {
             e.preventDefault();
             submit();
-          } else if (e.key === 'Escape') {
+          } else if (e.key === 'Escape' && !ime.isComposing(e)) {
+            // Composing Esc = cancel the IME candidate, not the popover.
             e.preventDefault();
             onCancel();
           }

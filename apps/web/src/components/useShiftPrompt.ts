@@ -43,7 +43,20 @@ export function useShiftPrompt(): {
   const shiftIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    // The store's pendingShiftPrompt is a single slot: a second
+    // overdue shift (or an external ack) replaces it while the
+    // previous toast may still hold picked tags that normally only
+    // persist on close. Flush them before resetting — the previous
+    // shift row is already recorded, only its tags are at stake.
+    const flushStaleTags = () => {
+      const staleId = shiftIdRef.current;
+      const staleTags = tagsRef.current;
+      if (staleId && staleTags.length > 0) {
+        void setShiftTags(staleId, staleTags);
+      }
+    };
     if (!pending) {
+      flushStaleTags();
       setToast(null);
       shiftIdRef.current = null;
       tagsRef.current = [];
@@ -52,6 +65,7 @@ export function useShiftPrompt(): {
     // Same shift already on-screen? Don't churn the toast state.
     if (shiftIdRef.current === pending.id) return;
 
+    flushStaleTags();
     shiftIdRef.current = pending.id;
     tagsRef.current = [];
     const task = tasks[pending.taskId];
@@ -96,7 +110,7 @@ export function useShiftPrompt(): {
     // per-surface `useReasonToast` pipeline. If one ever leaks in,
     // drop it silently so the toast doesn't get stuck open.
     shiftIdRef.current = null;
-  }, [pending, tasks, shifts]);
+  }, [pending, tasks, shifts, setShiftTags]);
 
   const onAddTag = useCallback((tag: string) => {
     if (!tagsRef.current.includes(tag)) {

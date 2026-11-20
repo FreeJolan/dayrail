@@ -98,7 +98,10 @@ export function TimePillPopover({
     e.preventDefault();
     const step = e.shiftKey ? 60 : 15;
     const delta = e.key === 'ArrowUp' ? step : -step;
-    const next = Math.max(0, Math.min(24 * 60, mins + delta));
+    // Clamp into the parser's domain (00:00–23:59). A 1440 ("24:00")
+    // ceiling would let the stepper produce a value parseHHMM rejects,
+    // flipping the form invalid with a misleading error.
+    const next = Math.max(0, Math.min(24 * 60 - 1, mins + delta));
     setValue(fmtHHMM(next));
   };
 

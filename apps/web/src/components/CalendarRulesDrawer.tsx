@@ -39,6 +39,7 @@ import {
   type EffectiveFromValue,
 } from './EffectiveFromPicker';
 import { useIme } from '@/lib/ime';
+import { useTodayIso } from '@/lib/useTodayIso';
 
 // ERD §5.4 Advanced Calendar Rules drawer (v0.3 live).
 // Four sections, each with list + create form + in-place edit + delete.
@@ -64,9 +65,16 @@ export function CalendarRulesDrawer({ open, onClose }: Props) {
   // the resolved `effectiveFrom` through to the writer.
   const [effectiveFromValue, setEffectiveFromValue] =
     useState<EffectiveFromValue>({ mode: 'today' });
+  // Re-resolve when the local date flips: this drawer is mounted
+  // unconditionally by the Calendar page, so a mount-time resolution
+  // of "今天起/明天起" would go stale across midnight and write
+  // revisions effective from yesterday (§10.5 would then rewrite the
+  // already-finished day retroactively).
+  const todayIso = useTodayIso();
   const effectiveFrom = useMemo(
     () => resolveEffectiveFromValue(effectiveFromValue),
-    [effectiveFromValue],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- todayIso forces re-resolution at the day boundary
+    [effectiveFromValue, todayIso],
   );
 
   const templatesList = useMemo(
@@ -1267,6 +1275,7 @@ function RuleEditCard({
         <SingleDateForm
           templates={templates}
           initial={{ date: v.date, templateKey: v.templateKey }}
+          dateLocked
           onSubmit={async (date, templateKey) => {
             await overrideCycleDay(date, templateKey, undefined, effectiveFrom);
             onClose();
@@ -1326,16 +1335,12 @@ function RuleEditCard({
         <WeekdayForm
           templates={templates}
           initial={{ templateKey: v.templateKey, weekdays: v.weekdays }}
-          onSubmit={async (templateKey) => {
+          onSubmit={async (templateKey, weekdays) => {
             // Existing weekday rule id is `cr-weekday-{templateKey}`;
             // editing the template key creates a new rule rather than
             // updating in place. Acceptable: weekday rules are
             // template-keyed by design (one per template).
-            await upsertWeekdayRule(
-              templateKey,
-              [...(rule.value as CalendarRuleWeekday).weekdays],
-              effectiveFrom,
-            );
+            await upsertWeekdayRule(templateKey, weekdays, effectiveFrom);
             onClose();
           }}
           onCancel={onClose}
