@@ -25,10 +25,15 @@ type ReasonAction = {
   railId?: string;
   /** Keeps the write and its undo in the caller's Edit Session. */
   sessionId?: string;
-} & (
-  | { action: 'defer'; occurrenceId?: never }
-  | { action: 'done' | 'archive'; occurrenceId?: string }
-);
+  /** ERD §10.6 — set when the row represents a TaskOccurrence. The
+   *  status write (and its undo) then lands on the occurrence, never
+   *  on the parent Task. `defer` with an occurrenceId performs NO
+   *  status write at all (occurrences carry no deferred state); the
+   *  toast still surfaces so the reason tag can be captured against
+   *  the parent Task. */
+  occurrenceId?: string;
+  action: 'defer' | 'done' | 'archive';
+};
 
 const TASK_ACTIONS = {
   done: { status: 'done', timestamp: 'doneAt' },
@@ -70,16 +75,51 @@ export function useReasonToast(surface: Signal['surface']): {
         ) {
           return;
         }
-        const timestamp = action === 'done' ? 'doneAt' : 'archivedAt';
-        const write =
-          action === 'done' ? store.completeTaskOccurrence : store.archiveTaskOccurrence;
-        void write(occurrenceId, sessionId);
+        if (action === 'defer') {
+          // ERD §10.6 — no occurrence-level deferred state exists. This
+          // is a true noop on both layers (writing the PARENT task's
+          // status here was the old bug: the row never changed while
+          // the task was silently marked deferred). Toast still fires
+          // so the user's reason tag lands via recordShift on close.
+          undoRef.current = null;
+        } else {
+          const timestamp = action === 'done' ? 'doneAt' : 'archivedAt';
+          const write =
+            action === 'done' ? store.completeTaskOccurrence : store.archiveTaskOccurrence;
+          void write(occurrenceId, sessionId);
+          undoRef.current = () => {
+            void store.updateTaskOccurrence(
+              occurrenceId,
+              { status: occurrence.status, [timestamp]: occurrence[timestamp] },
+              sessionId,
+            );
+          };
+        }
+      } else if (action === 'archive') {
+        // §10.6 D7 — archiving a whole Task must go through
+        // store.archiveTask so pending occurrences cascade with it.
+        // The plain updateTask path this used to take left every
+        // pending split surfacing in Today/Cycle/Pending/Backlog
+        // (deriveTaskStatus keeps rolling the task up to 'pending').
+        // Capture the pre-cascade pending set so undo restores both
+        // the task and its cascaded occurrences.
+        const pendingOccs = Object.values(store.taskOccurrences).filter(
+          (o) => o.taskId === taskId && o.status === 'pending',
+        );
+        void store.archiveTask(taskId, sessionId);
         undoRef.current = () => {
-          void store.updateTaskOccurrence(
-            occurrenceId,
-            { status: occurrence.status, [timestamp]: occurrence[timestamp] },
+          void store.updateTask(
+            taskId,
+            { status: task.status, archivedAt: task.archivedAt },
             sessionId,
           );
+          for (const o of pendingOccs) {
+            void store.updateTaskOccurrence(
+              o.id,
+              { status: 'pending', archivedAt: undefined },
+              sessionId,
+            );
+          }
         };
       } else {
         const { status, timestamp } = TASK_ACTIONS[action];

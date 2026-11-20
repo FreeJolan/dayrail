@@ -101,8 +101,13 @@ export function TodayTrack() {
 
   const handleCheckin = useCallback(
     (entry: CheckInEntry, action: CheckInAction) => {
+      // §10.6 — occurrence rows carry their occurrenceId so the write
+      // (and its toast undo) lands on the occurrence, not the parent.
       fire({
         taskId: entry.taskId,
+        ...(entry.occurrenceId !== undefined && {
+          occurrenceId: entry.occurrenceId,
+        }),
         railId: entry.railId,
         displayName: entry.railName,
         action,
@@ -164,9 +169,7 @@ export function TodayTrack() {
     [timelineRows, now.asDate, shifts],
   );
 
-  const completeTaskOccurrence = useStore((s) => s.completeTaskOccurrence);
   const reopenTaskOccurrence = useStore((s) => s.reopenTaskOccurrence);
-  const archiveTaskOccurrence = useStore((s) => s.archiveTaskOccurrence);
 
   // RailCard's row id is the occurrence id when the row represents an
   // occurrence; otherwise it's the Task id. Resolve either way before
@@ -177,9 +180,6 @@ export function TodayTrack() {
       if (occ) {
         const task = tasks[occ.taskId];
         if (!task) return;
-        // Reason-toast contract still uses taskId for shift-attribution
-        // continuity; v0.11+ refines this further (see ERD §5.5.6
-        // amendment) — here we keep the toast keyed to taskId for now.
         const railRev = occ.slot
           ? railAtDate(
               { railRevisions, railTombstones },
@@ -187,16 +187,15 @@ export function TodayTrack() {
               occ.slot.date,
             )
           : undefined;
-        if (action === 'done') {
-          void completeTaskOccurrence(occ.id);
-        } else if (action === 'archive') {
-          void archiveTaskOccurrence(occ.id);
-        }
-        // 'defer' on an occurrence is undefined in v0.11 — no
-        // occurrence-level deferred state. Fall through to a noop so
-        // the user's tag still surfaces via the toast.
+        // §10.6 — fire() owns the occurrence write AND its toast undo.
+        // (The old path wrote the occurrence directly, then fired
+        // without occurrenceId, which double-wrote the PARENT task's
+        // status and registered an undo that only restored the parent.
+        // 'defer' is a documented noop on occurrences — fire() shows
+        // the toast without any status write.)
         fire({
           taskId: task.id,
+          occurrenceId: occ.id,
           ...(railRev && { railId: railRev.railId }),
           displayName: occ.label?.trim() || task.title || railRev?.name || '',
           action,
@@ -225,8 +224,6 @@ export function TodayTrack() {
       railRevisions,
       railTombstones,
       fire,
-      completeTaskOccurrence,
-      archiveTaskOccurrence,
     ],
   );
 
@@ -381,11 +378,17 @@ function sample(d: Date): LiveNow {
 // ------------------------------------------------------------------
 
 function carriedRowToCheckInEntry(row: RailBoundTaskRow): CheckInEntry {
+  // §10.6 — occurrence rows keep their occurrenceId so the ✓ / 归档
+  // actions land on the occurrence (dropping it here was the old bug:
+  // the strip only passed taskId and the parent task got written).
+  // Title prefers the occurrence label per the `occurrence.label ??
+  // task.title` render convention.
   return {
     taskId: row.task.id,
+    ...(row.occurrence !== undefined && { occurrenceId: row.occurrence.id }),
     railId: row.rail.id,
     railName: row.rail.name,
-    taskTitle: row.task.title,
+    taskTitle: row.occurrence?.label?.trim() || row.task.title,
     ...(row.rail.subtitle && { subtitle: row.rail.subtitle }),
     color: row.rail.color as CheckInEntry['color'],
     start: row.plannedStart.slice(11, 16) || '00:00',

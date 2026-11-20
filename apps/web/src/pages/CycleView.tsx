@@ -89,6 +89,7 @@ export function CycleView({
   const clearCycleDayOverride = useStore((s) => s.clearCycleDayOverride);
   const createTask = useStore((s) => s.createTask);
   const updateTask = useStore((s) => s.updateTask);
+  const archiveTask = useStore((s) => s.archiveTask);
   const openEditSession = useStore((s) => s.openEditSession);
   const closeEditSession = useStore((s) => s.closeEditSession);
   const undoEditSessionAction = useStore((s) => s.undoEditSession);
@@ -289,7 +290,6 @@ export function CycleView({
   // (subscribed at the top of this component) and route accordingly.
   // The store actions below handle both branches; the legacy task
   // path stays exactly as before.
-  const completeTaskOccurrence = useStore((s) => s.completeTaskOccurrence);
   const reopenTaskOccurrence = useStore((s) => s.reopenTaskOccurrence);
   const archiveTaskOccurrence = useStore((s) => s.archiveTaskOccurrence);
   const scheduleTaskOccurrence = useStore((s) => s.scheduleTaskOccurrence);
@@ -322,9 +322,13 @@ export function CycleView({
               occ.slot.date,
             )
           : undefined;
-        void completeTaskOccurrence(occ.id, sessionId ?? undefined);
+        // §10.6 — pass occurrenceId so fire() writes the occurrence and
+        // registers an occurrence-level undo. (Completing it directly
+        // here and firing without occurrenceId double-wrote the parent
+        // task's raw status and made the toast undo a no-op on the pill.)
         fire({
           taskId: occ.taskId,
+          occurrenceId: occ.id,
           ...(railRev && { railId: railRev.railId }),
           displayName:
             occ.label?.trim() ||
@@ -360,7 +364,6 @@ export function CycleView({
       railTombstones,
       fire,
       sessionId,
-      completeTaskOccurrence,
     ],
   );
 
@@ -400,13 +403,13 @@ export function CycleView({
         void archiveTaskOccurrence(occ.id, sessionId ?? undefined);
         return;
       }
-      void updateTask(
-        rowId,
-        { status: 'archived', archivedAt: new Date().toISOString() },
-        sessionId ?? undefined,
-      );
+      // Whole-task archive goes through store.archiveTask so the §10.6
+      // D7 cascade archives any pending occurrences with it (the plain
+      // updateTask status-flip skipped the cascade and left pending
+      // splits surfacing everywhere).
+      void archiveTask(rowId, sessionId ?? undefined);
     },
-    [taskOccurrencesMap, archiveTaskOccurrence, updateTask, sessionId],
+    [taskOccurrencesMap, archiveTaskOccurrence, archiveTask, sessionId],
   );
 
   const handleUnarchiveTask = useCallback(
