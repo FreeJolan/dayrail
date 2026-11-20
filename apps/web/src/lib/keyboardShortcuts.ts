@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 // Vim-style bigraph shortcuts: press `g`, then a second key within
@@ -61,6 +61,27 @@ export function useGlobalShortcuts(
 ): void {
   const navigate = useNavigate();
 
+  // Callers pass freshly-built closures on every render (and `navigate`
+  // changes identity on navigation). If those lived in the effect's dep
+  // array, any re-render of the caller would tear the listener down and
+  // silently reset an in-flight `g` leader (1.2s window) — shortcuts
+  // would randomly swallow the second key. Latest-ref pattern instead:
+  // the effect mounts the listener once, handlers stay fresh via a ref.
+  const handlersRef = useRef({
+    navigate,
+    onOpenCheatsheet,
+    onToggleBacklog,
+    onOpenStaging,
+  });
+  useEffect(() => {
+    handlersRef.current = {
+      navigate,
+      onOpenCheatsheet,
+      onToggleBacklog,
+      onOpenStaging,
+    };
+  });
+
   useEffect(() => {
     let leader: 'g' | null = null;
     let leaderTimer: number | null = null;
@@ -80,7 +101,7 @@ export function useGlobalShortcuts(
       // `?` (Shift+/) opens the cheatsheet without a leader.
       if (e.key === '?') {
         e.preventDefault();
-        onOpenCheatsheet();
+        handlersRef.current.onOpenCheatsheet();
         return;
       }
 
@@ -90,9 +111,11 @@ export function useGlobalShortcuts(
         clearLeader();
         if (match) {
           e.preventDefault();
-          if ('path' in match) navigate(match.path);
-          else if (match.action === 'toggle-backlog') onToggleBacklog();
-          else if (match.action === 'open-proposals') onOpenStaging();
+          if ('path' in match) handlersRef.current.navigate(match.path);
+          else if (match.action === 'toggle-backlog')
+            handlersRef.current.onToggleBacklog();
+          else if (match.action === 'open-proposals')
+            handlersRef.current.onOpenStaging();
         }
         return;
       }
@@ -108,7 +131,7 @@ export function useGlobalShortcuts(
       window.removeEventListener('keydown', onKey);
       clearLeader();
     };
-  }, [navigate, onOpenCheatsheet, onToggleBacklog, onOpenStaging]);
+  }, []);
 }
 
 export function useCheatsheetToggle(): {
