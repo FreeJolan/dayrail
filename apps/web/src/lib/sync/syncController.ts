@@ -1,6 +1,6 @@
 // Sync controller (v0.7) — orchestrates push (debounced after writes,
-// pagehide best-effort, manual button) and the boot-gate pull. Keeps
-// identity cursors + syncStore in sync.
+// visibility/blur best-effort, manual button) and the boot-gate pull.
+// Keeps identity cursors + syncStore in sync.
 //
 // v0.7 wire format: `.dryj` Yjs binary container (see @dayrail/db/dryj).
 // Yjs's internal LWW + Lamport clock handles convergence, so the
@@ -9,8 +9,8 @@
 // surface; the user just sees field-level merges happen.
 //
 // Push path:
-//   1. caller (subscription / manual button / pagehide / Tauri
-//      window blur) calls requestPush().
+//   1. caller (subscription / manual button / visibilitychange /
+//      Tauri window blur) calls requestPush().
 //   2. controller debounces PUSH_DEBOUNCE_MS (8s · ERD §7.8 P4 ·
 //      down from v0.7's 60s); first event after a quiet window
 //      goes through immediately, follow-ups within the window are
@@ -41,6 +41,7 @@ import {
   bumpDirtyCount,
   clearDirtyCount,
   clearLocalIsSamplesOnly,
+  flushSyncMeta,
   getDeviceId,
   getDeviceLabel,
   getDirtyCount,
@@ -387,8 +388,10 @@ export function startSyncBackgroundLoop(): void {
 
   if (typeof window !== 'undefined') {
     window.addEventListener('visibilitychange', onVisibilityChange);
-    window.addEventListener('pagehide', onPageHide);
-    window.addEventListener('beforeunload', onBeforeUnload);
+    // Both teardown events route to the same honest departure-marker
+    // write (idempotent) — whichever the platform fires first wins.
+    window.addEventListener('pagehide', onDeparture);
+    window.addEventListener('beforeunload', onDeparture);
     // ERD §7.8 P4 · Tauri window blur as a natural push trigger.
     // "User switched to another app = natural commit point" — and
     // the desktop runtime gives us a clean signal the PWA doesn't.
@@ -431,20 +434,39 @@ function onVisibilityChange(): void {
   }
 }
 
-function onPageHide(): void {
-  if (getDirtyCount() > 0 && isDriveConnected() && !isSyncProbeSuppressed()) {
-    void runPush({ trigger: 'pagehide' }).catch(() => {
-      /* leaving anyway */
-    });
-  }
-}
-
-function onBeforeUnload(): void {
+/** Page teardown (pagehide + beforeunload) — HONEST best effort
+ *  (ERD §7.10.3 · audit #58).
+ *
+ *  This used to fire a `runPush({ keepalive: true })`, but that was
+ *  theater: the `keepalive` flag never reached fetch() (driveBackend
+ *  passes no keepalive option), the upload is a multi-roundtrip chain
+ *  (token refresh → listAll → PATCH → POST → prune) whose later
+ *  awaits never run once the document unloads, and the browser aborts
+ *  the in-flight request anyway. Real fetch-keepalive wouldn't save
+ *  it either — the 64 KiB keepalive body cap is far below a real
+ *  .dryj snapshot. Nothing was ever uploaded from this path.
+ *
+ *  What we CAN do honestly at teardown: record the departure. The
+ *  dirty cursor is already persisted (flushed shortly after each
+ *  edit), so the next launch's recovery push uploads the stranded
+ *  edits; the pendingDeparture marker additionally lets the
+ *  PendingDepartureBanner tell the user "上次离开时有 N 个改动没传
+ *  上去". The real best-effort push lives on `visibilitychange:
+ *  hidden`, which fires while the page is still alive (tab switch —
+ *  and it also precedes any close), where an async upload can
+ *  actually complete. */
+function onDeparture(): void {
   if (getDirtyCount() === 0 || !isDriveConnected()) return;
-  if (isSyncProbeSuppressed()) return;
-  void runPush({ trigger: 'beforeunload', keepalive: true }).catch(() => {
-    /* ignore */
+  setPendingDeparture({
+    count: getDirtyCount(),
+    at: new Date().toISOString(),
   });
+  // Kick the flush now instead of waiting for the setTimeout(0)
+  // coalescer — during unload that timer never fires. The write
+  // itself is still async (OPFS) and may not land on a hard kill;
+  // that's acceptable, the marker is UX copy on top of the durable
+  // dirty cursor.
+  void flushSyncMeta();
 }
 
 // Tauri-only: register a window focus listener so the desktop app
@@ -482,12 +504,9 @@ interface RunPushOpts {
     | 'manual'
     | 'debounced'
     | 'visibilitychange'
-    | 'pagehide'
-    | 'beforeunload'
     | 'recovery'
     | 'retry'
     | 'tauri-blur';
-  keepalive?: boolean;
 }
 
 /** Manual sync outcome.
@@ -1050,10 +1069,14 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       // post-upload verification + smart-diff recovery; P1's job is
       // to plug the much larger "we never read remote at all" hole.
       //
-      // Skip the firewall for keepalive (pagehide budget) — pagehide
-      // can't await metadata, and the next active push from this
-      // device will repair lineage via the firewall path.
-      if (!opts.keepalive) {
+      // The firewall runs for EVERY trigger. (A `keepalive` bypass
+      // used to exist for the beforeunload push; that push was theater
+      // — the flag never reached fetch and the upload chain can't
+      // survive unload — so teardown now writes the pendingDeparture
+      // marker instead and no caller needs to skip the firewall.)
+      // Block braces kept for the lexical scope of the firewall's
+      // locals.
+      {
         // IDENTITY PIN CHECK (ERD §7.10.2 · v0.12 P1).
         //
         // Block push if a mismatch is already pending — the modal is
@@ -1240,13 +1263,13 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       // Pre-push sanity gate (added 2026-05-08). Compare current
       // entity counts to what we last pushed; if the local state is
       // suspiciously emptier (templates went from N to 0, tasks
-      // halved, etc.), prompt before overwriting Drive. Skip on
-      // 'keepalive' (pagehide budget — no time to await user input)
-      // and on 'manual' if needed; we let manual through too because
-      // the user explicitly asked for the push.
+      // halved, etc.), prompt before overwriting Drive. Manual
+      // triggers go through the same gate — the user explicitly
+      // asked for the push, but a data-loss shape still deserves a
+      // confirm.
       const currCounts = computeLocalCounts();
       const lastPushed = getLastPushedCounts();
-      if (lastPushed && !opts.keepalive) {
+      if (lastPushed) {
         const warning = buildSanityWarning(
           {
             templates: lastPushed.templates,
@@ -1320,28 +1343,25 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       setLastSyncInfo(info);
       syncStore.setLastSync(info);
       // ERD §7.10.5 · v0.12 P2 · record successful push for the
-      // duration-aware surface. Skip keepalive: it's fire-and-forget
-      // (we don't actually know if Drive received it) so recording
-      // it could lie about success.
-      if (!opts.keepalive) {
-        const nowIso = new Date().toISOString();
-        setLastSuccessAt('push', nowIso);
-        appendSyncAttempt({
-          at: nowIso,
-          direction: 'push',
-          result: 'ok',
-        });
-        // A successful push by definition clears the pending pile;
-        // drop the dismiss so the banner can fire again if the pile
-        // grows back.
-        setDismissPendingPileUntil(null);
-        // ERD §7.10.3 · v0.12 P6 · any successful push pays off the
-        // "left without uploading" marker.
-        setPendingDeparture(null);
-        // ERD §7.10.4 · v0.12 P4 · drop a heartbeat so peers can see
-        // this device pushed. Best-effort; failures don't break push.
-        void writeHeartbeatBestEffort(snapshotId);
-      }
+      // duration-aware surface. Every surviving trigger awaits the
+      // real upload result, so recording here never lies.
+      const nowIso = new Date().toISOString();
+      setLastSuccessAt('push', nowIso);
+      appendSyncAttempt({
+        at: nowIso,
+        direction: 'push',
+        result: 'ok',
+      });
+      // A successful push by definition clears the pending pile;
+      // drop the dismiss so the banner can fire again if the pile
+      // grows back.
+      setDismissPendingPileUntil(null);
+      // ERD §7.10.3 · v0.12 P6 · any successful push pays off the
+      // "left without uploading" marker.
+      setPendingDeparture(null);
+      // ERD §7.10.4 · v0.12 P4 · drop a heartbeat so peers can see
+      // this device pushed. Best-effort; failures don't break push.
+      void writeHeartbeatBestEffort(snapshotId);
       syncStore.setPhase({ kind: 'idle' });
       if (retryTimer) {
         clearTimeout(retryTimer);
@@ -1351,17 +1371,14 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       const msg = (err as Error).message ?? String(err);
       console.warn('[sync] push failed:', err);
       // ERD §7.10.5 · v0.12 P2 · record fail attempt for the
-      // failure-history log + tooltip summary. Same keepalive skip
-      // rationale as on success.
-      if (!opts.keepalive) {
-        appendSyncAttempt({
-          at: new Date().toISOString(),
-          direction: 'push',
-          result: 'fail',
-          errorCode: classifySyncError(err),
-          errorBody: msg.slice(0, 500),
-        });
-      }
+      // failure-history log + tooltip summary.
+      appendSyncAttempt({
+        at: new Date().toISOString(),
+        direction: 'push',
+        result: 'fail',
+        errorCode: classifySyncError(err),
+        errorBody: msg.slice(0, 500),
+      });
       syncStore.setPhase({ kind: 'error', message: msg });
       if (opts.trigger !== 'manual' && phaseBefore.kind === 'idle') {
         setTimeout(() => {

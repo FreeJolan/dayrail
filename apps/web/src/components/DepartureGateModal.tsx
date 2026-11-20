@@ -22,8 +22,10 @@
 // interceptor (block CloseRequested → run gate → allow close) is
 // deferred · the "安全退出" button gives users the explicit gate
 // affordance without touching Rust. Browser tab-close / window-X
-// still goes through the existing pagehide keepalive path. See PR
-// description for the deferred follow-up.
+// writes the same pendingDeparture marker (syncController's teardown
+// handler) — a push can't survive unload, so the next launch's
+// recovery push does the actual upload. See PR description for the
+// deferred follow-up.
 
 import { useEffect, useState } from 'react';
 import { syncStore, useSyncStatus } from '@/lib/sync/syncStore';

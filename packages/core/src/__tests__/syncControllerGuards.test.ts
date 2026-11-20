@@ -525,3 +525,45 @@ describe('identity mismatch gates the pull surfaces (ERD §7.10.2)', () => {
     expect(identity.getLastPulledSnapshotId()).toBe('snapshot-2');
   });
 });
+
+// ============ audit #58 · honest teardown (no theater push) ============
+
+describe('page teardown records the departure instead of a doomed push', () => {
+  it('writes the pendingDeparture marker and starts no network call', async () => {
+    await bootApp();
+    const identity = await import('../../../../apps/web/src/lib/sync/identity');
+
+    await userEdit('line-unpushed');
+    expect(identity.getDirtyCount()).toBe(1);
+
+    // The controller registered pagehide + beforeunload handlers on
+    // the (stubbed) window — grab and fire them like a tab close does.
+    const calls = (
+      window.addEventListener as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls as Array<[string, () => void]>;
+    const pagehide = calls.find((c) => c[0] === 'pagehide')?.[1];
+    const beforeunload = calls.find((c) => c[0] === 'beforeunload')?.[1];
+    expect(typeof pagehide).toBe('function');
+    expect(typeof beforeunload).toBe('function');
+    pagehide!();
+    beforeunload!(); // both fire on a real close · marker is idempotent
+
+    expect(identity.getPendingDeparture()).toMatchObject({ count: 1 });
+    // The old keepalive push pretended to upload from here — it never
+    // could (fetch aborts at unload, multi-roundtrip chain). The
+    // honest teardown starts no network call at all; the persisted
+    // dirty cursor + next boot's recovery push carry the edits up.
+    expect(disk.getRemoteMeta).not.toHaveBeenCalled();
+    expect(disk.uploadDryj).not.toHaveBeenCalled();
+  });
+
+  it('stays silent when there is nothing unpushed', async () => {
+    await bootApp();
+    const identity = await import('../../../../apps/web/src/lib/sync/identity');
+    const calls = (
+      window.addEventListener as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls as Array<[string, () => void]>;
+    calls.find((c) => c[0] === 'pagehide')![1]();
+    expect(identity.getPendingDeparture()).toBeNull();
+  });
+});

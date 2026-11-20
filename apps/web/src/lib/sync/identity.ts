@@ -237,10 +237,11 @@ async function doFlush(): Promise<void> {
   }
 }
 
-/** Force an immediate flush. Called by sync controller before push
- *  triggers (Tauri blur, pagehide, etc.) so in-flight setter writes
- *  hit disk before the push starts. Safe to call before
- *  loadSyncMetaCache resolves — degenerates to a no-op. */
+/** Force an immediate flush. Called by the sync controller's page
+ *  teardown handler so the pendingDeparture marker doesn't sit in the
+ *  setTimeout(0) coalescer when the document unloads (that timer
+ *  never fires during unload). Safe to call before loadSyncMetaCache
+ *  resolves — degenerates to a no-op. */
 export async function flushSyncMeta(): Promise<void> {
   if (_flushTimer !== null) {
     clearTimeout(_flushTimer);
