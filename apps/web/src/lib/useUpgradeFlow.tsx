@@ -84,7 +84,16 @@ export function useUpgradeFlow(): UseUpgradeFlowResult {
     // covers the progress; no toast needed.
     if (isTauriRuntime()) {
       setDialogOpen(false);
-      void update();
+      // `update()` swallows install failures (desktopUpdate clears its
+      // own overlay and resolves). If it settles without relaunching,
+      // release `busy` so requestUpgrade() can retry — otherwise this
+      // instance's entry point becomes a dead button until restart. On
+      // success the relaunch tears the page down and the reset is moot.
+      try {
+        await update();
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     let filename: string;
@@ -108,7 +117,11 @@ export function useUpgradeFlow(): UseUpgradeFlowResult {
     // browser we target; `exportDryjSnapshot` itself defers
     // URL.revokeObjectURL by 1 s, so we're inside that window.
     window.setTimeout(() => {
-      void update();
+      // Same deal as the Tauri branch: a failed SW update resolves
+      // (swRegistration catches internally) without reloading — reset
+      // `busy` so the user can retry instead of hitting a silent
+      // early-return in requestUpgrade().
+      void update().finally(() => setBusy(false));
     }, TICK_BEFORE_UPDATE_MS);
   }, [update]);
 
