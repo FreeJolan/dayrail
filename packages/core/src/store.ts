@@ -592,29 +592,85 @@ export function applyImportedUpdate(dryjBytes: Uint8Array): void {
   Y.applyUpdate(getYDoc(), decoded.update, 'imported');
 }
 
-/** "First device joining an existing Drive canonical" path: clear
- *  every top-level Y.Map, then apply the remote update. Distinct
- *  from applyRemoteUpdate (which CRDT-merges into existing local
- *  state) — `replaceFromRemote` is for when the user explicitly
- *  wants the remote to BE their state, not be merged with what
- *  happens to be locally seeded.
+/** Make the remote snapshot BE the local state. Distinct from
+ *  applyRemoteUpdate (which CRDT-merges into existing local state) —
+ *  `replaceFromRemote` is for when the user explicitly wants the
+ *  remote to replace their state, not be merged with it.
  *
- *  Use case: user installed v0.7 fresh on a new device, the app
- *  seeded sample templates / rails / Inbox, then they connected
- *  Drive. Without this, "Pull from cloud" CRDT-merges samples with
- *  the user's actual cloud data, and the next push uploads the
- *  union — polluting Drive with samples for every other device. */
+ *  Use cases:
+ *    - "First device joining an existing Drive canonical": user
+ *      installed fresh, the app seeded sample templates / rails /
+ *      Inbox, then they connected Drive. Without replace semantics,
+ *      "Pull from cloud" CRDT-merges samples with the user's actual
+ *      cloud data and the next push uploads the union — polluting
+ *      Drive with samples for every other device.
+ *    - Settings → backup history → "rollback to this snapshot"
+ *      (followed by a force-push making it the new canonical).
+ *    - The sync controller's same-direction pull (remote already
+ *      contains everything local has — adopt remote wholesale).
+ *
+ *  Implementation note (the shared-history trap): `clear()` +
+ *  `Y.applyUpdate` alone is NOT a restore when the local doc shares
+ *  CRDT history with the snapshot (rollback to our own history, or
+ *  any doc that has synced before). applyUpdate skips (client, clock)
+ *  pairs the doc already integrated, and Yjs deletions are monotonic
+ *  — so every shared entity would stay deleted after the clear and
+ *  the "replace" would silently wipe the data instead. Therefore:
+ *
+ *    1. Decode the snapshot into a throwaway doc and read its
+ *       semantic (flat) state — what the snapshot actually LOOKS
+ *       like, independent of history.
+ *    2. In one live-doc transact: clear every top-level map, replay
+ *       the snapshot update (this fully restores content the local
+ *       doc never integrated — the fresh-device case — under its
+ *       original client ids, keeping later CRDT merges clean), then
+ *       rewrite whatever the replay could not resurrect from the
+ *       flat state as fresh local items.
+ *
+ *  The rewritten entries are authored by the local clientID. That is
+ *  semantically sound for every caller: rollback is immediately
+ *  force-pushed as the new canonical, and the same-direction pull
+ *  seeds lastPulledDoc with these very bytes as the next diff base. */
 export function replaceFromRemote(dryjBytes: Uint8Array): void {
   const decoded = decodeDryj(dryjBytes);
+  // Materialize the snapshot's semantic state on a throwaway doc.
+  const snapshotDoc = createYDoc();
+  let snapshotFlat: FlatState;
+  try {
+    Y.applyUpdate(snapshotDoc, decoded.update);
+    snapshotFlat = readFlatStateFromDoc(snapshotDoc);
+  } finally {
+    snapshotDoc.destroy();
+  }
   const doc = getYDoc();
+  // Single transact so observers see one atomic transition rather
+  // than "wipe → empty → restore" intermediate states.
   doc.transact(() => {
     for (const name of TOP_LEVEL_MAPS) {
       doc.getMap(name).clear();
     }
-    // Apply remote inside the same transact so observers see one
-    // atomic transition rather than "wipe → empty → restore"
-    // intermediate states.
     Y.applyUpdate(doc, decoded.update, REMOTE_ORIGIN);
+    // Repair pass: entries the replay failed to resurrect (shared
+    // history → items skipped as already-integrated, deletions stick)
+    // are rewritten from the snapshot's flat state. Entries that DID
+    // survive the replay are causally complete copies of the snapshot
+    // content (their container item was unknown locally, so all their
+    // inner items came from the snapshot update) — only missing ids
+    // need rewriting.
+    const missing: Record<string, Record<string, unknown>> = {};
+    for (const name of TOP_LEVEL_MAPS) {
+      const submap = doc.getMap(name);
+      const want = snapshotFlat[name] as Record<string, unknown>;
+      for (const [id, value] of Object.entries(want)) {
+        if (submap.has(id)) continue;
+        (missing[name] ??= {})[id] = value;
+      }
+    }
+    // loadFlatStateIntoDoc rebuilds the hydrate-compatible structures
+    // (entities as Y.Map, revision lists as Y.Array, tombstones as
+    // plain objects). Its nested transact reuses this outer
+    // transaction — origin stays REMOTE_ORIGIN, update stays atomic.
+    loadFlatStateIntoDoc(doc, missing as Partial<FlatState>);
   }, REMOTE_ORIGIN);
 }
 
