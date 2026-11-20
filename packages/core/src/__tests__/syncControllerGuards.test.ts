@@ -567,3 +567,33 @@ describe('page teardown records the departure instead of a doomed push', () => {
     expect(identity.getPendingDeparture()).toBeNull();
   });
 });
+
+// ============ audit #20 · imported snapshot must still push ============
+
+describe('import bumps the dirty cursor after the reload', () => {
+  it('boots the imported bytes with dirty=1 and samples-only cleared', async () => {
+    // Post-reset reality: resetLocalData wiped syncMeta (defaults
+    // apply) and the state file; the import stash is waiting. The
+    // hostile samplesOnly=true models a stale flag surviving through
+    // any path — the import must clear it either way.
+    disk.meta = { samplesOnly: true };
+    disk.bytes = null;
+    disk.pendingImport = baseBytes;
+    await bootApp();
+
+    const identity = await import('../../../../apps/web/src/lib/sync/identity');
+    const { syncStore } = await import('../../../../apps/web/src/lib/sync/syncStore');
+    const core = await import('@dayrail/core');
+
+    // The stash landed as the persisted state and hydrated.
+    expect(disk.savedBytes).toBe(baseBytes);
+    expect(core.useStore.getState().tasks['task']).toBeTruthy();
+
+    // The §7.9 regression: these two cursors used to be written
+    // BEFORE resetLocalData wiped syncMeta, so the import booted with
+    // dirty=0 and never pushed.
+    expect(identity.getDirtyCount()).toBe(1);
+    expect(syncStore.getSnapshot().dirtyCount).toBe(1);
+    expect(identity.isLocalSamplesOnly()).toBe(false);
+  });
+});

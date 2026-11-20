@@ -14,10 +14,6 @@
 
 import { decodeDryj } from '@dayrail/db/dryj';
 import { resetLocalData } from './resetLocalData';
-import {
-  bumpDirtyCount,
-  clearLocalIsSamplesOnly,
-} from './sync/identity';
 
 const PENDING_IMPORT_KEY = 'dayrail.pending-import';
 // One-shot toast sentinel: importLocalDataFromBytes sets this just
@@ -69,20 +65,15 @@ export async function importLocalDataFromBytes(
   // Base64-encode for sessionStorage (which only stores strings).
   const b64 = bytesToBase64(bytes);
   sessionStorage.setItem(PENDING_IMPORT_KEY, b64);
-  // The user just brought in real data. Clear the samples-only flag
-  // pre-emptively (boot.ts won't re-seed when there's a pending
-  // import, but a stale flag from a prior boot would otherwise let
-  // ConnectDrivePanel destroy this import on its first Drive pull).
-  clearLocalIsSamplesOnly();
-  // Bump the dirty cursor so the imported state actually pushes to
-  // Drive on the next sync trigger. Without this, post-reload boot
-  // applies the .dryj with origin='opfs' (filtered by the
-  // afterTransaction listener), dirty stays 0, and no push trigger
-  // ever fires — the import would be stranded on this device unless
-  // the user happened to make another edit. localStorage survives
-  // resetLocalData's OPFS wipe, so the bump persists across the
-  // reload that this function triggers.
-  bumpDirtyCount();
+  // NOTE: do NOT touch SyncMeta (dirty bump / samples-only clear)
+  // here. Since §7.9 those cursors live in the YDocStore's syncMeta
+  // file, and `resetLocalData()` below wipes that file — a pre-reset
+  // write is lost on reload (and its deferred flush could even race
+  // the reset and resurrect stale pre-import cursors). boot.ts does
+  // both writes AFTER the reload, once the fresh syncMeta cache is
+  // warm, in its pending-import branch — that's what makes the
+  // imported state actually push to Drive (the .dryj is applied with
+  // origin='opfs', which the afterTransaction listener ignores).
   // Stash a flag for the post-reload App layer to surface a "已成功
   // 导入" toast. Without this, the user sees: click → confirm →
   // silent reload → data is just there, with no signal that the
