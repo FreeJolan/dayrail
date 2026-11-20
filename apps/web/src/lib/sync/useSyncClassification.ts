@@ -35,6 +35,25 @@ function lastAttemptErroring(direction: 'push' | 'pull'): boolean {
   return false;
 }
 
+/** Start of the current push-failure streak: the EARLIEST failed push
+ *  attempt with no successful push attempt after it. null when the
+ *  latest push attempt succeeded (or none was recorded). This is the
+ *  honest basis for "传不上去多久了" — time since the last success
+ *  would silently include idle time (push only runs on changes).
+ *  Lower-bound caveat: the ring buffer caps at 100 attempts, so a
+ *  very long streak reports at least the span the buffer still sees. */
+function pushFailingSince(): string | null {
+  const attempts = getRecentAttempts();
+  let since: string | null = null;
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    const a = attempts[i];
+    if (!a || a.direction !== 'push') continue;
+    if (a.result === 'ok') break;
+    since = a.at;
+  }
+  return since;
+}
+
 export function useSyncClassification(): SyncStatusClassification {
   const status = useSyncStatus();
   const [tick, setTick] = useState(0);
@@ -54,12 +73,15 @@ export function useSyncClassification(): SyncStatusClassification {
     return { kind: 'checking' };
   }
 
+  const pushFailSince = pushFailingSince();
   return classifySyncStatus({
     nowMs: Date.now(),
     pendingCount: status.dirtyCount,
     lastSuccessPushIso: getLastSuccessAt('push'),
     lastSuccessPullIso: getLastSuccessAt('pull'),
-    pushErroring: lastAttemptErroring('push'),
+    // "Latest push attempt failed" ⇔ "a failure streak exists".
+    pushErroring: pushFailSince !== null,
+    pushFailingSinceIso: pushFailSince,
     pullErroring: lastAttemptErroring('pull'),
     sessionRoundTripDone: status.sessionRoundTripDone,
   });
