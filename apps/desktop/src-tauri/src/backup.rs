@@ -34,7 +34,8 @@
 //     etc.) for bring-your-own redundancy.
 
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -107,9 +108,45 @@ fn make_filename(reason: &str) -> String {
     format!("{}{}-{}.dryj", BACKUP_PREFIX, now, reason_part)
 }
 
-/// True for files this module manages (`dayrail-*.dryj`).
+/// True for files this module manages (`dayrail-*.dryj`). Loose prefix
+/// match — used by `backup_list` so historical / hand-copied snapshots
+/// stay visible and restorable.
 fn is_managed_backup(filename: &str) -> bool {
     filename.starts_with(BACKUP_PREFIX) && filename.ends_with(".dryj")
+}
+
+/// Strict matcher for names `make_filename` itself produces:
+/// `dayrail-YYYYMMDDTHHMMSSZ-<reason>.dryj` with a digits-only compact
+/// timestamp and a sanitised (alphanumeric + `-`) reason. GC filters on
+/// THIS — never on the looser `is_managed_backup` — so it can only ever
+/// delete files this module created. A user archive in a custom backup
+/// directory, e.g. a manual export `dayrail-2026-11-20.dryj` (our own
+/// export default name) or `dayrail-old-laptop.dryj`, is listed but
+/// never garbage-collected.
+fn is_generated_backup_name(filename: &str) -> bool {
+    let Some(rest) = filename.strip_prefix(BACKUP_PREFIX) else {
+        return false;
+    };
+    let Some(rest) = rest.strip_suffix(".dryj") else {
+        return false;
+    };
+    // rest = YYYYMMDDTHHMMSSZ-<reason>; timestamp is exactly 16 chars.
+    if rest.len() < 18 || !rest.is_char_boundary(16) {
+        return false;
+    }
+    let (ts, after) = rest.split_at(16);
+    let ts = ts.as_bytes();
+    let ts_ok = ts[..8].iter().all(|b| b.is_ascii_digit())
+        && ts[8] == b'T'
+        && ts[9..15].iter().all(|b| b.is_ascii_digit())
+        && ts[15] == b'Z';
+    if !ts_ok {
+        return false;
+    }
+    let Some(reason) = after.strip_prefix('-') else {
+        return false;
+    };
+    !reason.is_empty() && reason.chars().all(|c| c.is_alphanumeric() || c == '-')
 }
 
 #[tauri::command]
@@ -126,7 +163,13 @@ pub async fn backup_save(
     let backups = ensure_backups_dir(&app, dir.as_deref())?;
     let filename = make_filename(&reason);
     let path = backups.join(&filename);
-    fs::write(&path, &bytes).map_err(|e| format!("write backup: {}", e))?;
+    // Atomic write: temp file + fsync + rename. A crash mid-write
+    // (pre-update backups run right before restart-heavy windows) must
+    // never leave a truncated `.dryj` that would later be listed as a
+    // valid recovery point. The `.tmp` suffix keeps the temp file
+    // invisible to backup_list / GC (both require the `.dryj` suffix).
+    let tmp = backups.join(format!("{}.tmp", filename));
+    write_backup_atomically(&path, &tmp, &bytes).map_err(|e| format!("write backup: {}", e))?;
 
     let entry = BackupEntry {
         filename: filename.clone(),
@@ -143,10 +186,33 @@ pub async fn backup_save(
     Ok(entry)
 }
 
+/// Write `bytes` to `final_path` via `tmp_path` + rename so a crash
+/// mid-write can never leave a truncated file under the final name.
+/// `sync_all` before the rename so the rename can't be reordered ahead
+/// of the data hitting disk (the classic rename-atomicity caveat).
+fn write_backup_atomically(
+    final_path: &Path,
+    tmp_path: &Path,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    let result = (|| {
+        let mut f = fs::File::create(tmp_path)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(tmp_path, final_path)
+    })();
+    if result.is_err() {
+        // Best-effort: don't leave a dangling temp file behind.
+        let _ = fs::remove_file(tmp_path);
+    }
+    result
+}
+
 fn gc_old_backups(dir: &PathBuf, keep: usize) -> std::io::Result<()> {
     let mut entries: Vec<(PathBuf, std::time::SystemTime)> = fs::read_dir(dir)?
         .filter_map(|e| e.ok())
-        .filter(|e| is_managed_backup(&e.file_name().to_string_lossy()))
+        .filter(|e| is_generated_backup_name(&e.file_name().to_string_lossy()))
         .filter_map(|e| {
             let m = e.metadata().ok()?;
             Some((e.path(), m.modified().ok()?))
@@ -282,4 +348,122 @@ fn resolve_safe_path(
     }
     let dir = backups_dir(app, custom)?;
     Ok(dir.join(filename))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unique scratch dir per test under the real temp dir, cleaned up
+    /// by the Drop guard.
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "dayrail-backup-test-{}-{}",
+                tag,
+                uuid::Uuid::new_v4()
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn generated_names_match_the_strict_pattern() {
+        // Round-trip: whatever make_filename produces must be GC-able.
+        for reason in ["pre-update", "pre-import", "manual", "weird reason!", ""] {
+            let name = make_filename(reason);
+            assert!(
+                is_generated_backup_name(&name),
+                "make_filename({reason:?}) produced {name:?} which the strict matcher rejects"
+            );
+            assert!(is_managed_backup(&name));
+        }
+        assert!(is_generated_backup_name(
+            "dayrail-20261120T093011Z-pre-force-push.dryj"
+        ));
+    }
+
+    #[test]
+    fn user_archives_never_match_the_strict_pattern() {
+        for name in [
+            // Our own manual-export default name (dayrail-<date>.dryj).
+            "dayrail-2026-11-20.dryj",
+            // Hand-named archives that pass the loose prefix guard.
+            "dayrail-old-laptop.dryj",
+            "dayrail-backup-final.dryj",
+            // Near misses on the timestamp format.
+            "dayrail-20261120X093011Z-manual.dryj",
+            "dayrail-20261120T093011Z.dryj",
+            "dayrail-20261120T093011Zmanual.dryj",
+            "dayrail-20261120T093011Z-.dryj",
+            "dayrail-20261120T093011Z-pre update.dryj",
+            "dayrail-2026112T0093011Z-manual.dryj",
+            // Wrong prefix / suffix entirely.
+            "mybackup-20261120T093011Z-manual.dryj",
+            "dayrail-20261120T093011Z-manual.dryj.tmp",
+        ] {
+            assert!(
+                !is_generated_backup_name(name),
+                "{name:?} must not be eligible for GC"
+            );
+        }
+    }
+
+    #[test]
+    fn gc_deletes_only_generated_files_and_keeps_newest() {
+        let scratch = Scratch::new("gc");
+        let dir = scratch.path().to_path_buf();
+        // Three generated backups with strictly increasing mtimes.
+        let gen_names = [
+            "dayrail-20260101T000000Z-pre-update.dryj",
+            "dayrail-20260102T000000Z-pre-import.dryj",
+            "dayrail-20260103T000000Z-manual.dryj",
+        ];
+        let base = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        for (i, name) in gen_names.iter().enumerate() {
+            let p = dir.join(name);
+            let f = fs::File::create(&p).unwrap();
+            f.set_modified(base + std::time::Duration::from_secs(i as u64 * 60))
+                .unwrap();
+        }
+        // User archives sharing the loose dayrail-*.dryj pattern, with
+        // the OLDEST mtimes of all — the old GC would delete these first.
+        for name in ["dayrail-2025-01-01.dryj", "dayrail-old-laptop.dryj"] {
+            let p = dir.join(name);
+            let f = fs::File::create(&p).unwrap();
+            f.set_modified(base - std::time::Duration::from_secs(86_400))
+                .unwrap();
+        }
+
+        gc_old_backups(&dir, 2).unwrap();
+
+        assert!(!dir.join(gen_names[0]).exists(), "oldest generated GC'd");
+        assert!(dir.join(gen_names[1]).exists());
+        assert!(dir.join(gen_names[2]).exists());
+        assert!(dir.join("dayrail-2025-01-01.dryj").exists());
+        assert!(dir.join("dayrail-old-laptop.dryj").exists());
+    }
+
+    #[test]
+    fn atomic_write_lands_content_and_leaves_no_temp() {
+        let scratch = Scratch::new("atomic");
+        let final_path = scratch.path().join("dayrail-20260101T000000Z-manual.dryj");
+        let tmp_path = scratch.path().join("dayrail-20260101T000000Z-manual.dryj.tmp");
+        write_backup_atomically(&final_path, &tmp_path, b"snapshot-bytes").unwrap();
+        assert_eq!(fs::read(&final_path).unwrap(), b"snapshot-bytes");
+        assert!(!tmp_path.exists());
+        // Overwrite via the same path keeps working (rename over existing).
+        write_backup_atomically(&final_path, &tmp_path, b"second").unwrap();
+        assert_eq!(fs::read(&final_path).unwrap(), b"second");
+    }
 }

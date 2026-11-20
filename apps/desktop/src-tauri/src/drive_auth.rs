@@ -141,15 +141,7 @@ fn write_refresh_token(app: &AppHandle, token: &str) -> Result<(), String> {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create app_data_dir: {}", e))?;
     }
-    std::fs::write(&path, token)
-        .map_err(|e| format!("write token file: {}", e))?;
-    // Best-effort tighten: 0600 on Unix so other users on the box
-    // can't peek. No-op on Windows.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
+    write_refresh_token_file(&path, token)?;
     // Keychain is dark redundancy: if it succeeds (signed mac / win /
     // linux), great; if not (unsigned mac post-update), file alone
     // carries us through.
@@ -157,6 +149,55 @@ fn write_refresh_token(app: &AppHandle, token: &str) -> Result<(), String> {
         let _ = entry.set_password(token);
     }
     Ok(())
+}
+
+/// Atomic + permission-safe token file write.
+///
+/// Why not a plain `std::fs::write`: (a) it truncates in place, so a
+/// crash mid-write leaves an EMPTY authoritative token file — and when
+/// Google has just rotated the refresh token the old value is already
+/// revoked server-side, forcing the user through the whole OAuth flow
+/// again; (b) creating with the default umask and chmod-ing afterwards
+/// leaves a window where the full token sits world-readable.
+///
+/// So: create a sibling temp file with 0600 from the start, write +
+/// fsync, then rename into place (rename keeps the temp file's mode).
+fn write_refresh_token_file(path: &std::path::Path, token: &str) -> Result<(), String> {
+    use std::io::Write;
+
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+
+    let result = (|| -> std::io::Result<()> {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Applied at create time — the file is never readable by
+            // other users, not even between create and chmod.
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
+        // If a stale temp file survived an earlier crash, `mode` above
+        // didn't apply (it only affects newly created files) — tighten
+        // explicitly before writing the secret into it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        f.write_all(token.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        // Best-effort: don't leave a secret-bearing temp file behind.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.map_err(|e| format!("write token file: {}", e))
 }
 
 /// Forget both copies. Idempotent — succeeds even if neither exists.
@@ -261,7 +302,7 @@ pub async fn drive_connect(app: AppHandle) -> Result<AccessTokenInfo, String> {
         RedirectUrl::new(redirect_uri.clone())
             .map_err(|e| format!("bad redirect: {}", e))?,
     ))?;
-    let (auth_url, _csrf_state) = client
+    let (auth_url, csrf_state) = client
         .authorize_url(CsrfToken::new_random)
         .add_scope(Scope::new(GOOGLE_DRIVE_APPDATA_SCOPE.to_string()))
         // `access_type=offline` is what tells Google to issue a
@@ -282,10 +323,14 @@ pub async fn drive_connect(app: AppHandle) -> Result<AccessTokenInfo, String> {
     open::that(auth_url.to_string())
         .map_err(|e| format!("opening browser: {}", e))?;
 
-    // 5. Wait for the callback (with a timeout)
+    // 5. Wait for the callback (with an overall timeout). The state
+    //    parameter ties the callback to THIS flow (RFC 8252 §8.9);
+    //    stray connections (port scanners, browser speculative
+    //    connections, favicon probes) are answered and ignored while
+    //    we keep listening for the real redirect.
     let code = tokio::time::timeout(
         Duration::from_secs(OAUTH_CALLBACK_TIMEOUT_SECS),
-        wait_for_callback(listener),
+        wait_for_callback(listener, csrf_state.secret()),
     )
     .await
     .map_err(|_| {
@@ -401,78 +446,165 @@ pub async fn drive_is_connected(app: AppHandle) -> bool {
 
 // ============ Loopback callback parsing ============
 
-/// Accept a single connection on the loopback listener, parse the
-/// `code` query parameter from the request line, send a friendly
-/// HTML success page, and return the code.
-async fn wait_for_callback(listener: TcpListener) -> Result<String, String> {
-    let (mut stream, _) = listener
-        .accept()
-        .await
-        .map_err(|e| format!("loopback accept: {}", e))?;
+/// Hard cap on how long one accepted connection may take to deliver a
+/// complete request line. A stray connection that connects but never
+/// sends (e.g. a browser's speculative socket) must not wedge the flow
+/// while the real redirect waits in the accept backlog.
+const PER_CONNECTION_READ_TIMEOUT_SECS: u64 = 10;
 
-    let mut buf = vec![0u8; 8192];
-    let n = stream
-        .read(&mut buf)
-        .await
-        .map_err(|e| format!("loopback read: {}", e))?;
-    let request = std::str::from_utf8(&buf[..n])
-        .map_err(|e| format!("loopback utf8: {}", e))?;
+/// Upper bound on buffered request bytes. Google's redirect easily
+/// fits; anything larger is garbage.
+const MAX_REQUEST_LINE_BYTES: usize = 8192;
 
-    let first_line = request
-        .lines()
-        .next()
-        .ok_or_else(|| "empty request".to_string())?;
-    let path_with_query = first_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| "malformed request line".to_string())?;
+/// What one accepted loopback connection turned out to be.
+#[derive(Debug, PartialEq)]
+enum CallbackOutcome {
+    /// Valid callback — `state` matched — carrying the authorization code.
+    Code(String),
+    /// Valid callback — `state` matched — but Google reported an error
+    /// (typically the user denied consent).
+    Denied(String),
+    /// Anything else: stray connection, port scan, favicon probe,
+    /// wrong/missing state. Ignored; keep listening.
+    Stray,
+}
+
+fn query_param(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|kv| {
+        let mut parts = kv.splitn(2, '=');
+        match (parts.next(), parts.next()) {
+            (Some(k), Some(v)) if k == key => Some(v.to_string()),
+            _ => None,
+        }
+    })
+}
+
+/// Classify one HTTP request line against the CSRF state of the flow
+/// in progress. Only requests that echo back our exact `state` are
+/// treated as OAuth callbacks (RFC 8252 §8.9); everything else is a
+/// stray that must not abort — or be able to spoof — the flow.
+fn evaluate_callback_request(first_line: &str, expected_state: &str) -> CallbackOutcome {
+    let Some(path_with_query) = first_line.split_whitespace().nth(1) else {
+        return CallbackOutcome::Stray;
+    };
     let query = path_with_query.splitn(2, '?').nth(1).unwrap_or("");
 
-    let code_encoded = query
-        .split('&')
-        .find_map(|kv| {
-            let mut parts = kv.splitn(2, '=');
-            match (parts.next(), parts.next()) {
-                (Some("code"), Some(v)) => Some(v.to_string()),
-                _ => None,
-            }
-        })
-        .ok_or_else(|| {
-            // The redirect can also carry `error=...` if the user denied;
-            // surface that as the more useful message.
-            let err = query.split('&').find_map(|kv| {
-                let mut parts = kv.splitn(2, '=');
-                match (parts.next(), parts.next()) {
-                    (Some("error"), Some(v)) => Some(v.to_string()),
-                    _ => None,
-                }
-            });
-            match err {
-                Some(e) => format!("OAuth denied: {}", urlencoding::decode(&e).unwrap_or_default()),
-                None => "no `code` in callback".to_string(),
-            }
-        })?;
+    let state = query_param(query, "state")
+        .and_then(|s| urlencoding::decode(&s).ok().map(|d| d.into_owned()));
+    if state.as_deref() != Some(expected_state) {
+        return CallbackOutcome::Stray;
+    }
 
-    let code = urlencoding::decode(&code_encoded)
-        .map_err(|e| format!("decode code: {}", e))?
-        .into_owned();
+    if let Some(code) = query_param(query, "code") {
+        if let Ok(decoded) = urlencoding::decode(&code) {
+            if !decoded.is_empty() {
+                return CallbackOutcome::Code(decoded.into_owned());
+            }
+        }
+        return CallbackOutcome::Stray;
+    }
+    match query_param(query, "error") {
+        Some(e) => CallbackOutcome::Denied(
+            urlencoding::decode(&e)
+                .map(|d| d.into_owned())
+                .unwrap_or_else(|_| e),
+        ),
+        None => CallbackOutcome::Stray,
+    }
+}
 
-    // Confirmation page so the user knows the flow worked.
-    let body = "<!doctype html>\n\
-<html lang=\"zh-CN\">\n\
-<head><meta charset=\"utf-8\"><title>DayRail · 已连接</title>\n\
-<style>body{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 24px;color:#222;line-height:1.6}h1{font-weight:500;font-size:1.4rem}p{color:#555}</style>\n\
-</head>\n\
-<body><h1>✓ Drive 已连接</h1><p>可以关闭此页面，回到 DayRail。</p></body></html>\n";
+/// Read until a complete request line ("...\r\n") is buffered. A single
+/// `read()` is not enough — the request may arrive across several TCP
+/// segments and a partial read would truncate the query string.
+async fn read_request_line(stream: &mut tokio::net::TcpStream) -> Result<String, String> {
+    let mut buf: Vec<u8> = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    loop {
+        if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+            let line = &buf[..pos];
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            return Ok(String::from_utf8_lossy(line).into_owned());
+        }
+        if buf.len() >= MAX_REQUEST_LINE_BYTES {
+            return Err("request line too long".to_string());
+        }
+        let n = stream
+            .read(&mut chunk)
+            .await
+            .map_err(|e| format!("loopback read: {}", e))?;
+        if n == 0 {
+            return Err("connection closed before a full request line".to_string());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+}
+
+async fn respond_and_close(stream: &mut tokio::net::TcpStream, status: &str, body: &str) {
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
         body.len(),
         body
     );
     let _ = stream.write_all(response.as_bytes()).await;
     let _ = stream.shutdown().await;
+}
 
-    Ok(code)
+fn result_page(heading: &str, detail: &str) -> String {
+    format!(
+        "<!doctype html>\n\
+<html lang=\"zh-CN\">\n\
+<head><meta charset=\"utf-8\"><title>DayRail</title>\n\
+<style>body{{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 24px;color:#222;line-height:1.6}}h1{{font-weight:500;font-size:1.4rem}}p{{color:#555}}</style>\n\
+</head>\n\
+<body><h1>{}</h1><p>{}</p></body></html>\n",
+        heading, detail
+    )
+}
+
+/// Accept connections on the loopback listener until one of them is a
+/// genuine OAuth callback for this flow (its `state` matches), parse
+/// out the `code`, send a friendly HTML result page, and return the
+/// code. Stray connections are answered with a 404 and ignored —
+/// they can neither abort the flow nor inject a callback. The caller
+/// wraps this in the overall OAUTH_CALLBACK_TIMEOUT_SECS timeout.
+async fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<String, String> {
+    loop {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .map_err(|e| format!("loopback accept: {}", e))?;
+
+        // Bound each connection so an idle stray can't starve the real
+        // redirect sitting in the accept backlog.
+        let first_line = match tokio::time::timeout(
+            Duration::from_secs(PER_CONNECTION_READ_TIMEOUT_SECS),
+            read_request_line(&mut stream),
+        )
+        .await
+        {
+            Ok(Ok(line)) => line,
+            // Read error / slow or silent peer → drop it, keep waiting.
+            _ => continue,
+        };
+
+        match evaluate_callback_request(&first_line, expected_state) {
+            CallbackOutcome::Code(code) => {
+                let body = result_page("✓ Drive 已连接", "可以关闭此页面，回到 DayRail。");
+                respond_and_close(&mut stream, "200 OK", &body).await;
+                return Ok(code);
+            }
+            CallbackOutcome::Denied(err) => {
+                let body = result_page("Drive 连接未完成", "授权被拒绝。可以关闭此页面，回到 DayRail 重试。");
+                respond_and_close(&mut stream, "200 OK", &body).await;
+                return Err(format!("OAuth denied: {}", err));
+            }
+            CallbackOutcome::Stray => {
+                respond_and_close(&mut stream, "404 Not Found", "").await;
+                continue;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -512,5 +644,158 @@ mod tests {
         let message = format_refresh_error(error);
         assert!(message.starts_with("refresh:"));
         assert!(!message.contains("NEEDS_RECONNECT"));
+    }
+
+    // ---- loopback callback classification ----
+
+    const STATE: &str = "expected-state-abc123";
+
+    #[test]
+    fn callback_with_matching_state_and_code_is_accepted() {
+        let line = format!("GET /callback?state={}&code=4%2F0AbCdEf HTTP/1.1", STATE);
+        assert_eq!(
+            evaluate_callback_request(&line, STATE),
+            CallbackOutcome::Code("4/0AbCdEf".to_string())
+        );
+        // Param order must not matter.
+        let line = format!("GET /callback?code=xyz&state={} HTTP/1.1", STATE);
+        assert_eq!(
+            evaluate_callback_request(&line, STATE),
+            CallbackOutcome::Code("xyz".to_string())
+        );
+    }
+
+    #[test]
+    fn requests_without_or_with_wrong_state_are_strays() {
+        // A `code` arriving without our state must NOT be treated as a
+        // callback — that's the RFC 8252 §8.9 guard.
+        for line in [
+            "GET /callback?code=evil HTTP/1.1",
+            "GET /callback?state=some-other-flow&code=evil HTTP/1.1",
+            "GET /favicon.ico HTTP/1.1",
+            "GET / HTTP/1.1",
+            "",
+            "garbage",
+        ] {
+            assert_eq!(
+                evaluate_callback_request(line, STATE),
+                CallbackOutcome::Stray,
+                "line {line:?} must be classified as stray"
+            );
+        }
+    }
+
+    #[test]
+    fn denial_with_matching_state_is_surfaced() {
+        let line = format!("GET /callback?state={}&error=access_denied HTTP/1.1", STATE);
+        assert_eq!(
+            evaluate_callback_request(&line, STATE),
+            CallbackOutcome::Denied("access_denied".to_string())
+        );
+        // A denial without our state is just a stray.
+        let line = "GET /callback?error=access_denied HTTP/1.1";
+        assert_eq!(evaluate_callback_request(line, STATE), CallbackOutcome::Stray);
+    }
+
+    #[tokio::test]
+    async fn stray_connections_do_not_abort_the_flow() {
+        use tokio::net::TcpStream;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let flow = tokio::spawn(async move { wait_for_callback(listener, STATE).await });
+
+        // 1. Speculative connection that opens and closes without a byte.
+        drop(TcpStream::connect(("127.0.0.1", port)).await.unwrap());
+
+        // 2. Stray request carrying a code but no state — must be
+        //    ignored, not accepted and not fatal.
+        let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        s.write_all(b"GET /callback?code=evil HTTP/1.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut sink = Vec::new();
+        let _ = s.read_to_end(&mut sink).await; // server replies 404 + close
+        drop(s);
+
+        // 3. The real callback, split across two TCP writes so a
+        //    single-read implementation would see a truncated query.
+        let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let full = format!("GET /callback?state={}&code=good%2Fcode HTTP/1.1\r\nHost: x\r\n\r\n", STATE);
+        let (a, b) = full.as_bytes().split_at(30);
+        s.write_all(a).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        s.write_all(b).await.unwrap();
+
+        let code = flow.await.unwrap().unwrap();
+        assert_eq!(code, "good/code");
+    }
+
+    #[tokio::test]
+    async fn denial_from_the_real_flow_fails_with_oauth_denied() {
+        use tokio::net::TcpStream;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let flow = tokio::spawn(async move { wait_for_callback(listener, STATE).await });
+
+        let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        s.write_all(
+            format!("GET /callback?state={}&error=access_denied HTTP/1.1\r\n\r\n", STATE)
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+
+        let err = flow.await.unwrap().unwrap_err();
+        assert!(err.contains("OAuth denied: access_denied"), "got: {err}");
+    }
+
+    // ---- refresh-token file write ----
+
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "dayrail-drive-auth-test-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn token_file_write_is_atomic_and_private() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join(TOKEN_FILE_NAME);
+
+        write_refresh_token_file(&path, "refresh-token-1").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "refresh-token-1");
+        // No temp file left behind.
+        let tmp = scratch.0.join(format!("{}.tmp", TOKEN_FILE_NAME));
+        assert!(!tmp.exists());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "token file must be 0600");
+        }
+
+        // Overwrite (the rotation path) keeps content + permissions.
+        write_refresh_token_file(&path, "refresh-token-2").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "refresh-token-2");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
     }
 }

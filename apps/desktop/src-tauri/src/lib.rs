@@ -149,8 +149,13 @@ pub fn run() {
             // ERD §15.13 — clean up orphaned auto-update temp bundles
             // from previous sessions (incl. the update we just applied,
             // whose relaunch lands here). Background thread so a slow
-            // temp-dir scan never delays first paint.
-            std::thread::spawn(update_cleanup::sweep_stale_update_artifacts);
+            // temp-dir scan never delays first paint. The bundle
+            // identifier from tauri.conf.json is the ownership signal
+            // for the generic macOS updater temp dirs.
+            let bundle_identifier = app.config().identifier.clone();
+            std::thread::spawn(move || {
+                update_cleanup::sweep_stale_update_artifacts(&bundle_identifier)
+            });
 
             // ERD §15.8 launch-source detection.
             //

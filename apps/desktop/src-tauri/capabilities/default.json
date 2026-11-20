@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main DayRail window. Tauri 2's permission system is allowlist-based; nothing the frontend invokes works unless it's permitted here. Keep this minimal — every entry expands the surface that a compromised webview could touch.",
+  "description": "Capability for the main DayRail window. Tauri 2's permission system is allowlist-based; nothing the frontend invokes works unless it's permitted here. Keep this minimal — every entry expands the surface that a compromised webview could touch. fs scope strategy: the static allowlist covers only $APPDATA (Y.Doc persistence in ydoc/ + ydoc-dev/, see packages/db/src/tauriFsYDocStore.ts). Every read/write outside app data goes through tauri-plugin-dialog, which adds the user-picked path to the fs runtime scope on its own (allow_file/allow_directory in the dialog plugin) — so .dryj import/export and 下载 flows need no static grant here. Backup files (including a user-configured backup directory) are handled entirely by Rust commands in backup.rs and never touch the webview fs scope.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -15,45 +15,35 @@
     "autostart:allow-is-enabled",
     {
       "identifier": "fs:allow-read-file",
-      "allow": [
-        { "path": "$HOME/**" },
-        { "path": "$DESKTOP/**" },
-        { "path": "$DOCUMENT/**" },
-        { "path": "$DOWNLOAD/**" }
-      ]
+      "allow": [{ "path": "$APPDATA" }, { "path": "$APPDATA/**" }]
     },
     {
       "identifier": "fs:allow-write-file",
-      "allow": [
-        { "path": "$HOME/**" },
-        { "path": "$DESKTOP/**" },
-        { "path": "$DOCUMENT/**" },
-        { "path": "$DOWNLOAD/**" }
-      ]
+      "allow": [{ "path": "$APPDATA" }, { "path": "$APPDATA/**" }]
     },
     {
       "identifier": "fs:allow-write-text-file",
-      "allow": [{ "path": "$HOME/**" }]
+      "allow": [{ "path": "$APPDATA" }, { "path": "$APPDATA/**" }]
     },
     {
       "identifier": "fs:allow-read-text-file",
-      "allow": [{ "path": "$HOME/**" }]
+      "allow": [{ "path": "$APPDATA" }, { "path": "$APPDATA/**" }]
     },
     {
       "identifier": "fs:allow-mkdir",
-      "allow": [{ "path": "$HOME/**" }]
+      "allow": [{ "path": "$APPDATA" }, { "path": "$APPDATA/**" }]
     },
     {
       "identifier": "fs:allow-rename",
-      "allow": [{ "path": "$HOME/**" }]
+      "allow": [{ "path": "$APPDATA" }, { "path": "$APPDATA/**" }]
     },
     {
       "identifier": "fs:allow-remove",
-      "allow": [{ "path": "$HOME/**" }]
+      "allow": [{ "path": "$APPDATA" }, { "path": "$APPDATA/**" }]
     },
     {
       "identifier": "fs:allow-exists",
-      "allow": [{ "path": "$HOME/**" }]
+      "allow": [{ "path": "$APPDATA" }, { "path": "$APPDATA/**" }]
     }
   ]
 }
