@@ -1134,7 +1134,7 @@ export function createAgentDispatcher(options: AgentOptions = {}) {
       ),
     true,
     async (p) => {
-      if (p.id && state().cycles[p.id]) entity('cycle', p.id);
+      if (p.id) entity('cycle', p.id);
       return entity('cycle', await state().upsertCycle(p));
     },
   );

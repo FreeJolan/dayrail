@@ -293,6 +293,26 @@ describe('live agent primitives', () => {
     ).toBe('INVALID_STATE');
     expect(Object.keys(useStore.getState().tasks)).toHaveLength(0);
   });
+  it('cycle.set rejects an unknown id instead of silently creating a ghost cycle', async () => {
+    const c = client();
+    expect(
+      (await c.call('cycle.set', { id: 'cycle-missing', startDate: today }))
+        .error?.code,
+    ).toBe('NOT_FOUND');
+    expect(useStore.getState().cycles['cycle-missing']).toBeUndefined();
+    // Still creates without an id, and updates an existing cycle by id.
+    const created = result(
+      await c.call('cycle.set', { startDate: today, label: 'W1' }),
+    );
+    const updated = result(
+      await c.call('cycle.set', {
+        id: created.id,
+        startDate: today,
+        label: 'W2',
+      }),
+    );
+    expect(updated.label).toBe('W2');
+  });
   it('reports memory-only changes when persistence fails and never blindly repeats the mutation', async () => {
     const c = client({
       persist: async () => {
