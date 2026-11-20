@@ -29,9 +29,22 @@ export function toIsoDate(d: Date = new Date()): string {
 }
 
 export function toIsoDateTime(date: string, minutesSinceMidnight: number): string {
-  const h = Math.floor(minutesSinceMidnight / 60);
-  const m = minutesSinceMidnight % 60;
-  return `${date}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  // Overnight windows (e.g. a 23:00 + 120 min rail) push minutes past
+  // 1440. Roll the overflow into the following calendar day(s) instead
+  // of emitting "T24:30"-style strings — those are not parseable
+  // (`Date.parse` → NaN) and silently dropped the slot from the
+  // check-in / Pending queues. Calendar-day construction (not ms
+  // arithmetic) keeps the rollover DST-safe.
+  const dayOffset = Math.floor(minutesSinceMidnight / 1440);
+  const minutes = minutesSinceMidnight - dayOffset * 1440;
+  let day = date;
+  if (dayOffset !== 0) {
+    const [yr, mo, dy] = date.split('-').map(Number);
+    day = toIsoDate(new Date(yr!, mo! - 1, dy! + dayOffset));
+  }
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${day}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
 // ------------------------------------------------------------------
@@ -174,6 +187,10 @@ export function selectCheckinQueue(
  *     plain Inbox task the user explicitly set aside).
  *  2. `pending` Tasks with a slot whose planned window ended (any
  *     age — the check-in strip shows the last 24 h subset).
+ *  3. Tasks (or occurrences) whose slot points at a rail that no
+ *     longer resolves on the slot's date (deleted/tombstoned rail) —
+ *     the schedule is void, so they surface immediately as rail-less
+ *     rows instead of silently disappearing from every surface.
  *  Future-pending slot tasks, terminal `done / archived / deleted`,
  *  and pending slot-less tasks are excluded.
  *
@@ -203,7 +220,15 @@ export function selectPendingQueue(
         if (occ.status !== 'pending') continue;
         if (!occ.slot) continue;
         const rev = railAtDate(state, occ.slot.railId, occ.slot.date);
-        if (!rev) continue;
+        if (!rev) {
+          // The slot's rail doesn't resolve on that date (tombstoned,
+          // or never active there): the schedule is void. §5.7 makes
+          // Pending the master list with no hidden rows, so surface a
+          // rail-less "needs a decision" row — Today/check-in are
+          // rail-bound and can't show it anywhere else.
+          rows.push({ task, occurrence: occ });
+          continue;
+        }
         const rail = railFromRevision(rev);
         const { start, end } = plannedWindow(rail, occ.slot.date);
         const endMs = Date.parse(end);
@@ -223,7 +248,18 @@ export function selectPendingQueue(
     if (task.status !== 'pending' && task.status !== 'deferred') continue;
     if (task.slot) {
       const rev = railAtDate(state, task.slot.railId, task.slot.date);
-      if (!rev) continue;
+      if (!rev) {
+        // Slot points at a rail with no revision effective on that
+        // date — most commonly the rail was deleted (tombstoned) after
+        // the task was parked on it. ERD §10.3-v0.5 wants such slots
+        // unbound back to "未排期"; until the write side does that,
+        // dropping the row here made the task vanish from every
+        // scheduling surface while still `pending`, violating the
+        // §5.7 "master list / no hidden rows" contract. Surface it as
+        // a rail-less row (no planned window ⇒ needs a decision now).
+        rows.push({ task });
+        continue;
+      }
       const rail = railFromRevision(rev);
       const { start, end } = plannedWindow(rail, task.slot.date);
       if (task.status === 'pending') {
