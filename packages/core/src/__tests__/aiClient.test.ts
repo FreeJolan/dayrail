@@ -98,20 +98,9 @@ function rejection(p: Promise<unknown>): Promise<unknown> {
   );
 }
 
-/** Drive fake timers in small steps until `p` settles. (Backoff timers
- *  are scheduled only after async hops — a single big advance can run
- *  before anything is on the clock and then just no-op.) */
-async function advanceUntilSettled<T>(p: Promise<T>, maxMs = 30_000): Promise<T> {
-  let settled = false;
-  const tracked = p.finally(() => {
-    settled = true;
-  });
-  tracked.catch(() => {}); // avoid an unhandled-rejection report while driving
-  for (let elapsed = 0; elapsed < maxMs && !settled; elapsed += 500) {
-    await vi.advanceTimersByTimeAsync(500);
-  }
-  return tracked;
-}
+/** Wall-clock budget for the one test that rides a real SDK-internal
+ *  retry backoff (~2s) — generous headroom for a loaded CI runner. */
+const RETRY_TEST_TIMEOUT_MS = 20_000;
 
 // ------------ parseModelList ------------
 
@@ -409,34 +398,38 @@ describe('callChatCompletion', () => {
   });
 
   it('classifies a streaming 429 as rate-limit-429', async () => {
-    // Fresh Response per call: the SDK retries retryable statuses
-    // internally with multi-second backoff — drive it with fake timers.
+    // maxRetries: 0 — the SDK throws the APICallError directly, no
+    // multi-second internal backoff to ride out. Classification of the
+    // AI_RetryError wrapper is pinned by the 5xx case below.
     vi.stubGlobal(
       'fetch',
       vi.fn().mockImplementation(async () => errorResponse(429)),
     );
-    vi.useFakeTimers();
-    const err = await advanceUntilSettled(
-      rejection(callChatCompletion(chatParams())),
+    const err = await rejection(
+      callChatCompletion({ ...chatParams(), maxRetries: 0 }),
     );
     expect(err).toBeInstanceOf(AiClientError);
     expect((err as AiClientError).kind).toBe('rate-limit-429');
     expect((err as AiClientError).status).toBe(429);
   });
 
-  it('classifies a streaming 5xx as provider-error', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockImplementation(async () => errorResponse(502)),
-    );
-    vi.useFakeTimers();
-    const err = await advanceUntilSettled(
-      rejection(callChatCompletion(chatParams())),
+  it('classifies a streaming 5xx as provider-error (through the retry wrapper)', async () => {
+    // maxRetries: 1 — one real ~2s SDK backoff, so the rejection
+    // arrives wrapped in AI_RetryError and this test pins the unwrap
+    // in mapToAiClientError. Real timers: fake-timer driving of the
+    // SDK's internal backoff proved racy on loaded CI runners.
+    const fetchSpy = vi
+      .fn()
+      .mockImplementation(async () => errorResponse(502));
+    vi.stubGlobal('fetch', fetchSpy);
+    const err = await rejection(
+      callChatCompletion({ ...chatParams(), maxRetries: 1 }),
     );
     expect(err).toBeInstanceOf(AiClientError);
     expect((err as AiClientError).kind).toBe('provider-error');
     expect((err as AiClientError).status).toBe(502);
-  });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  }, RETRY_TEST_TIMEOUT_MS);
 
   it('retries a cold-start 403 and succeeds once the bridge warms up', async () => {
     const fetchSpy = vi
@@ -444,8 +437,10 @@ describe('callChatCompletion', () => {
       .mockImplementationOnce(async () => errorResponse(403))
       .mockImplementation(async () => sseResponse('warm'));
     vi.stubGlobal('fetch', fetchSpy);
-    vi.useFakeTimers();
-    const out = await advanceUntilSettled(callChatCompletion(chatParams()));
+    const out = await callChatCompletion({
+      ...chatParams(),
+      coldStartBackoffsMs: [10, 10],
+    });
     expect(out).toBe('warm');
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
