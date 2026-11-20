@@ -63,8 +63,11 @@ function Panel() {
       syncStore.setConnected(true);
       // After the new consent, run the verify again — if user picked
       // the original account it'll be 'match' · if a different one
-      // it'll loop here.
-      void verifyIdentityAfterConnect();
+      // it'll loop here. Awaited: between connect and the /about
+      // check landing, the controller's mismatch gate sees null, so a
+      // fire-and-forget verify would leave a one-RTT window where a
+      // periodic probe could auto-pull the wrong account's data.
+      await verifyIdentityAfterConnect();
     } catch (e) {
       setErrMsg((e as Error).message ?? String(e));
       setBusy(null);

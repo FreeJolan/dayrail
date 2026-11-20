@@ -25,6 +25,7 @@ function inputs(over: Partial<SyncStatusInputs> = {}): SyncStatusInputs {
     lastSuccessPushIso: iso(-5 * 60 * 1000),
     lastSuccessPullIso: iso(-2 * 60 * 1000),
     pushErroring: false,
+    pushFailingSinceIso: null,
     pullErroring: false,
     sessionRoundTripDone: true,
     ...over,
@@ -78,6 +79,14 @@ describe('formatDurationLong (warn state copy)', () => {
 
   it('clamps negative durations', () => {
     expect(formatDurationLong(-5000)).toBe('传不上去 0 分钟了');
+  });
+
+  // The never-pushed classification carries durationMs = Infinity; the
+  // UI surfaces (SyncStatusBanner / SideNav hover) pass it straight in.
+  // Without a guard the copy read "已经 Infinity 天多没传上去".
+  it('renders the never-pushed Infinity duration as honest copy', () => {
+    expect(formatDurationLong(Number.POSITIVE_INFINITY)).toBe('一直没能传上去');
+    expect(formatDurationLong(Number.NaN)).toBe('一直没能传上去');
   });
 });
 
@@ -134,12 +143,13 @@ describe('classifySyncStatus · #6 queued', () => {
 });
 
 describe('classifySyncStatus · #4 push-failure (data at risk)', () => {
-  it('fires when pending > 0 AND push erroring · severity by push age', () => {
+  it('fires when pending > 0 AND push erroring · severity by failure-streak age', () => {
     const res = classifySyncStatus(
       inputs({
         pendingCount: 4,
         pushErroring: true,
-        lastSuccessPushIso: iso(-3 * 60 * 60 * 1000),
+        pushFailingSinceIso: iso(-3 * 60 * 60 * 1000),
+        lastSuccessPushIso: iso(-9 * 24 * 60 * 60 * 1000),
       }),
     );
     expect(res).toEqual({
@@ -150,12 +160,13 @@ describe('classifySyncStatus · #4 push-failure (data at risk)', () => {
     });
   });
 
-  it('distinct / heavy ladder by push age', () => {
+  it('distinct / heavy ladder by failure-streak age', () => {
     const distinct = classifySyncStatus(
       inputs({
         pendingCount: 1,
         pushErroring: true,
-        lastSuccessPushIso: iso(-2 * 24 * 60 * 60 * 1000),
+        pushFailingSinceIso: iso(-2 * 24 * 60 * 60 * 1000),
+        lastSuccessPushIso: iso(-20 * 24 * 60 * 60 * 1000),
       }),
     );
     expect(distinct.kind === 'push-failure' && distinct.severity).toBe(
@@ -165,10 +176,50 @@ describe('classifySyncStatus · #4 push-failure (data at risk)', () => {
       inputs({
         pendingCount: 1,
         pushErroring: true,
-        lastSuccessPushIso: iso(-5 * 24 * 60 * 60 * 1000),
+        pushFailingSinceIso: iso(-5 * 24 * 60 * 60 * 1000),
+        lastSuccessPushIso: iso(-20 * 24 * 60 * 60 * 1000),
       }),
     );
     expect(heavy.kind === 'push-failure' && heavy.severity).toBe('heavy');
+  });
+
+  // The regression this basis switch fixes: push only runs when there
+  // are changes, so "time since last successful push" is idle time +
+  // failure time. An idle-for-3-days device whose first push then hits
+  // a transient blip must classify as a seconds-old mild failure, not
+  // a 3-day heavy one.
+  it('does NOT count idle time: 3-day-idle device + fresh failure = mild, seconds-old', () => {
+    const res = classifySyncStatus(
+      inputs({
+        pendingCount: 1,
+        pushErroring: true,
+        pushFailingSinceIso: iso(-10 * 1000), // failing for 10s
+        lastSuccessPushIso: iso(-3 * 24 * 60 * 60 * 1000), // idle 3 days
+      }),
+    );
+    expect(res).toEqual({
+      kind: 'push-failure',
+      severity: 'mild',
+      count: 1,
+      durationMs: 10 * 1000,
+    });
+  });
+
+  it('falls back to duration 0 (mild) when the streak start is unknown', () => {
+    const res = classifySyncStatus(
+      inputs({
+        pendingCount: 2,
+        pushErroring: true,
+        pushFailingSinceIso: null,
+        lastSuccessPushIso: iso(-5 * 24 * 60 * 60 * 1000),
+      }),
+    );
+    expect(res).toEqual({
+      kind: 'push-failure',
+      severity: 'mild',
+      count: 2,
+      durationMs: 0,
+    });
   });
 
   it('does NOT fire when pending > 0 but push not erroring (→ queued)', () => {

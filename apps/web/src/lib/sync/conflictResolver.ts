@@ -7,22 +7,28 @@
 // Resolution algorithm:
 //
 // 1. Apply remoteBytes to the live local Y.Doc via Y.applyUpdate
-//    (the same CRDT merge v0.7 used). After this:
-//      - Conflicting fields hold REMOTE's values (Yjs LWW + later
-//        Lamport clock favored remote since it was the one we just
-//        pulled).
-//      - Orthogonal changes from both sides are union-merged.
+//    (the same CRDT merge v0.7 used). This union-merges orthogonal
+//    changes from both sides. For CONFLICTING map fields the merge
+//    outcome is arbitrary: Yjs resolves concurrent Y.Map writes to
+//    the same key by clientID (the item integrated right-most wins),
+//    NOT by "whichever update was applied last" — and clientIDs are
+//    random per Y.Doc instance, so either side can win. Deleted
+//    entities stay deleted (Yjs deletions are monotonic).
 //
-// 2. For each conflict where the user chose 'local': override the
-//    merged value back to the pre-merge local value. The pre-merge
-//    value is captured in `FieldConflict.localValue` (classify
-//    already collected it from `localDiff.fields[field].next`).
+// 2. For EVERY conflict, explicitly write the user's chosen value
+//    (remote picks write `FieldConflict.remoteValue`, local picks
+//    write `localValue`) as a fresh transaction. Fresh ops from this
+//    client carry a later clock than everything merged in step 1, so
+//    the chosen value wins deterministically regardless of which
+//    side the CRDT merge happened to favor. This is also the ONLY
+//    way a "remote" pick can resurrect an entity the local side had
+//    deleted (step 1 alone leaves it deleted).
 //
 // 3. Trigger a push of the resolved local Y.Doc.
 //
 // This approach delegates orthogonal merging to Yjs (which it does
-// correctly when there are no conflicting fields) and only intervenes
-// surgically for user-chosen overrides.
+// correctly when there are no conflicting fields) and intervenes
+// surgically for every field the user was actually asked about.
 //
 // Complex values (arrays, nested objects): the field-conflict's
 // `localValue` is plain JS (the result of toJSON on the Y type). We
@@ -81,8 +87,9 @@ function jsToYjsValue(value: unknown): unknown {
  * @param remoteBytes  the Y.Doc bytes pulled from Drive (the same
  *                     ones classify ran against). Applied first via
  *                     CRDT merge to bring in orthogonal remote
- *                     changes + LWW-resolve conflicting fields to
- *                     remote's value.
+ *                     changes; conflicting fields land on an
+ *                     arbitrary side (clientID LWW) and are then
+ *                     overridden per the user's picks below.
  * @param conflicts    the FieldConflict list classify returned.
  * @param resolutions  user picks · keyed by `conflictKey(c)`.
  */
@@ -94,24 +101,29 @@ export function applyConflictResolutions(
   // Step 1 · CRDT merge brings in everything from remote.
   applyRemoteUpdate(remoteBytes);
 
-  // Step 2 · surgical overrides for user-chosen-local fields.
+  // Step 2 · explicitly write the chosen side for EVERY conflict.
+  // The merge above resolved each conflicting field by random
+  // clientID, so neither side's value can be assumed present; and a
+  // locally-deleted entity whose remote version the user chose to
+  // keep is still deleted. Writing the chosen value as fresh local
+  // ops makes the user's pick win deterministically.
   const doc = getYDoc();
   doc.transact(() => {
     for (const c of conflicts) {
       const choice = resolutions.get(conflictKey(c)) ?? 'remote';
-      if (choice === 'remote') continue;
-      // 'local' → restore the pre-merge local value.
+      const chosen = choice === 'remote' ? c.remoteValue : c.localValue;
       if (c.field === ENTITY_LEVEL_CONFLICT_FIELD) {
-        // Entity-level conflict (delete vs modify · add vs add with
-        // different content). 'local' = whatever local's snapshot
-        // was: null means "local deleted, keep that" → remove the
-        // entity; otherwise install the local entity's fields.
+        // Entity-level conflict (delete vs modify · add vs modify on
+        // same id). The chosen side's snapshot: null means "that side
+        // deleted the entity, keep the deletion" → remove it;
+        // otherwise (re-)install the chosen entity's fields — this is
+        // what resurrects a locally-deleted entity when the user picks
+        // the remote modification.
         const store = doc.getMap(c.storeKey);
-        if (c.localValue === null) {
+        if (chosen === null || chosen === undefined) {
           store.delete(c.entityId);
-        } else if (c.localValue && typeof c.localValue === 'object') {
-          const newEntity = jsToYjsValue(c.localValue) as Y.Map<unknown>;
-          store.set(c.entityId, newEntity);
+        } else if (typeof chosen === 'object') {
+          store.set(c.entityId, jsToYjsValue(chosen));
         }
         continue;
       }
@@ -119,7 +131,12 @@ export function applyConflictResolutions(
       const store = doc.getMap(c.storeKey);
       const entity = store.get(c.entityId);
       if (!(entity instanceof Y.Map)) continue;
-      entity.set(c.field, jsToYjsValue(c.localValue));
+      if (chosen === undefined) {
+        // The chosen side removed this field.
+        if (entity.has(c.field)) entity.delete(c.field);
+      } else {
+        entity.set(c.field, jsToYjsValue(chosen));
+      }
     }
   }, 'conflict-resolution');
 }

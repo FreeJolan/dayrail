@@ -303,12 +303,23 @@ function OfflinePanel({
     try {
       await connectDrive();
       syncStore.setConnected(true);
-      // Identity pin check (ERD §7.10.2). Fire-and-forget — a
-      // mismatch sets `pendingIdentityMismatch` on the store, which
-      // mounts the modal · the probing phase below still runs in
-      // parallel because the modal is the user's decision point and
-      // shouldn't block the rest of boot.
-      void verifyIdentityAfterConnect();
+      // Identity pin check (ERD §7.10.2) — AWAITED, as the pull-side
+      // gate. Reconnect is exactly where the wrong-account mis-click
+      // happens, and the probe that follows auto-pulls by default: a
+      // fire-and-forget check here raced the pull, so the wrong
+      // account's data could be CRDT-merged (irreversibly) before
+      // the IdentityMismatchModal — which lives inside `children`
+      // and physically cannot render during the probing phase —
+      // ever appeared. A 'failed' (transient /about error) outcome
+      // stays fail-open, matching the Settings reconnect path.
+      await verifyIdentityAfterConnect();
+      if (syncStore.getSnapshot().pendingIdentityMismatch !== null) {
+        // Wrong account: skip the probe/auto-pull entirely and mount
+        // the app so the IdentityMismatchModal can take over. The
+        // controller-level gates block any pull until it's resolved.
+        setPhase({ kind: 'done' });
+        return;
+      }
       setPhase({ kind: 'probing', slow: false });
     } catch (e) {
       setReconnectErr((e as Error).message);

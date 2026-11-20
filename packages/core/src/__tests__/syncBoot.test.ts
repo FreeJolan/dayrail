@@ -174,7 +174,7 @@ describe('sync status after cold boot', () => {
       nowMs: Date.now(), pendingCount: 0,
       lastSuccessPushIso: identity.getLastSuccessAt('push'),
       lastSuccessPullIso: pullAt,
-      pushErroring: false, pullErroring: false,
+      pushErroring: false, pushFailingSinceIso: null, pullErroring: false,
       sessionRoundTripDone: syncStore.getSnapshot().sessionRoundTripDone,
     }).kind).toBe('synced');
   });

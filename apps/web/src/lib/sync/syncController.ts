@@ -1,6 +1,6 @@
 // Sync controller (v0.7) — orchestrates push (debounced after writes,
-// pagehide best-effort, manual button) and the boot-gate pull. Keeps
-// identity cursors + syncStore in sync.
+// visibility/blur best-effort, manual button) and the boot-gate pull.
+// Keeps identity cursors + syncStore in sync.
 //
 // v0.7 wire format: `.dryj` Yjs binary container (see @dayrail/db/dryj).
 // Yjs's internal LWW + Lamport clock handles convergence, so the
@@ -9,8 +9,8 @@
 // surface; the user just sees field-level merges happen.
 //
 // Push path:
-//   1. caller (subscription / manual button / pagehide / Tauri
-//      window blur) calls requestPush().
+//   1. caller (subscription / manual button / visibilitychange /
+//      Tauri window blur) calls requestPush().
 //   2. controller debounces PUSH_DEBOUNCE_MS (8s · ERD §7.8 P4 ·
 //      down from v0.7's 60s); first event after a quiet window
 //      goes through immediately, follow-ups within the window are
@@ -31,6 +31,7 @@ import {
   replaceFromRemote,
   getYDoc,
   classify,
+  AUTO_TASK_ORIGIN,
   REMOTE_ORIGIN,
   OPFS_ORIGIN,
 } from '@dayrail/core';
@@ -40,6 +41,7 @@ import {
   bumpDirtyCount,
   clearDirtyCount,
   clearLocalIsSamplesOnly,
+  flushSyncMeta,
   getDeviceId,
   getDeviceLabel,
   getDirtyCount,
@@ -48,9 +50,11 @@ import {
   getLastModeUpgradeToastAt,
   getLastPulledSnapshotId,
   getLastPushedCounts,
+  getLastSuccessAt,
   isLocalSamplesOnly,
   isSyncProbeSuppressed,
   markLastActivityNow,
+  setDirtyCount,
   setDismissPendingPileUntil,
   setLastKnownMode,
   setLastModeUpgradeToastAt,
@@ -113,6 +117,49 @@ async function writeHeartbeatBestEffort(snapshotId: string): Promise<void> {
     await writeHeartbeat(hb);
   } catch (err) {
     console.warn('[sync] heartbeat write failed (non-fatal):', err);
+  }
+}
+
+/** Best-effort heartbeat REFRESH at boot reconcile (ERD §7.10.4).
+ *
+ *  Why this exists: heartbeats used to be written only after a
+ *  successful push, with `lastPushedAt = now ≥ lastActivityAt` by
+ *  construction. Under that protocol the ⚠ peer-stale condition
+ *  (`lastActivityAt > lastPushedAt + 1h`, heartbeatStatus.ts) was
+ *  structurally unreachable — a device whose pushes kept failing
+ *  simply froze its heartbeat, and peers judged it ✓ healthy, which
+ *  is exactly the "active but didn't push" scenario the banner was
+ *  designed to expose. Refreshing `lastActivityAt` at boot (while
+ *  keeping `lastPushedAt` = the real last successful push) produces
+ *  the activity-ahead-of-push shape whenever this device edited but
+ *  couldn't upload, so peers' reconcile can finally fire ⚠.
+ *
+ *  Boundaries: a device that never reboots its app won't refresh
+ *  (acceptable: desktop/PWA sessions restart daily in practice), and
+ *  a never-pushed / never-edited device stays silent — nothing
+ *  meaningful to advertise. */
+async function writeBootHeartbeatBestEffort(): Promise<void> {
+  const lastPushIso = getLastSuccessAt('push');
+  if (lastPushIso === null) return;
+  const lastActivityIso = getLastActivityAt();
+  if (lastActivityIso === null) return;
+  const hb: DeviceHeartbeat = {
+    deviceId: getDeviceId(),
+    deviceName: getDeviceLabel(),
+    lastActivityAt: lastActivityIso,
+    lastPushedAt: lastPushIso,
+    // Best approximation available at boot: after a push the lineage
+    // cursor equals the pushed snapshot; after a pull it points at
+    // the snapshot this device's state incorporates. Informational
+    // only — the reconcile classifier never reads it.
+    lastPushedSnapshotId: getLastPulledSnapshotId() ?? '',
+    pendingCount: getDirtyCount(),
+    schemaVersion: 1,
+  };
+  try {
+    await writeHeartbeat(hb);
+  } catch (err) {
+    console.warn('[sync] boot heartbeat refresh failed (non-fatal):', err);
   }
 }
 
@@ -268,7 +315,7 @@ export function startSyncBackgroundLoop(): void {
     // samples, or in v0.9 a re-seed because Tauri's auto-update path
     // wiped WKWebView OPFS while replacing the .app), DO NOT push to
     // Drive. Pushing the seed overwrites the user's real cloud data.
-    // The flag is cleared by authoritative paths only:
+    // The flag is cleared by authoritative paths:
     //   - BootGate → replaceLocalFromRemote / applyRemoteDryj on a
     //     successful pull (local now mirrors remote)
     //   - BootGate → no-remote / equal branch (Drive has nothing to
@@ -276,8 +323,10 @@ export function startSyncBackgroundLoop(): void {
     //   - importLocalData (user brought in real data via .dryj)
     //   - runForcePush success (user explicitly asked to overwrite)
     //   - ConnectDrivePanel paths in Settings (explicit user action)
+    //   - the FIRST genuine user-authored write (below) — once the
+    //     user authors anything, local is no longer disposable.
     // Sessions still tick so EditSessionIndicator stays accurate; we
-    // only suppress the dirty bump + push schedule.
+    // only suppress the dirty bump + push schedule for system writes.
     const samplesOnly = isLocalSamplesOnly();
     // Session activity tracking: when origin is the id of an open
     // session (set by openEditSession + threaded through every
@@ -305,7 +354,28 @@ export function startSyncBackgroundLoop(): void {
         }));
       }
     }
-    if (samplesOnly) return;
+    if (samplesOnly) {
+      // System-authored writes (boot / midnight habit auto-task
+      // materialization) fire on every start and say nothing about
+      // user intent — keep swallowing them so the disposable-seed
+      // marker survives (clearing it here was the v0.9.0→v0.9.1
+      // hole: a re-seeded install pushed the seed over real cloud
+      // data after its own boot writes "authored" something).
+      if (origin === AUTO_TASK_ORIGIN) return;
+      // A GENUINE user-authored write: local stops being a
+      // disposable sample seed right now. Without this clear the
+      // flag could stick forever on legacy-seeded installs — months
+      // of real edits would never bump the dirty cursor (never
+      // push), and the next samples-only pull surface would
+      // replaceLocalFromRemote right over them. This is the
+      // contract samplesOnlyFlag.test.ts pins ("boot seed → flag
+      // set; first user write → flag cleared") and the behavior
+      // BootGate's pull gate comment already assumed. Fall through:
+      // this edit is real data — track it and queue the push (the
+      // push firewall still classifies against remote before any
+      // upload).
+      clearLocalIsSamplesOnly();
+    }
     const next = bumpDirtyCount();
     syncStore.setDirtyCount(next);
     // ERD §7.10.4 · v0.12 P4 · stamp the moment of user activity so
@@ -318,8 +388,10 @@ export function startSyncBackgroundLoop(): void {
 
   if (typeof window !== 'undefined') {
     window.addEventListener('visibilitychange', onVisibilityChange);
-    window.addEventListener('pagehide', onPageHide);
-    window.addEventListener('beforeunload', onBeforeUnload);
+    // Both teardown events route to the same honest departure-marker
+    // write (idempotent) — whichever the platform fires first wins.
+    window.addEventListener('pagehide', onDeparture);
+    window.addEventListener('beforeunload', onDeparture);
     // ERD §7.8 P4 · Tauri window blur as a natural push trigger.
     // "User switched to another app = natural commit point" — and
     // the desktop runtime gives us a clean signal the PWA doesn't.
@@ -362,20 +434,39 @@ function onVisibilityChange(): void {
   }
 }
 
-function onPageHide(): void {
-  if (getDirtyCount() > 0 && isDriveConnected() && !isSyncProbeSuppressed()) {
-    void runPush({ trigger: 'pagehide' }).catch(() => {
-      /* leaving anyway */
-    });
-  }
-}
-
-function onBeforeUnload(): void {
+/** Page teardown (pagehide + beforeunload) — HONEST best effort
+ *  (ERD §7.10.3 · audit #58).
+ *
+ *  This used to fire a `runPush({ keepalive: true })`, but that was
+ *  theater: the `keepalive` flag never reached fetch() (driveBackend
+ *  passes no keepalive option), the upload is a multi-roundtrip chain
+ *  (token refresh → listAll → PATCH → POST → prune) whose later
+ *  awaits never run once the document unloads, and the browser aborts
+ *  the in-flight request anyway. Real fetch-keepalive wouldn't save
+ *  it either — the 64 KiB keepalive body cap is far below a real
+ *  .dryj snapshot. Nothing was ever uploaded from this path.
+ *
+ *  What we CAN do honestly at teardown: record the departure. The
+ *  dirty cursor is already persisted (flushed shortly after each
+ *  edit), so the next launch's recovery push uploads the stranded
+ *  edits; the pendingDeparture marker additionally lets the
+ *  PendingDepartureBanner tell the user "上次离开时有 N 个改动没传
+ *  上去". The real best-effort push lives on `visibilitychange:
+ *  hidden`, which fires while the page is still alive (tab switch —
+ *  and it also precedes any close), where an async upload can
+ *  actually complete. */
+function onDeparture(): void {
   if (getDirtyCount() === 0 || !isDriveConnected()) return;
-  if (isSyncProbeSuppressed()) return;
-  void runPush({ trigger: 'beforeunload', keepalive: true }).catch(() => {
-    /* ignore */
+  setPendingDeparture({
+    count: getDirtyCount(),
+    at: new Date().toISOString(),
   });
+  // Kick the flush now instead of waiting for the setTimeout(0)
+  // coalescer — during unload that timer never fires. The write
+  // itself is still async (OPFS) and may not land on a hard kill;
+  // that's acceptable, the marker is UX copy on top of the durable
+  // dirty cursor.
+  void flushSyncMeta();
 }
 
 // Tauri-only: register a window focus listener so the desktop app
@@ -413,12 +504,9 @@ interface RunPushOpts {
     | 'manual'
     | 'debounced'
     | 'visibilitychange'
-    | 'pagehide'
-    | 'beforeunload'
     | 'recovery'
     | 'retry'
     | 'tauri-blur';
-  keepalive?: boolean;
 }
 
 /** Manual sync outcome.
@@ -462,6 +550,10 @@ export async function runReconcileAtBoot(): Promise<void> {
     return;
   }
   try {
+    // Refresh this device's own heartbeat first so peers can see our
+    // current lastActivityAt even when our pushes have been failing
+    // (⚠ peer-stale would otherwise be unreachable — see the helper).
+    await writeBootHeartbeatBestEffort();
     const heartbeats = await listHeartbeats();
     const selfId = getDeviceId();
     const peers = heartbeats
@@ -602,6 +694,13 @@ export async function runManualSync(): Promise<ManualSyncOutcome> {
   // path so UI surfaces tell the user "everything's on Drive now"
   // instead of the merge-only "已合并云端改动" hint.
   await runPullFromRemote(probe.remote);
+  if (syncStore.getSnapshot().pendingConflict !== null) {
+    // The pull-side classify found a true conflict: nothing was
+    // merged, the SyncConflictPanel is up, and the push stays paused
+    // until the user resolves (the resolver re-pushes). Report noop
+    // rather than claiming anything synced.
+    return { kind: 'noop' };
+  }
   if (getDirtyCount() > 0 && isDriveConnected()) {
     await runPush({ trigger: 'manual' });
     return { kind: 'pushed' };
@@ -675,6 +774,9 @@ export async function runForcePush(): Promise<void> {
       // as the baseline going forward so the next regular runPush has
       // an accurate compare.
       const currCounts = computeLocalCounts();
+      // Same shape as runPush: snapshot the dirty cursor at export
+      // time so edits made during the upload stay dirty.
+      const dirtyAtExport = getDirtyCount();
       const update = exportYDocAsUpdate();
       const snapshotId = cryptoUUID();
       const meta: DryjMeta = {
@@ -699,8 +801,10 @@ export async function runForcePush(): Promise<void> {
       await saveLastPulledDocBytes(bytes).catch((e) =>
         console.warn('[sync] saveLastPulledDocBytes failed:', e),
       );
-      clearDirtyCount();
-      syncStore.setDirtyCount(0);
+      const remainingDirty = Math.max(0, getDirtyCount() - dirtyAtExport);
+      setDirtyCount(remainingDirty);
+      syncStore.setDirtyCount(remainingDirty);
+      if (remainingDirty > 0) schedulePush();
       clearLocalIsSamplesOnly();
       const info = { at: Date.now(), label: getDeviceLabel() };
       setLastSyncInfo(info);
@@ -743,7 +847,24 @@ export async function runForcePush(): Promise<void> {
   return inFlightPush;
 }
 
+/** IDENTITY GATE (ERD §7.10.2 · audit #2) — pull-side counterpart of
+ *  the runPush firewall's mismatch check. While an identity mismatch
+ *  is pending, NO remote bytes may reach the local doc: a Yjs merge
+ *  of the wrong account's data is irreversible (the modal itself
+ *  promises "两边账号的数据不会自动合并"). Throwing (instead of a
+ *  silent no-op) keeps callers' success paths honest — BootGate /
+ *  RuntimeSyncDialog treat it like any other failed pull and leave
+ *  their samples-only / cursor state untouched. */
+function assertNoPendingIdentityMismatch(): void {
+  if (syncStore.getSnapshot().pendingIdentityMismatch !== null) {
+    throw new Error(
+      'IDENTITY_MISMATCH · 当前登录的 Google 账号与本设备绑定的账号不一致，已暂停拉取',
+    );
+  }
+}
+
 async function runPullFromRemote(remote: RemoteMeta): Promise<void> {
+  assertNoPendingIdentityMismatch();
   // Serialize against an in-flight push so the lineage cursor
   // (lastPulledSnapshotId) doesn't get clobbered by an upload's
   // post-success setLastPulledSnapshotId after we've already
@@ -755,6 +876,9 @@ async function runPullFromRemote(remote: RemoteMeta): Promise<void> {
     } catch {
       /* push errored; we still want to attempt the pull */
     }
+    // Re-check: the awaited push runs its own identity verify and may
+    // have set the mismatch while we waited.
+    assertNoPendingIdentityMismatch();
   }
   if (inFlightPull) return inFlightPull;
   inFlightPull = (async () => {
@@ -766,6 +890,57 @@ async function runPullFromRemote(remote: RemoteMeta): Promise<void> {
     // below does NOT schedule a follow-up push.
     try {
       const bytes = await downloadDryjById(remote.fileId);
+      // PULL-SIDE TRUE-CONFLICT GATE (ERD §7.8 · audit #23).
+      //
+      // The classify/true-conflict/SyncConflictPanel pipeline used to
+      // hang off the push firewall only. Every pull surface (BootGate
+      // auto-pull, visibility/periodic/online probes, runManualSync's
+      // linear-lead) blind-merged via Y.applyUpdate, where concurrent
+      // same-field writes resolve by random clientID — and advancing
+      // the lastPulled cursor afterwards meant the push firewall never
+      // re-classified, so the losing side's edit was silently frozen
+      // into the next canonical. §7.8 explicitly deprecated silent
+      // LWW as "a bug, not a policy".
+      //
+      // Minimal correct gate: when LOCAL has unsynced writes and a
+      // diff base exists, classify before merging. true-conflict →
+      // hand off to the SyncConflictPanel exactly like the push
+      // firewall does (no merge, no cursor advance — the resolver
+      // applies the user's picks and re-pushes). Orthogonal /
+      // same-direction / no-base / classify-error keep today's CRDT
+      // merge: with no overlapping field edits it is correct, and
+      // fail-open-to-merge preserves pull availability.
+      if (getDirtyCount() > 0) {
+        const baseBytes = await loadLastPulledDocBytes().catch(() => null);
+        if (baseBytes !== null) {
+          let pendingConflictDetected = false;
+          try {
+            const cls = classify(
+              bytesToYDoc(baseBytes),
+              getYDoc(),
+              bytesToYDoc(bytes),
+            );
+            if (cls.type === 'true-conflict') {
+              syncStore.setPendingConflict({
+                conflicts: cls.conflicts,
+                remoteBytes: bytes,
+                remoteSnapshotId: remote.snapshotId,
+                detectedAt: Date.now(),
+              });
+              pendingConflictDetected = true;
+            }
+          } catch (classifyErr) {
+            console.warn(
+              '[sync] pull classify failed · falling back to CRDT merge:',
+              classifyErr,
+            );
+          }
+          if (pendingConflictDetected) {
+            syncStore.setPhase({ kind: 'idle' });
+            return;
+          }
+        }
+      }
       applyRemoteUpdate(bytes);
       setLastPulledSnapshotId(remote.snapshotId);
       // ERD §7.8 P3 · the bytes we just merged in become the new
@@ -894,10 +1069,14 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       // post-upload verification + smart-diff recovery; P1's job is
       // to plug the much larger "we never read remote at all" hole.
       //
-      // Skip the firewall for keepalive (pagehide budget) — pagehide
-      // can't await metadata, and the next active push from this
-      // device will repair lineage via the firewall path.
-      if (!opts.keepalive) {
+      // The firewall runs for EVERY trigger. (A `keepalive` bypass
+      // used to exist for the beforeunload push; that push was theater
+      // — the flag never reached fetch and the upload chain can't
+      // survive unload — so teardown now writes the pendingDeparture
+      // marker instead and no caller needs to skip the firewall.)
+      // Block braces kept for the lexical scope of the firewall's
+      // locals.
+      {
         // IDENTITY PIN CHECK (ERD §7.10.2 · v0.12 P1).
         //
         // Block push if a mismatch is already pending — the modal is
@@ -1084,13 +1263,13 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       // Pre-push sanity gate (added 2026-05-08). Compare current
       // entity counts to what we last pushed; if the local state is
       // suspiciously emptier (templates went from N to 0, tasks
-      // halved, etc.), prompt before overwriting Drive. Skip on
-      // 'keepalive' (pagehide budget — no time to await user input)
-      // and on 'manual' if needed; we let manual through too because
-      // the user explicitly asked for the push.
+      // halved, etc.), prompt before overwriting Drive. Manual
+      // triggers go through the same gate — the user explicitly
+      // asked for the push, but a data-loss shape still deserves a
+      // confirm.
       const currCounts = computeLocalCounts();
       const lastPushed = getLastPushedCounts();
-      if (lastPushed && !opts.keepalive) {
+      if (lastPushed) {
         const warning = buildSanityWarning(
           {
             templates: lastPushed.templates,
@@ -1110,6 +1289,14 @@ async function runPush(opts: RunPushOpts): Promise<void> {
         }
       }
 
+      // Snapshot the dirty cursor at the same instant the doc is
+      // exported (both statements are synchronous — nothing can land
+      // in between). The upload below takes seconds; edits made
+      // during it bump the cursor but are NOT in these bytes, so on
+      // success we subtract this snapshot instead of zeroing — a
+      // blanket clear stranded those edits locally while the UI
+      // claimed 已同步 (every push trigger gates on dirty > 0).
+      const dirtyAtExport = getDirtyCount();
       const update = exportYDocAsUpdate();
       const snapshotId = cryptoUUID();
       const parent = getLastPulledSnapshotId();
@@ -1136,8 +1323,12 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       await saveLastPulledDocBytes(bytes).catch((e) =>
         console.warn('[sync] saveLastPulledDocBytes failed:', e),
       );
-      clearDirtyCount();
-      syncStore.setDirtyCount(0);
+      // Pay off only what this upload actually carried; edits made
+      // during the upload stay dirty and re-schedule a sweep.
+      const remainingDirty = Math.max(0, getDirtyCount() - dirtyAtExport);
+      setDirtyCount(remainingDirty);
+      syncStore.setDirtyCount(remainingDirty);
+      if (remainingDirty > 0) schedulePush();
       // After a successful push, local has been committed to Drive.
       // The samples-only flag's whole job is to gate the destructive
       // "replace local with remote" branch on first-connect devices;
@@ -1152,28 +1343,25 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       setLastSyncInfo(info);
       syncStore.setLastSync(info);
       // ERD §7.10.5 · v0.12 P2 · record successful push for the
-      // duration-aware surface. Skip keepalive: it's fire-and-forget
-      // (we don't actually know if Drive received it) so recording
-      // it could lie about success.
-      if (!opts.keepalive) {
-        const nowIso = new Date().toISOString();
-        setLastSuccessAt('push', nowIso);
-        appendSyncAttempt({
-          at: nowIso,
-          direction: 'push',
-          result: 'ok',
-        });
-        // A successful push by definition clears the pending pile;
-        // drop the dismiss so the banner can fire again if the pile
-        // grows back.
-        setDismissPendingPileUntil(null);
-        // ERD §7.10.3 · v0.12 P6 · any successful push pays off the
-        // "left without uploading" marker.
-        setPendingDeparture(null);
-        // ERD §7.10.4 · v0.12 P4 · drop a heartbeat so peers can see
-        // this device pushed. Best-effort; failures don't break push.
-        void writeHeartbeatBestEffort(snapshotId);
-      }
+      // duration-aware surface. Every surviving trigger awaits the
+      // real upload result, so recording here never lies.
+      const nowIso = new Date().toISOString();
+      setLastSuccessAt('push', nowIso);
+      appendSyncAttempt({
+        at: nowIso,
+        direction: 'push',
+        result: 'ok',
+      });
+      // A successful push by definition clears the pending pile;
+      // drop the dismiss so the banner can fire again if the pile
+      // grows back.
+      setDismissPendingPileUntil(null);
+      // ERD §7.10.3 · v0.12 P6 · any successful push pays off the
+      // "left without uploading" marker.
+      setPendingDeparture(null);
+      // ERD §7.10.4 · v0.12 P4 · drop a heartbeat so peers can see
+      // this device pushed. Best-effort; failures don't break push.
+      void writeHeartbeatBestEffort(snapshotId);
       syncStore.setPhase({ kind: 'idle' });
       if (retryTimer) {
         clearTimeout(retryTimer);
@@ -1183,17 +1371,14 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       const msg = (err as Error).message ?? String(err);
       console.warn('[sync] push failed:', err);
       // ERD §7.10.5 · v0.12 P2 · record fail attempt for the
-      // failure-history log + tooltip summary. Same keepalive skip
-      // rationale as on success.
-      if (!opts.keepalive) {
-        appendSyncAttempt({
-          at: new Date().toISOString(),
-          direction: 'push',
-          result: 'fail',
-          errorCode: classifySyncError(err),
-          errorBody: msg.slice(0, 500),
-        });
-      }
+      // failure-history log + tooltip summary.
+      appendSyncAttempt({
+        at: new Date().toISOString(),
+        direction: 'push',
+        result: 'fail',
+        errorCode: classifySyncError(err),
+        errorBody: msg.slice(0, 500),
+      });
       syncStore.setPhase({ kind: 'error', message: msg });
       if (opts.trigger !== 'manual' && phaseBefore.kind === 'idle') {
         setTimeout(() => {
@@ -1356,6 +1541,7 @@ export async function applyRemoteDryj(remote: RemoteMeta): Promise<void> {
  *  to preserve. CRDT-merging samples with cloud data and pushing the
  *  union pollutes Drive for every other device. */
 export async function replaceLocalFromRemote(remote: RemoteMeta): Promise<void> {
+  assertNoPendingIdentityMismatch();
   // Replace semantics: any pending debounced push referenced the
   // pre-replace state. Cancel it so we don't waste a Drive history
   // slot uploading the just-pulled state under a fresh snapshotId
@@ -1370,6 +1556,9 @@ export async function replaceLocalFromRemote(remote: RemoteMeta): Promise<void> 
     } catch {
       /* push errored; we still want to replace */
     }
+    // Re-check: the awaited push runs its own identity verify and may
+    // have set the mismatch while we waited.
+    assertNoPendingIdentityMismatch();
   }
   if (inFlightPull) return inFlightPull;
   inFlightPull = (async () => {

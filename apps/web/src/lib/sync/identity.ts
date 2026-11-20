@@ -237,10 +237,11 @@ async function doFlush(): Promise<void> {
   }
 }
 
-/** Force an immediate flush. Called by sync controller before push
- *  triggers (Tauri blur, pagehide, etc.) so in-flight setter writes
- *  hit disk before the push starts. Safe to call before
- *  loadSyncMetaCache resolves — degenerates to a no-op. */
+/** Force an immediate flush. Called by the sync controller's page
+ *  teardown handler so the pendingDeparture marker doesn't sit in the
+ *  setTimeout(0) coalescer when the document unloads (that timer
+ *  never fires during unload). Safe to call before loadSyncMetaCache
+ *  resolves — degenerates to a no-op. */
 export async function flushSyncMeta(): Promise<void> {
   if (_flushTimer !== null) {
     clearTimeout(_flushTimer);
@@ -441,6 +442,30 @@ export function setIdentityPin(pin: IdentityPin): void {
 export function clearIdentityPin(): void {
   _cache.identityPin = null;
   scheduleFlush();
+}
+
+/** Explicit, user-chosen downgrade to Local-only (ERD §7.10.6).
+ *
+ *  The §7.10.6 regression guard fires whenever a pin exists while the
+ *  runtime is local — its job is to catch the user being downgraded
+ *  WITHOUT knowing (OAuth loss, storage eviction). A downgrade the
+ *  user explicitly confirmed must therefore clear the pin, or every
+ *  subsequent launch re-raises the ModeRegressionModal over the
+ *  user's own decision. Shared by every deliberate-downgrade surface:
+ *  the ModeRegressionModal's "明确降级" button and the Settings →
+ *  同步 disconnect / cancel-connect flows (audit #37 — the latter
+ *  used to leave the pin behind).
+ *
+ *  Also resets the lineage cursors so a future reconnect (if ever)
+ *  walks the first-connect path cleanly: no stale lastPulled lineage
+ *  to compare against whatever account gets picked then, no stale
+ *  dirty debt, no stale samples-only assertion. The Y.Doc itself is
+ *  untouched — local data carries forward. */
+export function recordExplicitDowngrade(): void {
+  clearIdentityPin();
+  clearLastPulledSnapshotId();
+  clearDirtyCount();
+  clearLocalIsSamplesOnly();
 }
 
 /** Update the `lastKnownMode` field on the existing pin. Idempotent —

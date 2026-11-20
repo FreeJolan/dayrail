@@ -25,7 +25,12 @@ import { setYDocStoreDevMode } from '@dayrail/db/yDocStore';
 // PR adding next year's events to the relevant region's file.
 import HOLIDAYS_ZH_CN from './data/holidays/zh-CN.json';
 import { popPendingImport } from './lib/importData';
-import { loadSyncMetaCache, setAutoDetectedDeviceLabel } from './lib/sync/identity';
+import {
+  bumpDirtyCount,
+  clearLocalIsSamplesOnly,
+  loadSyncMetaCache,
+  setAutoDetectedDeviceLabel,
+} from './lib/sync/identity';
 import { syncStore } from './lib/sync/syncStore';
 import { startSyncBackgroundLoop } from './lib/sync/syncController';
 import { isTauriRuntime } from './lib/versionUpdateContext';
@@ -84,6 +89,20 @@ export async function boot(): Promise<void> {
   const pending = popPendingImport();
   if (pending) {
     await saveYDocBytes(pending);
+    // The import flow (importData.ts) wiped the previous syncMeta via
+    // resetLocalData, so the two cursor writes that make the import
+    // SYNC correctly must happen here, after loadSyncMetaCache warmed
+    // the fresh store (audit #20 — writing them pre-reset was wiped
+    // by the reset and the imported data never pushed):
+    //   · clear samples-only — the user just brought in real data; a
+    //     samples-only pull surface must never replace it wholesale.
+    //   · bump the dirty cursor — hydrate applies the .dryj with
+    //     origin='opfs' (ignored by the afterTransaction listener),
+    //     so without this no push trigger ever fires and the import
+    //     strands on this device.
+    clearLocalIsSamplesOnly();
+    const dirty = bumpDirtyCount();
+    syncStore.setDirtyCount(dirty);
   }
 
   // 1. Hydrate from OPFS — load the .dryj if present, build the

@@ -463,6 +463,15 @@ export function getYDoc(): YDoc {
  *  none of those collide with these reserved strings. */
 export const REMOTE_ORIGIN = 'remote';
 export const OPFS_ORIGIN = 'opfs';
+/** Origin label for system-materialized habit auto-tasks
+ *  (`upsertAutoTask`, called by boot's / the midnight tick's
+ *  materializer). Unlike REMOTE/OPFS these ARE real user data and do
+ *  bump the dirty cursor — but the samples-only safety gate in
+ *  syncController must not treat them as "the user authored
+ *  something": boot-time materialization fires on every start, and
+ *  letting it clear the disposable-seed marker re-opens the
+ *  v0.9.0→v0.9.1 overwrite-cloud-with-seed path. */
+export const AUTO_TASK_ORIGIN = 'upsertAutoTask';
 
 let observerAttached = false;
 function attachObservers(doc: YDoc): void {
@@ -1906,7 +1915,7 @@ export const useStore = create<DayRailStore>()((_set, get) => ({
     if (tasksMap.has(task.id)) return;
     doc.transact(() => {
       upsertEntity(doc, 'tasks', task.id, { ...task });
-    }, 'upsertAutoTask');
+    }, AUTO_TASK_ORIGIN);
   },
 
   // ============ ERD §10.6 v0.11 · Task occurrences ============

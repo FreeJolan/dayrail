@@ -47,6 +47,13 @@ export function formatDurationAgo(fromIso: string, nowMs: number): string {
  *  Distinct from `formatDurationAgo` so the wording can carry the
  *  problem framing (e.g. "传不上去" vs "刚刚同步过"). */
 export function formatDurationLong(durationMs: number): string {
+  // The never-pushed classification deliberately carries
+  // durationMs = Infinity ("forever"). Without this guard the ladder
+  // below would render "已经 Infinity 天多没传上去". Mirrors the
+  // pull-axis guard in SideNav's formatStaleFor.
+  if (!Number.isFinite(durationMs)) {
+    return '一直没能传上去';
+  }
   const clamped = Math.max(0, durationMs);
   if (clamped >= DAY_MS) {
     const d = Math.floor(clamped / DAY_MS);
@@ -79,6 +86,15 @@ export interface SyncStatusInputs {
   lastSuccessPullIso: string | null;
   /** The most recent PUSH attempt failed (we're in a push-failing state). */
   pushErroring: boolean;
+  /** ISO of the FIRST failed push attempt in the current failure
+   *  streak (no successful push attempt since) · null when the most
+   *  recent push attempt succeeded or none was recorded. This is the
+   *  basis for push-failure durationMs: it measures how long pushes
+   *  have been FAILING, not how long since the last success. The
+   *  latter counts idle time — push only runs when there are changes,
+   *  so an idle-for-3-days device whose very first push then hits a
+   *  transient error would otherwise alarm at "3 天" heavy severity. */
+  pushFailingSinceIso: string | null;
   /** The most recent PULL/probe attempt failed. */
   pullErroring: boolean;
   /** This session has confirmed remote consistency through a push/pull
@@ -104,7 +120,9 @@ export type SyncStatusClassification =
   /** #6 — local changes queued, push not (yet) failing. Transient. */
   | { kind: 'queued'; count: number }
   /** #4 — pending changes the push can't deliver (data at risk).
-   *  durationMs = time since last successful push. */
+   *  durationMs = how long the current push-failure streak has lasted
+   *  (from `pushFailingSinceIso`), NOT time since the last successful
+   *  push — idle time must not inflate severity. */
   | {
       kind: 'push-failure';
       /** Mild < 1 day · distinct 1-3 days · heavy > 3 days. */
@@ -146,7 +164,17 @@ export function classifySyncStatus(
   //   (b) never confirmed a push on this device + a pile of writes
   //       (worst case for the "thought I was syncing but wasn't" framing).
   if (inp.pendingCount > 0 && inp.pushErroring) {
-    const durationMs = ageMsOrInfinity(inp.lastSuccessPushIso, inp.nowMs);
+    // Duration = age of the current failure streak. When the streak
+    // start is unknown (erroring flag set but no parseable timestamp)
+    // fall back to 0 — under-alarming beats a false "已经 N 天" heavy
+    // banner built out of idle time.
+    const failingSinceMs =
+      inp.pushFailingSinceIso === null
+        ? Number.NaN
+        : Date.parse(inp.pushFailingSinceIso);
+    const durationMs = Number.isNaN(failingSinceMs)
+      ? 0
+      : Math.max(0, inp.nowMs - failingSinceMs);
     return {
       kind: 'push-failure',
       severity: severityFor(durationMs),

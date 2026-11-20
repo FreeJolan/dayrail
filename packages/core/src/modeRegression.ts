@@ -14,6 +14,14 @@
 // runtime-inferred mode surfaces the ModeRegressionModal at boot.
 // User picks: reconnect / explicit-downgrade / decide-later.
 //
+// Contract with the IO layer: "the user deliberately downgraded" is
+// encoded as PIN CLEARED — there is no separate flag. Every surface
+// that lets the user knowingly drop to Local-only (the modal's
+// explicit-downgrade button, Settings → 断开连接, canceling a
+// connect flow) must clear the pin via identity.ts's
+// `recordExplicitDowngrade()`, or this guard will re-raise the modal
+// over the user's own decision at every launch.
+//
 // Pure module — no IO, no time. IO wrapper lives in
 // apps/web/src/lib/sync/syncController.ts (`checkModeRegressionAtBoot`).
 

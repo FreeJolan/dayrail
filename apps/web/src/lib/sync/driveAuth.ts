@@ -303,7 +303,43 @@ async function ensureTokenClient(): Promise<TokenClient> {
   return tokenClient;
 }
 
+/** Serialize GIS token requests. The GIS token client is a singleton
+ *  whose `callback` / `error_callback` get reassigned per request
+ *  (`requestTokenInner` below). Two CONCURRENT calls would clobber
+ *  each other's callbacks: the second assignment replaces the first
+ *  request's settle closures, so the first Promise never settles —
+ *  and everything awaiting it upstream (ensureAccessToken →
+ *  authedFetch → runPush's inFlightPush) hangs for the rest of the
+ *  session. Concurrency is real: BootGate's boot probe, the +1.5s
+ *  recovery push, and the 5-min periodic probe can all trigger a
+ *  silent refresh in the same window. The chain guarantees at most
+ *  one outstanding GIS request at a time; rejections don't poison
+ *  the queue. */
+let tokenRequestChain: Promise<void> = Promise.resolve();
+
 function requestToken(prompt: '' | 'consent'): Promise<CachedToken> {
+  const run = tokenRequestChain.then(() => {
+    // A queued silent request usually finds the token it was waiting
+    // for already refreshed by the request ahead of it — return the
+    // cache instead of burning another GIS round-trip (which could
+    // surface a popup).
+    if (
+      prompt === '' &&
+      cachedToken &&
+      cachedToken.expiresAt - Date.now() > NEAR_EXPIRY_MS
+    ) {
+      return Promise.resolve(cachedToken);
+    }
+    return requestTokenInner(prompt);
+  });
+  tokenRequestChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+function requestTokenInner(prompt: '' | 'consent'): Promise<CachedToken> {
   return new Promise<CachedToken>((resolve, reject) => {
     void ensureTokenClient().then((client) => {
       let settled = false;
