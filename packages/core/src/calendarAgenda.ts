@@ -231,11 +231,22 @@ export function selectCalendarAgenda(
 
   if (options.includeHabits) {
     const facts = new Map<string, Task>();
+    // Every materialized auto-task — INCLUDING soft-deleted ones —
+    // suppresses the same-key virtual candidate. A deleted habit
+    // occurrence must stay deleted on the Calendar too; before this
+    // set existed, excluding it from `facts` alone let the virtual
+    // pending candidate for the same (habit, date, rail) resurface,
+    // and `upsertAutoTask`'s id-idempotency meant it could never be
+    // re-materialized or dismissed again.
+    const materializedKeys = new Set<string>();
     for (const task of Object.values(state.tasks)) {
-      if (!isAutoTask(task) || !task.slot || task.status === 'deleted') continue;
+      if (!isAutoTask(task) || !task.slot) continue;
       if (!inRange(task.slot.date)) continue;
       const key = habitFactKey(task);
-      if (key) facts.set(key, task);
+      if (!key) continue;
+      materializedKeys.add(key);
+      if (task.status === 'deleted') continue;
+      facts.set(key, task);
     }
     const candidates = selectAutoTaskCandidates(
       state,
@@ -244,7 +255,9 @@ export function selectCalendarAgenda(
     const merged = new Map<string, { task: Task; virtual: boolean }>();
     for (const candidate of candidates) {
       const key = habitFactKey(candidate);
-      if (key) merged.set(key, { task: candidate, virtual: true });
+      if (key && !materializedKeys.has(key)) {
+        merged.set(key, { task: candidate, virtual: true });
+      }
     }
     for (const [key, fact] of facts) merged.set(key, { task: fact, virtual: false });
     for (const { task, virtual } of merged.values()) {

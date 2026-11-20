@@ -274,6 +274,42 @@ describe('findAffectedFutureAutoTasks', () => {
     const got = findAffectedFutureAutoTasks(withRevisions(state), { habitId: 'h1' }, NOW);
     expect(got).toEqual([]);
   });
+
+  it('still returns future pending auto-tasks on a tombstoned rail — §10.3 delete-rail cleanup', () => {
+    // The delete-rail flow tombstones FIRST (effectiveFrom = today) and
+    // purges SECOND, so by purge time railAtDate returns undefined for
+    // every affected slot. Skipping on that made the purge a permanent
+    // no-op: the confirm dialog promised "N auto-tasks will be cleaned"
+    // and 0 were. The window must fall back to the revision that WAS in
+    // effect, keeping the plannedStart>now gate (today's already-started
+    // slot stays, strictly-future slots purge) identical to the count
+    // the dialog showed.
+    const future = task({
+      id: 'task-auto-h1-2026-04-25-r1',
+      lineId: 'h1',
+      date: '2026-04-25',
+      railId: 'r1',
+      source: 'auto-habit',
+    });
+    // Rail fires 09:00; NOW is 12:00 on 2026-04-19 — already started.
+    const todayStarted = task({
+      id: 'task-auto-h1-2026-04-19-r1',
+      lineId: 'h1',
+      date: '2026-04-19',
+      railId: 'r1',
+      source: 'auto-habit',
+    });
+    const base = withRevisions({ rails, tasks: mapById([future, todayStarted]) });
+    const got = findAffectedFutureAutoTasks(
+      {
+        ...base,
+        railTombstones: { r1: { effectiveFrom: '2026-04-19', at: 0 } },
+      },
+      { habitId: 'h1' },
+      NOW,
+    );
+    expect(got.map((t) => t.id)).toEqual(['task-auto-h1-2026-04-25-r1']);
+  });
 });
 
 describe('findAffectedFutureAutoTasksForRail', () => {

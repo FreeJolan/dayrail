@@ -159,7 +159,12 @@ function lateSlot(
   occurrence: TaskOccurrence | undefined,
   expectedEnd: string,
 ): AttentionSchedule | null {
-  const slot = occurrence?.slot ?? task.slot;
+  // §10.6 — on an occurrence row the occurrence's own slot is the only
+  // schedule; the host Task's legacy slot is ignored in managed mode
+  // (every read path skips it). Falling back to `task.slot` here used
+  // to spray ghost late-schedule issues across every slot-less pending
+  // occurrence whenever a dangling Task.slot survived a CRDT merge.
+  const slot = occurrence ? occurrence.slot : task.slot;
   if (!slot || slot.date <= expectedEnd) return null;
   return {
     kind: 'slot',

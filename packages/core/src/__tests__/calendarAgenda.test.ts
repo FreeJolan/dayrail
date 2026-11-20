@@ -249,6 +249,27 @@ describe('selectCalendarAgenda', () => {
     expect(result[0]?.virtual).toBeUndefined();
   });
 
+  it('keeps a soft-deleted habit occurrence suppressed — it must not revive as a virtual candidate', () => {
+    // agent `task.delete` soft-deletes a materialized auto-task. Every
+    // other surface hides it; the Calendar merge used to drop it from
+    // `facts` only, letting the same-key virtual pending candidate
+    // through — an undeletable ghost (upsertAutoTask is id-idempotent,
+    // so the "virtual preview" could never become a fact again either).
+    const fact = task({
+      id: `task-auto-${habit.id}-${DATE}-${rail.id}`,
+      lineId: habit.id,
+      title: habit.name,
+      source: 'auto-habit',
+      status: 'deleted',
+      slot: { cycleId: 'auto', date: DATE, railId: rail.id },
+    });
+    const result = selectCalendarAgenda(
+      state({ tasks: { [fact.id]: fact } }),
+      { ...options, includeTasks: false, includeHabits: true },
+    );
+    expect(result).toEqual([]);
+  });
+
   it('is a pure read and does not materialize planned Habit rows', () => {
     const input = state();
     const before = JSON.stringify(input);

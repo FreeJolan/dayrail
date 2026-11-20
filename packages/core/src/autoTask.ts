@@ -22,6 +22,7 @@ import { toIsoDate, toIsoDateTime } from './today';
 import {
   habitBindingsActiveOn,
   railAtDate,
+  railAtDateIgnoringTombstone,
   railFromRevision,
 } from './revisions';
 import type { Rail, Task } from './types';
@@ -308,7 +309,28 @@ export function findAffectedFutureAutoTasks(
     if (t.lineId !== scope.habitId) continue;
     if (!t.slot) continue;
     if (scope.railId && t.slot.railId !== scope.railId) continue;
-    const window = autoTaskPlannedWindow(state, t);
+    let window = autoTaskPlannedWindow(state, t);
+    if (!window) {
+      // The rail doesn't resolve on slot.date — most commonly it was
+      // just deleted (tombstoned effective today), which is precisely
+      // the §10.3 "clean up the stranded future auto-tasks" case. The
+      // delete-rail flow tombstones FIRST and purges SECOND, so an
+      // honest `railAtDate` here returned `undefined` for every
+      // affected task and the purge was a permanent no-op. Fall back
+      // to the revision that was in effect ignoring the tombstone so
+      // the window (and the `plannedStart > now` safety gate) is
+      // computed exactly as the pre-delete confirm dialog counted it.
+      const rev = railAtDateIgnoringTombstone(state, t.slot.railId, t.slot.date);
+      if (rev) {
+        window = {
+          plannedStart: toIsoDateTime(t.slot.date, rev.startMinutes),
+          plannedEnd: toIsoDateTime(
+            t.slot.date,
+            rev.startMinutes + rev.durationMinutes,
+          ),
+        };
+      }
+    }
     if (!window) continue;
     const startMs = Date.parse(window.plannedStart);
     if (Number.isNaN(startMs)) continue;

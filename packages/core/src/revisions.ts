@@ -88,6 +88,22 @@ export function railAtDate(
   return pickActive(state.railRevisions[railId], date);
 }
 
+/** §10.3 cleanup helper — resolve the revision that WAS (or would have
+ *  been) in effect for a rail on `date`, ignoring the rail's tombstone.
+ *  Used by the auto-task purge to compute the planned window of
+ *  pending auto-tasks stranded on a just-deleted rail: `railAtDate`
+ *  returns `undefined` for every date on/after the tombstone, which
+ *  made the §10.3 purge skip exactly the orphans it exists to clean
+ *  up. NOT for rendering — display paths must keep honoring the
+ *  tombstone via `railAtDate`. */
+export function railAtDateIgnoringTombstone(
+  state: Pick<DayRailState, 'railRevisions'>,
+  railId: string,
+  date: EffectiveDate,
+): RailRevision | undefined {
+  return pickActive(state.railRevisions[railId], date);
+}
+
 /** Resolve a template's effective revision on `date`. */
 export function templateAtDate(
   state: TemplateReadState,
