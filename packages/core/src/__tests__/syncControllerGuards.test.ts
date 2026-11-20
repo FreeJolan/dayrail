@@ -273,3 +273,31 @@ describe('boot reconcile heartbeat refresh', () => {
     expect(disk.writeHeartbeat).not.toHaveBeenCalled();
   });
 });
+
+// ============ audit #22 · samples-only flag vs real user edits ============
+
+describe('samples-only flag lifecycle through the real controller', () => {
+  it('survives boot auto-materialization but clears on the first genuine user edit', async () => {
+    seedHabitWorld();
+    disk.meta.samplesOnly = true;
+    await bootApp();
+    const identity = await import('../../../../apps/web/src/lib/sync/identity');
+    const core = await import('@dayrail/core');
+
+    // Boot materialized today's habit auto-task AFTER the sync loop
+    // attached (a system-authored write). The disposable-seed marker
+    // must survive it, and the write must stay untracked — clearing
+    // here was the v0.9.0→v0.9.1 overwrite-cloud-with-seed hole.
+    expect(core.useStore.getState().tasks['task-auto-habit-2026-10-30-rail']).toBeTruthy();
+    expect(identity.isLocalSamplesOnly()).toBe(true);
+    expect(identity.getDirtyCount()).toBe(0);
+
+    // First GENUINE user write: the samplesOnlyFlag.test.ts contract
+    // ("first user write → flag cleared") — without it the flag
+    // sticks forever, real edits never bump the dirty cursor, and
+    // the next samples-only pull replaceLocalFromRemote's them away.
+    await userEdit('line-user-1');
+    expect(identity.isLocalSamplesOnly()).toBe(false);
+    expect(identity.getDirtyCount()).toBe(1);
+  });
+});

@@ -31,6 +31,7 @@ import {
   replaceFromRemote,
   getYDoc,
   classify,
+  AUTO_TASK_ORIGIN,
   REMOTE_ORIGIN,
   OPFS_ORIGIN,
 } from '@dayrail/core';
@@ -312,7 +313,7 @@ export function startSyncBackgroundLoop(): void {
     // samples, or in v0.9 a re-seed because Tauri's auto-update path
     // wiped WKWebView OPFS while replacing the .app), DO NOT push to
     // Drive. Pushing the seed overwrites the user's real cloud data.
-    // The flag is cleared by authoritative paths only:
+    // The flag is cleared by authoritative paths:
     //   - BootGate → replaceLocalFromRemote / applyRemoteDryj on a
     //     successful pull (local now mirrors remote)
     //   - BootGate → no-remote / equal branch (Drive has nothing to
@@ -320,8 +321,10 @@ export function startSyncBackgroundLoop(): void {
     //   - importLocalData (user brought in real data via .dryj)
     //   - runForcePush success (user explicitly asked to overwrite)
     //   - ConnectDrivePanel paths in Settings (explicit user action)
+    //   - the FIRST genuine user-authored write (below) — once the
+    //     user authors anything, local is no longer disposable.
     // Sessions still tick so EditSessionIndicator stays accurate; we
-    // only suppress the dirty bump + push schedule.
+    // only suppress the dirty bump + push schedule for system writes.
     const samplesOnly = isLocalSamplesOnly();
     // Session activity tracking: when origin is the id of an open
     // session (set by openEditSession + threaded through every
@@ -349,7 +352,28 @@ export function startSyncBackgroundLoop(): void {
         }));
       }
     }
-    if (samplesOnly) return;
+    if (samplesOnly) {
+      // System-authored writes (boot / midnight habit auto-task
+      // materialization) fire on every start and say nothing about
+      // user intent — keep swallowing them so the disposable-seed
+      // marker survives (clearing it here was the v0.9.0→v0.9.1
+      // hole: a re-seeded install pushed the seed over real cloud
+      // data after its own boot writes "authored" something).
+      if (origin === AUTO_TASK_ORIGIN) return;
+      // A GENUINE user-authored write: local stops being a
+      // disposable sample seed right now. Without this clear the
+      // flag could stick forever on legacy-seeded installs — months
+      // of real edits would never bump the dirty cursor (never
+      // push), and the next samples-only pull surface would
+      // replaceLocalFromRemote right over them. This is the
+      // contract samplesOnlyFlag.test.ts pins ("boot seed → flag
+      // set; first user write → flag cleared") and the behavior
+      // BootGate's pull gate comment already assumed. Fall through:
+      // this edit is real data — track it and queue the push (the
+      // push firewall still classifies against remote before any
+      // upload).
+      clearLocalIsSamplesOnly();
+    }
     const next = bumpDirtyCount();
     syncStore.setDirtyCount(next);
     // ERD §7.10.4 · v0.12 P4 · stamp the moment of user activity so
