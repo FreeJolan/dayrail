@@ -25,3 +25,12 @@ export async function deleteYDocBytes(): Promise<void> {
   const store = await getYDocStore();
   return store.deleteYDoc();
 }
+
+/** Quarantine a corrupt state file (rename to `.corrupt-<n>`) instead
+ *  of leaving it in place to be overwritten by the next persist.
+ *  Returns the quarantine file name, or null when no state file
+ *  exists. See YDocStore.quarantineYDoc. */
+export async function quarantineYDocBytes(): Promise<string | null> {
+  const store = await getYDocStore();
+  return store.quarantineYDoc();
+}
