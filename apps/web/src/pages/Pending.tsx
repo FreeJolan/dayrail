@@ -310,6 +310,7 @@ function adaptRow(
   // placeholder display values.
   const anchorIso =
     row.plannedStart ??
+    row.occurrence?.slot?.date ??
     row.task.slot?.date ??
     row.task.deferredAt ??
     row.task.archivedAt ??
@@ -370,13 +371,22 @@ function adaptRow(
       ageDays,
     };
   }
-  // Slot-less deferred task (e.g. Inbox item user pushed to later).
+  // Rail-less rows: slot-less deferred tasks (e.g. Inbox item user
+  // pushed to later) AND rows whose slot points at a rail that no
+  // longer resolves on that date (deleted rail — the core selector
+  // surfaces them without a planned window per §5.7). The latter
+  // still carry a slot date, so prefer it for grouping.
   return {
     key,
     taskId: row.task.id,
     ...(occurrenceId && { occurrenceId }),
     railId: '',
-    date: (row.task.deferredAt ?? '').slice(0, 10),
+    date: (
+      row.occurrence?.slot?.date ??
+      row.task.slot?.date ??
+      row.task.deferredAt ??
+      ''
+    ).slice(0, 10),
     start: '—',
     end: '—',
     railName: '未排期',
@@ -385,7 +395,7 @@ function adaptRow(
     ...(parentTaskTitle && { parentTaskTitle }),
     ...(note && { note }),
     task: row.task,
-    source: 'deferred',
+    source: row.task.status === 'deferred' ? 'deferred' : 'unmarked',
     tags: latestTagsForTask(row.task.id, shifts),
     ageDays,
   };

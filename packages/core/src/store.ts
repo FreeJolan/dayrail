@@ -927,7 +927,18 @@ function clearTombstone(doc: YDoc, mapName: string, parentId: string): void {
 }
 
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  // Local calendar day — NOT UTC. Date strings are local wall-clock
+  // "YYYY-MM-DD" across the codebase (see today.ts's conventions and
+  // `toIsoDate`; kept inline here to avoid a store↔today import
+  // cycle). The previous `toISOString().slice(0, 10)` returned the
+  // UTC day, which disagrees with the local day for |UTC-offset|
+  // hours around midnight — skewing effectiveFrom/tombstone defaults
+  // and the §5.5.6 reschedule/unschedule "today or overdue" gate.
+  const d = new Date();
+  const yr = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const dy = String(d.getDate()).padStart(2, '0');
+  return `${yr}-${mo}-${dy}`;
 }
 
 function ulidLite(prefix: string): string {
@@ -2995,9 +3006,12 @@ export function selectHabitPhasesByLine(
 export function selectCurrentHabitPhase(
   state: Pick<DayRailState, 'habitPhases'>,
   lineId: string,
-  todayIso?: string,
+  today?: string,
 ): HabitPhase | undefined {
-  const today = todayIso ?? new Date().toISOString().slice(0, 10);
+  // Default to the LOCAL calendar day (phase startDate is a local
+  // wall-clock date, so comparing against the UTC day flipped phases
+  // for a few hours around local midnight).
+  if (today === undefined) today = todayIso();
   let best: HabitPhase | undefined;
   for (const p of Object.values(state.habitPhases)) {
     if (p.lineId !== lineId) continue;
