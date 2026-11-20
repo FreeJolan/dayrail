@@ -444,6 +444,30 @@ export function clearIdentityPin(): void {
   scheduleFlush();
 }
 
+/** Explicit, user-chosen downgrade to Local-only (ERD §7.10.6).
+ *
+ *  The §7.10.6 regression guard fires whenever a pin exists while the
+ *  runtime is local — its job is to catch the user being downgraded
+ *  WITHOUT knowing (OAuth loss, storage eviction). A downgrade the
+ *  user explicitly confirmed must therefore clear the pin, or every
+ *  subsequent launch re-raises the ModeRegressionModal over the
+ *  user's own decision. Shared by every deliberate-downgrade surface:
+ *  the ModeRegressionModal's "明确降级" button and the Settings →
+ *  同步 disconnect / cancel-connect flows (audit #37 — the latter
+ *  used to leave the pin behind).
+ *
+ *  Also resets the lineage cursors so a future reconnect (if ever)
+ *  walks the first-connect path cleanly: no stale lastPulled lineage
+ *  to compare against whatever account gets picked then, no stale
+ *  dirty debt, no stale samples-only assertion. The Y.Doc itself is
+ *  untouched — local data carries forward. */
+export function recordExplicitDowngrade(): void {
+  clearIdentityPin();
+  clearLastPulledSnapshotId();
+  clearDirtyCount();
+  clearLocalIsSamplesOnly();
+}
+
 /** Update the `lastKnownMode` field on the existing pin. Idempotent —
  *  no-op when value is unchanged so we don't churn the store on
  *  every push. Used by §7.10.1 mode inference; read by §7.10.6

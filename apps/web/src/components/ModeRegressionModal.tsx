@@ -26,12 +26,7 @@
 import { useState } from 'react';
 import { syncStore, useSyncStatus } from '@/lib/sync/syncStore';
 import { connectDrive } from '@/lib/sync/driveAuth';
-import {
-  clearDirtyCount,
-  clearIdentityPin,
-  clearLastPulledSnapshotId,
-  clearLocalIsSamplesOnly,
-} from '@/lib/sync/identity';
+import { recordExplicitDowngrade } from '@/lib/sync/identity';
 import { verifyIdentityAfterConnect } from '@/lib/sync/syncController';
 
 export function ModeRegressionModal() {
@@ -72,13 +67,12 @@ function Panel() {
     setBusy('downgrade');
     setErrMsg(null);
     try {
-      // Explicit downgrade · clear sync cursors so the next time the
-      // user reconnects (if ever) walks the first-connect path. The
-      // Y.Doc itself is untouched — the local data carries forward.
-      clearIdentityPin();
-      clearLastPulledSnapshotId();
-      clearDirtyCount();
-      clearLocalIsSamplesOnly();
+      // Explicit downgrade · clear the pin + sync cursors so the next
+      // time the user reconnects (if ever) walks the first-connect
+      // path. The Y.Doc itself is untouched — the local data carries
+      // forward. Shared with the Settings disconnect flow.
+      recordExplicitDowngrade();
+      syncStore.setDirtyCount(0);
       syncStore.setPendingModeRegression(null);
     } catch (e) {
       setErrMsg((e as Error).message ?? String(e));

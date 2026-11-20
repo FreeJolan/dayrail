@@ -77,6 +77,7 @@ import {
   getDirtyCount,
   getLastPulledSnapshotId,
   isLocalSamplesOnly,
+  recordExplicitDowngrade,
   setBootSyncChoice,
   setDeviceLabel,
   type BootSyncChoice,
@@ -789,6 +790,13 @@ function ConnectDrivePanel() {
     try {
       await disconnectDrive();
       syncStore.setConnected(false);
+      // Deliberate abort of the connect flow. The verify step above
+      // may already have written a first-connect pin — clear it (and
+      // the other cursors) or the §7.10.6 regression guard would
+      // treat this user decision as an incident at every launch
+      // (same shape as audit #37's disconnect case).
+      recordExplicitDowngrade();
+      syncStore.setDirtyCount(0);
     } finally {
       setPhase({ kind: 'idle' });
     }
@@ -1702,6 +1710,15 @@ function DisconnectRow() {
     try {
       await disconnectDrive();
       syncStore.setConnected(false);
+      // The user just DELIBERATELY downgraded to Local-only (confirmed
+      // above). Clear the pin + sync cursors — same semantics as the
+      // ModeRegressionModal's "明确降级" button. Leaving the pin
+      // behind made the §7.10.6 regression guard treat this decision
+      // as an incident and re-raise the modal on every launch
+      // (audit #37); the guard is for downgrades the user DIDN'T
+      // choose.
+      recordExplicitDowngrade();
+      syncStore.setDirtyCount(0);
     } finally {
       setBusy(false);
     }

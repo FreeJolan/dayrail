@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { decodeDryj, encodeDryj } from '@dayrail/db/dryj';
 import { classifyReconcile } from '../heartbeatStatus';
+import { detectModeRegression } from '../modeRegression';
 
 const disk = vi.hoisted(() => ({
   meta: {} as Record<string, unknown>,
@@ -595,5 +596,38 @@ describe('import bumps the dirty cursor after the reload', () => {
     expect(identity.getDirtyCount()).toBe(1);
     expect(syncStore.getSnapshot().dirtyCount).toBe(1);
     expect(identity.isLocalSamplesOnly()).toBe(false);
+  });
+});
+
+// ============ audit #37 · explicit downgrade clears the pin ============
+
+describe('explicit downgrade vs mode-regression guard (ERD §7.10.6)', () => {
+  it('recordExplicitDowngrade silences the regression alarm and resets cursors', async () => {
+    disk.meta.identityPin = {
+      accountEmail: 'me@example.com',
+      appdataFileId: null,
+      lastKnownMode: 'backup',
+      pinnedAt: '2026-10-01T00:00:00.000Z',
+    };
+    disk.meta.dirtyCount = 3;
+    await bootApp();
+    const identity = await import('../../../../apps/web/src/lib/sync/identity');
+
+    // Sanity: an UNEXPLAINED drop to local with this pin must alarm —
+    // that's the guard's whole job.
+    expect(detectModeRegression(identity.getIdentityPin(), 'local').kind).toBe(
+      'regression',
+    );
+
+    // The user confirms 断开连接 (or the modal's 明确降级): deliberate
+    // downgrade — pin + lineage cursors go, local data stays.
+    identity.recordExplicitDowngrade();
+    expect(identity.getIdentityPin()).toBeNull();
+    expect(identity.getLastPulledSnapshotId()).toBeNull();
+    expect(identity.getDirtyCount()).toBe(0);
+    expect(identity.isLocalSamplesOnly()).toBe(false);
+    expect(detectModeRegression(identity.getIdentityPin(), 'local').kind).toBe(
+      'none',
+    );
   });
 });
