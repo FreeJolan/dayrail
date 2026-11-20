@@ -301,3 +301,45 @@ describe('samples-only flag lifecycle through the real controller', () => {
     expect(identity.getDirtyCount()).toBe(1);
   });
 });
+
+// ============ audit #24 · edits made during an upload stay dirty ============
+
+describe('push success pays off only the exported edits', () => {
+  it('keeps an edit made while the upload was in flight dirty (and queued)', async () => {
+    disk.getRemoteMeta.mockResolvedValue(null); // no remote canonical
+    let finishUpload!: () => void;
+    disk.uploadDryj.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishUpload = () =>
+            resolve({ canonicalFileId: 'c-1', historyFileId: 'h-1' });
+        }),
+    );
+    await bootApp();
+    const identity = await import('../../../../apps/web/src/lib/sync/identity');
+    const { syncStore } = await import('../../../../apps/web/src/lib/sync/syncStore');
+    const { runManualSync } = await import(
+      '../../../../apps/web/src/lib/sync/syncController'
+    );
+
+    await userEdit('line-before-push');
+    expect(identity.getDirtyCount()).toBe(1);
+
+    const manualSync = runManualSync();
+    await waitUntil(() => disk.uploadDryj.mock.calls.length === 1);
+
+    // The upload is in flight (its bytes were exported BEFORE this
+    // edit) — the user keeps typing.
+    await userEdit('line-during-push');
+    expect(identity.getDirtyCount()).toBe(2);
+
+    finishUpload();
+    await expect(manualSync).resolves.toEqual({ kind: 'pushed' });
+
+    // Only the exported edit is paid off. A blanket clear left this
+    // edit stranded with the UI showing 已同步 (every push trigger
+    // gates on dirty > 0).
+    expect(identity.getDirtyCount()).toBe(1);
+    expect(syncStore.getSnapshot().dirtyCount).toBe(1);
+  });
+});

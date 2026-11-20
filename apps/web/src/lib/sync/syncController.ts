@@ -53,6 +53,7 @@ import {
   isLocalSamplesOnly,
   isSyncProbeSuppressed,
   markLastActivityNow,
+  setDirtyCount,
   setDismissPendingPileUntil,
   setLastKnownMode,
   setLastModeUpgradeToastAt,
@@ -747,6 +748,9 @@ export async function runForcePush(): Promise<void> {
       // as the baseline going forward so the next regular runPush has
       // an accurate compare.
       const currCounts = computeLocalCounts();
+      // Same shape as runPush: snapshot the dirty cursor at export
+      // time so edits made during the upload stay dirty.
+      const dirtyAtExport = getDirtyCount();
       const update = exportYDocAsUpdate();
       const snapshotId = cryptoUUID();
       const meta: DryjMeta = {
@@ -771,8 +775,10 @@ export async function runForcePush(): Promise<void> {
       await saveLastPulledDocBytes(bytes).catch((e) =>
         console.warn('[sync] saveLastPulledDocBytes failed:', e),
       );
-      clearDirtyCount();
-      syncStore.setDirtyCount(0);
+      const remainingDirty = Math.max(0, getDirtyCount() - dirtyAtExport);
+      setDirtyCount(remainingDirty);
+      syncStore.setDirtyCount(remainingDirty);
+      if (remainingDirty > 0) schedulePush();
       clearLocalIsSamplesOnly();
       const info = { at: Date.now(), label: getDeviceLabel() };
       setLastSyncInfo(info);
@@ -1182,6 +1188,14 @@ async function runPush(opts: RunPushOpts): Promise<void> {
         }
       }
 
+      // Snapshot the dirty cursor at the same instant the doc is
+      // exported (both statements are synchronous — nothing can land
+      // in between). The upload below takes seconds; edits made
+      // during it bump the cursor but are NOT in these bytes, so on
+      // success we subtract this snapshot instead of zeroing — a
+      // blanket clear stranded those edits locally while the UI
+      // claimed 已同步 (every push trigger gates on dirty > 0).
+      const dirtyAtExport = getDirtyCount();
       const update = exportYDocAsUpdate();
       const snapshotId = cryptoUUID();
       const parent = getLastPulledSnapshotId();
@@ -1208,8 +1222,12 @@ async function runPush(opts: RunPushOpts): Promise<void> {
       await saveLastPulledDocBytes(bytes).catch((e) =>
         console.warn('[sync] saveLastPulledDocBytes failed:', e),
       );
-      clearDirtyCount();
-      syncStore.setDirtyCount(0);
+      // Pay off only what this upload actually carried; edits made
+      // during the upload stay dirty and re-schedule a sweep.
+      const remainingDirty = Math.max(0, getDirtyCount() - dirtyAtExport);
+      setDirtyCount(remainingDirty);
+      syncStore.setDirtyCount(remainingDirty);
+      if (remainingDirty > 0) schedulePush();
       // After a successful push, local has been committed to Drive.
       // The samples-only flag's whole job is to gate the destructive
       // "replace local with remote" branch on first-connect devices;
