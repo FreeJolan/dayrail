@@ -144,7 +144,11 @@ export function formatScheduleAsIcal(state: DayRailState): string {
       `Status: ${task.status}`,
     ]
       .filter(Boolean)
-      .join('\\n');
+      // Join with a REAL newline — escapeIcalText turns it into the
+      // RFC 5545 `\n` sequence. Joining with a literal backslash-n
+      // here would get its backslash doubled by the escaper and render
+      // as the two characters "\n" in calendar apps.
+      .join('\n');
 
     lines.push('BEGIN:VEVENT');
     lines.push(`UID:${task.id}@dayrail`);
