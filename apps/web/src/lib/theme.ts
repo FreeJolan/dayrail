@@ -3,13 +3,17 @@
 // control that lets the user switch. Also wires a `prefers-color-
 // scheme` listener so `system` mode follows OS-level changes live.
 
+import { safeStorageGet, safeStorageSet } from './safeStorage';
+
 export type ThemePref = 'system' | 'light' | 'dark';
 
 const STORAGE_KEY = 'dayrail.theme';
 
 function readSavedPref(): ThemePref {
-  if (typeof window === 'undefined') return 'system';
-  const raw = window.localStorage.getItem(STORAGE_KEY);
+  // initTheme() runs synchronously before React mounts; storage access
+  // must be guarded or a blocked-storage environment white-screens the
+  // app before the BootError page can render.
+  const raw = safeStorageGet(STORAGE_KEY);
   if (raw === 'light' || raw === 'dark' || raw === 'system') return raw;
   return 'system';
 }
@@ -40,9 +44,7 @@ let currentPref: ThemePref = 'system';
  *  listener so `system` mode tracks OS changes live. */
 export function applyTheme(pref: ThemePref): void {
   currentPref = pref;
-  if (typeof window !== 'undefined') {
-    window.localStorage.setItem(STORAGE_KEY, pref);
-  }
+  safeStorageSet(STORAGE_KEY, pref);
   setHtmlClass(effectiveTheme(pref));
 
   if (typeof window !== 'undefined' && !systemListenerBound) {

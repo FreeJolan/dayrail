@@ -4,14 +4,18 @@ import { isTauriRuntime } from './versionUpdateContext';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { create } from 'zustand';
+import { safeStorageGet, safeStorageSet } from './safeStorage';
 
 const PREF = 'dayrail.agent.enabled';
+// This initializer runs at module evaluation (before React mounts) on
+// App's static import chain — storage access MUST be guarded or a
+// blocked-storage environment white-screens the whole app.
 export const useAgentBridge = create<{
   enabled: boolean;
   running: boolean;
   error: string | null;
 }>(() => ({
-  enabled: localStorage.getItem(PREF) === 'true',
+  enabled: safeStorageGet(PREF) === 'true',
   running: false,
   error: null,
 }));
@@ -26,7 +30,7 @@ export function setAgentConfirmation(handler: typeof confirmDelete) {
   confirmDelete = handler;
 }
 export function setAgentEnabled(enabled: boolean): Promise<void> {
-  localStorage.setItem(PREF, String(enabled));
+  safeStorageSet(PREF, String(enabled));
   useAgentBridge.setState({ enabled });
   return reconcileAgentBridge();
 }
