@@ -675,6 +675,13 @@ export async function runManualSync(): Promise<ManualSyncOutcome> {
   // path so UI surfaces tell the user "everything's on Drive now"
   // instead of the merge-only "已合并云端改动" hint.
   await runPullFromRemote(probe.remote);
+  if (syncStore.getSnapshot().pendingConflict !== null) {
+    // The pull-side classify found a true conflict: nothing was
+    // merged, the SyncConflictPanel is up, and the push stays paused
+    // until the user resolves (the resolver re-pushes). Report noop
+    // rather than claiming anything synced.
+    return { kind: 'noop' };
+  }
   if (getDirtyCount() > 0 && isDriveConnected()) {
     await runPush({ trigger: 'manual' });
     return { kind: 'pushed' };
@@ -844,6 +851,57 @@ async function runPullFromRemote(remote: RemoteMeta): Promise<void> {
     // below does NOT schedule a follow-up push.
     try {
       const bytes = await downloadDryjById(remote.fileId);
+      // PULL-SIDE TRUE-CONFLICT GATE (ERD §7.8 · audit #23).
+      //
+      // The classify/true-conflict/SyncConflictPanel pipeline used to
+      // hang off the push firewall only. Every pull surface (BootGate
+      // auto-pull, visibility/periodic/online probes, runManualSync's
+      // linear-lead) blind-merged via Y.applyUpdate, where concurrent
+      // same-field writes resolve by random clientID — and advancing
+      // the lastPulled cursor afterwards meant the push firewall never
+      // re-classified, so the losing side's edit was silently frozen
+      // into the next canonical. §7.8 explicitly deprecated silent
+      // LWW as "a bug, not a policy".
+      //
+      // Minimal correct gate: when LOCAL has unsynced writes and a
+      // diff base exists, classify before merging. true-conflict →
+      // hand off to the SyncConflictPanel exactly like the push
+      // firewall does (no merge, no cursor advance — the resolver
+      // applies the user's picks and re-pushes). Orthogonal /
+      // same-direction / no-base / classify-error keep today's CRDT
+      // merge: with no overlapping field edits it is correct, and
+      // fail-open-to-merge preserves pull availability.
+      if (getDirtyCount() > 0) {
+        const baseBytes = await loadLastPulledDocBytes().catch(() => null);
+        if (baseBytes !== null) {
+          let pendingConflictDetected = false;
+          try {
+            const cls = classify(
+              bytesToYDoc(baseBytes),
+              getYDoc(),
+              bytesToYDoc(bytes),
+            );
+            if (cls.type === 'true-conflict') {
+              syncStore.setPendingConflict({
+                conflicts: cls.conflicts,
+                remoteBytes: bytes,
+                remoteSnapshotId: remote.snapshotId,
+                detectedAt: Date.now(),
+              });
+              pendingConflictDetected = true;
+            }
+          } catch (classifyErr) {
+            console.warn(
+              '[sync] pull classify failed · falling back to CRDT merge:',
+              classifyErr,
+            );
+          }
+          if (pendingConflictDetected) {
+            syncStore.setPhase({ kind: 'idle' });
+            return;
+          }
+        }
+      }
       applyRemoteUpdate(bytes);
       setLastPulledSnapshotId(remote.snapshotId);
       // ERD §7.8 P3 · the bytes we just merged in become the new

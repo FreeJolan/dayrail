@@ -72,6 +72,12 @@ vi.mock('../../../../apps/web/src/lib/sync/driveBackend', () => ({
   getCurrentAccountEmail: disk.getCurrentAccountEmail,
 }));
 
+/** One shared base snapshot per test: regenerating it would mint new
+ *  clientIDs, and a "remote" doc seeded from a REGENERATED copy would
+ *  not share CRDT history with the local doc — merges would then
+ *  resolve whole entities by clientID instead of per field. */
+let baseBytes: Uint8Array;
+
 function baseSnapshotBytes(): Uint8Array {
   const doc = new Y.Doc();
   doc.getMap('tasks').set(
@@ -182,7 +188,8 @@ beforeEach(() => {
     lastPulledSnapshotId: 'snapshot-1',
     dirtyCount: 0,
   };
-  disk.bytes = baseSnapshotBytes();
+  baseBytes = baseSnapshotBytes();
+  disk.bytes = baseBytes;
   disk.savedBytes = null;
   disk.lastPulled = null;
   disk.savedLastPulled = null;
@@ -341,5 +348,106 @@ describe('push success pays off only the exported edits', () => {
     // gates on dirty > 0).
     expect(identity.getDirtyCount()).toBe(1);
     expect(syncStore.getSnapshot().dirtyCount).toBe(1);
+  });
+});
+
+// ============ audit #23 · pull-side true-conflict gate (ERD §7.8) ============
+
+describe('pull routes same-field divergence into the conflict panel', () => {
+  it('pauses instead of silently LWW-merging when local is dirty and classify says conflict', async () => {
+    await bootApp();
+    const core = await import('@dayrail/core');
+    const identity = await import('../../../../apps/web/src/lib/sync/identity');
+    const { syncStore } = await import('../../../../apps/web/src/lib/sync/syncStore');
+
+    // Diff base = the snapshot both sides last agreed on.
+    disk.lastPulled = baseBytes;
+
+    // Local edits the task title…
+    await core.useStore.getState().updateTask('task', { title: 'local-title' });
+    expect(identity.getDirtyCount()).toBe(1);
+
+    // …and the remote canonical moved on with a DIFFERENT title.
+    const decoded = decodeDryj(baseBytes);
+    const remoteDoc = new Y.Doc();
+    Y.applyUpdate(remoteDoc, decoded.update);
+    (remoteDoc.getMap('tasks').get('task') as Y.Map<unknown>).set('title', 'remote-title');
+    const remoteBytes = encodeDryj(
+      {
+        snapshotId: 'snapshot-2',
+        deviceId: 'other-device',
+        deviceLabel: 'Other Mac',
+        createdAt: '2026-10-30T11:00:00Z',
+        schemaVersion: 2,
+      },
+      Y.encodeStateAsUpdate(remoteDoc),
+    );
+    remoteDoc.destroy();
+    disk.getRemoteMeta.mockResolvedValue({
+      fileId: 'file-2',
+      snapshotId: 'snapshot-2',
+      modifiedTime: '2026-10-30T11:00:00Z',
+    });
+    disk.downloadDryjById.mockResolvedValue(remoteBytes);
+
+    const { runManualSync } = await import(
+      '../../../../apps/web/src/lib/sync/syncController'
+    );
+    await expect(runManualSync()).resolves.toEqual({ kind: 'noop' });
+
+    // The conflict surfaced instead of a random-clientID silent merge…
+    const pending = syncStore.getSnapshot().pendingConflict;
+    expect(pending).not.toBeNull();
+    expect(pending!.remoteSnapshotId).toBe('snapshot-2');
+    expect(pending!.conflicts).toMatchObject([
+      { storeKey: 'tasks', entityId: 'task', field: 'title' },
+    ]);
+    // …nothing was merged, the lineage cursor did not advance (so the
+    // push firewall still classifies), and nothing was uploaded.
+    expect(core.useStore.getState().tasks['task']!.title).toBe('local-title');
+    expect(identity.getLastPulledSnapshotId()).toBe('snapshot-1');
+    expect(disk.uploadDryj).not.toHaveBeenCalled();
+  });
+
+  it('still CRDT-merges orthogonal remote changes without pausing', async () => {
+    await bootApp();
+    const core = await import('@dayrail/core');
+    const { syncStore } = await import('../../../../apps/web/src/lib/sync/syncStore');
+    disk.lastPulled = baseBytes;
+
+    // Local edits the title; remote edits a DIFFERENT field.
+    await core.useStore.getState().updateTask('task', { title: 'local-title' });
+    const decoded = decodeDryj(baseBytes);
+    const remoteDoc = new Y.Doc();
+    Y.applyUpdate(remoteDoc, decoded.update);
+    (remoteDoc.getMap('tasks').get('task') as Y.Map<unknown>).set('order', 5);
+    const remoteBytes = encodeDryj(
+      {
+        snapshotId: 'snapshot-2',
+        deviceId: 'other-device',
+        deviceLabel: 'Other Mac',
+        createdAt: '2026-10-30T11:00:00Z',
+        schemaVersion: 2,
+      },
+      Y.encodeStateAsUpdate(remoteDoc),
+    );
+    remoteDoc.destroy();
+    disk.getRemoteMeta.mockResolvedValue({
+      fileId: 'file-2',
+      snapshotId: 'snapshot-2',
+      modifiedTime: '2026-10-30T11:00:00Z',
+    });
+    disk.downloadDryjById.mockResolvedValue(remoteBytes);
+
+    const { runManualSync } = await import(
+      '../../../../apps/web/src/lib/sync/syncController'
+    );
+    // linear-lead pull merges, then the manual flow pushes the union.
+    await expect(runManualSync()).resolves.toEqual({ kind: 'pushed' });
+    expect(syncStore.getSnapshot().pendingConflict).toBeNull();
+    expect(core.useStore.getState().tasks['task']).toMatchObject({
+      title: 'local-title',
+      order: 5,
+    });
   });
 });
