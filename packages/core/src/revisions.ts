@@ -30,9 +30,12 @@ import type {
 // ------------------------------------------------------------------
 
 /** Pick the latest revision in `revs` whose `effectiveFrom <= date`.
- *  Assumes `revs` is sorted ASC by `effectiveFrom` (the reducer
- *  enforces this on insert). Returns `undefined` if no revision is
- *  active at `date`. */
+ *  Assumes `revs` is sorted ASC by `effectiveFrom` — the write path
+ *  (store.ts `appendRevision`) inserts in order, and the read path
+ *  (@dayrail/db `readFlatStateFromDoc` → `dedupRevisions`) re-sorts
+ *  on every load, self-healing legacy out-of-order arrays and
+ *  multi-device Y.Array interleavings. Returns `undefined` if no
+ *  revision is active at `date`. */
 function pickActive<R extends { effectiveFrom: EffectiveDate }>(
   revs: R[] | undefined,
   date: EffectiveDate,

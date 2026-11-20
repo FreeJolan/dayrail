@@ -271,7 +271,17 @@ export function loadFlatStateIntoDoc(doc: Y.Doc, state: Partial<FlatState>): voi
  *  For a single-user occasional-multi-device app this is acceptable;
  *  if a real multi-user revision-history surface ever ships, the
  *  schema needs a non-deterministic id (e.g. include deviceId) so
- *  concurrent appends preserve both bodies. */
+ *  concurrent appends preserve both bodies.
+ *
+ *  After deduping, the result is stable-sorted ASC by
+ *  `effectiveFrom`: `pickActive` (@dayrail/core revisions.ts)
+ *  early-breaks on the first entry past the queried date, so an
+ *  out-of-order array makes reads resolve the wrong revision — or
+ *  none at all, vanishing the entity for that date. The write path
+ *  (store.ts `appendRevision`) inserts in order, but arrays written
+ *  before that fix, and multi-device Y.Array merges (interleave
+ *  order follows clientID, not dates), are not guaranteed sorted.
+ *  Sorting at read time self-heals both. */
 function dedupRevisions(revs: unknown[]): unknown[] {
   const byId = new Map<string, { rev: unknown; authoredAt: number }>();
   const orderedIds: string[] = [];
@@ -289,7 +299,24 @@ function dedupRevisions(revs: unknown[]): unknown[] {
       byId.set(id, { rev: r, authoredAt });
     }
   }
-  return orderedIds.map((id) => byId.get(id)!.rev);
+  const deduped = orderedIds.map((id) => byId.get(id)!.rev);
+  // Stable sort (ties keep array order) — see doc comment above.
+  return deduped.sort((a, b) => {
+    const ea = effectiveFromOf(a);
+    const eb = effectiveFromOf(b);
+    return ea < eb ? -1 : ea > eb ? 1 : 0;
+  });
+}
+
+/** Defensive accessor for sorting: revisions always carry a string
+ *  `effectiveFrom`; anything else sorts first (and is dropped or
+ *  resolved upstream anyway). */
+function effectiveFromOf(rev: unknown): string {
+  if (rev && typeof rev === 'object') {
+    const ef = (rev as Record<string, unknown>).effectiveFrom;
+    if (typeof ef === 'string') return ef;
+  }
+  return '';
 }
 
 /** Read the entire Y.Doc into a flat state snapshot — the shape the
