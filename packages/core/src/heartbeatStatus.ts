@@ -8,6 +8,13 @@
 //                   recently (gap > STALE_THRESHOLD)
 //   ✕ offline     — the list query failed (Drive unreachable)
 //
+// Producer contract: devices write their heartbeat after every
+// successful push (lastActivityAt <= lastPushedAt there) AND refresh
+// it at boot reconcile with the current lastActivityAt while keeping
+// lastPushedAt at the real last successful push. The boot refresh is
+// what makes the ⚠ condition reachable — push-success-only writes
+// could never produce lastActivityAt > lastPushedAt.
+//
 // Pure module — no IO. The IO wrapper sits in
 // apps/web/src/lib/sync/syncController.ts.
 

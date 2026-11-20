@@ -48,6 +48,7 @@ import {
   getLastModeUpgradeToastAt,
   getLastPulledSnapshotId,
   getLastPushedCounts,
+  getLastSuccessAt,
   isLocalSamplesOnly,
   isSyncProbeSuppressed,
   markLastActivityNow,
@@ -113,6 +114,49 @@ async function writeHeartbeatBestEffort(snapshotId: string): Promise<void> {
     await writeHeartbeat(hb);
   } catch (err) {
     console.warn('[sync] heartbeat write failed (non-fatal):', err);
+  }
+}
+
+/** Best-effort heartbeat REFRESH at boot reconcile (ERD §7.10.4).
+ *
+ *  Why this exists: heartbeats used to be written only after a
+ *  successful push, with `lastPushedAt = now ≥ lastActivityAt` by
+ *  construction. Under that protocol the ⚠ peer-stale condition
+ *  (`lastActivityAt > lastPushedAt + 1h`, heartbeatStatus.ts) was
+ *  structurally unreachable — a device whose pushes kept failing
+ *  simply froze its heartbeat, and peers judged it ✓ healthy, which
+ *  is exactly the "active but didn't push" scenario the banner was
+ *  designed to expose. Refreshing `lastActivityAt` at boot (while
+ *  keeping `lastPushedAt` = the real last successful push) produces
+ *  the activity-ahead-of-push shape whenever this device edited but
+ *  couldn't upload, so peers' reconcile can finally fire ⚠.
+ *
+ *  Boundaries: a device that never reboots its app won't refresh
+ *  (acceptable: desktop/PWA sessions restart daily in practice), and
+ *  a never-pushed / never-edited device stays silent — nothing
+ *  meaningful to advertise. */
+async function writeBootHeartbeatBestEffort(): Promise<void> {
+  const lastPushIso = getLastSuccessAt('push');
+  if (lastPushIso === null) return;
+  const lastActivityIso = getLastActivityAt();
+  if (lastActivityIso === null) return;
+  const hb: DeviceHeartbeat = {
+    deviceId: getDeviceId(),
+    deviceName: getDeviceLabel(),
+    lastActivityAt: lastActivityIso,
+    lastPushedAt: lastPushIso,
+    // Best approximation available at boot: after a push the lineage
+    // cursor equals the pushed snapshot; after a pull it points at
+    // the snapshot this device's state incorporates. Informational
+    // only — the reconcile classifier never reads it.
+    lastPushedSnapshotId: getLastPulledSnapshotId() ?? '',
+    pendingCount: getDirtyCount(),
+    schemaVersion: 1,
+  };
+  try {
+    await writeHeartbeat(hb);
+  } catch (err) {
+    console.warn('[sync] boot heartbeat refresh failed (non-fatal):', err);
   }
 }
 
@@ -462,6 +506,10 @@ export async function runReconcileAtBoot(): Promise<void> {
     return;
   }
   try {
+    // Refresh this device's own heartbeat first so peers can see our
+    // current lastActivityAt even when our pushes have been failing
+    // (⚠ peer-stale would otherwise be unreachable — see the helper).
+    await writeBootHeartbeatBestEffort();
     const heartbeats = await listHeartbeats();
     const selfId = getDeviceId();
     const peers = heartbeats
